@@ -1,0 +1,28 @@
+[package]
+name = "jello"
+version = "0.1.0"
+description = "Jello, a synthesizer and music studio"
+authors = ["anubhav-qt"]
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the library name different from the app binary's
+# name, which avoids a Cargo bug on Windows (rust-lang/cargo#8519).
+name = "jello_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Smaller, faster release builds: https://tauri.app/concept/size/
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

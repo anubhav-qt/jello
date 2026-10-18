@@ -1,0 +1,34 @@
+/* Dev panel placeholder styles. Not a design: the real UI is designed
+   with the user through mockups first (see docs/design.md). */
+
+:root {
+  --background: #ffffff;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1a1a1a;
+    --text: #f0f0f0;
+    --muted: #9a9a9a;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  padding: 32px;
+}
+
+.placeholder-label {
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

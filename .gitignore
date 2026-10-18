@@ -1,0 +1,19 @@
+# Dependencies and build output
+node_modules/
+dist/
+target/
+
+# Rendered audio (test renders, exports)
+*.wav
+
+# Logs
+*.log
+
+# Local env files
+*.local
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
