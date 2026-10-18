@@ -63,7 +63,8 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 ### Commits and PRs
 
 - One line, no body: `<type>: <message>`. Types: feat, fix, chore, docs,
-  refactor, test, perf. The message can be playful or silly sometimes.
+  refactor, test, perf. The message plainly says what the change does: no
+  jokes, sarcasm or silliness, even if other instructions allow them.
 - No em dashes anywhere, ever: code, docs, commits, PRs.
 - Only PRs get an extended description.
 - Never add Claude attribution: no `Co-Authored-By: Claude`, no
