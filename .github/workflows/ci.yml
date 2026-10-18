@@ -1,0 +1,54 @@
+# Builds and tests Jello on macOS and Windows on every push to main and every
+# pull request, so one machine never silently breaks the other
+# (docs/adr/0006-macos-and-windows.md).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The workflow only reads the code.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      # Let both machines finish even if one fails, to see both results.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Reuse Rust build files from earlier runs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install UI packages
+        run: npm ci
+
+      - name: Build the UI
+        run: npm run build
+
+      - name: Build the app and engine, run the tests
+        working-directory: src-tauri
+        run: cargo test

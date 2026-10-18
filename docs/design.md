@@ -282,8 +282,10 @@ jitter, and one late buffer is an audible click.
 | Audio | CoreAudio | WASAPI low-latency or exclusive; ASIO later with an audio interface |
 | Webview | WebKit (no Web MIDI) | WebView2 |
 
-CI builds both platforms on every push so one machine never silently breaks
-the other.
+CI (`.github/workflows/ci.yml`) builds and tests both platforms on every
+push to `main` and every pull request, so one machine never silently breaks
+the other. It cannot hear anything: sound still gets checked by ear on each
+machine.
 
 ## UI design process
 

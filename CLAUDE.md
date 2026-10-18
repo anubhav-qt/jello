@@ -17,9 +17,9 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 ## Status
 
-- Now: v1 step 1, the skeleton. The C++ engine plays a test tone and renders
-  it to `Music/Jello/test-tone.wav` (dev panel buttons). Left: CI that builds
-  macOS and Windows. Then step 2, laptop synth and key mapping.
+- Now: v1 step 1 (skeleton) is built: the C++ engine plays a test tone and
+  renders `Music/Jello/test-tone.wav`, and CI builds and tests macOS and
+  Windows. Not yet heard on Windows. Next: step 2, laptop synth and key mapping.
 
 ## Repo layout
 
@@ -29,6 +29,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
   `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).
 - [docs/design.md](docs/design.md): the design, roadmap and open questions.
 - [docs/adr/](docs/adr/README.md): one file per decision (ADRs).
+- `.github/workflows/ci.yml`: CI, builds and tests on macOS and Windows.
 
 ## Working rules
 
@@ -36,9 +37,8 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 - One topic at a time. Plan as much as you like, but ask the user one
   question or decision at a time. Never stack several decisions in one message.
-- The user wants to understand all code. Before writing a new piece, explain
-  the plan in plain words and get a yes. After writing it, explain what was
-  written.
+- The user wants to understand all code. Explain each new piece in plain
+  words and get a yes before writing it, then explain what was written.
 - Never write C++ engine code before the user has approved its design.
 - The user is still learning music theory. Explain music terms briefly when
   they first come up.
