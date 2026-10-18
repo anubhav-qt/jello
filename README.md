@@ -30,3 +30,9 @@ npm run tauri dev
 
 - [Design and roadmap](docs/design.md)
 - [Architecture decisions](docs/adr/README.md)
+
+## License
+
+Jello is free software under the [GNU General Public License v3.0](LICENSE).
+You can use, change and share it, and anything you distribute that is built
+on Jello must also be released under the GPL-3.0.

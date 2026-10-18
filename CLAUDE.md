@@ -15,7 +15,8 @@ music making.
 - **C++ engine**: makes all sound. Sequencer, instruments, effects, mixer,
   audio out and offline render to WAV.
 - Platforms: macOS (laptop) and Windows (desktop), both from day one.
-- Open source, public on GitHub (anubhav-qt/jello).
+- Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
+  dependencies with GPL-3.0-compatible licenses (see ADR 0007).
 - Run: `nvm use`, `npm install`, `npm run tauri dev`.
 
 ## Status

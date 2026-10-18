@@ -14,6 +14,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0004](0004-songs-are-text.md) | Songs are text files | Accepted |
 | [0005](0005-cpu-for-audio-gpu-for-visuals-and-ai.md) | CPU for audio, GPU for visuals and AI | Accepted |
 | [0006](0006-macos-and-windows.md) | macOS and Windows from day one | Accepted |
+| [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 
 ## Template
 

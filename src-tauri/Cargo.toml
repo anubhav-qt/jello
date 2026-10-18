@@ -3,6 +3,7 @@ name = "jello"
 version = "0.1.0"
 description = "Jello, a synthesizer and music studio"
 authors = ["anubhav-qt"]
+license = "GPL-3.0-only"
 edition = "2024"
 
 [lib]
