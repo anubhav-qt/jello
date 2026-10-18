@@ -91,6 +91,32 @@ MCP server, in-app AI harness, AI voice conversion. See [AI](#ai-v3).
    same audio.
 7. The Rust to C++ boundary is a small, plain C API.
 
+## Engine
+
+How the C++ engine is built today. It grows with each step.
+
+- **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
+  create, destroy, start and stop audio, tone on or off, sample rate, render.
+- **Files:** `engine.cpp` holds the C API and all device code, `tone.*` the
+  test tone, `miniaudio.cpp` and `miniaudio_settings.h` the audio library
+  ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
+- **Build:** `src-tauri/build.rs` compiles the engine as C++17 with the `cc`
+  crate, so one Rust build builds everything.
+- **Sound format:** the engine always runs at 48,000 samples per second,
+  stereo, 32-bit float. miniaudio converts if the speakers run at another
+  rate.
+- **Threads:** the OS calls the engine on its audio thread every few
+  milliseconds. Other threads reach it only through atomics (later a
+  lock-free queue), never locks.
+- **No clicks:** turning sound on or off glides the volume over 10 ms.
+- **Offline render:** Rust makes a second engine with no speakers and calls
+  render, the same code the speakers hear. Rust writes 32-bit float WAV files
+  (`hound` crate) to `Music/Jello/`.
+- **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
+  `commands.rs` holds the commands, `wav.rs` writes files.
+- **Tests:** `cargo test` in `src-tauri/` renders the tone silently and checks
+  the fade in, loudness, clipping and fade out. Tests never open speakers.
+
 ## Input
 
 ### Computer keyboard
@@ -280,5 +306,5 @@ Ask the user one at a time, when the step that needs the answer comes up.
   [UI design process](#ui-design-process)).
 - Frontend framework. The skeleton uses plain TypeScript; decide at step 2.
 - Song file format details. Decide at step 5.
-- C++ engine design and audio library. Walk through with the user before
-  writing any engine code.
+- Engine design for step 2 (voices, note events, the lock-free queue). Walk
+  through it with the user before writing any engine code.

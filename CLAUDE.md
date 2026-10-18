@@ -1,12 +1,7 @@
 # Jello
 
-Jello is a desktop synthesizer and music studio. You play it with a computer
-keyboard or a MIDI keyboard and make full songs with synths, samples, effects
-and mixing. Later versions add vocals, a follow-along learning mode and AI
-music making.
-
-- Full design and roadmap: [docs/design.md](docs/design.md)
-- Decisions (ADRs): [docs/adr/README.md](docs/adr/README.md)
+Jello is a desktop synthesizer and music studio, played with a computer or
+MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 ## Stack
 
@@ -17,21 +12,23 @@ music making.
 - Platforms: macOS (laptop) and Windows (desktop), both from day one.
 - Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
   dependencies with GPL-3.0-compatible licenses (see ADR 0007).
-- Run: `nvm use`, `npm install`, `npm run tauri dev`.
+- Run: `nvm use`, `npm install`, `npm run tauri dev`. Tests: `cargo test` in
+  `src-tauri/`. `tauri dev` does not watch `engine/`: restart it after C++ edits.
 
 ## Status
 
-- Now: v1 step 1, the skeleton. The Tauri shell opens an empty window.
-  Next: agree on the C++ engine design, then a test tone to speakers and WAV.
-- Roadmap: [docs/design.md](docs/design.md#roadmap).
+- Now: v1 step 1, the skeleton. The C++ engine plays a test tone and renders
+  it to `Music/Jello/test-tone.wav` (dev panel buttons). Left: CI that builds
+  macOS and Windows. Then step 2, laptop synth and key mapping.
 
 ## Repo layout
 
 - `ui/`: webview UI (TypeScript, Vite). Currently a dev panel placeholder.
 - `src-tauri/`: Rust core (Tauri app, `tauri.conf.json`, capabilities).
-- `engine/`: C++ engine (not created yet).
-- `docs/design.md`: the design, roadmap and open questions.
-- `docs/adr/`: one file per decision.
+- `engine/`: C++ engine. C API in `include/jello_engine.h`, built by
+  `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).
+- [docs/design.md](docs/design.md): the design, roadmap and open questions.
+- [docs/adr/](docs/adr/README.md): one file per decision (ADRs).
 
 ## Working rules
 

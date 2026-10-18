@@ -1,9 +1,27 @@
-// The Rust core of Jello. For now it only opens the window; commands for the
-// engine get added here once the C++ engine design is agreed.
+// The Rust core of Jello. It owns the C++ sound engine and gives the UI named
+// commands to call.
+
+mod commands;
+mod engine;
+mod wav;
+
+use std::sync::Mutex;
+
+use engine::Engine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The live engine, shared by every command. Its speakers open the first
+    // time something plays.
+    let engine = Engine::new().expect("could not create the sound engine");
+
     tauri::Builder::default()
+        .manage(Mutex::new(engine))
+        .invoke_handler(tauri::generate_handler![
+            commands::start_tone,
+            commands::stop_tone,
+            commands::render_test_tone,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

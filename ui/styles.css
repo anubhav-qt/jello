@@ -32,3 +32,12 @@ main {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+
+.buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.status {
+  color: var(--muted);
+}
