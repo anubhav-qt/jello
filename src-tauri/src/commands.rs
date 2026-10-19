@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::engine::Engine;
+use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY};
 use crate::wav::write_wav;
 
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
@@ -39,11 +40,17 @@ pub fn release_note(engine: State<'_, Mutex<Engine>>, note: u8) {
     }
 }
 
-// Lets go of every note, for when the window loses focus and a held key's
-// release would never arrive.
+// Lets go of every note and forgets every held key, for when the window loses
+// focus and a held key's release would never arrive.
 #[tauri::command]
-pub fn release_all_notes(engine: State<'_, Mutex<Engine>>) {
+pub fn release_all_notes(engine: State<'_, Mutex<Engine>>, key_map: State<'_, Mutex<KeyMap>>) {
+    let mut key_map = key_map.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+
+    // Otherwise a key held when the window lost focus would still count as
+    // held, and its next press would be ignored.
+    key_map.release_all();
+
     // Same reason as in `release_note`.
     if engine.is_audio_running() {
         engine.all_notes_off();
@@ -60,6 +67,69 @@ pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
     engine.start_audio()?;
     let wave = engine.switch_wave();
     Ok(String::from(wave.name()))
+}
+
+// Does what a laptop key does when pressed: plays its note, or switches the
+// wave. `key` is the key's place on the keyboard, like "KeyQ". Returns the
+// wave new notes play, so the dev panel can show it.
+//
+// Commands that need both the key map and the engine lock the key map first,
+// so two of them can never end up waiting on each other.
+#[tauri::command]
+pub fn press_key(
+    engine: State<'_, Mutex<Engine>>,
+    key_map: State<'_, Mutex<KeyMap>>,
+    key: String,
+) -> Result<String, String> {
+    let mut key_map = key_map.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+
+    let action = key_map.press(&key);
+    match action {
+        Some(KeyAction::PlayNote(note)) => {
+            engine.start_audio()?;
+            engine.note_on(note, LAPTOP_VELOCITY);
+        }
+        Some(KeyAction::SwitchWave) => {
+            // Like `switch_wave`, it opens the speakers first.
+            engine.start_audio()?;
+            engine.switch_wave();
+        }
+        None => {}
+    }
+
+    let wave = engine.wave();
+    Ok(String::from(wave.name()))
+}
+
+// Lets go of the note a laptop key started, if it started one.
+#[tauri::command]
+pub fn release_key(
+    engine: State<'_, Mutex<Engine>>,
+    key_map: State<'_, Mutex<KeyMap>>,
+    key: String,
+) {
+    let mut key_map = key_map.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+
+    // Forget the key first, whether or not the speakers are open.
+    let note = key_map.release(&key);
+
+    // Same reason as in `release_note`.
+    if !engine.is_audio_running() {
+        return;
+    }
+    if let Some(note) = note {
+        engine.note_off(note);
+    }
+}
+
+// The wave new notes play, so the dev panel can show it when it opens.
+#[tauri::command]
+pub fn current_wave(engine: State<'_, Mutex<Engine>>) -> String {
+    let engine = engine.lock().unwrap();
+    let wave = engine.wave();
+    String::from(wave.name())
 }
 
 // Renders a held middle C to Music/Jello/test-note.wav and returns where it

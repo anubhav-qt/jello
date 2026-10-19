@@ -3,11 +3,13 @@
 
 mod commands;
 mod engine;
+mod key_map;
 mod wav;
 
 use std::sync::Mutex;
 
 use engine::Engine;
+use key_map::KeyMap;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,11 +19,16 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(Mutex::new(engine))
+        // What each laptop key does, and which note each held key started.
+        .manage(Mutex::new(KeyMap::new()))
         .invoke_handler(tauri::generate_handler![
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,
             commands::switch_wave,
+            commands::press_key,
+            commands::release_key,
+            commands::current_wave,
             commands::render_test_note,
         ])
         .run(tauri::generate_context!())

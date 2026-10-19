@@ -148,6 +148,11 @@ impl Engine {
         next
     }
 
+    // The wave new notes play.
+    pub fn wave(&self) -> Wave {
+        self.wave
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -1139,6 +1144,18 @@ mod tests {
         // And the engine really plays the wave it landed on.
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SQUARE_HARMONICS);
+    }
+
+    #[test]
+    fn the_engine_says_which_wave_new_notes_play() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.wave().name(), "triangle");
+
+        engine.switch_wave();
+        assert_eq!(engine.wave().name(), "square");
+
+        engine.set_wave(Wave::Sine);
+        assert_eq!(engine.wave().name(), "sine");
     }
 
     // Plays A4 on `wave` for `held_ms`, then lets go of it and renders

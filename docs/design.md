@@ -68,7 +68,11 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    panel stays the same until slice 5. Done.
 5. **Play from the laptop.** The webview forwards keys, the Rust key map
    plays the default preset, "/" switches waves and the dev panel shows the
-   current wave. Then tune the voice level, wave trims and envelope by ear.
+   current wave. Rust gains `press_key`, `release_key` and `current_wave`,
+   and `release_all_notes` also forgets which keys are held. The dev panel
+   shows which keys play which notes, and its middle C button goes away.
+   Then tune the voice level, wave trims and envelope by ear. Playing works;
+   tuning is next.
 
 After the slices: pick the frontend framework (with an ADR), then key mapping
 and the on-screen piano.
@@ -116,7 +120,7 @@ MCP server, in-app AI harness, AI voice conversion. See [AI](#ai-v3).
 
 ### Rules
 
-1. The live path (key or MIDI to sound) never goes through the webview.
+1. The live path (key or MIDI to sound) never waits on the webview.
    MIDI enters in Rust and goes straight to C++.
 2. The audio callback never locks, allocates memory, logs or waits. Events
    reach it through a lock-free queue.
@@ -197,7 +201,8 @@ and being built.
   render, the same code the speakers hear. Rust writes 32-bit float WAV files
   (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
-  `commands.rs` holds the commands, `wav.rs` writes files.
+  `commands.rs` holds the commands, `key_map.rs` turns laptop keys into
+  notes, `wav.rs` writes files.
 - **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
   pitch, the envelope's timing and levels, the velocity curve, that a chord
   is its notes added up, exact silence after letting go, which voice a new
@@ -208,7 +213,9 @@ and being built.
   below 5,000 Hz stay at least 1,000 times quieter than the note, that all
   four line up and are equally loud, that a switch only changes new notes,
   and that a voice taken over on a new wave glides across without a click.
-  Tests never open speakers.
+  The key map tests check the default layout row by row, that other keys do
+  nothing, and that letting go always stops the note a key started, even
+  after the layout changes. Tests never open speakers.
 
 ## Input
 
@@ -241,10 +248,16 @@ Then each key press gets the next note. Details:
 
 - Store keys by physical position (`event.code`). Show the label the user saw.
 - Ignore auto-repeat (`event.repeat`).
-- Release every note when the window loses focus.
+- Release every note when the window loses focus, and forget which keys were
+  held.
 - Block Shift, Ctrl, Option/Alt, Cmd/Win, Fn and Caps Lock. While Cmd, Ctrl
   or Option/Alt is held, no key plays, so shortcuts like Cmd+Q still work.
-  Mac brightness and volume keys never reach the app.
+  Pressing Cmd, Ctrl or Option/Alt also releases every note, because a Mac
+  may never report a key let go while Cmd is held. Mac brightness and volume
+  keys never reach the app.
+- Keys pressed without Cmd, Ctrl or Option/Alt belong to Jello. The webview's
+  own reactions to them are turned off, so the Mac never beeps, and Space and
+  Enter never press a button.
 - Mappings are saved as named presets. A default preset ships: the Z row
   plays C3 to B3 (S D G H J are the black keys) and the Q row plays C4 to B4
   (2 3 5 6 7 are the black keys), so Q is middle C. "/" steps to the next

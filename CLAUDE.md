@@ -20,7 +20,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 - Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
   Not yet heard on Windows.
 - Now: step 2, built in [slices](docs/design.md#step-2-slices). Slices 1
-  to 4 (through four waves) are done; next is slice 5, play from the laptop.
+  to 4 are done. In slice 5 the laptop keys play; next is tuning by ear.
 
 ## Repo layout
 

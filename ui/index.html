@@ -12,9 +12,18 @@
     <main>
       <p class="placeholder-label">Dev panel: placeholder, not a design</p>
       <h1>Jello</h1>
-      <p>Step 2: one note (middle C) from the C++ synth.</p>
+      <p>Step 2: play the C++ synth from the laptop keyboard.</p>
+      <p id="wave"></p>
+      <!-- The default key layout, top row first. Keep it in step with
+           src-tauri/src/key_map.rs. -->
+      <ul>
+        <li>2 3 5 6 7: C#4 D#4 F#4 G#4 A#4</li>
+        <li>Q W E R T Y U: C4 D4 E4 F4 G4 A4 B4 (Q is middle C)</li>
+        <li>S D G H J: C#3 D#3 F#3 G#3 A#3</li>
+        <li>Z X C V B N M: C3 D3 E3 F3 G3 A3 B3</li>
+        <li>/: next wave</li>
+      </ul>
       <div class="buttons">
-        <button id="play-note" type="button">Hold to play middle C</button>
         <button id="render-wav" type="button">Render WAV</button>
       </div>
       <p id="status" class="status"></p>
