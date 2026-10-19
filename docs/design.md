@@ -6,13 +6,21 @@ and this file should be fixed.
 
 ## Vision
 
-Jello is a desktop synthesizer and music studio with three long-term goals:
+The dream: release a track that sounds incredible, and when someone asks
+which DAW and synths made it, answer "I made the software. The synths, the
+studio, the whole thing. It's called Jello."
 
-1. **Make real music.** Full songs at the level of the user's references:
-   YOASOBI, Ado, Pink Floyd, Massive Attack, Radiohead.
-2. **Learn to play.** A follow-along mode that trains both hands to play in
+Jello is a desktop synthesizer and music studio with four long-term goals:
+
+1. **Make real music.** Production-grade songs, ready to release, at the
+   level of the user's references: YOASOBI, Ado, Pink Floyd, Massive Attack,
+   Radiohead.
+2. **Sound like no one else.** Jello grows around the user's artistic
+   instincts: instruments and workflows that exist nowhere else, used to
+   develop a sound that is distinctly theirs.
+3. **Learn to play.** A follow-along mode that trains both hands to play in
    sync. Sync is the goal; speed is secondary.
-3. **Make music with AI.** An AI can drive Jello from outside (MCP server) or
+4. **Make music with AI.** An AI can drive Jello from outside (MCP server) or
    from inside (an in-app harness), and write songs as code.
 
 ## Roadmap
