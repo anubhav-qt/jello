@@ -58,6 +58,10 @@ void Synth::all_notes_off() {
     mailbox_.send(Event{EventType::all_notes_off, 0, 0});
 }
 
+void Synth::set_wave(Wave wave) {
+    mailbox_.send(Event{EventType::set_wave, 0, 0, wave});
+}
+
 void Synth::render(float* out, int frames) {
     // Act on everything sent since the last chunk, oldest first.
     Event event{};
@@ -95,6 +99,10 @@ void Synth::handle(const Event& event) {
         for (Voice& voice : voices_) {
             voice.release();
         }
+    } else if (event.type == EventType::set_wave) {
+        // Only notes started from here on play it. Each voice keeps the wave
+        // its note started with.
+        wave_ = event.wave;
     }
 }
 
@@ -116,7 +124,7 @@ void Synth::play(int note, int velocity) {
 
     // Every press gets the next number, even one that reuses its voice.
     press_count_ += 1;
-    voice->start(note, velocity, press_count_);
+    voice->start(note, velocity, press_count_, wave_);
 }
 
 Voice* Synth::find_ringing_voice(int note) {

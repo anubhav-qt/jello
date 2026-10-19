@@ -62,7 +62,10 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    voice, and the soft clip. The C API and the dev panel stay the same, so
    only the tests play chords until slice 5. Done.
 4. **Four waves.** Sine, square and saw join triangle, with PolyBLEP, the
-   wave trims and the wave switch.
+   wave trims and the wave switch. The triangle's corners are rounded off
+   too, and a voice taken over on a new wave glides across instead of
+   clicking. The C API gains set wave and Rust gains `switch_wave`; the dev
+   panel stays the same until slice 5. Done.
 5. **Play from the laptop.** The webview forwards keys, the Rust key map
    plays the default preset, "/" switches waves and the dev panel shows the
    current wave. Then tune the voice level, wave trims and envelope by ear.
@@ -134,15 +137,19 @@ and being built.
 
 - **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
   create, destroy, start and stop audio, note on, note off, all notes off,
-  sample rate, render.
+  set wave, sample rate, render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
-  - `mailbox.*`: carries note messages to the audio thread, without locks.
+  - `mailbox.*`: carries note and wave messages to the audio thread, without
+    locks.
   - `synth.*`: the instrument. At the start of each chunk of sound it acts on
     every waiting message, then adds up its voices and puts the sum through
-    the soft clip. It also picks the voice for each new note.
-  - `voice.*`: plays one note as a triangle wave. The velocity curve and the
-    voice level set how loud it is.
+    the soft clip. It also picks the voice for each new note, and remembers
+    the wave new notes play.
+  - `voice.*`: plays one note on one of the four waves. The wave trim, the
+    velocity curve and the voice level set how loud it is.
+  - `wave.*`: the four wave shapes, with their jumps and corners rounded
+    off, and the trims that make them equally loud.
   - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
     to the held level (decay, sustain) and a fade out after letting go
     (release).
@@ -164,9 +171,25 @@ and being built.
   busy, it takes over the quietest voice fading out, or else the note held
   the longest. Every key press gets the next number from a counter, which is
   how the engine knows which note is oldest.
+- **Waves:** sine, triangle, square and saw. All four go from -1 to 1 and
+  start each cycle rising from zero, so they line up. A new engine plays
+  triangle. A switch only changes notes started after it: each voice keeps
+  the wave its note started with.
+  - The square and saw jump, and the triangle has corners. Played as they
+    are, their harmonics too high for the sample rate would fold back down
+    as stray, off-key tones (aliasing), worst on high notes. So the samples
+    on each side of a jump are bent (PolyBLEP), and so are those on each
+    side of a corner (PolyBLAMP). At A7, every stray tone below 5,000 Hz is
+    at least 1,800 times quieter than the note.
+  - Trims make every wave as loud as the triangle, measured by RMS (the
+    square root of the average squared height): sine 0.8165, triangle 1,
+    square 0.5774, saw 1. Starting values, to be tuned by ear.
 - **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
-  loudness were, so the sound never jumps.
+  loudness were, so the sound never jumps. If the new note plays another
+  wave, that wave starts at a different height. The gap between them is
+  added back and shrinks to nothing over 5 ms, so the sound glides across.
+  A silent voice has nothing to glide from, so it gets no gap.
 - **Soft clip:** after the voices are added up, samples between -0.8 and 0.8
   pass unchanged. Louder ones are bent toward 1.0 without ever reaching it,
   so the sound never clips. The master limiter takes over this job in step 6.
@@ -180,8 +203,12 @@ and being built.
   is its notes added up, exact silence after letting go, which voice a new
   note takes and that taking it never clicks, the soft clip's exact bend and
   never going above 1.0, that values MIDI never sends are ignored, the
-  mailbox size, and that the same notes always give the same samples. Tests
-  never open speakers.
+  mailbox size, and that the same notes always give the same samples. For
+  the waves, they check each one's harmonics, that on an A7 stray tones
+  below 5,000 Hz stay at least 1,000 times quieter than the note, that all
+  four line up and are equally loud, that a switch only changes new notes,
+  and that a voice taken over on a new wave glides across without a click.
+  Tests never open speakers.
 
 ## Input
 

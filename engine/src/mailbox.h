@@ -4,11 +4,14 @@
 #include <atomic>
 #include <cstdint>
 
+#include "wave.h"
+
 // What another thread can ask the audio thread to do.
 enum class EventType {
     note_on,
     note_off,
     all_notes_off,
+    set_wave,
 };
 
 // One message for the audio thread.
@@ -16,6 +19,10 @@ struct Event {
     EventType type;
     int note;      // which key, 0 to 127; middle C is 60
     int velocity;  // how hard the key was hit, 1 to 127; only for note_on
+
+    // Which wave notes sent after this one play; only for set_wave. It has a
+    // starting value, so the other messages can leave it out.
+    Wave wave = Wave::triangle;
 };
 
 // Carries events to the audio thread without locks

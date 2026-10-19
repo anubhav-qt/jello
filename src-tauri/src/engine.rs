@@ -16,6 +16,7 @@ unsafe extern "C" {
     fn jello_engine_note_on(engine: *mut JelloEngine, note: c_int, velocity: c_int);
     fn jello_engine_note_off(engine: *mut JelloEngine, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
+    fn jello_engine_set_wave(engine: *mut JelloEngine, wave: c_int);
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
 }
@@ -23,9 +24,53 @@ unsafe extern "C" {
 // Every frame of audio is one left sample and one right sample.
 pub const CHANNELS: usize = 2;
 
+// The shapes a note can play (docs/adr/0009-how-notes-become-sound.md).
+#[derive(Clone, Copy)]
+pub enum Wave {
+    Sine,
+    Triangle,
+    Square,
+    Saw,
+}
+
+impl Wave {
+    // The wave after this one: sine, triangle, square, saw, then sine again.
+    pub fn next(self) -> Wave {
+        match self {
+            Wave::Sine => Wave::Triangle,
+            Wave::Triangle => Wave::Square,
+            Wave::Square => Wave::Saw,
+            Wave::Saw => Wave::Sine,
+        }
+    }
+
+    // What to call the wave when showing it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Wave::Sine => "sine",
+            Wave::Triangle => "triangle",
+            Wave::Square => "square",
+            Wave::Saw => "saw",
+        }
+    }
+
+    // The wave's number in the C API (`JELLO_WAVE_` in
+    // engine/include/jello_engine.h).
+    fn number(self) -> c_int {
+        match self {
+            Wave::Sine => 0,
+            Wave::Triangle => 1,
+            Wave::Square => 2,
+            Wave::Saw => 3,
+        }
+    }
+}
+
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
+    // The wave new notes play. The C++ engine starts on triangle too.
+    wave: Wave,
 }
 
 // The C++ engine can be used from any thread, one call at a time. The app
@@ -43,6 +88,7 @@ impl Engine {
         let engine = Engine {
             raw,
             audio_running: false,
+            wave: Wave::Triangle,
         };
         Ok(engine)
     }
@@ -86,6 +132,22 @@ impl Engine {
         unsafe { jello_engine_all_notes_off(self.raw) };
     }
 
+    // Makes notes sent after this play `wave`. Notes sent before it keep
+    // theirs, even while they ring on.
+    pub fn set_wave(&mut self, wave: Wave) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_wave(self.raw, wave.number()) };
+        self.wave = wave;
+    }
+
+    // Moves new notes on to the next wave (sine, triangle, square, saw, then
+    // sine again) and returns it.
+    pub fn switch_wave(&mut self) -> Wave {
+        let next = self.wave.next();
+        self.set_wave(next);
+        next
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -126,6 +188,8 @@ impl Drop for Engine {
 mod tests {
     use super::*;
 
+    use std::f64::consts::PI;
+
     // The sound the C++ engine makes. When it is changed there on purpose,
     // change it here too.
     const VOICE_LEVEL: f32 = 0.35; // `voice_level` in engine/src/voice.cpp
@@ -150,6 +214,8 @@ mod tests {
     const A4_HZ: f64 = 440.0;
     const C5: u8 = 72;
     const C5_HZ: f64 = 523.2511;
+    const A7: u8 = 105;
+    const A7_HZ: f64 = 3520.0;
 
     // A firm key press, used unless a test says otherwise.
     const VELOCITY: u8 = 100;
@@ -225,9 +291,12 @@ mod tests {
     }
 
     // The pitch of `wave` in Hz, from how often it crosses zero on the way up.
-    // Each crossing falls between two samples. A triangle wave is a straight
-    // line there, so a straight line between the two samples finds it almost
-    // exactly.
+    // Each crossing falls between two samples. Sine, triangle and saw waves
+    // are close to straight lines there, so a straight line between the two
+    // samples finds it almost exactly. A square jumps across zero instead,
+    // so each of its crossings can be off by up to half a sample. Over a
+    // whole second those misses barely count: for A4 they move the pitch by
+    // less than 0.001 Hz.
     fn pitch(engine: &Engine, wave: &[f32]) -> f64 {
         let mut first_crossing = 0.0;
         let mut last_crossing = 0.0;
@@ -784,5 +853,423 @@ mod tests {
             whole_wave == chunked_wave,
             "the two engines sounded different"
         );
+    }
+
+    // Every wave, in the order switching steps through them.
+    const EVERY_WAVE: [Wave; 4] = [Wave::Sine, Wave::Triangle, Wave::Square, Wave::Saw];
+
+    #[test]
+    fn every_wave_plays_at_the_right_pitch() {
+        for wave in EVERY_WAVE {
+            let mut engine = Engine::new().unwrap();
+            engine.set_wave(wave);
+            let held = hold(&mut engine, A4, VELOCITY);
+            assert_pitch(&engine, &held, A4_HZ);
+        }
+    }
+
+    // How big the tone at `hz` is inside `wave`: 1.0 for a sine at that pitch
+    // that swings from -1 to 1, and 0.0 if that tone isn't there at all. It
+    // works like a spectrum analyzer listening to one pitch: it multiplies
+    // the samples by a sine at `hz` and adds them up, which only grows when
+    // the two match. It does the same with a cosine (the sine a quarter cycle
+    // later), so the tone is found wherever its cycles start. The answer is
+    // exact when a whole number of the tone's cycles fits in `wave`, as every
+    // harmonic of A4 does in one second.
+    fn tone_size(engine: &Engine, wave: &[f32], hz: f64) -> f64 {
+        let sample_rate = engine.sample_rate() as f64;
+        let mut with_sine = 0.0;
+        let mut with_cosine = 0.0;
+        for i in 0..wave.len() {
+            let angle = 2.0 * PI * hz * i as f64 / sample_rate;
+            let sample = wave[i] as f64;
+            with_sine += sample * angle.sin();
+            with_cosine += sample * angle.cos();
+        }
+        let both = (with_sine * with_sine + with_cosine * with_cosine).sqrt();
+        2.0 * both / wave.len() as f64
+    }
+
+    // How big harmonics 2 to 8 are next to the main tone (harmonic 1), for
+    // each wave. A sine has none. A triangle has only the odd ones, harmonic
+    // n at 1/n², and a square only the odd ones at 1/n. A saw has all of
+    // them, at 1/n.
+    const SINE_HARMONICS: [f64; 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    const TRIANGLE_HARMONICS: [f64; 7] = [0.0, 1.0 / 9.0, 0.0, 1.0 / 25.0, 0.0, 1.0 / 49.0, 0.0];
+    const SQUARE_HARMONICS: [f64; 7] = [0.0, 1.0 / 3.0, 0.0, 1.0 / 5.0, 0.0, 1.0 / 7.0, 0.0];
+    const SAW_HARMONICS: [f64; 7] = [
+        1.0 / 2.0,
+        1.0 / 3.0,
+        1.0 / 4.0,
+        1.0 / 5.0,
+        1.0 / 6.0,
+        1.0 / 7.0,
+        1.0 / 8.0,
+    ];
+
+    // Checks the harmonics in `wave`, one second of a held A4: harmonics 2 to
+    // 8 must have the `expected` sizes next to the main tone, give or take
+    // 0.005.
+    fn assert_harmonics(engine: &Engine, wave: &[f32], expected: [f64; 7]) {
+        let main_tone = tone_size(engine, wave, A4_HZ);
+        for i in 0..expected.len() {
+            let harmonic = i + 2;
+            let hz = A4_HZ * harmonic as f64;
+            let size = tone_size(engine, wave, hz) / main_tone;
+            let difference = (size - expected[i]).abs();
+            assert!(
+                difference <= 0.005,
+                "harmonic {harmonic} is {size} of the main tone, expected {}",
+                expected[i]
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_engine_plays_a_triangle_wave() {
+        let mut engine = Engine::new().unwrap();
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
+    }
+
+    #[test]
+    fn a_sine_wave_has_no_harmonics() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Sine);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SINE_HARMONICS);
+    }
+
+    #[test]
+    fn a_triangle_wave_has_odd_harmonics_that_fade_fast() {
+        // Away from the triangle and back again, so this checks that
+        // switching to it works, not only that Jello starts on it.
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Saw);
+        engine.set_wave(Wave::Triangle);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
+    }
+
+    #[test]
+    fn a_square_wave_has_odd_harmonics_that_fade_slowly() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Square);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SQUARE_HARMONICS);
+    }
+
+    #[test]
+    fn a_saw_wave_has_every_harmonic() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Saw);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SAW_HARMONICS);
+    }
+
+    #[test]
+    fn high_notes_keep_stray_tones_quiet() {
+        // Jumps and corners are made of harmonics that go on forever. Those
+        // too high for 48000 samples a second fold back down as stray,
+        // off-key tones, unless the jumps and corners are rounded off. A7,
+        // near the top of a piano, is high enough that the triangle, square
+        // and saw all fail here without their rounding. Its harmonics are
+        // multiples of 3520 Hz, and folding moves them by multiples of
+        // 48000 Hz, so the stray tones land on multiples of 320 Hz, the
+        // biggest number that divides both. Below 5000 Hz, where they are
+        // easiest to hear, each must be at least 1000 times quieter than the
+        // main tone.
+        for wave in EVERY_WAVE {
+            let mut engine = Engine::new().unwrap();
+            engine.set_wave(wave);
+            let held = hold(&mut engine, A7, VELOCITY);
+            let main_tone = tone_size(&engine, &held, A7_HZ);
+
+            let mut hz = 320.0;
+            while hz < 5000.0 {
+                let is_harmonic = hz % A7_HZ == 0.0;
+                if !is_harmonic {
+                    let size = tone_size(&engine, &held, hz) / main_tone;
+                    assert!(
+                        size <= 0.001,
+                        "{}: the stray tone at {hz} Hz is {size} of the main tone",
+                        wave.name()
+                    );
+                }
+                hz += 320.0;
+            }
+        }
+    }
+
+    #[test]
+    fn every_wave_starts_its_cycle_rising_from_zero() {
+        // That is what lines up the main tones of all four. A note on a new
+        // engine starts at the beginning of a cycle, and A4's cycles are
+        // about 109 samples long. So the first half of the first cycle,
+        // samples 1 to 54, must be above zero, and the second half, samples
+        // 55 to 108, below. Sample 0 is where the cycle starts, so it is
+        // skipped.
+        for wave in EVERY_WAVE {
+            let mut engine = Engine::new().unwrap();
+            engine.set_wave(wave);
+            engine.note_on(A4, VELOCITY);
+            let start = render_left(&mut engine, 3);
+
+            for i in 1..=54 {
+                assert!(
+                    start[i] > 0.0,
+                    "{}: sample {i} is not above zero",
+                    wave.name()
+                );
+            }
+            for i in 55..=108 {
+                assert!(
+                    start[i] < 0.0,
+                    "{}: sample {i} is not below zero",
+                    wave.name()
+                );
+            }
+        }
+    }
+
+    // How loud `wave` is overall (its RMS): square every sample, average
+    // them, then take the square root. Unlike the peak, it counts the whole
+    // wave, so it follows how loud a wave sounds much better.
+    fn rms(wave: &[f32]) -> f64 {
+        let mut total = 0.0;
+        for i in 0..wave.len() {
+            let sample = wave[i] as f64;
+            total += sample * sample;
+        }
+        let average = total / wave.len() as f64;
+        average.sqrt()
+    }
+
+    #[test]
+    fn every_wave_is_equally_loud() {
+        // The trims bring every wave to the triangle's loudness. A held
+        // triangle peaks at held_level(), and its RMS is that divided by the
+        // square root of 3. At A4, the square and saw come out about 1%
+        // under, because their rounded-off jumps take a little off, so 2%
+        // either way is allowed.
+        let expected = held_level() as f64 / 3.0_f64.sqrt();
+        for wave in EVERY_WAVE {
+            let mut engine = Engine::new().unwrap();
+            engine.set_wave(wave);
+            let held = hold(&mut engine, A4, VELOCITY);
+            let loudness = rms(&held);
+            let difference = (loudness - expected).abs();
+            assert!(
+                difference <= expected * 0.02,
+                "{}: the RMS is {loudness}, expected {expected} give or take 2%",
+                wave.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_switch_leaves_ringing_notes_alone() {
+        // A4 starts on the triangle, then the wave switches to the saw. Only
+        // notes sent after a switch play the new wave, so A4 stays a triangle.
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, ATTACK_MS + DECAY_MS);
+
+        engine.set_wave(Wave::Saw);
+        let wave = render_left(&mut engine, 1000);
+        assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
+    }
+
+    #[test]
+    fn a_note_pressed_again_after_a_switch_plays_the_new_wave() {
+        // A4 starts on the triangle and is still ringing when the wave
+        // switches to the saw. Pressing A4 again takes over its own voice, a
+        // busy one, and that new press plays the saw.
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+
+        engine.set_wave(Wave::Saw);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SAW_HARMONICS);
+    }
+
+    #[test]
+    fn a_switch_waits_its_turn_in_the_mailbox() {
+        // A4 is sent just before the switch to the saw, so the audio thread
+        // finds both waiting at the start of the same chunk. It acts on them
+        // in the order they were sent, so A4 starts on the triangle.
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        engine.set_wave(Wave::Saw);
+        render_left(&mut engine, ATTACK_MS + DECAY_MS);
+
+        let wave = render_left(&mut engine, 1000);
+        assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
+    }
+
+    #[test]
+    fn numbers_that_are_not_waves_change_nothing() {
+        // The C API takes any number as a wave, so it must ignore all but the
+        // four it knows. Rust's Wave can only send those four, so this calls
+        // the C API directly.
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Sine);
+        for number in [-1, 4, 255] {
+            // SAFETY: `raw` points to a live engine until Drop.
+            unsafe { jello_engine_set_wave(engine.raw, number) };
+        }
+
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SINE_HARMONICS);
+    }
+
+    #[test]
+    fn switching_steps_through_the_waves_in_order() {
+        // A new engine starts on the triangle, so the first switch lands on
+        // the square. After the saw, it wraps around to the sine.
+        let mut engine = Engine::new().unwrap();
+        let mut names = Vec::new();
+        for _ in 0..5 {
+            let next = engine.switch_wave();
+            names.push(next.name());
+        }
+        assert_eq!(names, ["square", "saw", "sine", "triangle", "square"]);
+
+        // And the engine really plays the wave it landed on.
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_harmonics(&engine, &wave, SQUARE_HARMONICS);
+    }
+
+    // Plays A4 on `wave` for `held_ms`, then lets go of it and renders
+    // `fade_ms` of its fade. A fade shorter than RELEASE_MS leaves its voice
+    // still sounding.
+    fn play_and_let_go_of_a4(wave: Wave, held_ms: u32, fade_ms: u32) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(wave);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, held_ms);
+        engine.note_off(A4);
+        render_left(&mut engine, fade_ms);
+        engine
+    }
+
+    // Switches to `wave` and presses A4 again. If A4 is still sounding, the
+    // press takes over its voice.
+    fn press_a4_again_on(engine: &mut Engine, wave: Wave) {
+        engine.set_wave(wave);
+        engine.note_on(A4, VELOCITY);
+    }
+
+    #[test]
+    fn a_note_pressed_again_on_a_new_wave_glides_across_without_a_click() {
+        // A4 fades on one wave, the wave switches to the next one, and A4 is
+        // pressed again, which takes over its own voice, still sounding the
+        // old wave. Ten tries for each switch, each 1 ms later than the last,
+        // so the press lands at many points along the wave.
+        for old in EVERY_WAVE {
+            let new = old.next();
+            for extra_ms in 0..10 {
+                let fade_ms = 100 + extra_ms;
+
+                let mut engine = play_and_let_go_of_a4(old, 100, fade_ms);
+                press_a4_again_on(&mut engine, new);
+                let glide = render_left(&mut engine, 10);
+
+                // Two sounds to hold it up against: A4 fading on as if it was
+                // never pressed again, and a plain press, where A4 was on the
+                // new wave all along, so there was no gap to glide across.
+                let mut engine = play_and_let_go_of_a4(old, 100, fade_ms);
+                let fade = render_left(&mut engine, 10);
+                let mut engine = play_and_let_go_of_a4(new, 100, fade_ms);
+                press_a4_again_on(&mut engine, new);
+                let plain = render_left(&mut engine, 10);
+
+                // It carries on exactly where the old wave was heading. The
+                // envelope starts gliding to the new press's peak at the same
+                // moment, which nudges the first sample by at most 1/240 of
+                // full loudness, so 1/100 is allowed.
+                let jump = (glide[0] - fade[0]).abs();
+                assert!(
+                    jump <= full_level() / 100.0,
+                    "{} to {}: the press jumped by {jump}",
+                    old.name(),
+                    new.name()
+                );
+
+                // The gap is the difference from the plain press. It never
+                // jumps, and after 5 ms it is gone, leaving the same sound.
+                let mut gap = Vec::new();
+                for i in 0..glide.len() {
+                    gap.push(glide[i] - plain[i]);
+                }
+                assert_no_click(&engine, &gap, A4_HZ);
+                let gone = frames_in_ms(&engine, 5);
+                assert_same_sound(&glide[gone..], &plain[gone..]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_press_mid_glide_picks_up_where_the_sound_was() {
+        // As above, but 2 ms into the glide the wave switches again, to the
+        // one after, and A4 is pressed a third time. By then the sound is
+        // part new wave, part what is left of the first gap, and the new gap
+        // must count both.
+        for first in EVERY_WAVE {
+            let second = first.next();
+            let third = second.next();
+            for extra_ms in 0..10 {
+                let fade_ms = 100 + extra_ms;
+
+                let mut engine = play_and_let_go_of_a4(first, 100, fade_ms);
+                press_a4_again_on(&mut engine, second);
+                render_left(&mut engine, 2);
+                press_a4_again_on(&mut engine, third);
+                let pressed_twice = render_left(&mut engine, 10);
+
+                // The same, as if A4 was not pressed the third time.
+                let mut engine = play_and_let_go_of_a4(first, 100, fade_ms);
+                press_a4_again_on(&mut engine, second);
+                render_left(&mut engine, 2);
+                let pressed_once = render_left(&mut engine, 10);
+
+                // The envelope nudges the first sample a little, as above.
+                let jump = (pressed_twice[0] - pressed_once[0]).abs();
+                assert!(
+                    jump <= full_level() / 100.0,
+                    "{} to {} to {}: the third press jumped by {jump}",
+                    first.name(),
+                    second.name(),
+                    third.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_note_on_a_silent_voice_starts_without_a_gap() {
+        // A4 fades out completely, the wave switches to the next one, and A4
+        // is pressed again. It gets its old voice back, as the first free
+        // one, but that voice was silent, so there is no sound to carry on
+        // from. It must sound exactly like A4 played on the new wave both
+        // times. Ten tries, each holding A4 1 ms longer, so the voice falls
+        // silent at many points along the wave.
+        for old in EVERY_WAVE {
+            let new = old.next();
+            for extra_ms in 0..10 {
+                let held_ms = 100 + extra_ms;
+
+                let mut engine = play_and_let_go_of_a4(old, held_ms, RELEASE_MS);
+                press_a4_again_on(&mut engine, new);
+                let after_silence = render_left(&mut engine, 10);
+
+                let mut engine = play_and_let_go_of_a4(new, held_ms, RELEASE_MS);
+                press_a4_again_on(&mut engine, new);
+                let new_both_times = render_left(&mut engine, 10);
+
+                assert_same_sound(&after_silence, &new_both_times);
+            }
+        }
     }
 }

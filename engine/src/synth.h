@@ -19,6 +19,8 @@ public:
     void note_on(int note, int velocity);
     void note_off(int note);
     void all_notes_off();
+    // Notes sent after this play `wave`. Notes sent before it keep theirs.
+    void set_wave(Wave wave);
 
     // Acts on every waiting event, then fills `frames` frames of stereo
     // (left, right, left, ...), every sample between -1.0 and 1.0. Runs on
@@ -51,6 +53,9 @@ private:
     // Made once, when the synth is created, and never resized, so the audio
     // thread never allocates.
     std::vector<Voice> voices_;
+
+    // The wave new notes play. Jello starts on triangle.
+    Wave wave_ = Wave::triangle;
 
     // How many notes have been pressed so far. Each press gets the next
     // number, so a smaller number means pressed earlier. A counter, not a

@@ -50,6 +50,18 @@ pub fn release_all_notes(engine: State<'_, Mutex<Engine>>) {
     }
 }
 
+// Moves notes played from now on to the next wave (sine, triangle, square,
+// saw, then sine again) and returns its name. Notes already playing keep
+// their wave. Like `play_note`, it opens the speakers first: before they
+// open, nothing empties the engine's mailbox, so switches would pile up there.
+#[tauri::command]
+pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let wave = engine.switch_wave();
+    Ok(String::from(wave.name()))
+}
+
 // Renders a held middle C to Music/Jello/test-note.wav and returns where it
 // went.
 #[tauri::command]

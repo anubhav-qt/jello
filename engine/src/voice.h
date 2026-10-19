@@ -3,19 +3,20 @@
 #include <cstdint>
 
 #include "envelope.h"
+#include "wave.h"
 
-// Plays one note: a triangle wave at the note's pitch, shaped by its own
-// envelope (docs/adr/0009-how-notes-become-sound.md). Only the audio thread
-// touches a voice, so nothing in here locks, allocates or waits.
+// Plays one note: a wave at the note's pitch, shaped by its own envelope
+// (docs/adr/0009-how-notes-become-sound.md). Only the audio thread touches a
+// voice, so nothing in here locks, allocates or waits.
 class Voice {
 public:
     explicit Voice(int sample_rate);
 
-    // Starts `note` (0 to 127, middle C is 60) at `velocity` (1 to 127).
-    // `press_number` says how old the note is: a smaller number was pressed
-    // earlier. If the voice is still sounding, it is taken over without a
-    // click.
-    void start(int note, int velocity, std::uint64_t press_number);
+    // Starts `note` (0 to 127, middle C is 60) at `velocity` (1 to 127),
+    // playing `wave`. `press_number` says how old the note is: a smaller
+    // number was pressed earlier. If the voice is still sounding, it is taken
+    // over without a click, even when `wave` is a different wave.
+    void start(int note, int velocity, std::uint64_t press_number, Wave wave);
 
     // Starts the fade to silence.
     void release();
@@ -40,11 +41,29 @@ public:
     void render(float* out, int frames);
 
 private:
+    // The wave's height at the current phase, trimmed so every wave is
+    // equally loud.
+    double height_now() const;
+
+    // How much of the gap is left for the next sample. It shrinks in a
+    // straight line: all of it on the first sample, a little less on each
+    // one after, and none once its time is up.
+    double gap_now() const;
+
     int sample_rate_;
+    int gap_samples_;  // how many samples a gap takes to shrink away
     Envelope envelope_;
     int note_ = 0;
     std::uint64_t press_number_ = 0;
+    Wave wave_ = Wave::triangle;  // the wave this voice's note started with
 
-    double phase_ = 0.0;       // where we are in one wave, from 0 to 1
+    double phase_ = 0.0;       // where we are in one cycle, from 0 to 1
     double phase_step_ = 0.0;  // how far the phase moves each sample
+
+    // When a voice that is still sounding starts a new wave, the new wave can
+    // be at a different height from where the old one was heading. The gap
+    // between them is added on top of the new wave and shrinks away, so the
+    // sound glides across instead of jumping.
+    double gap_ = 0.0;          // the gap when it started shrinking
+    int gap_samples_left_ = 0;  // samples until it is gone
 };

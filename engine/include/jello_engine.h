@@ -26,11 +26,12 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// The next three are for playing notes. They are safe to call while the
-// audio is running, from one thread at a time. Each one only leaves a message
-// for the audio thread, which acts on it at the start of its next chunk of
-// sound (about every 10 ms). If 1024 messages are already waiting, new ones
-// are dropped (docs/adr/0009-how-notes-become-sound.md).
+// The next four are for playing notes and picking their wave. They are safe
+// to call while the audio is running, from one thread at a time. Each one
+// only leaves a message for the audio thread, which acts on it at the start
+// of its next chunk of sound (about every 10 ms). If 1024 messages are
+// already waiting, new ones are dropped
+// (docs/adr/0009-how-notes-become-sound.md).
 
 // Starts `note` (0 to 127, middle C is 60) at `velocity`, how hard the key was
 // hit (1 to 127). A note or velocity outside those ranges is ignored.
@@ -41,6 +42,19 @@ void jello_engine_note_off(JelloEngine* engine, int note);
 
 // Lets go of every note.
 void jello_engine_all_notes_off(JelloEngine* engine);
+
+// The waves a note can play.
+enum {
+    JELLO_WAVE_SINE = 0,
+    JELLO_WAVE_TRIANGLE = 1,
+    JELLO_WAVE_SQUARE = 2,
+    JELLO_WAVE_SAW = 3,
+};
+
+// Makes notes sent after this play `wave`, one of the JELLO_WAVE_ numbers
+// above. Notes sent before it keep their wave, even while they ring on. Any
+// other number is ignored. A new engine starts on JELLO_WAVE_TRIANGLE.
+void jello_engine_set_wave(JelloEngine* engine, int wave);
 
 // How many samples per second the engine makes (48000).
 int jello_engine_sample_rate(JelloEngine* engine);

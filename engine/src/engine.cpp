@@ -117,6 +117,20 @@ void jello_engine_all_notes_off(JelloEngine* engine) {
     engine->synth.all_notes_off();
 }
 
+void jello_engine_set_wave(JelloEngine* engine, int wave) {
+    // Any number that isn't one of the four waves is ignored, so nothing odd
+    // reaches the synth.
+    if (wave == JELLO_WAVE_SINE) {
+        engine->synth.set_wave(Wave::sine);
+    } else if (wave == JELLO_WAVE_TRIANGLE) {
+        engine->synth.set_wave(Wave::triangle);
+    } else if (wave == JELLO_WAVE_SQUARE) {
+        engine->synth.set_wave(Wave::square);
+    } else if (wave == JELLO_WAVE_SAW) {
+        engine->synth.set_wave(Wave::saw);
+    }
+}
+
 int jello_engine_sample_rate(JelloEngine* engine) {
     (void)engine;  // every engine runs at the same rate, for now
     return sample_rate;

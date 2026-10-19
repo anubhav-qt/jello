@@ -21,6 +21,7 @@ pub fn run() {
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,
+            commands::switch_wave,
             commands::render_test_note,
         ])
         .run(tauri::generate_context!())
