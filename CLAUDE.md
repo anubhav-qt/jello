@@ -17,9 +17,10 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 ## Status
 
-- Now: v1 step 1 (skeleton) is built: the C++ engine plays a test tone and
-  renders `Music/Jello/test-tone.wav`, and CI builds and tests macOS and
-  Windows. Not yet heard on Windows. Next: step 2, laptop synth and key mapping.
+- Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
+  Not yet heard on Windows.
+- Now: step 2, built in [slices](docs/design.md#step-2-slices). Slice 1
+  (ADR 0009) is done; next is slice 2, one note.
 
 ## Repo layout
 
@@ -42,6 +43,8 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 - Never write C++ engine code before the user has approved its design.
 - The user is still learning music theory. Explain music terms briefly when
   they first come up.
+- Sound choices are the user's. Ask before rendering any sound demo, change
+  one thing at a time, and let the user pick by ear.
 
 ### UI
 

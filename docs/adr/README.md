@@ -16,6 +16,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0006](0006-macos-and-windows.md) | macOS and Windows from day one | Accepted |
 | [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
+| [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted |
 
 ## Template
 

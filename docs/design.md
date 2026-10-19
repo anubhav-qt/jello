@@ -35,6 +35,32 @@ exported as a WAV file.
 The system check (see [Performance](#performance-and-system-check)) grows
 together with the engine.
 
+#### Step 2 slices
+
+Step 2 is built in slices. Each one is explained and approved before it is
+written, then tested and explained again. The engine tests render notes
+without speakers and check pitch, envelope timing, exact silence after
+release, no jumps when a voice is stolen, and never going above 1.0.
+
+1. **Design written down.** [ADR 0009](adr/0009-how-notes-become-sound.md).
+   Done.
+2. **One note.** The mailbox, the envelope and one voice playing triangle,
+   with the velocity curve and the voice level. The C API gains note on,
+   note off and all notes off; Rust gains `play_note` and `release_note`.
+   The test tone goes away: Render WAV saves a held middle C to
+   `Music/Jello/test-note.wav`, and the dev panel gets a button that plays
+   middle C while it is held.
+3. **32 voices.** Finding a free voice, stealing, reusing a ringing note's
+   voice, and the soft clip.
+4. **Four waves.** Sine, square and saw join triangle, with PolyBLEP, the
+   wave trims and the wave switch.
+5. **Play from the laptop.** The webview forwards keys, the Rust key map
+   plays the default preset, "/" switches waves and the dev panel shows the
+   current wave. Then tune the voice level, wave trims and envelope by ear.
+
+After the slices: pick the frontend framework (with an ADR), then key mapping
+and the on-screen piano.
+
 ### v1.5: vocals
 
 Audio tracks, importing and recording vocals, a vocal effects chain, live
@@ -93,7 +119,9 @@ MCP server, in-app AI harness, AI voice conversion. See [AI](#ai-v3).
 
 ## Engine
 
-How the C++ engine is built today. It grows with each step.
+How the C++ engine is built today. It grows with each step. Step 2 (notes,
+voices, waves) is designed in [ADR 0009](adr/0009-how-notes-become-sound.md)
+and being built.
 
 - **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
   create, destroy, start and stop audio, tone on or off, sample rate, render.
@@ -149,11 +177,13 @@ Then each key press gets the next note. Details:
 - Store keys by physical position (`event.code`). Show the label the user saw.
 - Ignore auto-repeat (`event.repeat`).
 - Release every note when the window loses focus.
-- Block Shift, Ctrl, Option/Alt, Cmd/Win, Fn and Caps Lock. Mac brightness and
-  volume keys never reach the app.
-- Mappings are saved as named presets. A default preset ships: Z row is the
-  lower octave (S D G H J are black keys), Q row is the upper octave
-  (2 3 5 6 7 are black keys).
+- Block Shift, Ctrl, Option/Alt, Cmd/Win, Fn and Caps Lock. While Cmd, Ctrl
+  or Option/Alt is held, no key plays, so shortcuts like Cmd+Q still work.
+  Mac brightness and volume keys never reach the app.
+- Mappings are saved as named presets. A default preset ships: the Z row
+  plays C3 to B3 (S D G H J are the black keys) and the Q row plays C4 to B4
+  (2 3 5 6 7 are the black keys), so Q is middle C. "/" steps to the next
+  wave.
 - Laptop keyboards drop some 3+ key chords (ghosting). Mechanical keyboards
   with NKRO do not.
 
@@ -308,5 +338,6 @@ Ask the user one at a time, when the step that needs the answer comes up.
   [UI design process](#ui-design-process)).
 - Frontend framework. The skeleton uses plain TypeScript; decide at step 2.
 - Song file format details. Decide at step 5.
-- Engine design for step 2 (voices, note events, the lock-free queue). Walk
-  through it with the user before writing any engine code.
+- Laptop keyboard only, or a MIDI keyboard too? Laptop keys have no velocity
+  and drop some chords. Decide after playing step 2 for a while. The answer
+  shapes step 3 and the learning mode (v2).
