@@ -46,10 +46,10 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    Done.
 2. **One note.** The mailbox, the envelope and one voice playing triangle,
    with the velocity curve and the voice level. The C API gains note on,
-   note off and all notes off; Rust gains `play_note` and `release_note`.
-   The test tone goes away: Render WAV saves a held middle C to
-   `Music/Jello/test-note.wav`, and the dev panel gets a button that plays
-   middle C while it is held.
+   note off and all notes off; Rust gains `play_note`, `release_note` and
+   `release_all_notes`. The test tone goes away: Render WAV saves a held
+   middle C to `Music/Jello/test-note.wav`, and the dev panel gets a button
+   that plays middle C while it is held. Done.
 3. **32 voices.** Finding a free voice, stealing, reusing a ringing note's
    voice, and the soft clip.
 4. **Four waves.** Sine, square and saw join triangle, with PolyBLEP, the
@@ -124,26 +124,44 @@ voices, waves) is designed in [ADR 0009](adr/0009-how-notes-become-sound.md)
 and being built.
 
 - **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
-  create, destroy, start and stop audio, tone on or off, sample rate, render.
-- **Files:** `engine.cpp` holds the C API and all device code, `tone.*` the
-  test tone, `miniaudio.cpp` and `miniaudio_settings.h` the audio library
-  ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
+  create, destroy, start and stop audio, note on, note off, all notes off,
+  sample rate, render.
+- **Files:**
+  - `engine.cpp`: the C API and all device code.
+  - `mailbox.*`: carries note messages to the audio thread, without locks.
+  - `synth.*`: the instrument. At the start of each chunk of sound it acts on
+    every waiting message, then runs its voice.
+  - `voice.*`: plays one note as a triangle wave. The velocity curve and the
+    voice level set how loud it is.
+  - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
+    to the held level (decay, sustain) and a fade out after letting go
+    (release).
+  - `miniaudio.cpp` and `miniaudio_settings.h`: the audio library
+    ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
 - **Build:** `src-tauri/build.rs` compiles the engine as C++17 with the `cc`
   crate, so one Rust build builds everything.
 - **Sound format:** the engine always runs at 48,000 samples per second,
   stereo, 32-bit float. miniaudio converts if the speakers run at another
   rate.
 - **Threads:** the OS calls the engine on its audio thread every few
-  milliseconds. Other threads reach it only through atomics (later a
-  lock-free queue), never locks.
-- **No clicks:** turning sound on or off glides the volume over 10 ms.
+  milliseconds. Other threads reach it only through the mailbox, a lock-free
+  queue with 1024 slots that it empties at the start of each chunk. When the
+  mailbox is full, new messages are dropped. Only one thread may send at a
+  time (Rust keeps the engine behind a lock), and the audio thread never
+  locks or waits.
+- **No clicks:** a note fades in over 5 ms and out over 300 ms. A new note
+  picks up from wherever the old one's wave and loudness were, so the sound
+  never jumps.
 - **Offline render:** Rust makes a second engine with no speakers and calls
   render, the same code the speakers hear. Rust writes 32-bit float WAV files
   (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
   `commands.rs` holds the commands, `wav.rs` writes files.
-- **Tests:** `cargo test` in `src-tauri/` renders the tone silently and checks
-  the fade in, loudness, clipping and fade out. Tests never open speakers.
+- **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
+  pitch, the envelope's timing and levels, the velocity curve, exact silence
+  after letting go, no clicks when a new note takes over, never going above
+  1.0, that values MIDI never sends are ignored, the mailbox size, and that
+  the same notes always give the same samples. Tests never open speakers.
 
 ## Input
 

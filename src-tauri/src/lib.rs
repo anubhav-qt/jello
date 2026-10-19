@@ -18,9 +18,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(engine))
         .invoke_handler(tauri::generate_handler![
-            commands::start_tone,
-            commands::stop_tone,
-            commands::render_test_tone,
+            commands::play_note,
+            commands::release_note,
+            commands::release_all_notes,
+            commands::render_test_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

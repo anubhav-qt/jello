@@ -7,18 +7,29 @@
 #include <new>
 
 #include "miniaudio_settings.h"
-#include "tone.h"
+#include "synth.h"
 
 namespace {
 
 constexpr int sample_rate = 48000;
 constexpr int channels = 2;  // stereo
 
+// MIDI numbers notes from 0 to 127. Middle C is 60.
+bool is_valid_note(int note) {
+    return note >= 0 && note <= 127;
+}
+
+// How hard a key was hit, from 1 to 127. In MIDI a velocity of 0 means
+// "let go", so a note never starts at 0.
+bool is_valid_velocity(int velocity) {
+    return velocity >= 1 && velocity <= 127;
+}
+
 }  // namespace
 
 // Everything one engine owns.
 struct JelloEngine {
-    Tone tone{sample_rate};
+    Synth synth{sample_rate};
     ma_device device;
     bool audio_running = false;
 };
@@ -31,7 +42,7 @@ void on_audio(ma_device* device, void* output, const void* input, ma_uint32 fram
     (void)input;  // playback only, no microphone
 
     JelloEngine* engine = static_cast<JelloEngine*>(device->pUserData);
-    engine->tone.render(static_cast<float*>(output), static_cast<int>(frames));
+    engine->synth.render(static_cast<float*>(output), static_cast<int>(frames));
 }
 
 }  // namespace
@@ -84,8 +95,26 @@ void jello_engine_stop_audio(JelloEngine* engine) {
     engine->audio_running = false;
 }
 
-void jello_engine_set_tone(JelloEngine* engine, bool on) {
-    engine->tone.set_on(on);
+void jello_engine_note_on(JelloEngine* engine, int note, int velocity) {
+    // Ignore anything MIDI could never send, so nothing odd reaches the synth.
+    if (!is_valid_note(note)) {
+        return;
+    }
+    if (!is_valid_velocity(velocity)) {
+        return;
+    }
+    engine->synth.note_on(note, velocity);
+}
+
+void jello_engine_note_off(JelloEngine* engine, int note) {
+    if (!is_valid_note(note)) {
+        return;
+    }
+    engine->synth.note_off(note);
+}
+
+void jello_engine_all_notes_off(JelloEngine* engine) {
+    engine->synth.all_notes_off();
 }
 
 int jello_engine_sample_rate(JelloEngine* engine) {
@@ -94,7 +123,7 @@ int jello_engine_sample_rate(JelloEngine* engine) {
 }
 
 void jello_engine_render(JelloEngine* engine, float* out, int frames) {
-    engine->tone.render(out, frames);
+    engine->synth.render(out, frames);
 }
 
 }  // extern "C"

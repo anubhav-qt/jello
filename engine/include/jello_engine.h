@@ -26,17 +26,30 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// Turns the test tone on or off. It fades in and out over 10 ms.
-// Safe to call while the audio is running.
-void jello_engine_set_tone(JelloEngine* engine, bool on);
+// The next three are for playing notes. They are safe to call while the
+// audio is running, from one thread at a time. Each one only leaves a message
+// for the audio thread, which acts on it at the start of its next chunk of
+// sound (about every 10 ms). If 1024 messages are already waiting, new ones
+// are dropped (docs/adr/0009-how-notes-become-sound.md).
+
+// Starts `note` (0 to 127, middle C is 60) at `velocity`, how hard the key was
+// hit (1 to 127). A note or velocity outside those ranges is ignored.
+void jello_engine_note_on(JelloEngine* engine, int note, int velocity);
+
+// Lets go of `note`, so it fades out. A note outside 0 to 127 is ignored.
+void jello_engine_note_off(JelloEngine* engine, int note);
+
+// Lets go of every note.
+void jello_engine_all_notes_off(JelloEngine* engine);
 
 // How many samples per second the engine makes (48000).
 int jello_engine_sample_rate(JelloEngine* engine);
 
 // Makes sound without speakers, for writing files. Fills `out` with `frames`
 // frames of stereo, left and right taking turns (left, right, left, ...),
-// so `out` must hold frames * 2 floats. Only use this on an engine whose
-// audio is not running.
+// so `out` must hold frames * 2 floats. Notes sent before this call take
+// effect at its first frame. Only use this on an engine whose audio is not
+// running.
 void jello_engine_render(JelloEngine* engine, float* out, int frames);
 
 #ifdef __cplusplus

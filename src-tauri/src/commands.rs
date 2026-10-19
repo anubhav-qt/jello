@@ -9,41 +9,64 @@ use tauri::{AppHandle, Manager, State};
 use crate::engine::Engine;
 use crate::wav::write_wav;
 
-// The test tone file plays for 2 seconds, then keeps a short quiet tail so
-// the fade-out is in the file too and it ends without a click.
-const TEST_TONE_MS: u32 = 2000;
-const QUIET_TAIL_MS: u32 = 50;
+// The test file holds middle C at velocity 100 for 2 seconds, then lets go.
+// It keeps going for 400 ms after that: the 300 ms fade-out plus a little
+// silence, so it ends cleanly.
+const MIDDLE_C: u8 = 60;
+const TEST_VELOCITY: u8 = 100;
+const HOLD_MS: u32 = 2000;
+const TAIL_MS: u32 = 400;
 
+// Plays `note` at `velocity` until `release_note` lets go of it. The first
+// note opens the speakers, so it may start a little late.
 #[tauri::command]
-pub fn start_tone(engine: State<'_, Mutex<Engine>>) -> Result<(), String> {
+pub fn play_note(engine: State<'_, Mutex<Engine>>, note: u8, velocity: u8) -> Result<(), String> {
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    engine.set_tone(true);
+    engine.note_on(note, velocity);
     Ok(())
 }
 
+// Lets go of `note`, so it fades out.
 #[tauri::command]
-pub fn stop_tone(engine: State<'_, Mutex<Engine>>) {
+pub fn release_note(engine: State<'_, Mutex<Engine>>, note: u8) {
     let mut engine = engine.lock().unwrap();
-    engine.set_tone(false);
+    // Before the speakers open, no note can be playing and nothing empties the
+    // engine's mailbox. Sending anyway would let messages pile up there until
+    // it is full, and then the first real note would be dropped.
+    if engine.is_audio_running() {
+        engine.note_off(note);
+    }
 }
 
-// Renders the test tone to Music/Jello/test-tone.wav and returns where it went.
+// Lets go of every note, for when the window loses focus and a held key's
+// release would never arrive.
 #[tauri::command]
-pub fn render_test_tone(app: AppHandle) -> Result<String, String> {
+pub fn release_all_notes(engine: State<'_, Mutex<Engine>>) {
+    let mut engine = engine.lock().unwrap();
+    // Same reason as in `release_note`.
+    if engine.is_audio_running() {
+        engine.all_notes_off();
+    }
+}
+
+// Renders a held middle C to Music/Jello/test-note.wav and returns where it
+// went.
+#[tauri::command]
+pub fn render_test_note(app: AppHandle) -> Result<String, String> {
     // A second engine with no speakers, so the file never disturbs what is
     // playing live. It runs the same code the speakers hear.
     let mut engine = Engine::new()?;
     let sample_rate = engine.sample_rate();
 
-    engine.set_tone(true);
-    let mut samples = engine.render(frames_in_ms(sample_rate, TEST_TONE_MS));
+    engine.note_on(MIDDLE_C, TEST_VELOCITY);
+    let mut samples = engine.render(frames_in_ms(sample_rate, HOLD_MS));
 
-    engine.set_tone(false);
-    let tail = engine.render(frames_in_ms(sample_rate, QUIET_TAIL_MS));
+    engine.note_off(MIDDLE_C);
+    let tail = engine.render(frames_in_ms(sample_rate, TAIL_MS));
     samples.extend(tail);
 
-    let path = jello_music_folder(&app)?.join("test-tone.wav");
+    let path = jello_music_folder(&app)?.join("test-note.wav");
     write_wav(&path, &samples, sample_rate)?;
 
     Ok(path.display().to_string())
