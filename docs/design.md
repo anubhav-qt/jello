@@ -51,7 +51,8 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    middle C to `Music/Jello/test-note.wav`, and the dev panel gets a button
    that plays middle C while it is held. Done.
 3. **32 voices.** Finding a free voice, stealing, reusing a ringing note's
-   voice, and the soft clip.
+   voice, and the soft clip. The C API and the dev panel stay the same, so
+   only the tests play chords until slice 5. Done.
 4. **Four waves.** Sine, square and saw join triangle, with PolyBLEP, the
    wave trims and the wave switch.
 5. **Play from the laptop.** The webview forwards keys, the Rust key map
@@ -130,7 +131,8 @@ and being built.
   - `engine.cpp`: the C API and all device code.
   - `mailbox.*`: carries note messages to the audio thread, without locks.
   - `synth.*`: the instrument. At the start of each chunk of sound it acts on
-    every waiting message, then runs its voice.
+    every waiting message, then adds up its voices and puts the sum through
+    the soft clip. It also picks the voice for each new note.
   - `voice.*`: plays one note as a triangle wave. The velocity curve and the
     voice level set how loud it is.
   - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
@@ -149,19 +151,29 @@ and being built.
   mailbox is full, new messages are dropped. Only one thread may send at a
   time (Rust keeps the engine behind a lock), and the audio thread never
   locks or waits.
-- **No clicks:** a note fades in over 5 ms and out over 300 ms. A new note
-  picks up from wherever the old one's wave and loudness were, so the sound
-  never jumps.
+- **Voices:** 32, made once when the engine is created. A new note takes the
+  voice still ringing that same note, or else a free voice. When all 32 are
+  busy, it takes over the quietest voice fading out, or else the note held
+  the longest. Every key press gets the next number from a counter, which is
+  how the engine knows which note is oldest.
+- **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
+  takes over a busy voice picks up from wherever that voice's wave and
+  loudness were, so the sound never jumps.
+- **Soft clip:** after the voices are added up, samples between -0.8 and 0.8
+  pass unchanged. Louder ones are bent toward 1.0 without ever reaching it,
+  so the sound never clips. The master limiter takes over this job in step 6.
 - **Offline render:** Rust makes a second engine with no speakers and calls
   render, the same code the speakers hear. Rust writes 32-bit float WAV files
   (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
   `commands.rs` holds the commands, `wav.rs` writes files.
 - **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
-  pitch, the envelope's timing and levels, the velocity curve, exact silence
-  after letting go, no clicks when a new note takes over, never going above
-  1.0, that values MIDI never sends are ignored, the mailbox size, and that
-  the same notes always give the same samples. Tests never open speakers.
+  pitch, the envelope's timing and levels, the velocity curve, that a chord
+  is its notes added up, exact silence after letting go, which voice a new
+  note takes and that taking it never clicks, the soft clip's exact bend and
+  never going above 1.0, that values MIDI never sends are ignored, the
+  mailbox size, and that the same notes always give the same samples. Tests
+  never open speakers.
 
 ## Input
 

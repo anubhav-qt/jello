@@ -20,7 +20,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 - Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
   Not yet heard on Windows.
 - Now: step 2, built in [slices](docs/design.md#step-2-slices). Slices 1
-  (ADR 0009) and 2 (one note) are done; next is slice 3, 32 voices.
+  to 3 are done (ADR 0009, one note, 32 voices); next is slice 4, four waves.
 
 ## Repo layout
 

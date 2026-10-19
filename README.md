@@ -4,8 +4,8 @@ A desktop synthesizer and music studio. Play it with a computer keyboard or a
 MIDI keyboard and make full songs with synths, samples, effects and mixing.
 Later versions add vocals, a follow-along learning mode and AI music making.
 
-Early days: the C++ engine plays one note at a time. See the
-[design and roadmap](docs/design.md).
+Early days: the C++ engine plays up to 32 notes at once, but you can't play
+it from a keyboard yet. See the [design and roadmap](docs/design.md).
 
 ## Stack
 

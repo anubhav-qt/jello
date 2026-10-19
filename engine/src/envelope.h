@@ -27,6 +27,12 @@ public:
     // True before the first start, and again once the release has ended.
     bool is_silent() const;
 
+    // True from the moment the release starts until it has ended.
+    bool is_releasing() const;
+
+    // The level right now, from 0 up to the peak.
+    double level() const;
+
 private:
     enum class Stage {
         silent,

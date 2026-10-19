@@ -40,10 +40,11 @@ Voice::Voice(int sample_rate)
     : sample_rate_(sample_rate),
       envelope_(sample_rate) {}
 
-void Voice::start(int note, int velocity) {
+void Voice::start(int note, int velocity, std::uint64_t press_number) {
     // The phase is left where it is, so a voice that is still sounding carries
     // on from the same point in its wave instead of jumping.
     note_ = note;
+    press_number_ = press_number;
     phase_step_ = note_to_frequency(note) / sample_rate_;
     envelope_.start(velocity_to_peak(velocity));
 }
@@ -56,8 +57,20 @@ bool Voice::is_free() const {
     return envelope_.is_silent();
 }
 
+bool Voice::is_releasing() const {
+    return envelope_.is_releasing();
+}
+
+double Voice::level() const {
+    return envelope_.level();
+}
+
 int Voice::note() const {
     return note_;
+}
+
+std::uint64_t Voice::press_number() const {
+    return press_number_;
 }
 
 void Voice::render(float* out, int frames) {

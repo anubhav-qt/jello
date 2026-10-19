@@ -134,13 +134,18 @@ mod tests {
     const SUSTAIN: f32 = 0.7; // `sustain_level` in engine/src/envelope.cpp
     const RELEASE_MS: u32 = 300; // `release_ms` in engine/src/envelope.cpp
     const MAILBOX_SLOTS: usize = 1024; // `slot_count` in engine/src/mailbox.h
+    const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
+    const CLIP_START: f32 = 0.8; // `clip_start` in engine/src/synth.cpp
 
     // Notes by their MIDI numbers, and how many times a second their waves
     // repeat in standard tuning.
     const C3: u8 = 48;
+    const C3_HZ: f64 = 130.8128;
     const MIDDLE_C: u8 = 60;
     const MIDDLE_C_HZ: f64 = 261.6256;
     const E4: u8 = 64;
+    const E4_HZ: f64 = 329.6276;
+    const G4: u8 = 67;
     const A4: u8 = 69;
     const A4_HZ: f64 = 440.0;
     const C5: u8 = 72;
@@ -148,6 +153,10 @@ mod tests {
 
     // A firm key press, used unless a test says otherwise.
     const VELOCITY: u8 = 100;
+
+    // A key press so soft it can't be heard, though the note still takes a
+    // voice.
+    const QUIET: u8 = 1;
 
     fn frames_in_ms(engine: &Engine, ms: u32) -> usize {
         let frames = engine.sample_rate() * ms / 1000;
@@ -253,6 +262,18 @@ mod tests {
         );
     }
 
+    // Checks which note `wave` is playing, to within 1 Hz. That still tells
+    // apart any two notes these tests listen to, and suits a short, fading
+    // wave, which can't be measured to 0.01 Hz like a long, steady one.
+    fn assert_note(engine: &Engine, wave: &[f32], expected_hz: f64) {
+        let hz = pitch(engine, wave);
+        let difference = (hz - expected_hz).abs();
+        assert!(
+            difference < 1.0,
+            "played {hz} Hz, expected {expected_hz} Hz"
+        );
+    }
+
     #[test]
     fn a_new_engine_is_silent() {
         let mut engine = Engine::new().unwrap();
@@ -320,6 +341,89 @@ mod tests {
         assert_within_percent(ratio, 0.254, 1.0);
     }
 
+    // Checks that two sounds match, sample for sample. The engine adds in
+    // floats, which can round the last digit a little differently, so a
+    // millionth either way is allowed.
+    fn assert_same_sound(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for i in 0..actual.len() {
+            let difference = (actual[i] - expected[i]).abs();
+            assert!(
+                difference <= 0.000001,
+                "sample {i} is {}, expected {}",
+                actual[i],
+                expected[i]
+            );
+        }
+    }
+
+    // What the soft clip does to one sample. Matches `soft_clip` in
+    // engine/src/synth.cpp.
+    fn soft_clip(sample: f32) -> f32 {
+        let size = sample.abs();
+        if size <= CLIP_START {
+            return sample;
+        }
+
+        let room = 1.0 - CLIP_START;
+        let over = size - CLIP_START;
+        let share = over / (over + room);
+        let squeezed = CLIP_START + share * room;
+
+        if sample < 0.0 {
+            -squeezed
+        } else {
+            squeezed
+        }
+    }
+
+    // Plays `notes` together, then each note alone on a new engine, and
+    // checks that the chord is the lone notes added up, then put through the
+    // soft clip. Below 0.8 the soft clip changes nothing, so a quiet chord
+    // must be exactly its notes added up.
+    fn assert_chord_adds_up(notes: &[u8], velocity: u8) {
+        let mut engine = Engine::new().unwrap();
+        for note in notes {
+            engine.note_on(*note, velocity);
+        }
+        let chord = render_left(&mut engine, 1000);
+
+        let mut added_up = vec![0.0; chord.len()];
+        for note in notes {
+            let mut alone = Engine::new().unwrap();
+            alone.note_on(*note, velocity);
+            let wave = render_left(&mut alone, 1000);
+            for i in 0..added_up.len() {
+                added_up[i] += wave[i];
+            }
+        }
+
+        let mut expected = Vec::new();
+        for sample in added_up {
+            expected.push(soft_clip(sample));
+        }
+        assert_same_sound(&chord, &expected);
+    }
+
+    #[test]
+    fn a_chord_is_its_notes_added_together() {
+        // C major: middle C, E and G. Even if their peaks lined up, they
+        // would add up to only 0.65.
+        assert_chord_adds_up(&[MIDDLE_C, E4, G4], VELOCITY);
+    }
+
+    #[test]
+    fn all_32_voices_play_at_once() {
+        // 32 notes in a row, from C3 up. Softly, so that all together they
+        // stay below 0.8: even if every peak lined up, they would add up to
+        // only 0.62.
+        let mut notes = Vec::new();
+        for note in C3..C3 + VOICE_COUNT {
+            notes.push(note);
+        }
+        assert_chord_adds_up(&notes, 30);
+    }
+
     // Checks a release, from the moment the key is let go. Right after, the
     // note is still nearly as loud, so it fades instead of stopping dead
     // (which would click). It keeps fading for the whole release, and then
@@ -350,8 +454,12 @@ mod tests {
 
     #[test]
     fn all_notes_off_fades_to_exact_silence() {
+        // A chord, so every voice has to let go, not just one.
         let mut engine = Engine::new().unwrap();
-        hold(&mut engine, MIDDLE_C, VELOCITY);
+        engine.note_on(MIDDLE_C, VELOCITY);
+        engine.note_on(E4, VELOCITY);
+        engine.note_on(G4, VELOCITY);
+        render_left(&mut engine, 1000);
 
         engine.all_notes_off();
         let fade = render_left(&mut engine, RELEASE_MS);
@@ -372,6 +480,20 @@ mod tests {
         let wave = render_left(&mut engine, 50);
 
         assert_within_percent(peak(&wave), held_level(), 2.0);
+    }
+
+    #[test]
+    fn letting_go_of_one_note_leaves_the_others_ringing() {
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(MIDDLE_C, VELOCITY);
+        engine.note_on(E4, VELOCITY);
+        render_left(&mut engine, 500);
+
+        // Once middle C has faded out, only E4 is left.
+        engine.note_off(MIDDLE_C);
+        render_left(&mut engine, RELEASE_MS);
+        let wave = render_left(&mut engine, 1000);
+        assert_pitch(&engine, &wave, E4_HZ);
     }
 
     // Checks that the sound never jumps suddenly from one sample to the next,
@@ -399,21 +521,37 @@ mod tests {
         );
     }
 
+    // Presses the lowest `count` notes, from note 0 up, at QUIET. They fill
+    // voices without covering up the notes a test listens to.
+    fn press_quiet_notes(engine: &mut Engine, count: u8) {
+        for note in 0..count {
+            engine.note_on(note, QUIET);
+        }
+    }
+
     #[test]
-    fn a_new_note_takes_over_a_held_one_without_a_click() {
+    fn a_new_note_takes_over_the_oldest_held_one_without_a_click() {
         // Ten tries, each 1 ms later than the last. The new note arrives at
         // many points along middle C's wave, including near its top and
         // bottom, where a restart would jump the furthest.
         for extra_ms in 0..10 {
             let mut engine = Engine::new().unwrap();
+
+            // Quiet notes, then middle C, so every voice is busy. Pressing
+            // the quiet notes again makes them newer, so middle C becomes the
+            // oldest held note, though it was not the first one pressed.
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
             engine.note_on(MIDDLE_C, VELOCITY);
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
             let mut wave = render_left(&mut engine, 500 + extra_ms);
 
-            // An octave up, while middle C is still held.
+            // An octave up. It takes over middle C's voice, so afterwards
+            // only C5 can be heard.
             engine.note_on(C5, VELOCITY);
-            let after = render_left(&mut engine, 100);
-            wave.extend(after);
+            let after = render_left(&mut engine, 1000);
+            assert_pitch(&engine, &after, C5_HZ);
 
+            wave.extend(after);
             assert_no_click(&engine, &wave, C5_HZ);
         }
     }
@@ -423,6 +561,9 @@ mod tests {
         // Ten tries again, as above, while C5 fades out.
         for extra_ms in 0..10 {
             let mut engine = Engine::new().unwrap();
+
+            // Quiet notes, then C5, so every voice is busy.
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
             engine.note_on(C5, VELOCITY);
             let mut wave = render_left(&mut engine, 500);
 
@@ -430,24 +571,116 @@ mod tests {
             let fading = render_left(&mut engine, 100 + extra_ms);
             wave.extend(fading);
 
-            // An octave below middle C, while C5 is still fading.
+            // An octave below middle C. It takes over C5's fading voice, not
+            // a held one, though the quiet notes are older. Afterwards only
+            // C3 can be heard.
             engine.note_on(C3, VELOCITY);
-            let after = render_left(&mut engine, 100);
-            wave.extend(after);
+            let after = render_left(&mut engine, 1000);
+            assert_pitch(&engine, &after, C3_HZ);
 
+            wave.extend(after);
             assert_no_click(&engine, &wave, C5_HZ);
+        }
+    }
+
+    #[test]
+    fn a_new_note_takes_over_the_quietest_fading_one() {
+        let mut engine = Engine::new().unwrap();
+
+        // Quiet notes, then middle C and C5, so every voice is busy.
+        press_quiet_notes(&mut engine, VOICE_COUNT - 2);
+        engine.note_on(MIDDLE_C, VELOCITY);
+        engine.note_on(C5, VELOCITY);
+        render_left(&mut engine, 500);
+
+        // Both fade out, but C5 starts 100 ms sooner, so it is the quieter of
+        // the two when a 33rd note arrives. That note is quiet too, so the
+        // voice it takes over soon can't be heard.
+        engine.note_off(C5);
+        render_left(&mut engine, 100);
+        engine.note_off(MIDDLE_C);
+        engine.note_on(C3, QUIET);
+
+        // After that voice's 5 ms attack, middle C is the only note left to
+        // hear, so C5's voice was the one taken.
+        render_left(&mut engine, 10);
+        let wave = render_left(&mut engine, 100);
+        assert_note(&engine, &wave, MIDDLE_C_HZ);
+    }
+
+    #[test]
+    fn pressing_a_held_note_again_reuses_its_voice() {
+        // Ten tries, each 1 ms later than the last, so the second press lands
+        // at many points along A4's wave, as in the takeover tests above. The
+        // first try lands after exactly 220 waves: a second voice for A4 would
+        // start in step with the first, and the two would add up to more than
+        // one note's full loudness.
+        for extra_ms in 0..10 {
+            let mut engine = Engine::new().unwrap();
+            engine.note_on(A4, VELOCITY);
+            let mut wave = render_left(&mut engine, 500 + extra_ms);
+
+            engine.note_on(A4, VELOCITY);
+            let after = render_left(&mut engine, 500);
+            assert!(peak(&after) <= full_level());
+
+            // The one voice glides back up from where it was, without a click.
+            wave.extend(after);
+            assert_no_click(&engine, &wave, A4_HZ);
+        }
+    }
+
+    #[test]
+    fn pressing_a_fading_note_again_reuses_its_voice() {
+        // Ten tries again. The first one presses A4 again 600 ms in, after
+        // exactly 264 waves, so here too a second voice would line up with
+        // the first.
+        for extra_ms in 0..10 {
+            let mut engine = Engine::new().unwrap();
+            engine.note_on(A4, VELOCITY);
+            let mut wave = render_left(&mut engine, 500);
+
+            engine.note_off(A4);
+            let fading = render_left(&mut engine, 100 + extra_ms);
+            wave.extend(fading);
+
+            engine.note_on(A4, VELOCITY);
+            let after = render_left(&mut engine, 500);
+            assert!(peak(&after) <= full_level());
+
+            wave.extend(after);
+            assert_no_click(&engine, &wave, A4_HZ);
         }
     }
 
     #[test]
     fn nothing_ever_clips() {
         // Speakers can only play from -1.0 to 1.0. Anything past that clips,
-        // which sounds harsh and broken. With one voice, the hardest key
-        // press is the loudest sound there is.
+        // which sounds harsh and broken. This is the loudest chord there is:
+        // 32 notes at once, all pressed as hard as possible. Added up, their
+        // waves go far past 1.0, so only the soft clip keeps them under it.
         let mut engine = Engine::new().unwrap();
-        engine.note_on(MIDDLE_C, 127);
-        let wave = render_left(&mut engine, 1000);
-        assert!(peak(&wave) <= 1.0);
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+
+        // Both channels, since either one could clip.
+        let frames = frames_in_ms(&engine, 1000);
+        let samples = engine.render(frames);
+        assert!(peak(&samples) < 1.0);
+    }
+
+    #[test]
+    fn a_loud_chord_is_bent_by_the_soft_clip() {
+        // The same loudest chord. Past 0.8, its added-up notes must be bent
+        // exactly as the soft clip says: 1.0 into 0.9, 1.4 into 0.95. A hard
+        // clamp just under 1.0 would also keep it from clipping, but it cuts
+        // the tops of the waves flat, which sounds harsh too.
+        let mut notes = Vec::new();
+        for note in C3..C3 + VOICE_COUNT {
+            notes.push(note);
+        }
+        assert_chord_adds_up(&notes, 127);
     }
 
     // Presses `note` at `velocity` on a new engine and returns how loud the
@@ -476,35 +709,43 @@ mod tests {
     #[test]
     fn the_mailbox_holds_1024_messages() {
         let mut engine = Engine::new().unwrap();
+        hold(&mut engine, MIDDLE_C, VELOCITY);
 
-        // 1023 middle Cs, then C5 in the last free slot. All of them get in,
-        // and the last one sent wins.
+        // 1023 let-gos of E4, which is not playing, so they change nothing.
+        // Then letting go of middle C, in the last free slot.
         for _ in 0..MAILBOX_SLOTS - 1 {
-            engine.note_on(MIDDLE_C, VELOCITY);
+            engine.note_off(E4);
         }
-        engine.note_on(C5, VELOCITY);
+        engine.note_off(MIDDLE_C);
 
-        let wave = render_left(&mut engine, 1000);
-        assert_pitch(&engine, &wave, C5_HZ);
+        // It got in, so middle C fades out.
+        let fade = render_left(&mut engine, RELEASE_MS);
+        let after = render_left(&mut engine, 100);
+        assert_fades_out(&engine, &fade, &after);
     }
 
     #[test]
     fn a_full_mailbox_drops_new_messages() {
         let mut engine = Engine::new().unwrap();
+        hold(&mut engine, MIDDLE_C, VELOCITY);
 
-        // Every slot holds middle C, so C5 finds no room and is dropped.
+        // Let-gos of E4 fill every slot, so letting go of middle C finds no
+        // room and is dropped.
         for _ in 0..MAILBOX_SLOTS {
-            engine.note_on(MIDDLE_C, VELOCITY);
+            engine.note_off(E4);
         }
-        engine.note_on(C5, VELOCITY);
+        engine.note_off(MIDDLE_C);
 
-        let wave = render_left(&mut engine, 1000);
-        assert_pitch(&engine, &wave, MIDDLE_C_HZ);
+        // Middle C keeps sounding, even after a release would have ended.
+        render_left(&mut engine, RELEASE_MS);
+        let wave = render_left(&mut engine, 50);
+        assert_within_percent(peak(&wave), held_level(), 2.0);
 
-        // Rendering emptied the mailbox, so now C5 gets in.
-        engine.note_on(C5, VELOCITY);
-        let wave = render_left(&mut engine, 1000);
-        assert_pitch(&engine, &wave, C5_HZ);
+        // Rendering emptied the mailbox, so now letting go gets in.
+        engine.note_off(MIDDLE_C);
+        let fade = render_left(&mut engine, RELEASE_MS);
+        let after = render_left(&mut engine, 100);
+        assert_fades_out(&engine, &fade, &after);
     }
 
     // Renders `ms` milliseconds in chunks of `chunk_ms`, the way the speakers

@@ -66,6 +66,14 @@ bool Envelope::is_silent() const {
     return stage_ == Stage::silent;
 }
 
+bool Envelope::is_releasing() const {
+    return stage_ == Stage::release;
+}
+
+double Envelope::level() const {
+    return level_;
+}
+
 void Envelope::glide(Stage stage, double target, int samples) {
     stage_ = stage;
     target_ = target;
