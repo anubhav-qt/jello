@@ -21,12 +21,12 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
   Not yet heard on Windows.
 - Now: step 2, built in [slices](docs/design.md#step-2-slices). All five
   slices are done: the laptop keys play on the accordion grid, shown on the
-  Stage start page (ADR 0010), with the sound tuned by ear. The UI moves to
-  Svelte 5 (ADR 0011); that move is next.
+  Stage start page (ADR 0010), with the sound tuned by ear. The UI is now
+  Svelte 5 (ADR 0011). Next: key mapping and the on-screen piano.
 
 ## Repo layout
 
-- `ui/`: webview UI (TypeScript, Vite). Start page: `ui/stage.ts`.
+- `ui/`: webview UI (Svelte 5, TypeScript, Vite). Start page: `ui/Stage.svelte`.
 - `src-tauri/`: Rust core (Tauri app, `tauri.conf.json`, capabilities).
 - `engine/`: C++ engine. C API in `include/jello_engine.h`, built by
   `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).

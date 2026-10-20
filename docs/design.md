@@ -77,8 +77,8 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    instead of dipping. Done.
 
 After the slices: the frontend framework is Svelte 5
-([ADR 0011](adr/0011-svelte-5-for-the-ui.md)). Next: move the UI to it, then
-key mapping and the on-screen piano.
+([ADR 0011](adr/0011-svelte-5-for-the-ui.md)), and the Stage page has moved
+to it. Next: key mapping and the on-screen piano.
 
 ### v1.5: vocals
 

@@ -8,7 +8,7 @@
   --text-2: rgba(255, 255, 255, 0.5);
   --text-3: rgba(255, 255, 255, 0.3);
   /* The grid of dots: one in the middle of every 12 by 12 pixel square.
-     stage.ts lights these same dots, so the two must match. */
+     beams.ts lights these same dots, so the two must match. */
   background-color: #08080a;
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.075) 1.1px, transparent 1.6px);
   background-size: 12px 12px;
@@ -25,7 +25,7 @@
 }
 
 /* The line of light that sweeps down as the page powers on. Unseen until
-   stage.ts moves it. */
+   Stage.svelte moves it. */
 .stage-scan-line {
   position: absolute;
   top: -1px;

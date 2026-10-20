@@ -10,19 +10,6 @@ export function makeElement(tag: string, className: string, text?: string): HTML
   return element;
 }
 
-// A button that runs `onClick`. Afterwards it gives up the focus, so Space or
-// Enter played later can never press it again.
-export function makeButton(className: string, onClick: () => void): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.addEventListener("click", () => {
-    onClick();
-    button.blur();
-  });
-  return button;
-}
-
 // Finds the one element matching `selector`, or stops with an error.
 export function findElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);

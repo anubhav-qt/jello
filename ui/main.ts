@@ -1,15 +1,29 @@
-// The start page: the laptop keyboard drawn on a stage of dots (ui/stage.ts).
-// Keys play the synth: Rust decides what each key does.
+// The start page: the laptop keyboard drawn on a stage of dots
+// (ui/Stage.svelte). Keys play the synth: Rust decides what each key does.
 
 import { invoke } from "@tauri-apps/api/core";
+import { mount } from "svelte";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
-import { createStage, type Stage } from "./stage";
+import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
 
+// What ui/Stage.svelte lets main.ts do.
+interface StageControls {
+  // A key went down or came back up. `code` is its place, like "KeyQ".
+  keyDown(code: string): void;
+  keyUp(code: string): void;
+  // Every key came up at once.
+  releaseAll(): void;
+  // The wave new notes play, like "saw".
+  showWave(wave: string): void;
+  // A message for the player, like where a file was saved.
+  showStatus(message: string): void;
+}
+
 // The page, once Rust has said what each key does.
-let screen: Stage | null = null;
+let screen: StageControls | null = null;
 function showWave(wave: string) {
   if (screen !== null) {
     screen.showWave(wave);
@@ -153,13 +167,15 @@ async function start() {
     return;
   }
 
-  screen = createStage({
-    platform: detectPlatform(),
-    layout,
-    onWaveClick: () => sendInOrder(switchWave),
-    onRenderClick: renderWav,
+  screen = mount(Stage, {
+    target: page,
+    props: {
+      platform: detectPlatform(),
+      layout,
+      onWaveClick: () => sendInOrder(switchWave),
+      onRenderClick: renderWav,
+    },
   });
-  screen.show(page);
   sendInOrder(askForWave);
 }
 

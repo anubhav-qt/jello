@@ -3,8 +3,6 @@
 // keyboard, the way `event.code` names them ("KeyQ", "Slash"), just like
 // Rust's key map (src-tauri/src/key_map.rs) names them.
 
-import { makeElement } from "./dom";
-
 export type Platform = "mac" | "windows";
 
 // What each key does, as Rust's `key_layout` command answers.
@@ -16,7 +14,7 @@ export interface KeyLayout {
 }
 
 // One key, as drawn.
-interface KeySpec {
+export interface KeySpec {
   // The key's place, like "KeyQ". Empty for keys the webview never hears
   // about, like fn and Touch ID.
   code: string;
@@ -35,7 +33,7 @@ interface KeySpec {
 }
 
 // One row of keys, left to right.
-interface KeyRow {
+export interface KeyRow {
   keys: KeySpec[];
   // The function keys' row is drawn shorter than the others.
   short?: boolean;
@@ -43,13 +41,6 @@ interface KeyRow {
 
 // What a key is for, which decides how it is drawn.
 export type KeyKind = "note" | "wave" | "plain" | "blank";
-
-// A drawn keyboard: its element, its rows, and each key's element by its place.
-export interface DrawnKeyboard {
-  element: HTMLElement;
-  rows: HTMLElement[];
-  keys: Map<string, HTMLElement>;
-}
 
 // The keyboard to draw: a Mac's, or a PC's on Windows.
 export function detectPlatform(): Platform {
@@ -247,7 +238,7 @@ function windowsRows(): KeyRow[] {
   ];
 }
 
-function kindOf(code: string, layout: KeyLayout): KeyKind {
+export function kindOf(code: string, layout: KeyLayout): KeyKind {
   if (code === "") {
     return "blank";
   }
@@ -260,109 +251,10 @@ function kindOf(code: string, layout: KeyLayout): KeyKind {
   return "plain";
 }
 
-// A note's name as two parts, so the octave can be drawn smaller.
-function drawNoteName(note: number): HTMLElement {
-  const name = noteName(note);
-  const element = makeElement("span", "key-note");
-  element.append(makeElement("span", "key-pitch", name.pitch));
-  element.append(makeElement("span", "key-octave", String(name.octave)));
-  return element;
-}
-
-function drawKey(spec: KeySpec, layout: KeyLayout): HTMLElement {
-  const element = makeElement("div", "key");
-  element.style.setProperty("--w", String(spec.width));
-  element.dataset.code = spec.code;
-
-  const kind = kindOf(spec.code, layout);
-  element.dataset.kind = kind;
-  if (spec.half === true) {
-    element.classList.add("is-half");
-  }
-
-  if (spec.symbol !== undefined) {
-    element.append(makeElement("span", "key-symbol", spec.symbol));
-  }
-  const label = makeElement("span", "key-label", spec.label);
-  // Words like "shift" are printed smaller than single letters.
-  if (spec.label.length > 1) {
-    label.classList.add("is-word");
-  }
-  element.append(label);
-
-  if (kind === "note") {
-    const note = layout.notes[spec.code];
-    element.dataset.note = String(note);
-    element.style.setProperty("--pitch-hue", String(pitchHue(note)));
-    element.append(drawNoteName(note));
-  }
-  if (kind === "wave") {
-    // The wave's name goes here once it is known (showWaveOnKeys).
-    element.append(makeElement("span", "key-note", "wave"));
-  }
-  return element;
-}
-
-// Draws the keyboard for `platform`, with each key's note from `layout`.
-export function drawKeyboard(platform: Platform, layout: KeyLayout): DrawnKeyboard {
-  let rowSpecs = windowsRows();
+// The rows of keys to draw for `platform`.
+export function keyRows(platform: Platform): KeyRow[] {
   if (platform === "mac") {
-    rowSpecs = macRows();
+    return macRows();
   }
-
-  const element = makeElement("div", "keyboard");
-  element.dataset.platform = platform;
-  const rows: HTMLElement[] = [];
-  const keys = new Map<string, HTMLElement>();
-
-  for (const rowSpec of rowSpecs) {
-    const row = makeElement("div", "keyboard-row");
-    if (rowSpec.short === true) {
-      row.classList.add("is-short");
-    }
-
-    for (const spec of rowSpec.keys) {
-      if (spec.gap === true) {
-        const room = makeElement("div", "key-gap");
-        room.style.setProperty("--w", String(spec.width));
-        row.append(room);
-        continue;
-      }
-
-      const keyElement = drawKey(spec, layout);
-      if (spec.code !== "") {
-        keys.set(spec.code, keyElement);
-      }
-
-      // A key with another stacked under it shares its spot in the row.
-      if (spec.below === undefined) {
-        row.append(keyElement);
-        continue;
-      }
-      const stack = makeElement("div", "key-stack");
-      stack.style.setProperty("--w", String(spec.width));
-      const lower = drawKey(spec.below, layout);
-      keys.set(spec.below.code, lower);
-      stack.append(keyElement, lower);
-      row.append(stack);
-    }
-
-    element.append(row);
-    rows.push(row);
-  }
-
-  return { element, rows, keys };
-}
-
-// Writes the wave's name on the keys that switch waves.
-export function showWaveOnKeys(keyboard: DrawnKeyboard, wave: string) {
-  for (const keyElement of keyboard.keys.values()) {
-    if (keyElement.dataset.kind !== "wave") {
-      continue;
-    }
-    const name = keyElement.querySelector(".key-note");
-    if (name !== null) {
-      name.textContent = wave;
-    }
-  }
+  return windowsRows();
 }
