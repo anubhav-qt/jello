@@ -76,8 +76,9 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    square and saw go 2 dB quieter, and held notes stay at full volume
    instead of dipping. Done.
 
-After the slices: pick the frontend framework (with an ADR), then key mapping
-and the on-screen piano.
+After the slices: the frontend framework is Svelte 5
+([ADR 0011](adr/0011-svelte-5-for-the-ui.md)). Next: move the UI to it, then
+key mapping and the on-screen piano.
 
 ### v1.5: vocals
 
@@ -423,7 +424,6 @@ Ask the user one at a time, when the step that needs the answer comes up.
 - Design system for screens after the start page. They follow the start
   page's Stage look (ADR 0010); the details are settled screen by screen
   (see [UI design process](#ui-design-process)).
-- Frontend framework. The skeleton uses plain TypeScript; decide at step 2.
 - Song file format details. Decide at step 5.
 - Laptop keyboard only, or a MIDI keyboard too? Laptop keys have no velocity
   and drop some chords. Decide after playing step 2 for a while. The answer

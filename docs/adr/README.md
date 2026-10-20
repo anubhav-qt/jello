@@ -1,6 +1,7 @@
 # Architecture decision records
 
-One file per decision, numbered in order. An accepted ADR is never rewritten.
+One file per decision, numbered in order. From 0011 on, an ADR is a short
+brief of a few lines. An accepted ADR is never rewritten.
 To change a decision, write a new ADR and mark the old one as
 "Superseded by NNNN".
 
@@ -18,6 +19,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
 | [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted |
 | [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted |
+| [0011](0011-svelte-5-for-the-ui.md) | Svelte 5 for the UI | Accepted |
 
 ## Template
 

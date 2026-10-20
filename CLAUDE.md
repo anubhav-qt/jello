@@ -21,8 +21,8 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
   Not yet heard on Windows.
 - Now: step 2, built in [slices](docs/design.md#step-2-slices). All five
   slices are done: the laptop keys play on the accordion grid, shown on the
-  Stage start page (ADR 0010), with the sound tuned by ear. Next: pick the
-  frontend framework.
+  Stage start page (ADR 0010), with the sound tuned by ear. The UI moves to
+  Svelte 5 (ADR 0011); that move is next.
 
 ## Repo layout
 
@@ -81,5 +81,6 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
   needs to know: status, layout, commands, rules.
 - Keep this file brief (under about 80 lines). Details go in `docs/design.md`
   or an ADR.
-- Every significant decision gets an ADR in `docs/adr/`. Never rewrite an
-  accepted ADR; write a new one that supersedes it.
+- Every significant decision gets an ADR in `docs/adr/`: a short brief of a
+  few lines. Small decisions are just todos. Never rewrite an accepted ADR;
+  write a new one that supersedes it.
