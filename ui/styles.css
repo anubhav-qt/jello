@@ -1,6 +1,21 @@
 /* The page, the fonts, and where each key sits. stage.css gives the page its
    colors, shapes and motion. */
 
+/* The fonts ship inside the app, so it looks the same offline. Both are
+   under the SIL Open Font License (ui/fonts/OFL-*.txt). */
+@font-face {
+  font-family: "Open Sans";
+  src: url("./fonts/OpenSans.ttf") format("truetype");
+  font-weight: 300 800;
+  font-stretch: 75% 100%;
+}
+
+@font-face {
+  font-family: "Doto";
+  src: url("./fonts/Doto.ttf") format("truetype");
+  font-weight: 100 900;
+}
+
 * {
   box-sizing: border-box;
 }
