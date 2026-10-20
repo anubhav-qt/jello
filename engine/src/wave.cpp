@@ -139,15 +139,17 @@ double wave_height(Wave wave, double phase, double phase_step) {
 // whole wave, so it follows how loud a wave sounds much better. At full
 // height the triangle and saw both come to 0.577, a sine to 0.707, and a
 // square to 1, since it sits at full height all the time. Each trim brings
-// its wave to the triangle's 0.577.
+// its wave to the triangle's 0.577. Ears still heard square and saw as louder,
+// since their bright upper harmonics stand out, so by ear in slice 5 they were
+// turned down a further 2 dB (times 0.794).
 float wave_trim(Wave wave) {
     if (wave == Wave::sine) {
         return 0.8165f;  // 0.577 / 0.707
     } else if (wave == Wave::triangle) {
         return 1.0f;
     } else if (wave == Wave::square) {
-        return 0.5774f;  // 0.577 / 1
+        return 0.4586f;  // 0.577 / 1, then 2 dB down
     } else {
-        return 1.0f;
+        return 0.7943f;  // 2 dB down
     }
 }

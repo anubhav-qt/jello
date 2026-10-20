@@ -1051,14 +1051,20 @@ mod tests {
     }
 
     #[test]
-    fn every_wave_is_equally_loud() {
+    fn every_wave_sounds_equally_loud() {
         // The trims bring every wave to the triangle's loudness. A held
         // triangle peaks at held_level(), and its RMS is that divided by the
-        // square root of 3. At A4, the square and saw come out about 1%
-        // under, because their rounded-off jumps take a little off, so 2%
-        // either way is allowed.
-        let expected = held_level() as f64 / 3.0_f64.sqrt();
+        // square root of 3. Square and saw sounded louder by ear, so they sit
+        // a further 2 dB lower (times 0.7943). At A4, the square and saw come
+        // out about 1% under, because their rounded-off jumps take a little
+        // off, so 2% either way is allowed.
+        let triangle_loudness = held_level() as f64 / 3.0_f64.sqrt();
         for wave in EVERY_WAVE {
+            let mut expected = triangle_loudness;
+            if matches!(wave, Wave::Square | Wave::Saw) {
+                expected = triangle_loudness * 0.7943;
+            }
+
             let mut engine = Engine::new().unwrap();
             engine.set_wave(wave);
             let held = hold(&mut engine, A4, VELOCITY);

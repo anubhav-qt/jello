@@ -15,6 +15,6 @@ enum class Wave {
 // triangle, square and saw need it to round off their corners and jumps.
 double wave_height(Wave wave, double phase, double phase_step);
 
-// How much to scale `wave` so all four waves are equally loud. A starting
-// value, to be tuned by ear in slice 5.
+// How much to scale `wave` so all four waves sound equally loud. Chosen by
+// ear in slice 5.
 float wave_trim(Wave wave);
