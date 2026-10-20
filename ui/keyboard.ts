@@ -7,8 +7,11 @@ export type Platform = "mac" | "windows";
 
 // What each key does, as Rust's `key_layout` command answers.
 export interface KeyLayout {
-  // Each key that plays a note, with its note: "KeyM" plays 60.
+  // Each key that plays one note, with its note: "KeyM" plays 60.
   notes: Record<string, number>;
+  // Each key that plays a chord, with its notes, lowest first: "KeyC" plays
+  // [48, 52, 55].
+  chords: Record<string, number[]>;
   // The keys that move new notes on to the next wave.
   wave_keys: string[];
 }
@@ -40,7 +43,7 @@ export interface KeyRow {
 }
 
 // What a key is for, which decides how it is drawn.
-export type KeyKind = "note" | "wave" | "plain" | "blank";
+export type KeyKind = "note" | "chord" | "wave" | "plain" | "blank";
 
 // The keyboard to draw: a Mac's, or a PC's on Windows.
 export function detectPlatform(): Platform {
@@ -245,10 +248,27 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   if (layout.notes[code] !== undefined) {
     return "note";
   }
+  if (layout.chords[code] !== undefined) {
+    return "chord";
+  }
   if (layout.wave_keys.includes(code)) {
     return "wave";
   }
   return "plain";
+}
+
+// The notes key `code` plays, lowest first: one for a note key, a few for a
+// chord key, and none for any other key.
+export function notesOf(code: string, layout: KeyLayout): number[] {
+  const note = layout.notes[code];
+  if (note !== undefined) {
+    return [note];
+  }
+  const chord = layout.chords[code];
+  if (chord !== undefined) {
+    return chord;
+  }
+  return [];
 }
 
 // The rows of keys to draw for `platform`.

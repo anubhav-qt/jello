@@ -78,7 +78,10 @@ release, no jumps when a voice is stolen, and never going above 1.0.
 
 After the slices: the frontend framework is Svelte 5
 ([ADR 0011](adr/0011-svelte-5-for-the-ui.md)), and the Stage page has moved
-to it. Next: key mapping and the on-screen piano.
+to it. The default layout now plays chords with the left hand and the
+melody with the right ([ADR 0012](adr/0012-chords-left-melody-right.md)),
+and keeps changing as it gets played. Next: key mapping and the on-screen
+piano.
 
 ### v1.5: vocals
 
@@ -216,9 +219,10 @@ and being built.
   below 5,000 Hz stay at least 1,000 times quieter than the note, that all
   four line up and are equally loud, that a switch only changes new notes,
   and that a voice taken over on a new wave glides across without a click.
-  The key map tests check the default layout row by row, that other keys do
-  nothing, and that letting go always stops the note a key started, even
-  after the layout changes. Tests never open speakers.
+  The key map tests check the melody keys finger by finger and each chord,
+  that other keys do nothing, and that letting go always stops the notes a
+  key started, even after the layout changes, except a note another held
+  key still plays. Tests never open speakers.
 
 ## Input
 
@@ -261,16 +265,27 @@ Then each key press gets the next note. Details:
 - Keys pressed without Cmd, Ctrl or Option/Alt belong to Jello. The webview's
   own reactions to them are turned off, so the Mac never beeps, and Space and
   Enter never press a button.
-- Mappings are saved as named presets. A default preset ships: the
-  accordion grid, laid out like the note buttons of a chromatic button
-  accordion. Each finger plays a column of three keys, each a half step
-  above the one below it, and the next finger's column carries on from
-  there. So each hand's four resting fingers cover one octave, and a chord
-  keeps its shape wherever it is played (C major is M K L, C minor M , L).
-  The left hand plays C3 to D4 (Z is C3) and the right hand A3 to B4 (M is
-  middle C). A note under both hands keeps sounding until every key playing
-  it is let go. The backtick key (`` ` ``) steps to the next wave. Space, Shift, Cmd and Option play
-  nothing, saved for layer keys that will switch whole mappings.
+- Mappings are saved as named presets. A default preset ships, with the
+  hands split like on an accordion
+  ([ADR 0012](adr/0012-chords-left-melody-right.md)):
+  - **Left hand, chords.** Each letter key from A to G plays the major chord
+    with its name (C plays C3 E3 G3), with roots from C3 to B3. In touch
+    typing, all seven are left-hand keys. A chord is one key, so ghosting
+    never drops part of it. The other left keys play nothing yet, kept for
+    chord flavors like minor, or bass notes.
+  - **Right hand, melody.** Each finger plays a column of four keys, from
+    the bottom row up to the number row, each a half step above the one
+    below it, and the next finger's column carries on from there. The keys
+    play G#3 to D#5 (N is G#3, M is middle C), one fixed note each. An
+    octave is always the same row, three fingers over (M to /). The keys
+    past the pinky play nothing yet.
+  - A note that a chord and a melody key both play keeps sounding until
+    every key playing it is let go. The backtick key (`` ` ``) steps to the
+    next wave. Space, Shift, Cmd and Option play nothing, saved for layer
+    keys that will switch whole mappings.
+  - Before ADR 0012, the default was the accordion grid: three keys per
+    finger on both hands, C3 to B4, laid out like a chromatic button
+    accordion's note buttons.
 - Laptop keyboards drop some 3+ key chords (ghosting). Mechanical keyboards
   with NKRO do not.
 

@@ -19,10 +19,10 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 - Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
   Not yet heard on Windows.
-- Now: step 2, built in [slices](docs/design.md#step-2-slices). All five
-  slices are done: the laptop keys play on the accordion grid, shown on the
-  Stage start page (ADR 0010), with the sound tuned by ear. The UI is now
-  Svelte 5 (ADR 0011). Next: key mapping and the on-screen piano.
+- Now: step 2, built in [slices](docs/design.md#step-2-slices), all done: the
+  laptop keys play on the Stage start page (ADR 0010), tuned by ear, in
+  Svelte 5 (ADR 0011). Default layout: chords left, melody right (ADR 0012).
+  Next: key mapping and the on-screen piano.
 
 ## Repo layout
 

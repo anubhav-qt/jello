@@ -1,6 +1,6 @@
-<!-- One key: what is printed on it, and the note or wave it plays. -->
+<!-- One key: what is printed on it, and the note, chord or wave it plays. -->
 <script lang="ts">
-  import { kindOf, noteName, pitchHue, type KeyLayout, type KeySpec } from "./keyboard";
+  import { kindOf, noteName, notesOf, pitchHue, type KeyLayout, type KeySpec } from "./keyboard";
 
   interface Props {
     spec: KeySpec;
@@ -15,11 +15,14 @@
 
   let kind = $derived(kindOf(spec.code, layout));
   let note = $derived(layout.notes[spec.code]);
+  // The notes it plays, lowest first. A chord's lowest note is its root, the
+  // note it is named after.
+  let notes = $derived(notesOf(spec.code, layout));
 
-  // Only keys that play a note get a color and a note name.
+  // Only keys that play a note or chord get a color: a chord gets its root's.
   let hue = $derived.by(() => {
-    if (kind === "note") {
-      return pitchHue(note);
+    if (notes.length > 0) {
+      return pitchHue(notes[0]);
     }
     return undefined;
   });
@@ -28,6 +31,16 @@
       return noteName(note);
     }
     return { pitch: "", octave: 0 };
+  });
+
+  // A chord key shows the chord's name, the way a chord chart writes it.
+  // Every chord is major for now, and a major chord is written as just its
+  // root, like "C".
+  let chordName = $derived.by(() => {
+    if (kind === "chord") {
+      return noteName(notes[0]).pitch;
+    }
+    return "";
   });
 
   // The wave keys say "wave" until Rust has said which wave it is.
@@ -59,6 +72,9 @@
     <!-- The note's name in two parts, so the octave can be drawn smaller.
          They sit on one line, so no space comes between them. -->
     <span class="key-note"><span class="key-pitch">{name.pitch}</span><span class="key-octave">{name.octave}</span></span>
+  {/if}
+  {#if kind === "chord"}
+    <span class="key-note">{chordName}</span>
   {/if}
   {#if kind === "wave"}
     <span class="key-note">{waveLabel}</span>

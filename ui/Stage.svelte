@@ -8,7 +8,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { createBeams, type Beams } from "./beams";
   import Keyboard from "./Keyboard.svelte";
-  import { noteName, type KeyLayout, type Platform } from "./keyboard";
+  import { noteName, notesOf, type KeyLayout, type Platform } from "./keyboard";
   import TopBar from "./TopBar.svelte";
 
   interface Props {
@@ -30,16 +30,14 @@
   const STATUS_TIME = 4000;
   const LETTER_TIME = 16;
 
-  // The notes the `held` keys play, lowest first, each once.
+  // The notes the `held` keys play, chords included, lowest first, each once.
   function heldNotes(held: Set<string>): number[] {
     const notes: number[] = [];
     for (const code of held) {
-      const note = layout.notes[code];
-      if (note === undefined) {
-        continue;
-      }
-      if (!notes.includes(note)) {
-        notes.push(note);
+      for (const note of notesOf(code, layout)) {
+        if (!notes.includes(note)) {
+          notes.push(note);
+        }
       }
     }
     notes.sort((low, high) => low - high);
@@ -133,13 +131,13 @@
     }
   }
 
-  // A key that plays a note sends a beam up from the panel's top edge, on
-  // the column of dots nearest the key's middle.
+  // A key that plays a note or chord sends a beam up from the panel's top
+  // edge, on the column of dots nearest the key's middle.
   function startBeam(code: string) {
     if (beams === null) {
       return;
     }
-    if (layout.notes[code] === undefined) {
+    if (notesOf(code, layout).length === 0) {
       return;
     }
     const keyElement = root.querySelector<HTMLElement>(`.key[data-code="${code}"]`);

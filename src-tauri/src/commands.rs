@@ -69,8 +69,8 @@ pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
     Ok(String::from(wave.name()))
 }
 
-// Does what a laptop key does when pressed: plays its note, or switches the
-// wave. `key` is the key's place on the keyboard, like "KeyQ". Returns the
+// Does what a laptop key does when pressed: plays its note or chord, or
+// switches the wave. `key` is the key's place on the keyboard, like "KeyQ". Returns the
 // wave new notes play, so the UI can show it.
 //
 // Commands that need both the key map and the engine lock the key map first,
@@ -90,6 +90,12 @@ pub fn press_key(
             engine.start_audio()?;
             engine.note_on(note, LAPTOP_VELOCITY);
         }
+        Some(KeyAction::PlayChord(notes)) => {
+            engine.start_audio()?;
+            for note in notes {
+                engine.note_on(note, LAPTOP_VELOCITY);
+            }
+        }
         Some(KeyAction::SwitchWave) => {
             // Like `switch_wave`, it opens the speakers first.
             engine.start_audio()?;
@@ -102,8 +108,8 @@ pub fn press_key(
     Ok(String::from(wave.name()))
 }
 
-// Lets go of the note a laptop key started, if it started one and no other
-// held key is still playing it.
+// Lets go of the notes a laptop key started, except any that another held
+// key is still playing.
 #[tauri::command]
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
@@ -114,13 +120,13 @@ pub fn release_key(
     let mut engine = engine.lock().unwrap();
 
     // Forget the key first, whether or not the speakers are open.
-    let note = key_map.release(&key);
+    let notes = key_map.release(&key);
 
     // Same reason as in `release_note`.
     if !engine.is_audio_running() {
         return;
     }
-    if let Some(note) = note {
+    for note in notes {
         engine.note_off(note);
     }
 }
@@ -133,7 +139,8 @@ pub fn current_wave(engine: State<'_, Mutex<Engine>>) -> String {
     String::from(wave.name())
 }
 
-// What every laptop key does, so the UI can draw each key's note on it.
+// What every laptop key does, so the UI can draw each key's note or chord on
+// it.
 #[tauri::command]
 pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>) -> LayoutForUi {
     let key_map = key_map.lock().unwrap();

@@ -298,7 +298,8 @@
     color 40ms;
 }
 
-.stage .key[data-kind="note"].is-held {
+.stage .key[data-kind="note"].is-held,
+.stage .key[data-kind="chord"].is-held {
   border-color: rgba(var(--amber), 0.95);
   background-color: rgba(var(--amber), 0.16);
   box-shadow:
