@@ -2,7 +2,8 @@
 
 namespace {
 
-// Starting values, to be tuned by ear. Every voice shares them.
+// Every voice shares these. The release was chosen by ear in slice 5; the
+// rest are starting values, still to be tuned by ear.
 constexpr int attack_ms = 5;
 constexpr int decay_ms = 300;
 constexpr double sustain_level = 0.7;  // 70% of the peak

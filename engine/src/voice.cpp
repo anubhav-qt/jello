@@ -5,7 +5,7 @@
 namespace {
 
 // How loud one voice is. With it, a 4-note chord is about as loud as the
-// step 1 test tone. A starting value, to be tuned by ear in slice 5.
+// step 1 test tone. Chosen by ear in slice 5.
 constexpr float voice_level = 0.35f;
 
 // How long a gap takes to shrink away, the same as the envelope's attack.
