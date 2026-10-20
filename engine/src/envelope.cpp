@@ -2,10 +2,10 @@
 
 namespace {
 
-// Every voice shares these. The release and sustain were chosen by ear in
-// slice 5; the rest are starting values, still to be tuned by ear. With the
-// sustain at the full peak, a held note never dips, so the decay has nothing
-// to do for now. It stays for sounds that will want a dip later.
+// Every voice shares these, all checked by ear in slice 5. The attack made no
+// audible difference between 2 and 20 ms, so it stays at 5. With the sustain
+// at the full peak, a held note never dips, so the decay has nothing to do
+// for now. It stays for sounds that will want a dip later.
 constexpr int attack_ms = 5;
 constexpr int decay_ms = 300;
 constexpr double sustain_level = 1.0;  // the full peak

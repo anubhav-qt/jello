@@ -72,8 +72,9 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    and `release_all_notes` also forgets which keys are held. The dev panel
    is replaced by the Stage start page ([ADR 0010](adr/0010-stage-look-for-the-start-page.md)),
    which draws the laptop keyboard with each key's note and lights held
-   keys. Then tune the voice level, wave trims and envelope by ear. Playing
-   works; tuning is next.
+   keys. Then tune by ear: the voice level and release stay as they were,
+   square and saw go 2 dB quieter, and held notes stay at full volume
+   instead of dipping. Done.
 
 After the slices: pick the frontend framework (with an ADR), then key mapping
 and the on-screen piano.

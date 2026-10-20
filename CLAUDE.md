@@ -19,9 +19,10 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 - Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
   Not yet heard on Windows.
-- Now: step 2, built in [slices](docs/design.md#step-2-slices). Slices 1
-  to 4 are done. In slice 5 the laptop keys play on the accordion grid,
-  shown on the Stage start page (ADR 0010). Next: tune the sound by ear.
+- Now: step 2, built in [slices](docs/design.md#step-2-slices). All five
+  slices are done: the laptop keys play on the accordion grid, shown on the
+  Stage start page (ADR 0010), with the sound tuned by ear. Next: pick the
+  frontend framework.
 
 ## Repo layout
 
