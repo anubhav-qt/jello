@@ -1,27 +1,25 @@
-// Dev panel placeholder: plays the synth from the laptop keyboard, shows the
-// wave new notes play, and renders a held middle C to a WAV file. Not a
-// design.
+// The start page: the laptop keyboard drawn on a stage of dots (ui/stage.ts).
+// Keys play the synth: Rust decides what each key does.
 
 import { invoke } from "@tauri-apps/api/core";
+import { findElement, makeElement } from "./dom";
+import { detectPlatform, type KeyLayout } from "./keyboard";
+import { createStage, type Stage } from "./stage";
 
-function findElement<T extends HTMLElement>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (element === null) {
-    throw new Error(`Missing element: ${selector}`);
+const page = findElement<HTMLElement>("#app");
+
+// The page, once Rust has said what each key does.
+let screen: Stage | null = null;
+function showWave(wave: string) {
+  if (screen !== null) {
+    screen.showWave(wave);
   }
-  return element;
 }
-
-const waveLine = findElement<HTMLParagraphElement>("#wave");
-const renderButton = findElement<HTMLButtonElement>("#render-wav");
-const status = findElement<HTMLParagraphElement>("#status");
 
 function showStatus(message: string) {
-  status.textContent = message;
-}
-
-function showWave(wave: string) {
-  waveLine.textContent = `Wave: ${wave}`;
+  if (screen !== null) {
+    screen.showStatus(message);
+  }
 }
 
 // Messages go to the engine one at a time, in order: each one waits for the
@@ -33,13 +31,13 @@ function sendInOrder(send: () => Promise<void>) {
   lastMessage = lastMessage.then(send);
 }
 
-// The next four catch their own errors, so one failed message never stops
+// The next six catch their own errors, so one failed message never stops
 // the ones after it.
 
 async function askForWave() {
   try {
-    const wave = await invoke<string>("current_wave");
-    showWave(wave);
+    const newWave = await invoke<string>("current_wave");
+    showWave(newWave);
   } catch (error) {
     showStatus(`Could not get the wave: ${error}`);
   }
@@ -49,10 +47,8 @@ async function askForWave() {
 // does, and answers with the wave new notes play.
 async function pressKey(key: string) {
   try {
-    const wave = await invoke<string>("press_key", { key });
-    showWave(wave);
-    // The sound shows it worked, so just clear any old message.
-    showStatus("");
+    const newWave = await invoke<string>("press_key", { key });
+    showWave(newWave);
   } catch (error) {
     showStatus(`Could not play: ${error}`);
   }
@@ -74,13 +70,40 @@ async function releaseAllNotes() {
   }
 }
 
+// The top bar's wave button does what the ` key does.
+async function switchWave() {
+  try {
+    const newWave = await invoke<string>("switch_wave");
+    showWave(newWave);
+  } catch (error) {
+    showStatus(`Could not switch the wave: ${error}`);
+  }
+}
+
+async function renderWav() {
+  try {
+    const path = await invoke<string>("render_test_note");
+    showStatus(`Saved ${path}`);
+  } catch (error) {
+    showStatus(`Could not render: ${error}`);
+  }
+}
+
+// Lets go of every key at once, on screen and in the engine.
+function letGoOfEverything() {
+  if (screen !== null) {
+    screen.releaseAll();
+  }
+  sendInOrder(releaseAllNotes);
+}
+
 window.addEventListener("keydown", (event) => {
   // While Cmd, Ctrl or Option/Alt is held, the key is a shortcut like Cmd+Q:
   // it plays nothing and is left alone. Every note is let go too, because on
   // a Mac a key let go while Cmd is held may never say so, and its note would
   // stay stuck on.
   if (event.metaKey || event.ctrlKey || event.altKey) {
-    sendInOrder(releaseAllNotes);
+    letGoOfEverything();
     return;
   }
 
@@ -98,30 +121,46 @@ window.addEventListener("keydown", (event) => {
   // `event.code` is the key's place on the keyboard, like "KeyQ", whatever is
   // printed on it.
   const key = event.code;
+  if (screen !== null) {
+    screen.keyDown(key);
+  }
   sendInOrder(() => pressKey(key));
 });
 
-// Every let-go goes to Rust, even while Cmd is held. Rust ignores keys that
-// did not start a note.
+// Every let-go goes to Rust, even while Cmd is held. Rust ignores keys
+// that did not start a note.
 window.addEventListener("keyup", (event) => {
   const key = event.code;
+  if (screen !== null) {
+    screen.keyUp(key);
+  }
   sendInOrder(() => releaseKey(key));
 });
 
 // If the window loses focus (say, Cmd+Tab), let-gos may never reach it, so
-// let go of every note right away.
+// let go of every key right away.
 window.addEventListener("blur", () => {
-  sendInOrder(releaseAllNotes);
+  letGoOfEverything();
 });
 
-renderButton.addEventListener("click", async () => {
+// Asks Rust what each key does, then shows the page.
+async function start() {
+  let layout: KeyLayout;
   try {
-    const path = await invoke<string>("render_test_note");
-    showStatus(`Saved ${path}`);
+    layout = await invoke<KeyLayout>("key_layout");
   } catch (error) {
-    showStatus(`Could not render: ${error}`);
+    page.append(makeElement("p", "start-error", `Could not start: ${error}`));
+    return;
   }
-});
 
-// Show the wave as soon as the panel opens.
-sendInOrder(askForWave);
+  screen = createStage({
+    platform: detectPlatform(),
+    layout,
+    onWaveClick: () => sendInOrder(switchWave),
+    onRenderClick: renderWav,
+  });
+  screen.show(page);
+  sendInOrder(askForWave);
+}
+
+start();

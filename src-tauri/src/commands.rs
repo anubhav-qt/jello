@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::engine::Engine;
-use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY};
+use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi};
 use crate::wav::write_wav;
 
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
@@ -71,7 +71,7 @@ pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
 
 // Does what a laptop key does when pressed: plays its note, or switches the
 // wave. `key` is the key's place on the keyboard, like "KeyQ". Returns the
-// wave new notes play, so the dev panel can show it.
+// wave new notes play, so the UI can show it.
 //
 // Commands that need both the key map and the engine lock the key map first,
 // so two of them can never end up waiting on each other.
@@ -102,7 +102,8 @@ pub fn press_key(
     Ok(String::from(wave.name()))
 }
 
-// Lets go of the note a laptop key started, if it started one.
+// Lets go of the note a laptop key started, if it started one and no other
+// held key is still playing it.
 #[tauri::command]
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
@@ -124,12 +125,19 @@ pub fn release_key(
     }
 }
 
-// The wave new notes play, so the dev panel can show it when it opens.
+// The wave new notes play, so the UI can show it when it opens.
 #[tauri::command]
 pub fn current_wave(engine: State<'_, Mutex<Engine>>) -> String {
     let engine = engine.lock().unwrap();
     let wave = engine.wave();
     String::from(wave.name())
+}
+
+// What every laptop key does, so the UI can draw each key's note on it.
+#[tauri::command]
+pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>) -> LayoutForUi {
+    let key_map = key_map.lock().unwrap();
+    key_map.layout_for_ui()
 }
 
 // Renders a held middle C to Music/Jello/test-note.wav and returns where it

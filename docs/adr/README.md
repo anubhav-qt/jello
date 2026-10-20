@@ -17,6 +17,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
 | [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted |
+| [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted |
 
 ## Template
 

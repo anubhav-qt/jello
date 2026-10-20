@@ -29,6 +29,7 @@ pub fn run() {
             commands::press_key,
             commands::release_key,
             commands::current_wave,
+            commands::key_layout,
             commands::render_test_note,
         ])
         .run(tauri::generate_context!())

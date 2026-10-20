@@ -20,11 +20,12 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 - Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
   Not yet heard on Windows.
 - Now: step 2, built in [slices](docs/design.md#step-2-slices). Slices 1
-  to 4 are done. In slice 5 the laptop keys play; next is tuning by ear.
+  to 4 are done. In slice 5 the laptop keys play on the accordion grid,
+  shown on the Stage start page (ADR 0010). Next: tune the sound by ear.
 
 ## Repo layout
 
-- `ui/`: webview UI (TypeScript, Vite). Currently a dev panel placeholder.
+- `ui/`: webview UI (TypeScript, Vite). Start page: `ui/stage.ts`.
 - `src-tauri/`: Rust core (Tauri app, `tauri.conf.json`, capabilities).
 - `engine/`: C++ engine. C API in `include/jello_engine.h`, built by
   `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).

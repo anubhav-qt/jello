@@ -67,12 +67,13 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    clicking. The C API gains set wave and Rust gains `switch_wave`; the dev
    panel stays the same until slice 5. Done.
 5. **Play from the laptop.** The webview forwards keys, the Rust key map
-   plays the default preset, "/" switches waves and the dev panel shows the
-   current wave. Rust gains `press_key`, `release_key` and `current_wave`,
+   plays the default preset (the accordion grid) and the backtick key (`` ` ``) switches waves.
+   Rust gains `press_key`, `release_key`, `current_wave` and `key_layout`,
    and `release_all_notes` also forgets which keys are held. The dev panel
-   shows which keys play which notes, and its middle C button goes away.
-   Then tune the voice level, wave trims and envelope by ear. Playing works;
-   tuning is next.
+   is replaced by the Stage start page ([ADR 0010](adr/0010-stage-look-for-the-start-page.md)),
+   which draws the laptop keyboard with each key's note and lights held
+   keys. Then tune the voice level, wave trims and envelope by ear. Playing
+   works; tuning is next.
 
 After the slices: pick the frontend framework (with an ADR), then key mapping
 and the on-screen piano.
@@ -258,10 +259,16 @@ Then each key press gets the next note. Details:
 - Keys pressed without Cmd, Ctrl or Option/Alt belong to Jello. The webview's
   own reactions to them are turned off, so the Mac never beeps, and Space and
   Enter never press a button.
-- Mappings are saved as named presets. A default preset ships: the Z row
-  plays C3 to B3 (S D G H J are the black keys) and the Q row plays C4 to B4
-  (2 3 5 6 7 are the black keys), so Q is middle C. "/" steps to the next
-  wave.
+- Mappings are saved as named presets. A default preset ships: the
+  accordion grid, laid out like the note buttons of a chromatic button
+  accordion. Each finger plays a column of three keys, each a half step
+  above the one below it, and the next finger's column carries on from
+  there. So each hand's four resting fingers cover one octave, and a chord
+  keeps its shape wherever it is played (C major is M K L, C minor M , L).
+  The left hand plays C3 to D4 (Z is C3) and the right hand A3 to B4 (M is
+  middle C). A note under both hands keeps sounding until every key playing
+  it is let go. The backtick key (`` ` ``) steps to the next wave. Space, Shift, Cmd and Option play
+  nothing, saved for layer keys that will switch whole mappings.
 - Laptop keyboards drop some 3+ key chords (ghosting). Mechanical keyboards
   with NKRO do not.
 
@@ -412,8 +419,9 @@ Ask the user one at a time, when the step that needs the answer comes up.
 
 - Is a level a version of a song (5 difficulties per song) or a tier of the
   course (different material per level)? Leaning: tiers.
-- UI direction and design system. A long, mockup-first process (see
-  [UI design process](#ui-design-process)).
+- Design system for screens after the start page. They follow the start
+  page's Stage look (ADR 0010); the details are settled screen by screen
+  (see [UI design process](#ui-design-process)).
 - Frontend framework. The skeleton uses plain TypeScript; decide at step 2.
 - Song file format details. Decide at step 5.
 - Laptop keyboard only, or a MIDI keyboard too? Laptop keys have no velocity

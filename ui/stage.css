@@ -1,0 +1,355 @@
+/* The start page, "Stage": a dark stage of dots, lit in amber, like the
+   dot-matrix display on a piece of studio gear. */
+
+.stage {
+  /* The lamps' color, as three numbers so it can be used at any strength. */
+  --amber: 255, 176, 72;
+  --text: rgba(255, 255, 255, 0.86);
+  --text-2: rgba(255, 255, 255, 0.5);
+  --text-3: rgba(255, 255, 255, 0.3);
+  /* The grid of dots: one in the middle of every 12 by 12 pixel square.
+     stage.ts lights these same dots, so the two must match. */
+  background-color: #08080a;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.075) 1.1px, transparent 1.6px);
+  background-size: 12px 12px;
+  color: var(--text);
+}
+
+/* The beams of light rising from the keys, behind everything else. */
+.stage-beams {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* The line of light that sweeps down as the page powers on. Unseen until
+   stage.ts moves it. */
+.stage-scan-line {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  height: 2px;
+  background: rgb(255, 228, 190);
+  box-shadow:
+    0 0 12px 2px rgba(var(--amber), 0.75),
+    0 0 48px 10px rgba(var(--amber), 0.25);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The top bar: dark, with a row of dots under it instead of a line. */
+.stage .topbar {
+  position: relative;
+  z-index: 1;
+  padding: 0 20px;
+  background: rgba(8, 8, 10, 0.8);
+}
+
+.stage .topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 4px;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.2) 1px, transparent 1.5px);
+  background-size: 6px 4px;
+  background-repeat: repeat-x;
+}
+
+.stage .topbar-row {
+  height: 56px;
+}
+
+.stage .crumbs {
+  gap: 10px;
+  font-family: "Doto", monospace;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The logo: four rows of four amber dots, glowing brighter while notes
+   play. */
+.stage .logo {
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  background-image: radial-gradient(circle, rgb(var(--amber)) 1.7px, transparent 2.2px);
+  background-size: 5px 5px;
+  filter: drop-shadow(0 0 3px rgba(var(--amber), 0.5));
+  transition: filter 900ms ease-out;
+}
+
+.stage.is-playing .logo {
+  filter: drop-shadow(0 0 7px rgba(var(--amber), 0.95));
+  transition: filter 40ms;
+}
+
+.stage .crumb-divider {
+  color: var(--text-3);
+}
+
+.stage .crumb.is-current {
+  color: var(--text-2);
+}
+
+.stage .actions {
+  gap: 10px;
+}
+
+/* Buttons: thin outlines that light up amber under the pointer. */
+.stage .action {
+  gap: 10px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  transition:
+    border-color 600ms ease-out,
+    background-color 600ms ease-out;
+}
+
+.stage .action:hover {
+  border-color: rgba(var(--amber), 0.75);
+  transition:
+    border-color 40ms,
+    background-color 40ms;
+}
+
+.stage .action:active {
+  background-color: rgba(var(--amber), 0.2);
+}
+
+.stage .action-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.stage .action-value {
+  font-family: "Doto", monospace;
+  font-size: 16px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: rgb(var(--amber));
+}
+
+.stage .action:last-child .action-value {
+  color: var(--text);
+}
+
+.stage .tabs {
+  height: 40px;
+}
+
+.stage .tab {
+  position: relative;
+  align-self: stretch;
+  gap: 8px;
+  padding: 0 2px;
+  font-family: "Doto", monospace;
+  font-size: 16px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: rgb(var(--amber));
+}
+
+/* The open tab is underlined with a row of amber dots, over the grey ones. */
+.stage .tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 4px;
+  background-color: #08080a;
+  background-image: radial-gradient(circle, rgb(var(--amber)) 1.2px, transparent 1.7px);
+  background-size: 6px 4px;
+  background-repeat: repeat-x;
+}
+
+/* The held notes, in big glowing dots. */
+.stage-readout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.4);
+  height: calc(var(--u) * 1.1);
+  font-family: "Doto", monospace;
+  font-size: calc(var(--u) * 0.9);
+  font-weight: 900;
+  color: rgb(var(--amber));
+  text-shadow:
+    0 0 2px rgba(var(--amber), 0.9),
+    0 0 22px rgba(var(--amber), 0.55);
+  transition: opacity 40ms;
+}
+
+/* Once every key is up, the last notes stay a moment, fading quickly at
+   first and then slowly, like a lamp cooling down. */
+.stage-readout.is-idle {
+  opacity: 0;
+  transition: opacity 1200ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.stage-note {
+  display: flex;
+  align-items: baseline;
+}
+
+.stage-note-octave {
+  margin-left: 2px;
+  font-size: 0.5em;
+  opacity: 0.6;
+}
+
+/* A note let go while other keys are still held dims, and stays until the
+   next key goes down. */
+.stage-note.is-let-go {
+  opacity: 0.3;
+  transition: opacity 400ms ease-out;
+}
+
+/* The dark panel the keyboard sits on. */
+.stage-panel {
+  padding: calc(var(--u) * 0.22);
+  border-radius: calc(var(--u) * 0.14);
+  background: #0d0d10;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 40px 80px -30px rgba(0, 0, 0, 0.9);
+}
+
+/* Keys: dark tiles. A held key lights up at once; let go, it fades out
+   slowly (the transition here, on the resting key). */
+.stage .key {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: calc(var(--u) * 0.08);
+  background-color: #121216;
+  color: var(--text);
+  transition:
+    background-color 900ms ease-out,
+    border-color 900ms ease-out,
+    box-shadow 900ms ease-out,
+    color 900ms ease-out;
+}
+
+.stage .key-label {
+  font-weight: 600;
+}
+
+.stage .key-label.is-word,
+.stage .key-symbol {
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* A note's dots are square at rest and round while its key is held. */
+.stage .key-note {
+  font-weight: 700;
+  font-variation-settings: "ROND" 0;
+  color: rgba(var(--amber), 0.75);
+  transition:
+    font-variation-settings 900ms ease-out,
+    color 900ms ease-out,
+    text-shadow 900ms ease-out;
+}
+
+.stage .key-octave {
+  opacity: 0.6;
+}
+
+/* Keys that play nothing sink into the panel. */
+.stage .key[data-kind="plain"],
+.stage .key[data-kind="blank"] {
+  border-color: rgba(255, 255, 255, 0.05);
+  background-color: #0f0f12;
+}
+
+.stage .key[data-kind="plain"] .key-label,
+.stage .key[data-kind="plain"] .key-symbol,
+.stage .key[data-kind="blank"] .key-label {
+  color: var(--text-3);
+}
+
+.stage .key[data-kind="wave"] .key-note {
+  font-size: calc(var(--u) * 0.15);
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.stage .key.is-held {
+  border-color: rgba(255, 255, 255, 0.45);
+  background-color: #1c1c21;
+  transition:
+    background-color 40ms,
+    border-color 40ms,
+    box-shadow 40ms,
+    color 40ms;
+}
+
+.stage .key[data-kind="note"].is-held {
+  border-color: rgba(var(--amber), 0.95);
+  background-color: rgba(var(--amber), 0.16);
+  box-shadow:
+    0 0 18px rgba(var(--amber), 0.45),
+    inset 0 0 14px rgba(var(--amber), 0.25);
+  color: rgb(255, 222, 176);
+}
+
+.stage .key.is-held .key-note {
+  font-variation-settings: "ROND" 100;
+  color: rgb(var(--amber));
+  text-shadow: 0 0 10px rgba(var(--amber), 0.8);
+  transition:
+    font-variation-settings 40ms,
+    color 40ms,
+    text-shadow 40ms;
+}
+
+/* Messages, typed out at the bottom left with a blinking cursor. */
+.stage-ticker {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 40px;
+  z-index: 2;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transition: opacity 600ms ease-out;
+  pointer-events: none;
+}
+
+.stage-ticker.is-shown {
+  opacity: 1;
+  transition: opacity 40ms;
+}
+
+.stage-ticker-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: rgb(var(--amber));
+  animation: stage-blink 1s steps(1) infinite;
+}
+
+@keyframes stage-blink {
+  50% {
+    opacity: 0;
+  }
+}

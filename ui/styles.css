@@ -1,43 +1,170 @@
-/* Dev panel placeholder styles. Not a design: the real UI is designed
-   with the user through mockups first (see docs/design.md). */
+/* The page, the fonts, and where each key sits. stage.css gives the page its
+   colors, shapes and motion. */
 
-:root {
-  --background: #ffffff;
-  --text: #1a1a1a;
-  --muted: #6b6b6b;
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #1a1a1a;
-    --text: #f0f0f0;
-    --muted: #9a9a9a;
-  }
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
 body {
-  margin: 0;
-  background: var(--background);
-  color: var(--text);
-  font-family: system-ui, sans-serif;
+  background: #0b0b0c;
+  font-family: "Open Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* The page is an instrument: nothing on it is text to select. */
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
 
-main {
-  padding: 32px;
+#app {
+  position: fixed;
+  inset: 0;
 }
 
-.placeholder-label {
-  color: var(--muted);
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+/* Shown instead of the page if it can't start. */
+.start-error {
+  margin: 32px;
+  color: #f0f0f0;
 }
 
-.buttons {
+/* The page, filling the window. */
+.screen {
+  /* The width of one key: as big as the window allows, within limits. */
+  --u: clamp(36px, min(calc((100vw - 120px) / 15), calc((100vh - 300px) / 6)), 66px);
+  position: absolute;
+  inset: 0;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.status {
-  color: var(--muted);
+.screen-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.4);
+  padding-bottom: 24px;
+}
+
+/* How the top bar's parts are laid out. stage.css styles them. */
+.topbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.crumbs,
+.actions,
+.tabs,
+.tab,
+.action {
+  display: flex;
+  align-items: center;
+}
+
+.action {
+  font: inherit;
+  cursor: default;
+}
+
+.logo {
+  display: block;
+  flex: none;
+}
+
+/* The keyboard. Each key is its width in keys (--w) times one key's width
+   (--u), less a gap that is split between its two sides. So every row is
+   exactly as wide as its keys add up to. */
+.keyboard {
+  --gap: calc(var(--u) * 0.1);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+}
+
+.keyboard-row {
+  display: flex;
+  height: var(--u);
+}
+
+.keyboard-row.is-short {
+  height: calc(var(--u) * 0.6);
+}
+
+.key,
+.key-gap,
+.key-stack {
+  flex: none;
+  width: calc(var(--u) * var(--w) - var(--gap));
+  margin: calc(var(--gap) / 2);
+}
+
+.key {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: calc(100% - var(--gap));
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Half-height keys sit at the bottom of their row, like a Mac's left and
+   right arrows. */
+.keyboard-row > .key.is-half {
+  height: calc((100% - 2 * var(--gap)) / 2);
+  align-self: flex-end;
+}
+
+/* Two half-height keys in one spot: up over down. */
+.key-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: calc(100% - var(--gap));
+}
+
+.key-stack > .key {
+  width: 100%;
+  height: calc((100% - var(--gap)) / 2);
+  margin: 0;
+}
+
+.key-label {
+  font-size: calc(var(--u) * 0.28);
+}
+
+.key-label.is-word,
+.key-symbol {
+  font-size: calc(var(--u) * 0.16);
+}
+
+.key-symbol {
+  margin-bottom: calc(var(--u) * 0.06);
+}
+
+.key.is-half .key-label {
+  font-size: calc(var(--u) * 0.13);
+}
+
+.key-note {
+  margin-top: calc(var(--u) * 0.07);
+  font-family: "Doto", monospace;
+  font-size: calc(var(--u) * 0.2);
+}
+
+.key-octave {
+  font-size: 0.75em;
 }
