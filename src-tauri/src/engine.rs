@@ -200,7 +200,7 @@ mod tests {
     const VOICE_LEVEL: f32 = 0.35; // `voice_level` in engine/src/voice.cpp
     const ATTACK_MS: u32 = 5; // `attack_ms` in engine/src/envelope.cpp
     const DECAY_MS: u32 = 300; // `decay_ms` in engine/src/envelope.cpp
-    const SUSTAIN: f32 = 0.7; // `sustain_level` in engine/src/envelope.cpp
+    const SUSTAIN: f32 = 1.0; // `sustain_level` in engine/src/envelope.cpp
     const RELEASE_MS: u32 = 300; // `release_ms` in engine/src/envelope.cpp
     const MAILBOX_SLOTS: usize = 1024; // `slot_count` in engine/src/mailbox.h
     const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
