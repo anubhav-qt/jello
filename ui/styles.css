@@ -66,9 +66,11 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* The keyboard sits low, its bottom edge 15% of the window's height above
+     the window's bottom edge, with the readout just above it. */
+  justify-content: flex-end;
   gap: calc(var(--u) * 0.4);
-  padding-bottom: 24px;
+  padding-bottom: 15vh;
 }
 
 /* How the top bar's parts are laid out. stage.css styles them. */
