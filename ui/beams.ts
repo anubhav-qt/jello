@@ -3,9 +3,8 @@
 // the last notes played stay in sight for a moment. They are drawn on a
 // canvas behind everything else, in the screen's own pixels.
 
-// The grid's dots are this many pixels apart, both ways, with one in the
-// middle of every square. It must match the grid in stage.css.
-const CELL = 12;
+import { colorForNote, DOT_CELL, NOTE_COLORS, type NoteColor } from "./note-colors";
+
 // How fast a beam rises, in pixels per millisecond.
 const RISE_SPEED = 0.16;
 // How far a beam rises before it has faded away, in pixels.
@@ -21,17 +20,21 @@ export interface Beams {
   fit(width: number, height: number): void;
   // Key `code` went down: a beam starts rising from `startY`, on the column
   // of dots nearest `keyMiddle`. Both are in page pixels.
-  start(code: string, keyMiddle: number, startY: number): void;
+  start(code: string, keyMiddle: number, startY: number, note: number): void;
   // Key `code` came back up: its beam lets go of the panel and floats away.
   end(code: string): void;
+  // Stop drawing when the page is removed or replaced during development.
+  destroy(): void;
 }
 
 // The beam of light one key press sends up.
 interface Beam {
   // The key that sent it, like "KeyQ".
   code: string;
-  // The middle of its middle column of dots, across the page.
-  x: number;
+  // Used to keep the beam the same color as its key in the note family.
+  note: number;
+  // The key's middle, before snapping to the background's dot grid.
+  keyMiddle: number;
   // Where it rises from: the top edge of the keyboard's panel.
   startY: number;
   // When its key went down, and when it came back up (null while held).
@@ -41,7 +44,7 @@ interface Beam {
 
 // One lit dot with its glow, drawn once and then stamped for every lit dot.
 // `scale` is how many screen pixels make one page pixel, so it stays sharp.
-function drawGlow(scale: number): HTMLCanvasElement {
+function drawGlow(scale: number, color: NoteColor): HTMLCanvasElement {
   const glow = document.createElement("canvas");
   const size = Math.ceil(GLOW_SIZE * scale);
   glow.width = size;
@@ -54,19 +57,28 @@ function drawGlow(scale: number): HTMLCanvasElement {
   const middle = size / 2;
   const light = context.createRadialGradient(middle, middle, 0, middle, middle, middle);
   // A hot, nearly white middle, a little bigger than the grid's dots...
-  light.addColorStop(0, "rgba(255, 240, 214, 1)");
-  light.addColorStop(0.12, "rgba(255, 196, 112, 1)");
-  // ...in a soft amber haze.
-  light.addColorStop(0.2, "rgba(255, 176, 72, 0.5)");
-  light.addColorStop(1, "rgba(255, 176, 72, 0)");
+  light.addColorStop(0, `rgba(${color.core}, 1)`);
+  light.addColorStop(0.12, `rgba(${color.glow}, 1)`);
+  // ...in a soft haze in the note's color.
+  light.addColorStop(0.2, `rgba(${color.accent}, 0.5)`);
+  light.addColorStop(1, `rgba(${color.accent}, 0)`);
   context.fillStyle = light;
   context.fillRect(0, 0, size, size);
   return glow;
 }
 
+// Cache each color's dot once, then stamp it for every beam in that color.
+function drawGlows(scale: number): Map<string, HTMLCanvasElement> {
+  const glows = new Map<string, HTMLCanvasElement>();
+  for (const color of Object.values(NOTE_COLORS)) {
+    glows.set(color.accent, drawGlow(scale, color));
+  }
+  return glows;
+}
+
 export function createBeams(canvas: HTMLCanvasElement): Beams {
   const context = canvas.getContext("2d");
-  let glow = drawGlow(window.devicePixelRatio);
+  let glows = drawGlows(window.devicePixelRatio);
   let width = 0;
   let height = 0;
   // The beams still in sight.
@@ -123,21 +135,29 @@ export function createBeams(canvas: HTMLCanvasElement): Beams {
   // columns, each row dimmer the higher it has risen.
   // `pen` is the canvas's drawing context.
   function drawBeam(pen: CanvasRenderingContext2D, beam: Beam, top: number, bottom: number) {
+    const color = colorForNote(beam.note);
+    const glow = glows.get(color.accent);
+    if (glow === undefined) {
+      return;
+    }
+    const cell = DOT_CELL;
+    const column = Math.round((beam.keyMiddle - cell / 2) / cell);
+    const x = column * cell + cell / 2;
     // Nothing above where beams fade out, or above the page, needs drawing.
     const highest = Math.max(top, beam.startY - FADE_DISTANCE, 0);
-    const firstRow = Math.ceil((highest - CELL / 2) / CELL);
-    const lastRow = Math.floor((bottom - CELL / 2) / CELL);
+    const firstRow = Math.ceil((highest - cell / 2) / cell);
+    const lastRow = Math.floor((bottom - cell / 2) / cell);
 
     for (let row = firstRow; row <= lastRow; row += 1) {
-      const y = row * CELL + CELL / 2;
+      const y = row * cell + cell / 2;
       const brightness = 1 - (beam.startY - y) / FADE_DISTANCE;
-      stampGlow(pen, beam.x, y, brightness);
-      stampGlow(pen, beam.x - CELL, y, brightness * SIDE_BRIGHTNESS);
-      stampGlow(pen, beam.x + CELL, y, brightness * SIDE_BRIGHTNESS);
+      stampGlow(pen, glow, x, y, brightness);
+      stampGlow(pen, glow, x - cell, y, brightness * SIDE_BRIGHTNESS);
+      stampGlow(pen, glow, x + cell, y, brightness * SIDE_BRIGHTNESS);
     }
   }
 
-  function stampGlow(pen: CanvasRenderingContext2D, x: number, y: number, brightness: number) {
+  function stampGlow(pen: CanvasRenderingContext2D, glow: HTMLCanvasElement, x: number, y: number, brightness: number) {
     pen.globalAlpha = brightness;
     pen.drawImage(glow, x - GLOW_SIZE / 2, y - GLOW_SIZE / 2, GLOW_SIZE, GLOW_SIZE);
   }
@@ -150,17 +170,17 @@ export function createBeams(canvas: HTMLCanvasElement): Beams {
       height = newHeight;
       canvas.width = Math.round(width * scale);
       canvas.height = Math.round(height * scale);
-      glow = drawGlow(scale);
+      glows = drawGlows(scale);
       if (context !== null) {
         context.setTransform(scale, 0, 0, scale, 0, 0);
       }
     },
 
-    start(code, keyMiddle, startY) {
-      const column = Math.round((keyMiddle - CELL / 2) / CELL);
+    start(code, keyMiddle, startY, note) {
       beams.push({
         code,
-        x: column * CELL + CELL / 2,
+        note,
+        keyMiddle,
         startY,
         pressedAt: performance.now(),
         releasedAt: null,
@@ -175,6 +195,12 @@ export function createBeams(canvas: HTMLCanvasElement): Beams {
           beam.releasedAt = now;
         }
       }
+    },
+
+    destroy() {
+      window.cancelAnimationFrame(frame);
+      frame = 0;
+      beams = [];
     },
   };
 }

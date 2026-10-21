@@ -1,6 +1,6 @@
 # 0010: Stage look for the start page
 
-- Status: Accepted
+- Status: Accepted; colors superseded by 0014
 - Date: 2026-10-20
 
 ## Context

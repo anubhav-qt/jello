@@ -13,11 +13,16 @@ fn build_engine() {
         .include("../engine/include")
         .include("../engine/third_party")
         .file("../engine/src/engine.cpp")
-        .file("../engine/src/mailbox.cpp")
         .file("../engine/src/envelope.cpp")
         .file("../engine/src/wave.cpp")
         .file("../engine/src/voice.cpp")
         .file("../engine/src/synth.cpp")
+        .file("../engine/src/clock.cpp")
+        .file("../engine/src/click.cpp")
+        .file("../engine/src/looper.cpp")
+        .file("../engine/src/snap.cpp")
+        .file("../engine/src/song_player.cpp")
+        .file("../engine/src/conductor.cpp")
         .file("../engine/src/miniaudio.cpp")
         .compile("jello_engine");
 

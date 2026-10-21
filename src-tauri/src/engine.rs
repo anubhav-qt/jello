@@ -2,11 +2,64 @@
 // (engine/include/jello_engine.h). The rest of the Rust core only uses this.
 
 use std::ffi::c_int;
+use std::time::{Duration, Instant};
 
 // The engine itself lives in C++. Rust only ever holds a pointer to it.
 #[repr(C)]
 struct JelloEngine {
     _private: [u8; 0],
+}
+
+// `JelloLooperStatus` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawLooperStatus {
+    state: c_int,
+    number: c_int,
+    position: u64,
+    waiting: bool,
+}
+
+// `JelloLoopChange` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawLoopChange {
+    change: c_int,
+    layer: c_int,
+    index: c_int,
+    note: c_int,
+    sample: u64,
+}
+
+// The kinds of change, the `JELLO_LOOP_` numbers in
+// engine/include/jello_engine.h.
+const LOOP_FORGOT: c_int = 0;
+const LOOP_STARTED: c_int = 1;
+const LOOP_ENDED: c_int = 2;
+const LOOP_KEPT: c_int = 3;
+const LOOP_LAYER_STARTED: c_int = 4;
+const LOOP_LAYER_STOPPED: c_int = 5;
+const LOOP_LAYER_DROPPED: c_int = 6;
+const LOOP_LAYER_REMOVED: c_int = 7;
+
+// The number for the layer recorded last (`JELLO_NEWEST_LAYER` in
+// engine/include/jello_engine.h).
+const NEWEST_LAYER: c_int = -1;
+
+// `JelloLoopNote` in engine/include/jello_engine.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawLoopNote {
+    note: c_int,
+    start: u64,
+    end: u64,
+}
+
+// `JelloSongChord` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawSongChord {
+    notes: [c_int; CHORD_MAX_NOTES],
+    note_count: c_int,
+    velocity: c_int,
+    length: u64,
 }
 
 unsafe extern "C" {
@@ -17,12 +70,72 @@ unsafe extern "C" {
     fn jello_engine_note_off(engine: *mut JelloEngine, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
     fn jello_engine_set_wave(engine: *mut JelloEngine, wave: c_int);
+    // Only the tests start and stop the click for now.
+    #[cfg(test)]
+    fn jello_engine_start_click(engine: *mut JelloEngine);
+    #[cfg(test)]
+    fn jello_engine_stop_click(engine: *mut JelloEngine);
+    fn jello_engine_set_tempo(engine: *mut JelloEngine, tempo: c_int);
+    fn jello_engine_press_looper(engine: *mut JelloEngine);
+    // Only the tests clear the whole loop at once for now.
+    #[cfg(test)]
+    fn jello_engine_clear_loop(engine: *mut JelloEngine);
+    fn jello_engine_remove_layer(engine: *mut JelloEngine, layer: c_int);
+    fn jello_engine_set_layer_volume(engine: *mut JelloEngine, layer: c_int, volume: f32);
+    fn jello_engine_set_snap(engine: *mut JelloEngine, snap: bool);
+    fn jello_engine_plan_loop(
+        engine: *mut JelloEngine,
+        played: *const RawLoopNote,
+        count: c_int,
+        bars: c_int,
+        tempo: c_int,
+        snap: bool,
+        planned: *mut RawLoopNote,
+    ) -> bool;
+    fn jello_engine_looper_status(engine: *mut JelloEngine) -> RawLooperStatus;
+    fn jello_engine_next_loop_change(engine: *mut JelloEngine, change: *mut RawLoopChange) -> bool;
+    fn jello_engine_play_song(engine: *mut JelloEngine, chords: *const RawSongChord, count: c_int) -> bool;
+    fn jello_engine_stop_song(engine: *mut JelloEngine);
+    fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
 }
 
 // Every frame of audio is one left sample and one right sample.
 pub const CHANNELS: usize = 2;
+
+// The slowest and fastest tempos the engine plays, in beats per minute
+// (`JELLO_SLOWEST_TEMPO` and `JELLO_FASTEST_TEMPO` in
+// engine/include/jello_engine.h).
+pub const SLOWEST_TEMPO: u32 = 40;
+pub const FASTEST_TEMPO: u32 = 240;
+
+// A new engine's tempo, the usual default in music software. The C++ engine
+// starts there too.
+pub const START_TEMPO: u32 = 120;
+
+// How much slowing down or speeding up changes the tempo.
+const TEMPO_STEP: u32 = 5;
+
+// How many beats make a bar (`beats_per_bar` in engine/src/clock.h).
+pub const BEATS_PER_BAR: u32 = 4;
+
+// The most layers a loop holds (`JELLO_LOOP_MAX_LAYERS` in
+// engine/include/jello_engine.h).
+pub const MAX_LAYERS: usize = 8;
+
+// A layer's volume, in percent, from silent to as played. Each layer starts
+// at full.
+pub const FULL_VOLUME: u32 = 100;
+
+// How long Esc waits for a layer's number (docs/adr/0026-layers.md).
+const ESC_WAIT: Duration = Duration::from_millis(500);
+
+// The most chords a song plays, and the most notes in each chord
+// (`JELLO_SONG_MAX_CHORDS` and `JELLO_CHORD_MAX_NOTES` in
+// engine/include/jello_engine.h).
+pub const SONG_MAX_CHORDS: usize = 512;
+const CHORD_MAX_NOTES: usize = 4;
 
 // The shapes a note can play (docs/adr/0009-how-notes-become-sound.md).
 #[derive(Clone, Copy)]
@@ -66,11 +179,123 @@ impl Wave {
     }
 }
 
+// What the looper is doing (docs/adr/0021-a-looper-on-a-beat.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LooperState {
+    // No loop.
+    Idle,
+    // One bar of clicks before recording starts.
+    CountingIn,
+    // Recording, with the click on.
+    Recording,
+    // Playing the loop over and over, with the click off.
+    Looping,
+    // Playing the loop and recording a layer over it, with the click on
+    // (docs/adr/0026-layers.md).
+    Layering,
+}
+
+impl LooperState {
+    // What to call it when showing it.
+    pub fn name(self) -> &'static str {
+        match self {
+            LooperState::Idle => "idle",
+            LooperState::CountingIn => "counting in",
+            LooperState::Recording => "recording",
+            LooperState::Looping => "looping",
+            LooperState::Layering => "layering",
+        }
+    }
+
+    // The state for its number in the C API (`JELLO_LOOPER_` in
+    // engine/include/jello_engine.h).
+    fn from_number(number: c_int) -> LooperState {
+        match number {
+            1 => LooperState::CountingIn,
+            2 => LooperState::Recording,
+            3 => LooperState::Looping,
+            4 => LooperState::Layering,
+            _ => LooperState::Idle,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LooperStatus {
+    pub state: LooperState,
+    // While counting in, the beat (1 to 4). While recording, the bar being
+    // recorded, from 1. While looping or recording a layer, how many bars
+    // the loop lasts. 0 when idle.
+    pub number: u32,
+    // True while a press, clear or removal is still on its way to the
+    // engine's audio thread, so `state` doesn't show it yet.
+    pub waiting: bool,
+}
+
+// One note of the loop (docs/adr/0024-the-looper-s-look.md). Samples count
+// from the loop's start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopNote {
+    pub note: u8,
+    pub start: u64,
+    // None while its key is still held, while recording.
+    pub end: Option<u64>,
+}
+
+// One layer of the loop (docs/adr/0026-layers.md). The first loop is the
+// first layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoopLayer {
+    // Its notes as played, in the order they started.
+    pub notes: Vec<LoopNote>,
+    // How loud it plays, in percent, from 0 to FULL_VOLUME.
+    pub volume: u32,
+    // True while it is being recorded.
+    pub recording: bool,
+}
+
+// One chord of a song for the engine to play
+// (docs/adr/0022-compose-as-a-tape.md).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongChord {
+    // Its notes, at most 4.
+    pub notes: Vec<u8>,
+    // How hard they are hit, 1 to 127.
+    pub velocity: u8,
+    // How long it plays, in milliseconds.
+    pub length_ms: u64,
+}
+
+// Where the song is playing: which of the chords sent last, and how far into
+// it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SongPlace {
+    // The chord's place among them, from 0.
+    pub chord: usize,
+    // How far into it, in milliseconds.
+    pub ms_in: u64,
+}
+
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
     // The wave new notes play. The C++ engine starts on triangle too.
     wave: Wave,
+    // The beat's tempo in beats per minute. The C++ engine starts there too.
+    tempo: u32,
+    // Whether loops snap to the beat. The C++ engine starts with it on too.
+    snap: bool,
+    // How many samples each chord of the song sent last plays, so the
+    // engine's position in the song can be turned into a chord.
+    song_lengths: Vec<u64>,
+    // Rust's copy of the loop's layers, oldest first, kept by the changes the
+    // engine sends.
+    layers: Vec<LoopLayer>,
+    // A message about the looper for the top bar, kept until the screen
+    // takes it.
+    looper_message: Option<String>,
+    // When Esc was pressed, while it waits for a layer's number.
+    esc_pressed_at: Option<Instant>,
 }
 
 // The C++ engine can be used from any thread, one call at a time. The app
@@ -89,6 +314,12 @@ impl Engine {
             raw,
             audio_running: false,
             wave: Wave::Triangle,
+            tempo: START_TEMPO,
+            snap: true,
+            song_lengths: Vec::new(),
+            layers: Vec::new(),
+            looper_message: None,
+            esc_pressed_at: None,
         };
         Ok(engine)
     }
@@ -153,6 +384,497 @@ impl Engine {
         self.wave
     }
 
+    // The click on its own, without the looper. Only the tests use it for
+    // now; a metronome key can later.
+
+    // Starts the click on beat 1 of a bar. Does nothing if it is already on.
+    #[cfg(test)]
+    pub fn start_click(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_start_click(self.raw) };
+    }
+
+    // Stops the click. A tick already sounding rings out.
+    #[cfg(test)]
+    pub fn stop_click(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_stop_click(self.raw) };
+    }
+
+    // Right Shift's looper (`jello_engine_press_looper`): counts in, records,
+    // closes the loop at the nearest bar line, then starts and stops layers.
+    // A loop with MAX_LAYERS layers takes no more: the engine ignores the
+    // press, and a message says why.
+    pub fn press_looper(&mut self) {
+        let status = self.looper_status();
+        let full = self.loop_layers().len() == MAX_LAYERS;
+        if status.state == LooperState::Looping {
+            if full {
+                self.looper_message = Some(format!("{MAX_LAYERS} layers is the most, Esc removes one"));
+            }
+        }
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_press_looper(self.raw) };
+    }
+
+    // Stops every layer's notes and forgets the loop, or cancels the
+    // count-in or the recording. Live notes play on. Only the tests clear
+    // the whole loop at once for now; Esc removes a layer at a time.
+    #[cfg(test)]
+    pub fn clear_loop(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_clear_loop(self.raw) };
+    }
+
+    // Stops the newest layer's notes and forgets it
+    // (`jello_engine_remove_layer`). Removing the only layer clears the
+    // loop, and so does removing any during the count-in or the first
+    // recording.
+    pub fn remove_newest_layer(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_remove_layer(self.raw, NEWEST_LAYER) };
+    }
+
+    // The same for layer `number`, counted from 1 in the order the layers
+    // were recorded. The layers after it move up. A layer that doesn't
+    // exist changes nothing.
+    pub fn remove_layer(&mut self, number: u32) {
+        if number == 0 {
+            return;
+        }
+        // A number too big for a C int becomes -2, which the engine ignores.
+        let layer = c_int::try_from(number - 1).unwrap_or(-2);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_remove_layer(self.raw, layer) };
+    }
+
+    // What Esc does at `now` (docs/adr/0026-layers.md). With two layers or
+    // more, it waits half a second for a layer's number (`pick_layer`), and
+    // if none comes the newest goes (`finish_esc_wait`). With fewer there is
+    // nothing to pick from, so the newest goes at once: that cancels the
+    // count-in or the recording, or clears a loop of one layer. Pressed
+    // again while it waits, the newest goes at once.
+    pub fn press_esc(&mut self, now: Instant) {
+        if self.is_esc_waiting(now) {
+            self.esc_pressed_at = None;
+            self.remove_newest_layer();
+            return;
+        }
+        if self.loop_layers().len() < 2 {
+            self.remove_newest_layer();
+            return;
+        }
+        self.esc_pressed_at = Some(now);
+    }
+
+    // While Esc waits, layer `number` (from 1) goes instead of the newest,
+    // and this returns true: the key was used to pick it. A number with no
+    // layer removes nothing and leaves a message saying so. Returns false
+    // when Esc isn't waiting, so the key plays as usual.
+    pub fn pick_layer(&mut self, number: u32, now: Instant) -> bool {
+        if !self.is_esc_waiting(now) {
+            return false;
+        }
+        self.esc_pressed_at = None;
+
+        let count = self.loop_layers().len();
+        if number as usize > count {
+            self.looper_message = Some(format!("There is no layer {number}"));
+            return true;
+        }
+        self.remove_layer(number);
+        true
+    }
+
+    // Once Esc has waited half a second with no layer's number, the newest
+    // layer goes. Every command that shows the looper calls this first, and
+    // the screen asks every 50 ms while the looper is busy, so it goes at
+    // most that much late.
+    pub fn finish_esc_wait(&mut self, now: Instant) {
+        let pressed_at = match self.esc_pressed_at {
+            Some(pressed_at) => pressed_at,
+            None => return,
+        };
+        if now.saturating_duration_since(pressed_at) < ESC_WAIT {
+            return;
+        }
+        self.esc_pressed_at = None;
+        self.remove_newest_layer();
+    }
+
+    // True while Esc waits for a layer's number at `now`.
+    fn is_esc_waiting(&self, now: Instant) -> bool {
+        let pressed_at = match self.esc_pressed_at {
+            Some(pressed_at) => pressed_at,
+            None => return false,
+        };
+        now.saturating_duration_since(pressed_at) < ESC_WAIT
+    }
+
+    // While Esc waits, the layer it removes if no number comes: the newest,
+    // counted from 1. None otherwise.
+    pub fn esc_removes(&mut self, now: Instant) -> Option<u32> {
+        if !self.is_esc_waiting(now) {
+            return None;
+        }
+        let newest = self.loop_layers().len();
+        u32::try_from(newest).ok()
+    }
+
+    // Sets layer `number`'s volume (counted from 1) to `percent`, from 0 to
+    // FULL_VOLUME, its notes already sounding too
+    // (`jello_engine_set_layer_volume`). Fails for a layer that doesn't
+    // exist or a volume above FULL_VOLUME.
+    pub fn set_layer_volume(&mut self, number: u32, percent: u32) -> Result<(), String> {
+        if percent > FULL_VOLUME {
+            return Err(format!("a layer's volume goes from 0 to {FULL_VOLUME}, not {percent}"));
+        }
+        let count = self.loop_layers().len();
+        if number == 0 {
+            return Err(String::from("layers are counted from 1"));
+        }
+        if number as usize > count {
+            return Err(format!("there is no layer {number}"));
+        }
+
+        let place = number as usize - 1;
+        let layer = place as c_int;
+        let volume = percent as f32 / FULL_VOLUME as f32;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_layer_volume(self.raw, layer, volume) };
+        self.layers[place].volume = percent;
+        Ok(())
+    }
+
+    // The message about the looper waiting for the top bar, if there is
+    // one. Taking it means it shows once.
+    pub fn take_looper_message(&mut self) -> Option<String> {
+        self.looper_message.take()
+    }
+
+    // Turns "snap to beat" on or off (`jello_engine_set_snap`). A loop
+    // already playing changes right away.
+    pub fn set_snap(&mut self, snap: bool) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_snap(self.raw, snap) };
+        self.snap = snap;
+    }
+
+    // Turns "snap to beat" off if it is on, and on if it is off.
+    pub fn switch_snap(&mut self) {
+        let snap = !self.snap;
+        self.set_snap(snap);
+    }
+
+    // True while loops snap to the beat.
+    pub fn snap(&self) -> bool {
+        self.snap
+    }
+
+    // Where a loop `bars` bars long plays one layer's `notes` each time
+    // around, by the engine's own rule (`jello_engine_plan_loop`): moved to
+    // the nearest half beat while snap is on, and as played while it is off.
+    // They come in the order they start each time around. A note still held counts as
+    // ending where it starts. If the engine can't work it out, the notes
+    // come back as they are.
+    pub fn plan_loop(&self, notes: &[LoopNote], bars: u32) -> Vec<LoopNote> {
+        let mut played = Vec::new();
+        for note in notes {
+            let raw = RawLoopNote {
+                note: c_int::from(note.note),
+                start: note.start,
+                end: note.end.unwrap_or(note.start),
+            };
+            played.push(raw);
+        }
+        // Room for as many notes as were played.
+        let mut planned = played.clone();
+
+        // Numbers too big for a C int become -1 or 0, which the engine
+        // refuses.
+        let count = c_int::try_from(played.len()).unwrap_or(-1);
+        let bars = c_int::try_from(bars).unwrap_or(0);
+        let tempo = c_int::try_from(self.tempo).unwrap_or(0);
+        // SAFETY: `raw` points to a live engine until Drop, and `played` and
+        // `planned` both hold exactly `count` notes.
+        let worked_out = unsafe {
+            jello_engine_plan_loop(
+                self.raw,
+                played.as_ptr(),
+                count,
+                bars,
+                tempo,
+                self.snap,
+                planned.as_mut_ptr(),
+            )
+        };
+        if !worked_out {
+            return notes.to_vec();
+        }
+
+        let mut plan = Vec::new();
+        for raw in planned {
+            let note = LoopNote {
+                note: u8::try_from(raw.note).unwrap_or(0),
+                start: raw.start,
+                end: Some(raw.end),
+            };
+            plan.push(note);
+        }
+        plan
+    }
+
+    // What the looper is doing, as of the engine's last chunk of sound.
+    pub fn looper_status(&self) -> LooperStatus {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let raw = unsafe { jello_engine_looper_status(self.raw) };
+        let number = u32::try_from(raw.number).unwrap_or(0);
+        LooperStatus {
+            state: LooperState::from_number(raw.state),
+            number,
+            waiting: raw.waiting,
+        }
+    }
+
+    // How many samples into the count-in, the recording or the repeat
+    // playing now the looper is, as of the engine's last chunk of sound. 0
+    // when idle. Each starts on beat 1 of a bar.
+    pub fn looper_position(&self) -> u64 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let raw = unsafe { jello_engine_looper_status(self.raw) };
+        raw.position
+    }
+
+    // The loop's layers, oldest first, as of the engine's last chunk of
+    // sound. First takes in every change the engine has sent since the last
+    // time.
+    pub fn loop_layers(&mut self) -> &[LoopLayer] {
+        loop {
+            let mut change = RawLoopChange {
+                change: LOOP_FORGOT,
+                layer: 0,
+                index: 0,
+                note: 0,
+                sample: 0,
+            };
+            // SAFETY: `raw` points to a live engine until Drop, and `change`
+            // is ours to fill.
+            let taken = unsafe { jello_engine_next_loop_change(self.raw, &mut change) };
+            if !taken {
+                break;
+            }
+            self.apply_loop_change(&change);
+        }
+        &self.layers
+    }
+
+    // Changes Rust's copy of the loop's layers the way the engine changed its
+    // own.
+    fn apply_loop_change(&mut self, change: &RawLoopChange) {
+        let layer = usize::try_from(change.layer).unwrap_or(0);
+        let index = usize::try_from(change.index).unwrap_or(0);
+        if change.change == LOOP_FORGOT {
+            self.layers.clear();
+        } else if change.change == LOOP_LAYER_STARTED {
+            let started = LoopLayer {
+                notes: Vec::new(),
+                volume: FULL_VOLUME,
+                recording: true,
+            };
+            self.layers.push(started);
+        } else if change.change == LOOP_STARTED {
+            let note = LoopNote {
+                note: u8::try_from(change.note).unwrap_or(0),
+                start: change.sample,
+                end: None,
+            };
+            if let Some(recording) = self.layers.get_mut(layer) {
+                recording.notes.push(note);
+            }
+        } else if change.change == LOOP_ENDED {
+            if let Some(ended) = self.loop_note_mut(layer, index) {
+                ended.end = Some(change.sample);
+            }
+        } else if change.change == LOOP_KEPT {
+            if let Some(closed) = self.layers.get_mut(layer) {
+                closed.notes.truncate(index);
+                closed.recording = false;
+            }
+        } else if change.change == LOOP_LAYER_STOPPED {
+            if let Some(stopped) = self.layers.get_mut(layer) {
+                stopped.recording = false;
+            }
+        } else if change.change == LOOP_LAYER_DROPPED {
+            self.forget_layer(layer);
+            self.looper_message = Some(String::from("Nothing played, no layer added"));
+        } else if change.change == LOOP_LAYER_REMOVED {
+            self.forget_layer(layer);
+        }
+    }
+
+    // Note `index` of layer `layer` in Rust's copy, if both exist.
+    fn loop_note_mut(&mut self, layer: usize, index: usize) -> Option<&mut LoopNote> {
+        let holding = self.layers.get_mut(layer)?;
+        holding.notes.get_mut(index)
+    }
+
+    // Takes layer `layer` out of Rust's copy, if it exists. The layers after
+    // it move up.
+    fn forget_layer(&mut self, layer: usize) {
+        if layer < self.layers.len() {
+            self.layers.remove(layer);
+        }
+    }
+
+    // True from the looper's first press until it is cleared, counting a
+    // press still on its way.
+    pub fn is_looper_busy(&self) -> bool {
+        let status = self.looper_status();
+        if status.waiting {
+            return true;
+        }
+        status.state != LooperState::Idle
+    }
+
+    // Plays `chords` one after another, each for its length, with no gap
+    // between them, from the engine's next chunk of sound. Whatever the song
+    // was playing stops first. Fails and plays nothing if there are more
+    // than SONG_MAX_CHORDS chords, a chord has more than 4 notes, a note or
+    // velocity is outside MIDI's range, or too many messages are waiting.
+    // The engine checks the number of chords itself, so it isn't checked
+    // twice here.
+    pub fn play_song(&mut self, chords: &[SongChord]) -> Result<(), String> {
+        let mut raw_chords = Vec::new();
+        let mut lengths = Vec::new();
+        for chord in chords {
+            let raw = self.raw_song_chord(chord)?;
+            lengths.push(raw.length);
+            raw_chords.push(raw);
+        }
+
+        let too_many = format!("a song plays at most {SONG_MAX_CHORDS} chords");
+        let count = match c_int::try_from(raw_chords.len()) {
+            Ok(count) => count,
+            Err(_) => return Err(too_many),
+        };
+        // SAFETY: `raw` points to a live engine until Drop, and `raw_chords`
+        // holds exactly `count` chords.
+        let played = unsafe { jello_engine_play_song(self.raw, raw_chords.as_ptr(), count) };
+        if !played {
+            return Err(format!(
+                "the engine did not take the song: {too_many}, a note or velocity is outside MIDI's range, or too many messages are waiting",
+            ));
+        }
+
+        self.song_lengths = lengths;
+        Ok(())
+    }
+
+    // `chord` as the C API takes it, with its length turned into samples.
+    fn raw_song_chord(&self, chord: &SongChord) -> Result<RawSongChord, String> {
+        if chord.notes.len() > CHORD_MAX_NOTES {
+            return Err(format!("a chord in a song has at most {CHORD_MAX_NOTES} notes"));
+        }
+        let mut notes = [0; CHORD_MAX_NOTES];
+        for (place, note) in chord.notes.iter().enumerate() {
+            notes[place] = c_int::from(*note);
+        }
+
+        // 48 samples a millisecond, so a chord held 2,000 ms plays 96,000.
+        let length = chord.length_ms * u64::from(self.sample_rate()) / 1000;
+
+        let raw = RawSongChord {
+            notes,
+            note_count: chord.notes.len() as c_int,
+            velocity: c_int::from(chord.velocity),
+            length,
+        };
+        Ok(raw)
+    }
+
+    // Lets go of what the song is playing and forgets it. Live notes and the
+    // loop play on.
+    pub fn stop_song(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_stop_song(self.raw) };
+    }
+
+    // Where the song is, as of the engine's last chunk of sound, or None
+    // when no song is playing. A song sent but not yet started counts as at
+    // its very start.
+    pub fn song_place(&self) -> Option<SongPlace> {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let position = unsafe { jello_engine_song_position(self.raw) };
+
+        // -1 means no song is playing.
+        let mut samples_left = match u64::try_from(position) {
+            Ok(position) => position,
+            Err(_) => return None,
+        };
+
+        // Walk the chords until the position falls inside one. A chord 0
+        // samples long is never playing.
+        for (chord, length) in self.song_lengths.iter().enumerate() {
+            if samples_left < *length {
+                let ms_in = samples_left * 1000 / u64::from(self.sample_rate());
+                return Some(SongPlace { chord, ms_in });
+            }
+            samples_left -= length;
+        }
+
+        // Played to its very end: its last chord lets go on the next sample.
+        None
+    }
+
+    // Plays the beat at `tempo` beats per minute from the next beat on. The
+    // engine ignores a tempo outside SLOWEST_TEMPO to FASTEST_TEMPO, and so
+    // does the tempo kept here. While the looper is busy, the engine keeps
+    // its beat, so this changes nothing.
+    pub fn set_tempo(&mut self, tempo: u32) {
+        // Not sent at all, so the tempo kept here and the engine's always
+        // agree. Sent anyway, it could go wrong: with Esc still on its way,
+        // the engine would clear the loop first and then take the tempo.
+        if self.is_looper_busy() {
+            return;
+        }
+
+        // A number too big for a C int becomes -1, which the engine ignores.
+        let number = c_int::try_from(tempo).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_tempo(self.raw, number) };
+
+        if tempo < SLOWEST_TEMPO {
+            return;
+        }
+        if tempo > FASTEST_TEMPO {
+            return;
+        }
+        self.tempo = tempo;
+    }
+
+    // Slows the beat down by 5 beats per minute, but never below
+    // SLOWEST_TEMPO.
+    pub fn slow_down(&mut self) {
+        let slower = self.tempo - TEMPO_STEP;
+        if slower >= SLOWEST_TEMPO {
+            self.set_tempo(slower);
+        }
+    }
+
+    // Speeds the beat up by 5 beats per minute, but never above
+    // FASTEST_TEMPO.
+    pub fn speed_up(&mut self) {
+        let faster = self.tempo + TEMPO_STEP;
+        if faster <= FASTEST_TEMPO {
+            self.set_tempo(faster);
+        }
+    }
+
+    // The beat's tempo, in beats per minute.
+    pub fn tempo(&self) -> u32 {
+        self.tempo
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -202,9 +924,9 @@ mod tests {
     const DECAY_MS: u32 = 300; // `decay_ms` in engine/src/envelope.cpp
     const SUSTAIN: f32 = 1.0; // `sustain_level` in engine/src/envelope.cpp
     const RELEASE_MS: u32 = 300; // `release_ms` in engine/src/envelope.cpp
-    const MAILBOX_SLOTS: usize = 1024; // `slot_count` in engine/src/mailbox.h
+    const MAILBOX_SLOTS: usize = 1024; // `EventMailbox` in engine/src/mailbox.h
     const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
-    const CLIP_START: f32 = 0.8; // `clip_start` in engine/src/synth.cpp
+    const CLIP_START: f32 = 0.8; // `clip_start` in engine/src/conductor.cpp
 
     // Notes by their MIDI numbers, and how many times a second their waves
     // repeat in standard tuning.
@@ -432,7 +1154,7 @@ mod tests {
     }
 
     // What the soft clip does to one sample. Matches `soft_clip` in
-    // engine/src/synth.cpp.
+    // engine/src/conductor.cpp.
     fn soft_clip(sample: f32) -> f32 {
         let size = sample.abs();
         if size <= CLIP_START {
@@ -1294,5 +2016,2666 @@ mod tests {
                 assert_same_sound(&after_silence, &new_both_times);
             }
         }
+    }
+
+    // The click (docs/adr/0021-a-looper-on-a-beat.md). Its sound comes from
+    // engine/src/click.cpp. When it is changed there on purpose, change it
+    // here too.
+    const HIGH_TICK_HZ: f64 = 1760.0; // `high_hz`
+    const LOW_TICK_HZ: f64 = 880.0; // `low_hz`
+    const TICK_MS: u32 = 40; // `tick_ms`
+    const HALF_LIFE_MS: u32 = 4; // `half_life_ms`
+
+    // How many samples a beat lasts at 120 beats per minute: half a second.
+    const BEAT_AT_120: usize = 24_000;
+
+    // How many samples the engine makes in a minute.
+    const SAMPLES_PER_MINUTE: usize = 48_000 * 60;
+
+    // Ticks are always far more than this many samples apart, so a run of
+    // silence this long means the last tick is over.
+    const SILENCE_BETWEEN_TICKS: usize = 1000;
+
+    // The sample each tick in `wave` starts on. A tick's sine wave starts
+    // from zero, so its first sample is silent and the one after it is the
+    // first that sounds.
+    fn tick_starts(wave: &[f32]) -> Vec<usize> {
+        let mut starts = Vec::new();
+        // How many silent samples came just before this one. The time before
+        // the first sample counts as a long silence.
+        let mut silent = SILENCE_BETWEEN_TICKS;
+        for (i, sample) in wave.iter().enumerate() {
+            if *sample != 0.0 {
+                if silent >= SILENCE_BETWEEN_TICKS && i > 0 {
+                    starts.push(i - 1);
+                }
+                silent = 0;
+            } else {
+                silent += 1;
+            }
+        }
+        starts
+    }
+
+    // The samples one tick lasts, from `start` on.
+    fn tick_at<'a>(engine: &Engine, wave: &'a [f32], start: usize) -> &'a [f32] {
+        let length = frames_in_ms(engine, TICK_MS);
+        &wave[start..start + length]
+    }
+
+    #[test]
+    fn the_click_ticks_on_every_beat() {
+        // At 120 beats per minute a beat is 24,000 samples, so the ticks start
+        // on exactly these samples.
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        let wave = render_left(&mut engine, 2100);
+        assert_eq!(tick_starts(&wave), vec![0, 24_000, 48_000, 72_000, 96_000]);
+    }
+
+    #[test]
+    fn the_first_beat_of_each_bar_ticks_higher() {
+        // Two bars of 4 beats, then the first beat of a third.
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        let wave = render_left(&mut engine, 4100);
+        let starts = tick_starts(&wave);
+        assert_eq!(starts.len(), 9);
+
+        for (beat, start) in starts.iter().enumerate() {
+            let tick = tick_at(&engine, &wave, *start);
+            if beat % 4 == 0 {
+                assert_note(&engine, tick, HIGH_TICK_HZ);
+            } else {
+                assert_note(&engine, tick, LOW_TICK_HZ);
+            }
+        }
+    }
+
+    #[test]
+    fn a_tick_halves_every_4_ms_then_stops_after_40() {
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        let wave = render_left(&mut engine, 400);
+
+        // Each 4 ms of the tick is about half as loud as the 4 ms before.
+        let step = frames_in_ms(&engine, HALF_LIFE_MS);
+        let tick = tick_at(&engine, &wave, 0);
+        for part in 1..tick.len() / step {
+            let before = peak(&tick[(part - 1) * step..part * step]);
+            let now = peak(&tick[part * step..(part + 1) * step]);
+            assert_within_percent(now, before / 2.0, 5.0);
+        }
+
+        // After 40 ms, exact silence until the next beat.
+        let after = &wave[tick.len()..];
+        assert_eq!(peak(after), 0.0);
+    }
+
+    #[test]
+    fn the_beat_never_drifts() {
+        // At 115 beats per minute a beat is 25,043.478... samples, so beats
+        // can't all be the same whole number of samples long. Each one starts
+        // on the sample nearest below where it belongs, worked out from the
+        // start, so the rounding never adds up: 1,000 beats in, the next tick
+        // starts on sample 1,000 x 2,880,000 / 115 = 25,043,478.26..., so
+        // 25,043,478.
+        let mut engine = Engine::new().unwrap();
+        engine.set_tempo(115);
+        engine.start_click();
+
+        // Skip ahead to just before that tick, in 10-second chunks.
+        let expected = 1000 * SAMPLES_PER_MINUTE / 115;
+        let window_start = expected - 500;
+        let mut rendered = 0;
+        while rendered < window_start {
+            let frames = usize::min(480_000, window_start - rendered);
+            engine.render(frames);
+            rendered += frames;
+        }
+
+        let window = render_left(&mut engine, 20);
+        assert_eq!(tick_starts(&window), vec![500]);
+    }
+
+    #[test]
+    fn ticks_land_on_the_same_samples_however_the_sound_is_asked_for() {
+        // The speakers ask for sound a chunk at a time, and beats fall
+        // anywhere inside a chunk. 7 ms chunks never line up with the beat,
+        // yet every sample must match a render made in one go.
+        let mut whole = Engine::new().unwrap();
+        let mut chunked = Engine::new().unwrap();
+        whole.start_click();
+        chunked.start_click();
+
+        let whole_wave = render_left(&mut whole, 2100);
+        let chunked_wave = render_in_chunks(&mut chunked, 2100, 7);
+        assert!(whole_wave == chunked_wave, "the two engines ticked differently");
+    }
+
+    #[test]
+    fn a_new_tempo_starts_on_the_next_beat() {
+        // Halfway through beat 1 at 120, the tempo drops to 60. Beat 1 keeps
+        // its length, so beat 2 starts on time, and from there on each beat
+        // lasts twice as long.
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        let mut wave = render_left(&mut engine, 250);
+        engine.set_tempo(60);
+        let rest = render_left(&mut engine, 2350);
+        wave.extend(rest);
+
+        let starts = tick_starts(&wave);
+        assert_eq!(starts, vec![0, 24_000, 72_000, 120_000]);
+    }
+
+    #[test]
+    fn the_slowest_and_fastest_tempos_play_and_others_are_ignored() {
+        // A beat at 40 lasts 72,000 samples, and at 240 just 12,000.
+        let mut slowest = Engine::new().unwrap();
+        slowest.set_tempo(SLOWEST_TEMPO);
+        slowest.start_click();
+        let wave = render_left(&mut slowest, 3100);
+        assert_eq!(tick_starts(&wave), vec![0, 72_000, 144_000]);
+
+        let mut fastest = Engine::new().unwrap();
+        fastest.set_tempo(FASTEST_TEMPO);
+        fastest.start_click();
+        let wave = render_left(&mut fastest, 600);
+        assert_eq!(tick_starts(&wave), vec![0, 12_000, 24_000]);
+
+        // Tempos past either end change nothing: the beat stays at 120.
+        let mut engine = Engine::new().unwrap();
+        engine.set_tempo(SLOWEST_TEMPO - 1);
+        engine.set_tempo(FASTEST_TEMPO + 1);
+        engine.set_tempo(0);
+        engine.set_tempo(u32::MAX);
+        engine.start_click();
+        let wave = render_left(&mut engine, 1100);
+        assert_eq!(tick_starts(&wave), vec![0, BEAT_AT_120, 2 * BEAT_AT_120]);
+        assert_eq!(engine.tempo(), START_TEMPO);
+    }
+
+    #[test]
+    fn stopping_the_click_lets_its_tick_ring_out() {
+        // Stopped 10 ms into a tick, the tick still plays all of its 40 ms,
+        // exactly like one left alone. Then no more ticks come.
+        let mut stopped = Engine::new().unwrap();
+        stopped.start_click();
+        let mut wave = render_left(&mut stopped, 10);
+        stopped.stop_click();
+        let rest = render_left(&mut stopped, 1990);
+        wave.extend(rest);
+
+        let mut left_alone = Engine::new().unwrap();
+        left_alone.start_click();
+        let alone = render_left(&mut left_alone, 100);
+
+        let tick = tick_at(&stopped, &wave, 0);
+        let alone_tick = tick_at(&left_alone, &alone, 0);
+        assert!(tick == alone_tick, "the tick was cut short");
+        assert_eq!(peak(&wave[tick.len()..]), 0.0);
+    }
+
+    #[test]
+    fn starting_the_click_again_begins_a_new_bar() {
+        // Stopped after beat 2, then started again: the next tick is right
+        // away, and it is the high one, as beat 1 of a new bar.
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        render_left(&mut engine, 600);
+        engine.stop_click();
+        render_left(&mut engine, 100);
+        engine.start_click();
+        let wave = render_left(&mut engine, 100);
+
+        assert_eq!(tick_starts(&wave), vec![0]);
+        assert_note(&engine, tick_at(&engine, &wave, 0), HIGH_TICK_HZ);
+    }
+
+    #[test]
+    fn starting_the_click_while_it_is_on_changes_nothing() {
+        // A second start 300 ms in doesn't jump back to beat 1, so beat 2
+        // still comes at 24,000.
+        let mut engine = Engine::new().unwrap();
+        engine.start_click();
+        let mut wave = render_left(&mut engine, 300);
+        engine.start_click();
+        let rest = render_left(&mut engine, 800);
+        wave.extend(rest);
+
+        assert_eq!(tick_starts(&wave), vec![0, BEAT_AT_120, 2 * BEAT_AT_120]);
+        assert_note(&engine, tick_at(&engine, &wave, BEAT_AT_120), LOW_TICK_HZ);
+    }
+
+    #[test]
+    fn the_click_takes_no_voice() {
+        // All 32 voices are held. If a tick took one of them, a note would
+        // stop. So once the tick is over, the notes sound exactly as they do
+        // with no click at all.
+        let mut clicking = Engine::new().unwrap();
+        let mut quiet = Engine::new().unwrap();
+        for note in 0..VOICE_COUNT {
+            clicking.note_on(C3 + note, VELOCITY);
+            quiet.note_on(C3 + note, VELOCITY);
+        }
+        clicking.start_click();
+
+        render_left(&mut clicking, TICK_MS);
+        render_left(&mut quiet, TICK_MS);
+        let with_click = render_left(&mut clicking, 400);
+        let without = render_left(&mut quiet, 400);
+        assert!(with_click == without, "a note stopped when the click ticked");
+    }
+
+    #[test]
+    fn the_click_and_notes_never_go_above_full_loudness() {
+        // 32 notes as loud as they go, with a high tick on top, still stay
+        // below 1.0.
+        let mut engine = Engine::new().unwrap();
+        for note in 0..VOICE_COUNT {
+            engine.note_on(C3 + note, 127);
+        }
+        engine.start_click();
+        let wave = render_left(&mut engine, 100);
+        assert!(peak(&wave) < 1.0);
+    }
+
+    #[test]
+    fn a_new_engine_beats_at_120_with_the_looper_idle() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.tempo(), START_TEMPO);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+        assert!(!engine.is_looper_busy());
+
+        // Nothing ticks until the click or the looper starts.
+        let wave = render_left(&mut engine, 1000);
+        assert_eq!(peak(&wave), 0.0);
+    }
+
+    #[test]
+    fn slowing_down_and_speeding_up_go_by_5_and_stop_at_the_ends() {
+        let mut engine = Engine::new().unwrap();
+        engine.speed_up();
+        assert_eq!(engine.tempo(), 125);
+
+        // The engine plays it too: a beat at 125 is 23,040 samples.
+        engine.start_click();
+        let wave = render_left(&mut engine, 500);
+        assert_eq!(tick_starts(&wave), vec![0, 23_040]);
+
+        engine.slow_down();
+        engine.slow_down();
+        assert_eq!(engine.tempo(), 115);
+
+        // From 120 it takes 16 steps to reach 40, and then it stays there.
+        let mut engine = Engine::new().unwrap();
+        for _ in 0..20 {
+            engine.slow_down();
+        }
+        assert_eq!(engine.tempo(), SLOWEST_TEMPO);
+
+        // And 24 steps to reach 240.
+        for _ in 0..50 {
+            engine.speed_up();
+        }
+        assert_eq!(engine.tempo(), FASTEST_TEMPO);
+    }
+
+    // The looper (docs/adr/0021-a-looper-on-a-beat.md). Most of these tests
+    // play the same music twice: once through the looper, and once by hand,
+    // with every loop note played live on the exact sample the loop should
+    // play it, and the click stopped where the loop takes over. Every sample
+    // must match. That shows the loop plays each note on exactly the right
+    // sample, as loud and on the same wave as live, and lets go of it
+    // exactly when it should. Many play notes between half beats, so they
+    // turn "snap to beat" off, and the loop plays each note as played.
+
+    // How many samples a bar of 4 beats lasts at 120 beats per minute: 2
+    // seconds.
+    const BAR_AT_120: usize = 4 * BEAT_AT_120;
+
+    // At 120 the count-in takes the first bar, so recording starts on the
+    // second.
+    const RECORDING_STARTS: usize = BAR_AT_120;
+
+    // An engine with "snap to beat" off, so its loops play every note
+    // exactly as played.
+    fn engine_without_snap() -> Engine {
+        let mut engine = Engine::new().unwrap();
+        engine.set_snap(false);
+        engine
+    }
+
+    fn looper(state: LooperState, number: u32, waiting: bool) -> LooperStatus {
+        LooperStatus {
+            state,
+            number,
+            waiting,
+        }
+    }
+
+    // One thing a test does, on the sample it is at.
+    #[derive(Clone, Copy)]
+    enum Step {
+        NoteOn(u8),
+        NoteOff(u8),
+        AllNotesOff,
+        PressLooper,
+        ClearLoop,
+        // Esc's two ways to remove a layer: the newest, or by its number.
+        RemoveNewest,
+        RemoveLayer(u32),
+        // A layer's number and its new volume, in percent.
+        Volume(u32, u32),
+        StartClick,
+        StopClick,
+        SetWave(Wave),
+        PlaySong(&'static [TestChord]),
+        StopSong,
+        Snap(bool),
+    }
+
+    use Step::*;
+
+    fn take_step(engine: &mut Engine, step: Step) {
+        match step {
+            NoteOn(note) => engine.note_on(note, VELOCITY),
+            NoteOff(note) => engine.note_off(note),
+            AllNotesOff => engine.all_notes_off(),
+            PressLooper => engine.press_looper(),
+            ClearLoop => engine.clear_loop(),
+            RemoveNewest => engine.remove_newest_layer(),
+            RemoveLayer(number) => engine.remove_layer(number),
+            Volume(number, percent) => engine.set_layer_volume(number, percent).unwrap(),
+            StartClick => engine.start_click(),
+            StopClick => engine.stop_click(),
+            SetWave(wave) => engine.set_wave(wave),
+            PlaySong(song) => engine.play_song(&song_chords(song)).unwrap(),
+            StopSong => engine.stop_song(),
+            Snap(on) => engine.set_snap(on),
+        }
+    }
+
+    // `steps` with each one moved `by` samples later.
+    fn moved(steps: &[(usize, Step)], by: usize) -> Vec<(usize, Step)> {
+        let mut later = Vec::new();
+        for (at, step) in steps {
+            later.push((at + by, *step));
+        }
+        later
+    }
+
+    // Renders `frames` frames in chunks of at most `chunk`, and keeps only
+    // the left channel.
+    fn render_frames_left(engine: &mut Engine, frames: usize, chunk: usize) -> Vec<f32> {
+        let mut left = Vec::new();
+        while left.len() < frames {
+            let size = usize::min(chunk, frames - left.len());
+            let samples = engine.render(size);
+            for frame in samples.chunks(CHANNELS) {
+                left.push(frame[0]);
+            }
+        }
+        left
+    }
+
+    // Renders `frames` frames, taking each step on the sample it is at, and
+    // keeps only the left channel. Steps on the same sample are taken in the
+    // order given. The sound between two steps renders in one go.
+    fn play(engine: &mut Engine, steps: &[(usize, Step)], frames: usize) -> Vec<f32> {
+        play_in_chunks(engine, steps, frames, usize::MAX)
+    }
+
+    // Like `play`, but renders in chunks of at most `chunk` frames, the way
+    // the speakers ask for sound.
+    fn play_in_chunks(engine: &mut Engine, steps: &[(usize, Step)], frames: usize, chunk: usize) -> Vec<f32> {
+        // Sorting keeps steps on the same sample in their order.
+        let mut in_order = steps.to_vec();
+        in_order.sort_by_key(|(at, _)| *at);
+
+        let mut wave = Vec::new();
+        for (at, step) in in_order {
+            let stretch = render_frames_left(engine, at - wave.len(), chunk);
+            wave.extend(stretch);
+            take_step(engine, step);
+        }
+        let rest = render_frames_left(engine, frames - wave.len(), chunk);
+        wave.extend(rest);
+        wave
+    }
+
+    // The first layer's notes in Rust's copy: the first loop's.
+    fn first_layer_notes(engine: &mut Engine) -> Vec<LoopNote> {
+        match engine.loop_layers().first() {
+            Some(layer) => layer.notes.clone(),
+            None => Vec::new(),
+        }
+    }
+
+    // Checks that two renders are the same, sample for sample.
+    fn assert_same_samples(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for i in 0..actual.len() {
+            assert!(
+                actual[i] == expected[i],
+                "sample {i} is {}, expected {}",
+                actual[i],
+                expected[i]
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_press_counts_in_one_bar_then_records_from_beat_1() {
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+
+        // On its way to the engine: already busy, though not counting in yet.
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, true));
+        assert!(engine.is_looper_busy());
+
+        // Each beat of the count-in, then each bar recorded.
+        let mut wave = Vec::new();
+        for beat in 1..=4 {
+            let part = render_frames_left(&mut engine, BEAT_AT_120, usize::MAX);
+            wave.extend(part);
+            assert_eq!(engine.looper_status(), looper(LooperState::CountingIn, beat, false));
+        }
+        for bar in 1..=2 {
+            let part = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+            wave.extend(part);
+            assert_eq!(engine.looper_status(), looper(LooperState::Recording, bar, false));
+        }
+
+        // The click ticks on every beat throughout, higher on each beat 1.
+        let mut expected = Vec::new();
+        for beat in 0..12 {
+            expected.push(beat * BEAT_AT_120);
+        }
+        assert_eq!(tick_starts(&wave), expected);
+        for start in [0, BAR_AT_120, 2 * BAR_AT_120] {
+            assert_note(&engine, tick_at(&engine, &wave, start), HIGH_TICK_HZ);
+        }
+    }
+
+    #[test]
+    fn the_looper_says_how_far_into_the_count_in_the_recording_and_each_repeat_it_is() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.looper_position(), 0);
+
+        // The count-in counts from the press.
+        engine.press_looper();
+        render_frames_left(&mut engine, 30_000, usize::MAX);
+        assert_eq!(engine.looper_position(), 30_000);
+
+        // Recording counts from 0 again, from its first sample, and on past
+        // its first bar.
+        render_frames_left(&mut engine, RECORDING_STARTS - 30_000 + 10_000, usize::MAX);
+        assert_eq!(engine.looper_status().state, LooperState::Recording);
+        assert_eq!(engine.looper_position(), 10_000);
+        render_frames_left(&mut engine, BAR_AT_120 + 70_000, usize::MAX);
+        assert_eq!(engine.looper_position(), BAR_AT_120 as u64 + 80_000);
+
+        // Pressed 80,000 samples into bar 2, nearer its end: the loop closes
+        // there, 2 bars long, and each repeat counts from 0 again.
+        engine.press_looper();
+        render_frames_left(&mut engine, 16_000 + 5_000, usize::MAX);
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 2, false));
+        assert_eq!(engine.looper_position(), 5_000);
+        render_frames_left(&mut engine, 2 * BAR_AT_120 + 2_000, usize::MAX);
+        assert_eq!(engine.looper_position(), 7_000);
+
+        // Cleared, it is back to 0.
+        engine.clear_loop();
+        render_frames_left(&mut engine, 100, usize::MAX);
+        assert_eq!(engine.looper_position(), 0);
+
+        // A new count-in counts from its own press.
+        engine.press_looper();
+        render_frames_left(&mut engine, 12_000, usize::MAX);
+        assert_eq!(engine.looper_position(), 12_000);
+    }
+
+    #[test]
+    fn rust_keeps_a_copy_of_the_loop_s_notes() {
+        // While recording: A4 played and let go, C5 still held.
+        let start = RECORDING_STARTS;
+        let steps = [
+            (0, PressLooper),
+            (start + 10_000, NoteOn(A4)),
+            (start + 20_000, NoteOff(A4)),
+            (start + 60_000, NoteOn(C5)),
+        ];
+        let mut engine = Engine::new().unwrap();
+        play(&mut engine, &steps, start + 70_000);
+        let a4 = LoopNote {
+            note: A4,
+            start: 10_000,
+            end: Some(20_000),
+        };
+        let held_c5 = LoopNote {
+            note: C5,
+            start: 60_000,
+            end: None,
+        };
+        assert_eq!(first_layer_notes(&mut engine), vec![a4, held_c5]);
+
+        // Pressed in bar 1, the loop closes at its end, and C5, still held
+        // there, ends there too. Letting go of it later changes nothing.
+        engine.press_looper();
+        render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        engine.note_off(C5);
+        render_frames_left(&mut engine, 1_000, usize::MAX);
+        let c5 = LoopNote {
+            note: C5,
+            start: 60_000,
+            end: Some(BAR_AT_120 as u64),
+        };
+        assert_eq!(first_layer_notes(&mut engine), vec![a4, c5]);
+
+        // Esc forgets them.
+        engine.remove_newest_layer();
+        render_frames_left(&mut engine, 1_000, usize::MAX);
+        assert!(engine.loop_layers().is_empty());
+
+        // A new recording starts with only its own notes, even when the
+        // copy was last read before the old loop was cleared.
+        let mut engine = Engine::new().unwrap();
+        play(&mut engine, &steps, start + 70_000);
+        engine.loop_layers();
+        engine.clear_loop();
+        let again = [(0, PressLooper), (start + 4_000, NoteOn(E4))];
+        play(&mut engine, &again, start + 8_000);
+        let e4 = LoopNote {
+            note: E4,
+            start: 4_000,
+            end: None,
+        };
+        assert_eq!(first_layer_notes(&mut engine), vec![e4]);
+    }
+
+    #[test]
+    fn a_loop_closed_at_the_bar_line_just_passed_leaves_out_the_notes_after_it() {
+        // E4 starts in bar 1 and is still held. G4 starts just after bar 2
+        // does.
+        let start = RECORDING_STARTS;
+        let steps = [
+            (0, PressLooper),
+            (start + 50_000, NoteOn(E4)),
+            (start + BAR_AT_120 + 5_000, NoteOn(G4)),
+        ];
+        let mut engine = Engine::new().unwrap();
+        play(&mut engine, &steps, start + BAR_AT_120 + 10_000);
+        assert_eq!(first_layer_notes(&mut engine).len(), 2);
+
+        // Pressed 20,000 samples into bar 2, nearer its start: the loop
+        // closes where bar 2 started, 1 bar long. E4 ends on that bar line,
+        // and G4, played after it, is left out.
+        render_frames_left(&mut engine, 10_000, usize::MAX);
+        engine.press_looper();
+        render_frames_left(&mut engine, 10_000, usize::MAX);
+        let e4 = LoopNote {
+            note: E4,
+            start: 50_000,
+            end: Some(BAR_AT_120 as u64),
+        };
+        assert_eq!(first_layer_notes(&mut engine), vec![e4]);
+    }
+
+    #[test]
+    fn a_loop_plays_its_notes_on_the_same_samples_every_time_around() {
+        // Two notes in a 1-bar loop, counted from the loop's start. The
+        // press late in bar 1 closes the loop at its end.
+        let bar = [
+            (10_000, NoteOn(A4)),
+            (20_000, NoteOff(A4)),
+            (40_000, NoteOn(C5)),
+            (65_000, NoteOff(C5)),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..4 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 4 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(looper_engine.looper_status(), looper(LooperState::Looping, 1, false));
+    }
+
+    #[test]
+    fn a_loop_is_at_least_one_bar() {
+        // Pressed half a beat into bar 1, the nearest bar line is where
+        // recording started. A loop can't be empty, so it closes at the end
+        // of bar 1, and the A4 played after the press is in it.
+        let bar = [(30_000, NoteOn(A4)), (40_000, NoteOff(A4))];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 12_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(looper_engine.looper_status(), looper(LooperState::Looping, 1, false));
+    }
+
+    #[test]
+    fn pressing_a_little_early_records_on_to_the_bar_line() {
+        // Pressed 70,000 samples into bar 2, nearer its end than its start:
+        // recording goes on to the bar line, so the A4 played after the press
+        // is in the loop too. The loop is 2 bars.
+        let bars = [
+            (10_000, NoteOn(C5)),
+            (20_000, NoteOff(C5)),
+            (BAR_AT_120 + 75_000, NoteOn(A4)),
+            (BAR_AT_120 + 90_000, NoteOff(A4)),
+        ];
+        let start = RECORDING_STARTS;
+        let loop_length = 2 * BAR_AT_120;
+        let mut looped = vec![(0, PressLooper), (start + BAR_AT_120 + 70_000, PressLooper)];
+        looped.extend(moved(&bars, start));
+
+        let mut live = vec![(0, StartClick), (start + loop_length, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bars, start + time_around * loop_length));
+        }
+
+        let frames = start + 3 * loop_length;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(looper_engine.looper_status(), looper(LooperState::Looping, 2, false));
+    }
+
+    #[test]
+    fn recording_on_to_the_bar_line_still_shows_as_recording() {
+        // Pressed a little before the end of bar 2, the looper records on
+        // to the bar line, and the screen says recording, bar 2, until the
+        // loop plays.
+        let bar_line = RECORDING_STARTS + 2 * BAR_AT_120;
+        let steps = [(0, PressLooper), (RECORDING_STARTS + BAR_AT_120 + 70_000, PressLooper)];
+        let mut engine = Engine::new().unwrap();
+        play(&mut engine, &steps, bar_line);
+        assert_eq!(engine.looper_status(), looper(LooperState::Recording, 2, false));
+
+        render_frames_left(&mut engine, 1, usize::MAX);
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 2, false));
+    }
+
+    // Two bars recorded, counted from the loop's start.
+    const LATE_CLOSE_BARS: [(usize, Step); 7] = [
+        // Over before the press, and pressed again while held, the way a
+        // second chord key sharing it would.
+        (1_000, NoteOn(C5)),
+        (2_000, NoteOn(C5)),
+        (3_000, NoteOff(C5)),
+        // Held across the moment of the press.
+        (5_000, NoteOn(E4)),
+        (60_000, NoteOff(E4)),
+        // In bar 2.
+        (BAR_AT_120 + 30_000, NoteOn(A4)),
+        (BAR_AT_120 + 50_000, NoteOff(A4)),
+    ];
+
+    // Where bar 3 starts, and the press 20,000 samples into it.
+    const BAR_3: usize = RECORDING_STARTS + 2 * BAR_AT_120;
+    const LATE_PRESS: usize = BAR_3 + 20_000;
+
+    // Records LATE_CLOSE_BARS, plays G4 from bar 3's very first sample, then
+    // presses late.
+    fn late_close_steps() -> Vec<(usize, Step)> {
+        let mut steps = vec![
+            (0, PressLooper),
+            (BAR_3, NoteOn(G4)),
+            (BAR_3 + 10_000, NoteOff(G4)),
+            (LATE_PRESS, PressLooper),
+        ];
+        steps.extend(moved(&LATE_CLOSE_BARS, RECORDING_STARTS));
+        steps
+    }
+
+    #[test]
+    fn pressing_a_little_late_closes_on_the_bar_line_just_passed() {
+        // The press comes 20,000 samples into bar 3, nearer its start than
+        // its end. The loop closes on that bar line, 2 bars long, so it has
+        // already been playing for 20,000 samples: E4, which would be
+        // sounding by now, starts right away, and C5, already over, waits
+        // for the next time around. G4, played from bar 3's very first sample
+        // until before the press, is not in the loop.
+        let mut live = vec![
+            (0, StartClick),
+            (BAR_3, NoteOn(G4)),
+            (BAR_3 + 10_000, NoteOff(G4)),
+            (LATE_PRESS, StopClick),
+        ];
+        live.extend(moved(&LATE_CLOSE_BARS, RECORDING_STARTS));
+        // The first time around, from 20,000 samples in.
+        live.push((LATE_PRESS, NoteOn(E4)));
+        live.push((BAR_3 + 60_000, NoteOff(E4)));
+        live.extend(moved(&LATE_CLOSE_BARS[5..], BAR_3));
+        // Then all of it, twice more.
+        let loop_length = 2 * BAR_AT_120;
+        live.extend(moved(&LATE_CLOSE_BARS, BAR_3 + loop_length));
+        live.extend(moved(&LATE_CLOSE_BARS, BAR_3 + 2 * loop_length));
+
+        let frames = BAR_3 + 3 * loop_length;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &late_close_steps(), frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(looper_engine.looper_status(), looper(LooperState::Looping, 2, false));
+    }
+
+    #[test]
+    fn a_note_played_on_the_sample_recording_starts_is_recorded() {
+        // With 10 ms chunks at 120 beats per minute, every bar line falls on
+        // a chunk's first sample, so a note pressed just before beat 1 is
+        // heard from the very sample recording starts. It is in the loop.
+        let bar = [(0, NoteOn(A4)), (10_000, NoteOff(A4))];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn a_press_right_on_a_bar_line_closes_the_loop_there() {
+        // Pressed on the very sample bar 3 starts, the nearest bar line is
+        // that one. The loop is 2 bars long, and A4, its first note, starts
+        // right away.
+        let bars = [
+            (0, NoteOn(A4)),
+            (10_000, NoteOff(A4)),
+            (BAR_AT_120 + 20_000, NoteOn(C5)),
+            (BAR_AT_120 + 40_000, NoteOff(C5)),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (BAR_3, PressLooper)];
+        looped.extend(moved(&bars, start));
+
+        let loop_length = 2 * BAR_AT_120;
+        let mut live = vec![(0, StartClick), (BAR_3, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bars, start + time_around * loop_length));
+        }
+
+        let frames = start + 3 * loop_length;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(looper_engine.looper_status(), looper(LooperState::Looping, 2, false));
+    }
+
+    #[test]
+    fn loops_play_the_same_samples_however_the_sound_is_asked_for() {
+        // The speakers ask for sound a chunk at a time, and loop notes and
+        // bar lines fall anywhere inside a chunk. 7 ms chunks never line up
+        // with them, yet every sample must match a render made in one go.
+        let steps = late_close_steps();
+        let frames = BAR_3 + 4 * BAR_AT_120;
+        let mut whole = Engine::new().unwrap();
+        let mut chunked = Engine::new().unwrap();
+        let chunk = frames_in_ms(&chunked, 7);
+        let whole_wave = play(&mut whole, &steps, frames);
+        let chunked_wave = play_in_chunks(&mut chunked, &steps, frames, chunk);
+        assert_same_samples(&chunked_wave, &whole_wave);
+    }
+
+    #[test]
+    fn the_click_stops_once_the_loop_plays() {
+        // An empty 1-bar loop: the count-in and the bar recorded tick, then
+        // nothing does.
+        let mut engine = Engine::new().unwrap();
+        let steps = [(0, PressLooper), (RECORDING_STARTS + 80_000, PressLooper)];
+        let wave = play(&mut engine, &steps, RECORDING_STARTS + 4 * BAR_AT_120);
+
+        let mut expected = Vec::new();
+        for beat in 0..8 {
+            expected.push(beat * BEAT_AT_120);
+        }
+        assert_eq!(tick_starts(&wave), expected);
+    }
+
+    #[test]
+    fn a_loop_never_drifts_from_the_beat() {
+        // At 115 beats per minute a bar is 100,173.91... samples, so bars
+        // can't all be the same whole number of samples long: most are
+        // 100,174 and a few 100,173. Each time around starts on its bar's
+        // first sample, worked out by the clock from the start, so after 60
+        // times around the notes still land on the exact samples. E4, held
+        // when the loop closes, is let go right on each bar line, even after
+        // a bar a sample shorter than the loop.
+        let tempo = 115;
+        // The sample bar `n` starts on. The count-in is bar 0.
+        let bar_line = |n: usize| n * 4 * SAMPLES_PER_MINUTE / tempo;
+        let bar = [(1_000, NoteOn(A4)), (5_800, NoteOff(A4)), (80_000, NoteOn(E4))];
+        let start = bar_line(1);
+        let times_around = 60;
+
+        let mut looped = vec![(0, PressLooper), (start + 90_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+        // The live E4 is let go after the loop closes, so it isn't recorded.
+        looped.push((bar_line(2) + 20_000, NoteOff(E4)));
+
+        let mut live = vec![(0, StartClick)];
+        live.extend(moved(&bar, start));
+        live.push((bar_line(2), StopClick));
+        live.push((bar_line(2) + 20_000, NoteOff(E4)));
+        for n in 2..2 + times_around {
+            live.extend(moved(&bar, bar_line(n)));
+            live.push((bar_line(n + 1), NoteOff(E4)));
+        }
+
+        // Up to just before A4 would start again, so E4 is heard let go on
+        // the last bar line too.
+        let frames = bar_line(2 + times_around) + 1_000;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        looper_engine.set_tempo(115);
+        live_engine.set_tempo(115);
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn a_note_held_when_the_loop_closes_is_let_go_at_its_end() {
+        // A4 is still held when the loop closes, and let go 20,000 samples
+        // later. The loop lets go of it right at its end each time around,
+        // so it never keeps ringing.
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let looped = [
+            (0, PressLooper),
+            (start + 48_000, NoteOn(A4)),
+            (start + 80_000, PressLooper),
+            (first_time + 20_000, NoteOff(A4)),
+        ];
+
+        let mut live = vec![
+            (0, StartClick),
+            (start + 48_000, NoteOn(A4)),
+            (first_time, StopClick),
+            (first_time + 20_000, NoteOff(A4)),
+        ];
+        for time_around in 0..3 {
+            let bar = first_time + time_around * BAR_AT_120;
+            live.push((bar + 48_000, NoteOn(A4)));
+            live.push((bar + BAR_AT_120, NoteOff(A4)));
+        }
+
+        let frames = first_time + 3 * BAR_AT_120 + 20_000;
+        let mut looper_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn quick_and_repeated_notes_loop_exactly_as_played() {
+        // A4 is let go on the very sample it starts. C5 is pressed again
+        // while held, the way a second chord key sharing it would.
+        let bar = [
+            (10_000, NoteOn(A4)),
+            (10_000, NoteOff(A4)),
+            (20_000, NoteOn(C5)),
+            (30_000, NoteOn(C5)),
+            (40_000, NoteOff(C5)),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn letting_go_of_everything_ends_the_notes_being_recorded() {
+        // When the window loses focus every note is let go, and the loop
+        // lets go of them there too.
+        let bar = [(10_000, NoteOn(A4)), (10_000, NoteOn(C5)), (30_000, AllNotesOff)];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        live.extend(moved(&bar, start));
+        for time_around in 1..3 {
+            let bar_start = start + time_around * BAR_AT_120;
+            live.push((bar_start + 10_000, NoteOn(A4)));
+            live.push((bar_start + 10_000, NoteOn(C5)));
+            live.push((bar_start + 30_000, NoteOff(A4)));
+            live.push((bar_start + 30_000, NoteOff(C5)));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn losing_focus_lets_go_of_live_notes_but_the_loop_plays_on() {
+        // C5 is played live over the loop's A4, and the window loses focus
+        // while both sound: C5 is let go, just as if its key came up, and
+        // A4 plays on.
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let bar = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
+        let mut steps = vec![
+            (0, PressLooper),
+            (start + 80_000, PressLooper),
+            (first_time + 20_000, NoteOn(C5)),
+        ];
+        steps.extend(moved(&bar, start));
+        let mut lost_focus = steps.clone();
+        lost_focus.push((first_time + 40_000, AllNotesOff));
+        let mut let_go = steps.clone();
+        let_go.push((first_time + 40_000, NoteOff(C5)));
+
+        let frames = first_time + 2 * BAR_AT_120;
+        let mut lost_focus_engine = Engine::new().unwrap();
+        let mut let_go_engine = Engine::new().unwrap();
+        let lost_focus_wave = play(&mut lost_focus_engine, &lost_focus, frames);
+        let let_go_wave = play(&mut let_go_engine, &let_go, frames);
+        assert_same_samples(&lost_focus_wave, &let_go_wave);
+    }
+
+    #[test]
+    fn notes_played_before_the_count_in_s_last_quarter_beat_are_not_recorded() {
+        let start = RECORDING_STARTS;
+        let notes = [(30_000, NoteOn(C5)), (40_000, NoteOff(C5))];
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(notes);
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        live.extend(notes);
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn loop_notes_and_live_notes_never_cut_each_other_off() {
+        // The loop plays A4 from 1,000 to 60,000 samples into each bar.
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let mut steps = vec![
+            (0, PressLooper),
+            (start + 1_000, NoteOn(A4)),
+            (start + 60_000, NoteOff(A4)),
+            (start + 80_000, PressLooper),
+        ];
+        // The first time around, A4 is played live as well: once while the
+        // loop's A4 sounds, and once starting while it sounds and held after
+        // the loop lets go of its own.
+        steps.push((first_time + 20_000, NoteOn(A4)));
+        steps.push((first_time + 30_000, NoteOff(A4)));
+        steps.push((first_time + 50_000, NoteOn(A4)));
+        steps.push((first_time + 90_000, NoteOff(A4)));
+
+        let mut engine = Engine::new().unwrap();
+        let wave = play(&mut engine, &steps, first_time + BAR_AT_120);
+
+        // Once the first live A4 has faded out, the loop's A4 still sounds.
+        let release = frames_in_ms(&engine, RELEASE_MS);
+        let loop_alone = &wave[first_time + 30_000 + release + 100..first_time + 60_000];
+        assert_within_percent(peak(loop_alone), held_level(), 2.0);
+
+        // Once the loop's A4 has faded out, the held live A4 still sounds.
+        let live_alone = &wave[first_time + 60_000 + release + 100..first_time + 90_000];
+        assert_within_percent(peak(live_alone), held_level(), 2.0);
+    }
+
+    #[test]
+    fn esc_on_the_only_layer_stops_the_loop_and_forgets_it() {
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let bar = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
+        let mut looped = vec![
+            (0, PressLooper),
+            (start + 80_000, PressLooper),
+            (first_time + 30_000, RemoveNewest),
+        ];
+        looped.extend(moved(&bar, start));
+
+        // Esc lets go of the loop's A4, and nothing plays after it.
+        let mut live = vec![
+            (0, StartClick),
+            (first_time, StopClick),
+            (first_time + 10_000, NoteOn(A4)),
+            (first_time + 30_000, NoteOff(A4)),
+        ];
+        live.extend(moved(&bar, start));
+
+        let frames = first_time + 3 * BAR_AT_120;
+        let mut engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+
+        // The tempo is free again, and the next press counts in afresh at
+        // it: a beat at 125 is 23,040 samples, so recording starts on the
+        // fifth.
+        engine.speed_up();
+        assert_eq!(engine.tempo(), 125);
+        engine.press_looper();
+        let wave = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        assert_eq!(tick_starts(&wave), vec![0, 23_040, 46_080, 69_120, 92_160]);
+        assert_eq!(engine.looper_status(), looper(LooperState::Recording, 1, false));
+    }
+
+    #[test]
+    fn after_esc_the_click_starts_on_a_new_bar() {
+        // Esc stops the beat the looper started, so the click started
+        // afterwards begins a new bar right away, high tick first.
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+        render_left(&mut engine, 600);
+        engine.remove_newest_layer();
+        render_left(&mut engine, 100);
+        engine.start_click();
+        let wave = render_left(&mut engine, 100);
+
+        assert_eq!(tick_starts(&wave), vec![0]);
+        assert_note(&engine, tick_at(&engine, &wave, 0), HIGH_TICK_HZ);
+    }
+
+    #[test]
+    fn a_press_during_the_count_in_cancels_it() {
+        // Cancelled after beat 2 starts: no more ticks, and the tempo is
+        // free again.
+        let mut engine = Engine::new().unwrap();
+        let steps = [(0, PressLooper), (30_000, PressLooper)];
+        let wave = play(&mut engine, &steps, 2 * BAR_AT_120);
+        assert_eq!(tick_starts(&wave), vec![0, BEAT_AT_120]);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+
+        engine.speed_up();
+        assert_eq!(engine.tempo(), 125);
+    }
+
+    #[test]
+    fn a_press_while_closing_changes_nothing() {
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let bar = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+
+        // Recording on to the bar line, a press is ignored.
+        let mut pressed = looped.clone();
+        pressed.push((start + 90_000, PressLooper));
+
+        let frames = first_time + 3 * BAR_AT_120;
+        let mut engine = Engine::new().unwrap();
+        let mut pressed_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut engine, &looped, frames);
+        let pressed_wave = play(&mut pressed_engine, &pressed, frames);
+        assert_same_samples(&pressed_wave, &looped_wave);
+        assert_eq!(pressed_engine.looper_status(), looper(LooperState::Looping, 1, false));
+    }
+
+    #[test]
+    fn loop_notes_play_the_wave_chosen_when_they_start() {
+        // Switched to square after A4 has played once around: from then on,
+        // the loop's A4 plays square.
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let bar = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
+        let switch = (first_time + 80_000, SetWave(Wave::Square));
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper), switch];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![(0, StartClick), (first_time, StopClick), switch];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    // How many notes a loop holds. When it is changed there on purpose,
+    // change it here too.
+    const LOOP_NOTES: usize = 4096; // `max_notes` in engine/src/looper.h
+
+    #[test]
+    fn a_full_loop_keeps_4096_notes_and_plays_the_rest_live() {
+        // 4,096 short notes fill the loop, one every 7 samples. C5, the
+        // note after them, still sounds live but isn't recorded.
+        let mut bar = Vec::new();
+        for i in 0..LOOP_NOTES {
+            let note = C3 + (i % 24) as u8;
+            bar.push((7 * i, NoteOn(note)));
+            bar.push((7 * i + 3, NoteOff(note)));
+        }
+        let start = RECORDING_STARTS;
+        let mut looped = vec![
+            (0, PressLooper),
+            (start + 40_000, NoteOn(C5)),
+            (start + 45_000, NoteOff(C5)),
+            (start + 80_000, PressLooper),
+        ];
+        looped.extend(moved(&bar, start));
+
+        let mut live = vec![
+            (0, StartClick),
+            (start + 40_000, NoteOn(C5)),
+            (start + 45_000, NoteOff(C5)),
+            (start + BAR_AT_120, StopClick),
+        ];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn the_tempo_is_locked_while_the_looper_is_busy() {
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+
+        // Locked from the moment of the press, even before the engine has
+        // acted on it.
+        engine.speed_up();
+        assert_eq!(engine.tempo(), START_TEMPO);
+        let count_in = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        engine.slow_down();
+        assert_eq!(engine.tempo(), START_TEMPO);
+
+        // Asked directly, the engine keeps its beat as well.
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_tempo(engine.raw, 60) };
+        let recording = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        assert_eq!(tick_starts(&count_in), vec![0, 24_000, 48_000, 72_000]);
+        assert_eq!(tick_starts(&recording), vec![0, 24_000, 48_000, 72_000]);
+
+        // Esc unlocks it, once the engine has acted on it.
+        engine.remove_newest_layer();
+        engine.speed_up();
+        assert_eq!(engine.tempo(), START_TEMPO);
+        render_left(&mut engine, 10);
+        engine.speed_up();
+        assert_eq!(engine.tempo(), 125);
+    }
+
+    // Snap to beat (docs/adr/0021-a-looper-on-a-beat.md): each time around,
+    // the loop plays its notes moved to the nearest half beat, an eighth
+    // note. At 120 that is every 12,000 samples. The first time through
+    // sounds as played, since live notes are never moved.
+
+    // Records `played`, counted from the loop's start, into a 1-bar loop
+    // closed by a press `close_at` samples in, and plays it 3 times around.
+    // Checks every sample against playing it by hand: `played` the first
+    // time through, then `each_time` every time around.
+    fn assert_loop_plays(mut looper_engine: Engine, played: &[(usize, Step)], close_at: usize, each_time: &[(usize, Step)]) {
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + close_at, PressLooper)];
+        looped.extend(moved(played, start));
+
+        let mut live = vec![(0, StartClick)];
+        live.extend(moved(played, start));
+        live.push((start + BAR_AT_120, StopClick));
+        for time_around in 1..4 {
+            live.extend(moved(each_time, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 4 * BAR_AT_120;
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn each_time_around_a_note_starts_and_ends_on_the_nearest_half_beat() {
+        // A new engine snaps. A4 moves earlier at both ends, C5 starts
+        // earlier and ends later, and E4 moves later at both ends.
+        let played = [
+            (13_000, NoteOn(A4)),
+            (29_000, NoteOff(A4)),
+            (41_000, NoteOn(C5)),
+            (55_000, NoteOff(C5)),
+            (70_000, NoteOn(E4)),
+            (80_000, NoteOff(E4)),
+        ];
+        let each_time = [
+            (12_000, NoteOn(A4)),
+            (24_000, NoteOff(A4)),
+            (36_000, NoteOn(C5)),
+            (60_000, NoteOff(C5)),
+            (72_000, NoteOn(E4)),
+            (84_000, NoteOff(E4)),
+        ];
+        assert_loop_plays(Engine::new().unwrap(), &played, 85_000, &each_time);
+    }
+
+    #[test]
+    fn a_snapped_note_lasts_at_least_half_a_beat() {
+        // A quick tap would start and end on the same half beat, so it ends
+        // on the next one.
+        let played = [(25_000, NoteOn(A4)), (26_000, NoteOff(A4))];
+        let each_time = [(24_000, NoteOn(A4)), (36_000, NoteOff(A4))];
+        assert_loop_plays(Engine::new().unwrap(), &played, 85_000, &each_time);
+    }
+
+    #[test]
+    fn a_note_within_a_quarter_beat_of_the_loop_s_end_moves_round_to_beat_1() {
+        // At 40 beats per minute, the slowest, a bar is 288,000 samples, a
+        // half beat 36,000 and a quarter beat 18,000. That leaves time for
+        // a note played near the loop's end to fade out before the loop
+        // plays it again on beat 1: by hand, the two would share one voice.
+        //
+        // The loop ends 288,000 samples in. A4, 17,000 before that, is
+        // nearer the next time around's beat 1, so it plays there first
+        // thing, for half a beat. E4, 19,000 before, is nearer the last half
+        // beat, so it stays, and ends with the loop. Both are played after
+        // the press, while the loop records on to the bar line.
+        let bar = 288_000;
+        let start = bar;
+        let played = [
+            (108_000, NoteOn(C5)),
+            (144_000, NoteOff(C5)),
+            (bar - 19_000, NoteOn(E4)),
+            (bar - 17_500, NoteOff(E4)),
+            (bar - 17_000, NoteOn(A4)),
+            (bar - 16_000, NoteOff(A4)),
+        ];
+        let each_time = [
+            (0, NoteOn(A4)),
+            (36_000, NoteOff(A4)),
+            (108_000, NoteOn(C5)),
+            (144_000, NoteOff(C5)),
+            (252_000, NoteOn(E4)),
+            (bar, NoteOff(E4)),
+        ];
+
+        let mut looped = vec![(0, PressLooper), (start + 200_000, PressLooper)];
+        looped.extend(moved(&played, start));
+        let mut live = vec![(0, StartClick)];
+        live.extend(moved(&played, start));
+        live.push((start + bar, StopClick));
+        for time_around in 1..4 {
+            live.extend(moved(&each_time, start + time_around * bar));
+        }
+
+        let frames = start + 4 * bar;
+        let mut looper_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        looper_engine.set_tempo(40);
+        live_engine.set_tempo(40);
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn two_presses_of_one_key_never_cut_each_other_off() {
+        // Both A4s snap to beat 1. The first, a quick tap, would last half a
+        // beat, and its end would cut off the second: the synth plays a key
+        // on one voice. So it ends where the second starts, and the second
+        // plays on to its own end.
+        let played = [
+            (1_000, NoteOn(A4)),
+            (2_000, NoteOff(A4)),
+            (5_000, NoteOn(A4)),
+            (50_000, NoteOff(A4)),
+        ];
+        let each_time = [
+            (0, NoteOn(A4)),
+            (0, NoteOff(A4)),
+            (0, NoteOn(A4)),
+            (48_000, NoteOff(A4)),
+        ];
+        assert_loop_plays(Engine::new().unwrap(), &played, 85_000, &each_time);
+    }
+
+    #[test]
+    fn a_note_let_go_while_an_earlier_one_is_held_ends_first() {
+        // C5 is held like a chord under A4, which starts after it and ends
+        // before it.
+        let played = [
+            (1_000, NoteOn(C5)),
+            (13_000, NoteOn(A4)),
+            (23_000, NoteOff(A4)),
+            (47_000, NoteOff(C5)),
+        ];
+        let each_time = [
+            (0, NoteOn(C5)),
+            (12_000, NoteOn(A4)),
+            (24_000, NoteOff(A4)),
+            (48_000, NoteOff(C5)),
+        ];
+        assert_loop_plays(Engine::new().unwrap(), &played, 85_000, &each_time);
+    }
+
+    #[test]
+    fn a_note_played_a_little_before_recording_starts_counts_as_beat_1() {
+        // In the count-in's last quarter beat, 6,000 samples at 120, notes
+        // are recorded as played on beat 1 and keep their lengths: E4 even
+        // lets go before recording starts. C5, a little earlier, is not
+        // recorded. Snap is off, so the loop keeps the lengths as played.
+        let start = RECORDING_STARTS;
+        let played = [
+            (start - 7_000, NoteOn(C5)),
+            (start - 6_500, NoteOff(C5)),
+            (start - 6_000, NoteOn(E4)),
+            (start - 5_000, NoteOn(A4)),
+            (start - 3_000, NoteOff(E4)),
+            (start + 5_000, NoteOff(A4)),
+        ];
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(played);
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        live.extend(played);
+        for time_around in 1..4 {
+            let bar = start + time_around * BAR_AT_120;
+            live.push((bar, NoteOn(E4)));
+            live.push((bar, NoteOn(A4)));
+            live.push((bar + 3_000, NoteOff(E4)));
+            live.push((bar + 10_000, NoteOff(A4)));
+        }
+
+        let frames = start + 4 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+
+        // Rust's copy has them on beat 1 too.
+        let e4 = LoopNote {
+            note: E4,
+            start: 0,
+            end: Some(3_000),
+        };
+        let a4 = LoopNote {
+            note: A4,
+            start: 0,
+            end: Some(10_000),
+        };
+        assert_eq!(first_layer_notes(&mut looper_engine), vec![e4, a4]);
+    }
+
+    #[test]
+    fn an_early_note_and_the_same_key_again_never_cut_each_other_off() {
+        // A4 is pressed 5,000 samples early, so it moves to beat 1 keeping
+        // its length, and pressed again 2,000 samples in: the first would
+        // now end at 7,000, after the second starts. So it ends where the
+        // second starts, even with snap off.
+        let start = RECORDING_STARTS;
+        let played = [
+            (start - 5_000, NoteOn(A4)),
+            (start + 2_000, NoteOn(A4)),
+            (start + 20_000, NoteOff(A4)),
+        ];
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(played);
+
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        live.extend(played);
+        for time_around in 1..4 {
+            let bar = start + time_around * BAR_AT_120;
+            live.push((bar, NoteOn(A4)));
+            live.push((bar + 2_000, NoteOff(A4)));
+            live.push((bar + 2_000, NoteOn(A4)));
+            live.push((bar + 20_000, NoteOff(A4)));
+        }
+
+        let frames = start + 4 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn switching_snap_changes_a_loop_already_playing_right_away() {
+        // Snapped, A4 plays from 12,000 to 24,000 and C5 from 36,000 to
+        // 84,000.
+        let played = [
+            (13_000, NoteOn(A4)),
+            (29_000, NoteOff(A4)),
+            (31_000, NoteOn(C5)),
+            (89_000, NoteOff(C5)),
+        ];
+        let snapped = [
+            (12_000, NoteOn(A4)),
+            (24_000, NoteOff(A4)),
+            (36_000, NoteOn(C5)),
+            (84_000, NoteOff(C5)),
+        ];
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let second_time = first_time + BAR_AT_120;
+        let third_time = second_time + BAR_AT_120;
+
+        // Off 50,000 samples into the first time around, and on again
+        // 86,000 into the second.
+        let mut looped = vec![
+            (0, PressLooper),
+            (start + 85_000, PressLooper),
+            (first_time + 50_000, Snap(false)),
+            (second_time + 86_000, Snap(true)),
+        ];
+        looped.extend(moved(&played, start));
+
+        // At the first switch C5 should be sounding either way, so it is let
+        // go and started again, and ends where its timing as played ends it.
+        // At the second, as played it sounds until 89,000, but snapped it
+        // ended at 84,000, so it stops right away.
+        let mut live = vec![(0, StartClick), (first_time, StopClick)];
+        live.extend(moved(&played, start));
+        live.extend(moved(&snapped[..3], first_time));
+        live.push((first_time + 50_000, NoteOff(C5)));
+        live.push((first_time + 50_000, NoteOn(C5)));
+        live.push((first_time + 89_000, NoteOff(C5)));
+        live.extend(moved(&played[..3], second_time));
+        live.push((second_time + 86_000, NoteOff(C5)));
+        live.extend(moved(&snapped, third_time));
+
+        let frames = third_time + BAR_AT_120;
+        let mut looper_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn turning_snap_on_while_it_is_on_changes_nothing() {
+        // C5 sounds from 36,000 to 84,000 samples in each time around. The
+        // wave is switched while it sounds, and turning snap on again
+        // neither stops nor restarts it: it keeps the wave it started with.
+        let played = [(36_000, NoteOn(C5)), (84_000, NoteOff(C5))];
+        let start = RECORDING_STARTS;
+        let first_time = start + BAR_AT_120;
+        let mut looped = vec![
+            (0, PressLooper),
+            (start + 85_000, PressLooper),
+            (first_time + 40_000, SetWave(Wave::Square)),
+        ];
+        looped.extend(moved(&played, start));
+        let mut switched = looped.clone();
+        switched.push((first_time + 50_000, Snap(true)));
+
+        let frames = first_time + 2 * BAR_AT_120;
+        let mut looper_engine = Engine::new().unwrap();
+        let mut switched_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let switched_wave = play(&mut switched_engine, &switched, frames);
+        assert_same_samples(&switched_wave, &looped_wave);
+    }
+
+    // A note of the loop that has ended, for Rust's copy.
+    // Layers (docs/adr/0026-layers.md). Like the looper's other tests, most
+    // of these play the same music twice: once through the looper, with
+    // layers recorded over the loop, and once by hand. Each layer here
+    // starts on a bar line, where a click started by hand falls in step with
+    // the loop's beat. With snap off, the loop plays every note as played.
+
+    // The first loop of these tests: A4 from 10,000 to 60,000 samples into
+    // its one bar.
+    const BASE: [(usize, Step); 2] = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
+
+    // Where the loop first plays: the end of the bar recorded.
+    const LOOP_STARTS: usize = RECORDING_STARTS + BAR_AT_120;
+
+    // The sample time around `n` starts on, counting from 1.
+    fn time_around(n: usize) -> usize {
+        LOOP_STARTS + (n - 1) * BAR_AT_120
+    }
+
+    // The first loop through the looper: the second press, late in the bar,
+    // closes it at the bar's end.
+    fn base_looped() -> Vec<(usize, Step)> {
+        let mut steps = vec![(0, PressLooper), (RECORDING_STARTS + 80_000, PressLooper)];
+        steps.extend(moved(&BASE, RECORDING_STARTS));
+        steps
+    }
+
+    // The same by hand for `times` times around: the click through the
+    // count-in and the recording, and A4 played live every time.
+    fn base_by_hand(times: usize) -> Vec<(usize, Step)> {
+        let mut steps = vec![(0, StartClick), (LOOP_STARTS, StopClick)];
+        steps.extend(moved(&BASE, RECORDING_STARTS));
+        for n in 1..=times {
+            steps.extend(moved(&BASE, time_around(n)));
+        }
+        steps
+    }
+
+    // Renders both and checks every sample matches.
+    fn assert_layers_play(looped: &[(usize, Step)], live: &[(usize, Step)], frames: usize) -> Engine {
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, looped, frames);
+        let live_wave = play(&mut live_engine, live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        looper_engine
+    }
+
+    #[test]
+    fn a_layer_records_round_and_round_and_plays_from_the_next_time_around() {
+        // The layer starts as the second time around starts, and records
+        // through the third: C5 the first time, E4 the second, before C5.
+        // Each plays from the time around after the one it was played in,
+        // with the click on until the press that stops the layer.
+        let second = time_around(2);
+        let third = time_around(3);
+        let c5 = [(20_000, NoteOn(C5)), (40_000, NoteOff(C5))];
+        let e4 = [(5_000, NoteOn(E4)), (15_000, NoteOff(E4))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&c5, second));
+        looped.extend(moved(&e4, third));
+        looped.push((third + 70_000, PressLooper));
+
+        let mut live = base_by_hand(5);
+        live.push((second, StartClick));
+        live.push((third + 70_000, StopClick));
+        for n in 2..=5 {
+            live.extend(moved(&c5, time_around(n)));
+        }
+        for n in 3..=5 {
+            live.extend(moved(&e4, time_around(n)));
+        }
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(6));
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 1, false));
+
+        // Rust's copy: the layer's notes in the order they were played,
+        // counted from the loop's start.
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[1].notes, vec![ended(C5, 20_000, 40_000), ended(E4, 5_000, 15_000)]);
+        assert!(!layers[1].recording);
+    }
+
+    #[test]
+    fn recording_a_layer_shows_with_the_loop_s_length_and_place() {
+        // The first loop is turned all the way down, so only the click is
+        // heard.
+        let second = time_around(2);
+        let mut steps = base_looped();
+        steps.push((second, Volume(1, 0)));
+        steps.push((second + 30_000, PressLooper));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, second + 50_000);
+        assert_eq!(engine.looper_status(), looper(LooperState::Layering, 1, false));
+        assert_eq!(engine.looper_position(), 50_000);
+        assert!(engine.loop_layers()[1].recording);
+
+        // The click comes back on the next beat, 72,000 samples into the
+        // time around, and goes on every beat.
+        let wave = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        assert_eq!(tick_starts(&wave), vec![22_000, 46_000, 70_000, 94_000]);
+    }
+
+    #[test]
+    fn notes_held_when_a_layer_stops_record_until_let_go_but_never_past_the_loop_s_end() {
+        // E4 goes down in the layer and is held into the next time around:
+        // it is cut at the loop's end. G4 goes down before the press that
+        // stops the layer and up after it, and keeps its whole length.
+        let second = time_around(2);
+        let third = time_around(3);
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.push((second + 50_000, NoteOn(E4)));
+        looped.push((second + 60_000, NoteOn(G4)));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((second + 90_000, NoteOff(G4)));
+        looped.push((third + 30_000, NoteOff(E4)));
+
+        let mut live = base_by_hand(4);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        live.push((second + 50_000, NoteOn(E4)));
+        live.push((second + 60_000, NoteOn(G4)));
+        live.push((second + 90_000, NoteOff(G4)));
+        live.push((third + 30_000, NoteOff(E4)));
+        for n in 3..=4 {
+            let at = time_around(n);
+            live.push((at + 50_000, NoteOn(E4)));
+            live.push((at + BAR_AT_120, NoteOff(E4)));
+            live.push((at + 60_000, NoteOn(G4)));
+            live.push((at + 90_000, NoteOff(G4)));
+        }
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(5));
+        let layers = engine.loop_layers().to_vec();
+        let loop_end = BAR_AT_120 as u64;
+        assert_eq!(layers[1].notes, vec![ended(E4, 50_000, loop_end), ended(G4, 60_000, 90_000)]);
+    }
+
+    #[test]
+    fn layers_play_the_same_key_on_their_own_voices() {
+        // The first loop plays A4 from 10,000 to 60,000, and a layer plays it
+        // from 28,800 to 76,800, while the first is still sounding. Each
+        // keeps its own voice, so neither cuts the other off. By hand, the
+        // second A4 is played by the song, which has voices of its own too.
+        const SECOND_A4: &[TestChord] = &[chord(&[A4], 1000)];
+        let second = time_around(2);
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.push((second + 28_800, NoteOn(A4)));
+        looped.push((second + 76_800, NoteOff(A4)));
+        looped.push((second + 90_000, PressLooper));
+
+        let mut live = base_by_hand(4);
+        live.push((second, StartClick));
+        live.push((second + 90_000, StopClick));
+        for n in 2..=4 {
+            live.push((time_around(n) + 28_800, PlaySong(SECOND_A4)));
+        }
+
+        assert_layers_play(&looped, &live, time_around(5));
+    }
+
+    #[test]
+    fn esc_removes_one_layer_and_the_others_play_on() {
+        // A layer of C5 held under a quicker E4 over the first loop's A4.
+        // Then layer 1, the first loop, is removed while its A4 sounds: A4
+        // lets go at once and the layer plays on, E4 still letting go before
+        // C5. Then the newest, now the only one, goes too, and the loop is
+        // cleared.
+        let second = time_around(2);
+        let third = time_around(3);
+        let fourth = time_around(4);
+        let layer = [
+            (20_000, NoteOn(C5)),
+            (25_000, NoteOn(E4)),
+            (35_000, NoteOff(E4)),
+            (60_000, NoteOff(C5)),
+        ];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&layer, second));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((third + 30_000, RemoveLayer(1)));
+        looped.push((fourth + 30_000, RemoveNewest));
+
+        let mut live = base_by_hand(2);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        live.extend(moved(&layer, second));
+        live.push((third + 10_000, NoteOn(A4)));
+        live.push((third + 30_000, NoteOff(A4)));
+        live.extend(moved(&layer, third));
+        live.push((fourth + 20_000, NoteOn(C5)));
+        live.push((fourth + 25_000, NoteOn(E4)));
+        live.push((fourth + 30_000, NoteOff(C5)));
+        live.push((fourth + 30_000, NoteOff(E4)));
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(6));
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+        assert!(engine.loop_layers().is_empty());
+        engine.speed_up();
+        assert_eq!(engine.tempo(), 125);
+    }
+
+    #[test]
+    fn removing_a_layer_that_doesn_t_exist_changes_nothing() {
+        // Rust only asks for layers it knows of, but its copy can be a chunk
+        // behind the engine. Removing layer 3 of 2 while both sound leaves
+        // them playing.
+        let second = time_around(2);
+        let third = time_around(3);
+        let c5 = [(20_000, NoteOn(C5)), (40_000, NoteOff(C5))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&c5, second));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((third + 30_000, RemoveLayer(3)));
+
+        let mut live = base_by_hand(4);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        for n in 2..=4 {
+            live.extend(moved(&c5, time_around(n)));
+        }
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(5));
+        assert_eq!(engine.loop_layers().len(), 2);
+    }
+
+    #[test]
+    fn after_a_removal_each_layer_keeps_its_own_voices_and_volume() {
+        // A layer of C5 over the first loop's A4. The first loop is turned
+        // all the way down once its A4 has faded, then removed. A new layer
+        // then records E4 on the voices and volume the first loop had: it
+        // plays as loud as played. Then layer 1, now C5's, is turned all the
+        // way down: C5 goes quiet from its first sample, and E4 plays on.
+        // The quiet C5 still takes a voice, so by hand E4 would land on
+        // another voice and phase: the fifth time around is checked by
+        // loudness instead of sample for sample.
+        let second = time_around(2);
+        let third = time_around(3);
+        let fourth = time_around(4);
+        let fifth = time_around(5);
+        let c5 = [(20_000, NoteOn(C5)), (40_000, NoteOff(C5))];
+        let e4 = [(50_000, NoteOn(E4)), (60_000, NoteOff(E4))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&c5, second));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((third + 80_000, Volume(1, 0)));
+        looped.push((third + 90_000, RemoveLayer(1)));
+        looped.push((fourth, PressLooper));
+        looped.extend(moved(&e4, fourth));
+        looped.push((fourth + 70_000, PressLooper));
+        looped.push((fifth, Volume(1, 0)));
+
+        let mut live = base_by_hand(3);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        live.push((fourth, StartClick));
+        live.push((fourth + 70_000, StopClick));
+        for n in 2..=4 {
+            live.extend(moved(&c5, time_around(n)));
+        }
+        live.extend(moved(&e4, fourth));
+
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, time_around(6));
+        let live_wave = play(&mut live_engine, &live, fifth);
+        assert_same_samples(&looped_wave[..fifth], &live_wave);
+
+        // C5's place in the fifth time around is silent.
+        let c5_place = &looped_wave[fifth + 20_000..fifth + 40_000];
+        assert_eq!(peak(c5_place), 0.0);
+
+        // E4 is as loud as played, give or take 2%.
+        let e4_looped = peak(&looped_wave[fifth + 50_000..fifth + 60_000]);
+        assert_within_percent(e4_looped, held_level(), 2.0);
+
+        assert_eq!(volumes_of(&mut looper_engine), vec![0, FULL_VOLUME]);
+    }
+
+    #[test]
+    fn live_notes_play_as_loud_as_played_whatever_a_layer_s_volume() {
+        // The first loop is turned down to half before its A4 plays, and C5
+        // is played live once A4 has faded, on the voice A4 had. By hand A4
+        // plays at full volume, so the two only match once it has faded: C5
+        // is as loud as played from its first sample.
+        let first = LOOP_STARTS;
+        let c5 = [(80_000, NoteOn(C5)), (90_000, NoteOff(C5))];
+        let mut looped = base_looped();
+        looped.push((first, Volume(1, 50)));
+        looped.extend(moved(&c5, first));
+        let mut live = base_by_hand(1);
+        live.extend(moved(&c5, first));
+
+        let mut looper_engine = engine_without_snap();
+        let mut live_engine = Engine::new().unwrap();
+        let looped_wave = play(&mut looper_engine, &looped, time_around(2));
+        let live_wave = play(&mut live_engine, &live, time_around(2));
+
+        // A4 at half, give or take 2%.
+        let half = peak(&looped_wave[first + 20_000..first + 50_000]);
+        let full = peak(&live_wave[first + 20_000..first + 50_000]);
+        assert_within_percent(half, full / 2.0, 2.0);
+
+        // A4 lets go 60,000 samples in and fades for 14,400.
+        let faded = first + 75_000;
+        assert_same_samples(&looped_wave[faded..], &live_wave[faded..]);
+    }
+
+    #[test]
+    fn the_snap_switch_moves_every_layer_but_not_what_is_being_recorded() {
+        // Layer 2 holds C5 from 41,000 to 50,000 samples in. Layer 3 is being
+        // recorded, with E4 played from 38,000 to 42,000 this time around,
+        // when snap goes on 44,000 samples in. Like closing the loop at a bar
+        // line, the notes that should be sounding by then start again: A4,
+        // snapped to 12,000 to 60,000, and C5, snapped to 36,000 to 48,000.
+        // E4 only plays from the next time around, snapped to 36,000 to
+        // 48,000 too.
+        let second = time_around(2);
+        let third = time_around(3);
+        let c5 = [(41_000, NoteOn(C5)), (50_000, NoteOff(C5))];
+        let e4 = [(38_000, NoteOn(E4)), (42_000, NoteOff(E4))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&c5, second));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((third, PressLooper));
+        looped.extend(moved(&e4, third));
+        looped.push((third + 44_000, Snap(true)));
+        looped.push((third + 70_000, PressLooper));
+
+        let mut live = base_by_hand(2);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        live.extend(moved(&c5, second));
+        live.push((third, StartClick));
+        live.push((third + 70_000, StopClick));
+        live.push((third + 10_000, NoteOn(A4)));
+        live.extend(moved(&e4, third));
+        live.push((third + 41_000, NoteOn(C5)));
+        live.push((third + 44_000, NoteOff(A4)));
+        live.push((third + 44_000, NoteOff(C5)));
+        live.push((third + 44_000, NoteOn(A4)));
+        live.push((third + 44_000, NoteOn(C5)));
+        live.push((third + 48_000, NoteOff(C5)));
+        live.push((third + 60_000, NoteOff(A4)));
+        let snapped = [
+            (12_000, NoteOn(A4)),
+            (36_000, NoteOn(C5)),
+            (36_000, NoteOn(E4)),
+            (48_000, NoteOff(C5)),
+            (48_000, NoteOff(E4)),
+            (60_000, NoteOff(A4)),
+        ];
+        for n in 4..=5 {
+            live.extend(moved(&snapped, time_around(n)));
+        }
+
+        assert_layers_play(&looped, &live, time_around(6));
+    }
+
+    // Each layer's volume in Rust's copy, oldest first.
+    fn volumes_of(engine: &mut Engine) -> Vec<u32> {
+        let mut volumes = Vec::new();
+        for layer in engine.loop_layers() {
+            volumes.push(layer.volume);
+        }
+        volumes
+    }
+
+    #[test]
+    fn removing_the_layer_being_recorded_stops_the_recording() {
+        let second = time_around(2);
+        let mut steps = base_looped();
+        steps.push((second, PressLooper));
+        steps.push((second + 20_000, NoteOn(C5)));
+        steps.push((second + 30_000, RemoveNewest));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, second + 40_000);
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 1, false));
+        assert_eq!(engine.loop_layers().len(), 1);
+
+        // Nothing more is recorded.
+        engine.note_on(E4, VELOCITY);
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.loop_layers()[0].notes, vec![ended(A4, 10_000, 60_000)]);
+
+        // C5 is still held, but the layer it was recorded in is gone. So
+        // once a new layer records G4, letting go of C5 leaves G4 held.
+        engine.press_looper();
+        render_frames_left(&mut engine, 10, usize::MAX);
+        engine.note_on(G4, VELOCITY);
+        render_frames_left(&mut engine, 10, usize::MAX);
+        engine.note_off(C5);
+        render_frames_left(&mut engine, 10, usize::MAX);
+        let g4 = LoopNote {
+            note: G4,
+            start: 40_020,
+            end: None,
+        };
+        assert_eq!(engine.loop_layers()[1].notes, vec![g4]);
+    }
+
+    #[test]
+    fn a_note_held_while_an_earlier_layer_is_removed_keeps_its_whole_length() {
+        // E4 goes down in the layer being recorded, and the first loop is
+        // removed while it is held. The layer's notes move up into the gap,
+        // and E4 still ends where its key is let go.
+        let second = time_around(2);
+        let e4 = [(20_000, NoteOn(E4)), (50_000, NoteOff(E4))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&e4, second));
+        looped.push((second + 30_000, RemoveLayer(1)));
+        looped.push((second + 70_000, PressLooper));
+
+        let mut live = base_by_hand(1);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        live.push((second + 10_000, NoteOn(A4)));
+        live.push((second + 30_000, NoteOff(A4)));
+        for n in 2..=4 {
+            live.extend(moved(&e4, time_around(n)));
+        }
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(5));
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].notes, vec![ended(E4, 20_000, 50_000)]);
+    }
+
+    #[test]
+    fn a_note_still_held_as_the_next_layer_starts_ends_in_its_own_layer() {
+        // G4 goes down in a layer, which is stopped, and the next one started,
+        // while G4 is held. Letting go of it ends it in the layer it was
+        // played in, and the new one stays empty.
+        let second = time_around(2);
+        let mut steps = base_looped();
+        steps.push((second, PressLooper));
+        steps.push((second + 60_000, NoteOn(G4)));
+        steps.push((second + 70_000, PressLooper));
+        steps.push((second + 75_000, PressLooper));
+        steps.push((second + 90_000, NoteOff(G4)));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, second + 95_000);
+
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[1].notes, vec![ended(G4, 60_000, 90_000)]);
+        assert!(layers[2].notes.is_empty());
+        assert!(layers[2].recording);
+    }
+
+    #[test]
+    fn a_layer_stopped_with_no_notes_is_dropped_and_clears_the_loop_if_it_was_the_only_one() {
+        let second = time_around(2);
+        let mut steps = base_looped();
+        // Started and stopped with nothing played: dropped.
+        steps.push((second, PressLooper));
+        steps.push((second + 10_000, PressLooper));
+        // Started again, and the first loop removed while it records.
+        steps.push((second + 20_000, PressLooper));
+        steps.push((second + 30_000, RemoveLayer(1)));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, second + 40_000);
+        assert_eq!(engine.looper_status(), looper(LooperState::Layering, 1, false));
+        assert_eq!(engine.take_looper_message(), Some(String::from("Nothing played, no layer added")));
+        assert_eq!(engine.loop_layers().len(), 1);
+        assert!(engine.loop_layers()[0].recording);
+
+        // Stopped with nothing played, it was the only layer: the loop is
+        // cleared.
+        engine.press_looper();
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+        assert!(engine.loop_layers().is_empty());
+    }
+
+    #[test]
+    fn a_loop_holds_at_most_8_layers() {
+        // Each layer records one C5 from the start of a time around and
+        // stops half a bar in.
+        let mut steps = base_looped();
+        for n in 2..=8 {
+            let at = time_around(n);
+            steps.push((at, PressLooper));
+            steps.push((at + 10_000, NoteOn(C5)));
+            steps.push((at + 20_000, NoteOff(C5)));
+            steps.push((at + 50_000, PressLooper));
+        }
+        let ninth = time_around(9);
+        steps.push((ninth, PressLooper));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, ninth + 10_000);
+        assert_eq!(engine.loop_layers().len(), 8);
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 1, false));
+        assert_eq!(engine.take_looper_message(), Some(String::from("8 layers is the most, Esc removes one")));
+
+        // Once one goes, a new one can start. The eighth is the C API's
+        // highest number.
+        engine.remove_layer(8);
+        engine.press_looper();
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.looper_status(), looper(LooperState::Layering, 1, false));
+        assert_eq!(engine.loop_layers().len(), 8);
+    }
+
+    #[test]
+    fn rust_keeps_each_layer_s_notes_and_volume_as_layers_go() {
+        // Three layers: the first loop's A4, then C5, then E4. Layer 2 is
+        // turned down, then layer 1 removed: the others move up with their
+        // notes and volumes.
+        let second = time_around(2);
+        let third = time_around(3);
+        let mut steps = base_looped();
+        steps.push((second, PressLooper));
+        steps.push((second + 20_000, NoteOn(C5)));
+        steps.push((second + 40_000, NoteOff(C5)));
+        steps.push((second + 50_000, PressLooper));
+        steps.push((third, PressLooper));
+        steps.push((third + 50_000, NoteOn(E4)));
+        steps.push((third + 60_000, NoteOff(E4)));
+        steps.push((third + 70_000, PressLooper));
+        steps.push((third + 80_000, Volume(2, 30)));
+        steps.push((third + 90_000, RemoveLayer(1)));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &steps, time_around(4));
+
+        let c5_layer = LoopLayer {
+            notes: vec![ended(C5, 20_000, 40_000)],
+            volume: 30,
+            recording: false,
+        };
+        let e4_layer = LoopLayer {
+            notes: vec![ended(E4, 50_000, 60_000)],
+            volume: FULL_VOLUME,
+            recording: false,
+        };
+        assert_eq!(engine.loop_layers().to_vec(), vec![c5_layer, e4_layer]);
+    }
+
+    #[test]
+    fn a_layer_s_volume_turns_its_notes_down_without_a_click() {
+        // The first loop holds A4 from beat 1 to 90,000 samples in. The
+        // first time around, it is turned down to half 40,000 samples in,
+        // the next time around, to nothing, and the time after, back to
+        // full.
+        let loop_a4 = [(0, NoteOn(A4)), (90_000, NoteOff(A4))];
+        let mut steps = vec![(0, PressLooper), (RECORDING_STARTS + 80_000, PressLooper)];
+        steps.extend(moved(&loop_a4, RECORDING_STARTS));
+        steps.push((LOOP_STARTS + 40_000, Volume(1, 50)));
+        steps.push((time_around(2), Volume(1, 0)));
+        steps.push((time_around(3), Volume(1, FULL_VOLUME)));
+        let mut engine = engine_without_snap();
+        let wave = play(&mut engine, &steps, time_around(4));
+
+        // A wave's samples can fall a little either side of its peak, so
+        // these are give or take 2%.
+        let first = LOOP_STARTS;
+        let full = peak(&wave[first + 20_000..first + 40_000]);
+        let half = peak(&wave[first + 41_000..first + 80_000]);
+        assert_within_percent(full, held_level(), 2.0);
+        assert_within_percent(half, full / 2.0, 2.0);
+
+        // It eases there over 10 ms, so no sample moves much further from
+        // the one before than the wave itself does at full volume. Halved at
+        // once, A4 would jump by half its height, 13 times as far.
+        let steepest = |samples: &[f32]| {
+            let mut most: f32 = 0.0;
+            for pair in samples.windows(2) {
+                most = most.max((pair[1] - pair[0]).abs());
+            }
+            most
+        };
+        let steady = steepest(&wave[first + 20_000..first + 40_000]);
+        let turned = steepest(&wave[first + 39_000..first + 42_000]);
+        assert!(turned <= steady * 1.5, "turned: {turned}, steady: {steady}");
+
+        // Turned all the way down, A4 still plays, silently.
+        let second = time_around(2);
+        assert_eq!(peak(&wave[second + 1_000..second + 90_000]), 0.0);
+
+        // And turned back up, as loud as played.
+        let third = time_around(3);
+        assert_within_percent(peak(&wave[third + 20_000..third + 40_000]), held_level(), 2.0);
+    }
+
+    fn ended(note: u8, start: u64, end: u64) -> LoopNote {
+        LoopNote {
+            note,
+            start,
+            end: Some(end),
+        }
+    }
+
+    #[test]
+    fn rust_asks_the_engine_where_the_loop_plays_its_notes() {
+        let played = [
+            ended(A4, 13_000, 29_000),
+            ended(E4, 25_000, 26_000),
+            ended(G4, 61_000, 70_000),
+            ended(C5, 91_000, 94_000),
+        ];
+
+        // Snapped, C5 moves round to beat 1 and plays first, and E4 lasts
+        // half a beat.
+        let mut engine = Engine::new().unwrap();
+        let snapped = vec![
+            ended(C5, 0, 12_000),
+            ended(A4, 12_000, 24_000),
+            ended(E4, 24_000, 36_000),
+            ended(G4, 60_000, 72_000),
+        ];
+        assert_eq!(engine.plan_loop(&played, 1), snapped);
+
+        // A note still held counts as ending where it starts, so snapped it
+        // lasts half a beat.
+        let held = [LoopNote {
+            note: A4,
+            start: 13_000,
+            end: None,
+        }];
+        assert_eq!(engine.plan_loop(&held, 1), vec![ended(A4, 12_000, 24_000)]);
+
+        // A loop of no bars, a note outside MIDI's range or more notes than
+        // a loop holds can't be worked out, so the notes come back as they
+        // are.
+        assert_eq!(engine.plan_loop(&played, 0), played.to_vec());
+        let too_high = [ended(200, 13_000, 29_000)];
+        assert_eq!(engine.plan_loop(&too_high, 1), too_high.to_vec());
+        let mut too_many = Vec::new();
+        for i in 0..LOOP_NOTES as u64 + 1 {
+            too_many.push(ended(A4, 1_000 + i, 2_000 + i));
+        }
+        assert_eq!(engine.plan_loop(&too_many, 1), too_many);
+
+        // With snap off, they play as played, and a note still held lasts
+        // no time.
+        engine.set_snap(false);
+        assert_eq!(engine.plan_loop(&played, 1), played.to_vec());
+        assert_eq!(engine.plan_loop(&held, 1), vec![ended(A4, 13_000, 13_000)]);
+
+        // At 115 a half beat is 12,521.74 samples, and each one starts on
+        // the whole sample before: half beat 1 on 12,521, and 2 on 25,043.
+        let mut engine = Engine::new().unwrap();
+        engine.set_tempo(115);
+        assert_eq!(engine.plan_loop(&played[..1], 1), vec![ended(A4, 12_521, 25_043)]);
+    }
+
+    #[test]
+    fn the_plan_never_depends_on_the_order_notes_were_played_in() {
+        // A layer recorded round and round can hold notes that snap to the
+        // same half beat, played in any order. Notes that start together go
+        // from the one that ends first, then from the lowest. Of two A4s,
+        // the shorter is cut off where the longer starts, so the longer is
+        // heard.
+        let long_a4 = ended(A4, 13_000, 40_000);
+        let short_a4 = ended(A4, 11_000, 20_000);
+        let e4 = ended(E4, 12_500, 20_000);
+        let planned = vec![ended(E4, 12_000, 24_000), ended(A4, 12_000, 12_000), ended(A4, 12_000, 36_000)];
+
+        let engine = Engine::new().unwrap();
+        let orders = [
+            [long_a4, short_a4, e4],
+            [long_a4, e4, short_a4],
+            [short_a4, long_a4, e4],
+            [short_a4, e4, long_a4],
+            [e4, long_a4, short_a4],
+            [e4, short_a4, long_a4],
+        ];
+        for order in orders {
+            assert_eq!(engine.plan_loop(&order, 1), planned);
+        }
+    }
+
+    // Compose's song (docs/adr/0022-compose-as-a-tape.md). Like the looper's
+    // tests, most of these play the same music twice: once as a song, and
+    // once by hand, with every chord's notes played live on the exact
+    // samples the song should play them. Every sample must match. That shows
+    // each chord starts and lets go on exactly the right sample, as loud and
+    // on the same wave as live, however the sound is asked for.
+
+    // How many samples the engine makes in a millisecond.
+    const SAMPLES_PER_MS: usize = 48;
+
+    // How many samples a note takes to fade out once let go: 300 ms.
+    const RELEASE_SAMPLES: usize = RELEASE_MS as usize * SAMPLES_PER_MS;
+
+    const E3: u8 = 52;
+
+    // Chords by their notes. Am shares C3 and E3 with C.
+    const C_CHORD: &[u8] = &[C3, E3, 55]; // C3 E3 G3
+    const AM_CHORD: &[u8] = &[45, C3, E3]; // A2 C3 E3
+    const F_CHORD: &[u8] = &[41, 45, C3]; // F2 A2 C3
+    const G_CHORD: &[u8] = &[43, 47, 50]; // G2 B2 D3
+
+    // A chord of a song in these tests: its notes and how long it was held.
+    #[derive(Clone, Copy)]
+    struct TestChord {
+        notes: &'static [u8],
+        ms: u64,
+    }
+
+    const fn chord(notes: &'static [u8], ms: u64) -> TestChord {
+        TestChord { notes, ms }
+    }
+
+    // Four chords whose ends fall partway into 10 ms chunks, the size the
+    // speakers ask for.
+    const SONG: &[TestChord] = &[
+        chord(C_CHORD, 1001),
+        chord(AM_CHORD, 753),
+        chord(F_CHORD, 1499),
+        chord(G_CHORD, 667),
+    ];
+
+    // A test song as the engine takes it, every chord as hard as VELOCITY.
+    fn song_chords(song: &[TestChord]) -> Vec<SongChord> {
+        let mut chords = Vec::new();
+        for test_chord in song {
+            chords.push(SongChord {
+                notes: test_chord.notes.to_vec(),
+                velocity: VELOCITY,
+                length_ms: test_chord.ms,
+            });
+        }
+        chords
+    }
+
+    // How many samples `song` lasts.
+    fn song_samples(song: &[TestChord]) -> usize {
+        let mut samples = 0;
+        for test_chord in song {
+            samples += test_chord.ms as usize * SAMPLES_PER_MS;
+        }
+        samples
+    }
+
+    // `song` played by hand from sample `at`: on the sample each chord
+    // ends, its notes are let go, then the next chord's notes start.
+    fn by_hand(song: &[TestChord], at: usize) -> Vec<(usize, Step)> {
+        let mut steps = Vec::new();
+        let mut start = at;
+        for test_chord in song {
+            for note in test_chord.notes {
+                steps.push((start, NoteOn(*note)));
+            }
+            let end = start + test_chord.ms as usize * SAMPLES_PER_MS;
+            for note in test_chord.notes {
+                steps.push((end, NoteOff(*note)));
+            }
+            start = end;
+        }
+        steps
+    }
+
+    // `steps` without the ones on sample `at` or after it.
+    fn before(steps: &[(usize, Step)], at: usize) -> Vec<(usize, Step)> {
+        let mut kept = Vec::new();
+        for (step_at, step) in steps {
+            if *step_at < at {
+                kept.push((*step_at, *step));
+            }
+        }
+        kept
+    }
+
+    fn place(chord: usize, ms_in: u64) -> Option<SongPlace> {
+        Some(SongPlace { chord, ms_in })
+    }
+
+    #[test]
+    fn a_song_plays_each_chord_for_its_length_like_playing_it_by_hand() {
+        // Started 1,000 samples in, and rendered in one go, in 10 ms chunks
+        // and in odd-sized ones, with time left at the end for G to fade.
+        let frames = 1000 + song_samples(SONG) + RELEASE_SAMPLES + 1000;
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &by_hand(SONG, 1000), frames);
+        assert!(peak(&live_wave) > 0.0);
+
+        for chunk in [usize::MAX, 480, 337] {
+            let mut song_engine = Engine::new().unwrap();
+            let song_wave = play_in_chunks(&mut song_engine, &[(1000, PlaySong(SONG))], frames, chunk);
+            assert_same_samples(&song_wave, &live_wave);
+        }
+    }
+
+    #[test]
+    fn a_chord_held_2000_ms_lets_go_on_sample_96000() {
+        // 48 samples a millisecond.
+        let mut song_engine = Engine::new().unwrap();
+        song_engine.play_song(&song_chords(&[chord(C_CHORD, 2000)])).unwrap();
+        let song_wave = play(&mut song_engine, &[], 120_000);
+
+        let mut live = Vec::new();
+        for note in C_CHORD {
+            live.push((0, NoteOn(*note)));
+            live.push((96_000, NoteOff(*note)));
+        }
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &live, 120_000);
+        assert_same_samples(&song_wave, &live_wave);
+    }
+
+    #[test]
+    fn chords_that_share_notes_play_them_again() {
+        // C into Am into C: C3 and E3 let go and start again each time, the
+        // way they do when one chord key is let go just as the next is
+        // pressed.
+        const SHARING: &[TestChord] = &[chord(C_CHORD, 500), chord(AM_CHORD, 500), chord(C_CHORD, 500)];
+        let frames = song_samples(SHARING) + RELEASE_SAMPLES;
+        let mut song_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let song_wave = play_in_chunks(&mut song_engine, &[(0, PlaySong(SHARING))], frames, 480);
+        let live_wave = play(&mut live_engine, &by_hand(SHARING, 0), frames);
+        assert_same_samples(&song_wave, &live_wave);
+    }
+
+    #[test]
+    fn a_chord_0_ms_long_starts_and_lets_go_on_the_same_sample() {
+        // A chord added the moment it was pressed has no length yet: first,
+        // in the middle and last.
+        const WITH_EMPTY: &[TestChord] = &[
+            chord(G_CHORD, 0),
+            chord(C_CHORD, 500),
+            chord(F_CHORD, 0),
+            chord(AM_CHORD, 500),
+            chord(G_CHORD, 0),
+        ];
+        let frames = song_samples(WITH_EMPTY) + RELEASE_SAMPLES;
+        let mut song_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let song_wave = play_in_chunks(&mut song_engine, &[(0, PlaySong(WITH_EMPTY))], frames, 480);
+        let live_wave = play(&mut live_engine, &by_hand(WITH_EMPTY, 0), frames);
+        assert_same_samples(&song_wave, &live_wave);
+    }
+
+    #[test]
+    fn stopping_lets_go_of_the_chord_playing() {
+        // Stopped 200 ms into Am: Am fades out the way it does when its key
+        // is let go, and F never plays.
+        let stop = 1000 + (1001 + 200) * SAMPLES_PER_MS;
+        let mut live = before(&by_hand(SONG, 1000), stop);
+        live.push((stop, AllNotesOff));
+        let song = [(1000, PlaySong(SONG)), (stop, StopSong)];
+
+        let frames = 1000 + song_samples(SONG) + RELEASE_SAMPLES;
+        let mut song_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let song_wave = play_in_chunks(&mut song_engine, &song, frames, 480);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&song_wave, &live_wave);
+        assert_eq!(song_engine.song_place(), None);
+    }
+
+    #[test]
+    fn playing_again_starts_over() {
+        // Played again 200 ms into Am: Am lets go, and C starts again right
+        // there.
+        let again = 1000 + (1001 + 200) * SAMPLES_PER_MS;
+        let mut live = before(&by_hand(SONG, 1000), again);
+        live.push((again, AllNotesOff));
+        live.extend(by_hand(SONG, again));
+        let song = [(1000, PlaySong(SONG)), (again, PlaySong(SONG))];
+
+        let frames = again + song_samples(SONG) + RELEASE_SAMPLES;
+        let mut song_engine = Engine::new().unwrap();
+        let mut live_engine = Engine::new().unwrap();
+        let song_wave = play_in_chunks(&mut song_engine, &song, frames, 480);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&song_wave, &live_wave);
+    }
+
+    #[test]
+    fn live_notes_and_song_notes_never_cut_each_other_off() {
+        const HELD_C: &[TestChord] = &[chord(C_CHORD, 2000)];
+
+        // A live E3 played over the song's C chord, which has an E3 too, and
+        // let go while the chord plays on. Once the live E3 has faded, the
+        // song sounds exactly as if it had played alone.
+        let mut alone_engine = Engine::new().unwrap();
+        let alone = play(&mut alone_engine, &[(0, PlaySong(HELD_C))], 120_000);
+        let with_live_steps = [(0, PlaySong(HELD_C)), (10_000, NoteOn(E3)), (30_000, NoteOff(E3))];
+        let mut with_live_engine = Engine::new().unwrap();
+        let with_live = play(&mut with_live_engine, &with_live_steps, 120_000);
+        assert!(with_live[10_000..30_000] != alone[10_000..30_000]);
+        let faded = 30_000 + RELEASE_SAMPLES;
+        assert_same_samples(&with_live[faded..], &alone[faded..]);
+
+        // The other way around: a live E3 held while the song's C chord
+        // plays and lets go. Once the chord has faded, the live E3 sounds
+        // exactly as if it had played alone.
+        let mut live_alone_engine = Engine::new().unwrap();
+        let live_alone = play(&mut live_alone_engine, &[(0, NoteOn(E3))], 200_000);
+        let with_song_steps = [(0, NoteOn(E3)), (10_000, PlaySong(HELD_C))];
+        let mut with_song_engine = Engine::new().unwrap();
+        let with_song = play(&mut with_song_engine, &with_song_steps, 200_000);
+        let song_faded = 10_000 + 96_000 + RELEASE_SAMPLES;
+        assert_same_samples(&with_song[song_faded..], &live_alone[song_faded..]);
+        assert!(peak(&with_song[song_faded..]) > 0.0);
+    }
+
+    #[test]
+    fn the_looper_never_records_the_song() {
+        // The song's C chord plays while the looper records its first bar.
+        // The loop closes at the end of that bar, and comes out silent once
+        // the chord has faded.
+        const HELD_C: &[TestChord] = &[chord(C_CHORD, 2000)];
+        let start = RECORDING_STARTS;
+        let steps = [
+            (0, PressLooper),
+            (start + 1000, PlaySong(HELD_C)),
+            (start + 80_000, PressLooper),
+        ];
+        let mut engine = Engine::new().unwrap();
+        let wave = play(&mut engine, &steps, start + 3 * BAR_AT_120);
+        assert_eq!(engine.looper_status(), looper(LooperState::Looping, 1, false));
+
+        let faded = start + 1000 + 96_000 + RELEASE_SAMPLES;
+        assert!(peak(&wave[start..faded]) > 0.0);
+        assert_eq!(peak(&wave[faded..]), 0.0);
+    }
+
+    #[test]
+    fn esc_and_letting_go_of_every_key_leave_the_song_playing() {
+        // Esc clears the loop, and losing focus lets go of every live note,
+        // but neither touches the song.
+        let frames = song_samples(SONG) + RELEASE_SAMPLES;
+        let mut alone_engine = Engine::new().unwrap();
+        let alone = play(&mut alone_engine, &[(0, PlaySong(SONG))], frames);
+        let steps = [(0, PlaySong(SONG)), (30_000, ClearLoop), (60_000, AllNotesOff)];
+        let mut engine = Engine::new().unwrap();
+        let wave = play(&mut engine, &steps, frames);
+        assert_same_samples(&wave, &alone);
+    }
+
+    #[test]
+    fn the_engine_says_where_the_song_is() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.song_place(), None);
+
+        // On its way to the engine, the song counts as at its start. Then
+        // it moves along with each 10 ms chunk.
+        let song = [chord(C_CHORD, 1000), chord(G_CHORD, 0), chord(AM_CHORD, 500)];
+        engine.play_song(&song_chords(&song)).unwrap();
+        assert_eq!(engine.song_place(), place(0, 0));
+        render_frames_left(&mut engine, 250 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), place(0, 250));
+
+        // G is 0 ms long, so it never shows: C goes straight on to Am.
+        render_frames_left(&mut engine, 750 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), place(2, 0));
+        render_frames_left(&mut engine, 490 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), place(2, 490));
+
+        // Played to its end, the song is over.
+        render_frames_left(&mut engine, 10 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), None);
+
+        // A stop still on its way already counts as stopped.
+        engine.play_song(&song_chords(&song)).unwrap();
+        render_frames_left(&mut engine, 100 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), place(0, 100));
+        engine.stop_song();
+        assert_eq!(engine.song_place(), None);
+        render_frames_left(&mut engine, 10 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), None);
+    }
+
+    // The chords of a song as long as the engine plays, 1 ms each.
+    fn longest_song() -> Vec<TestChord> {
+        let chords = [C_CHORD, AM_CHORD, F_CHORD, G_CHORD];
+        let mut song = Vec::new();
+        for i in 0..SONG_MAX_CHORDS {
+            song.push(chord(chords[i % 4], 1));
+        }
+        song
+    }
+
+    #[test]
+    fn a_song_plays_512_chords_and_no_more() {
+        let song = longest_song();
+        let frames = song_samples(&song) + RELEASE_SAMPLES;
+        let mut engine = Engine::new().unwrap();
+
+        // A 513th is refused, with the mailbox empty, so the refusal is for
+        // the number of chords and not for want of room.
+        let mut too_long = song.clone();
+        too_long.push(chord(C_CHORD, 1));
+        assert!(engine.play_song(&song_chords(&too_long)).is_err());
+
+        // Asked directly, the engine refuses it too.
+        let mut raw_chords = Vec::new();
+        for test_chord in song_chords(&too_long) {
+            raw_chords.push(engine.raw_song_chord(&test_chord).unwrap());
+        }
+        // SAFETY: `raw` points to a live engine until Drop, and `raw_chords`
+        // holds exactly 513 chords.
+        let played = unsafe { jello_engine_play_song(engine.raw, raw_chords.as_ptr(), 513) };
+        assert!(!played);
+
+        // 512 play, the same as playing them by hand.
+        engine.play_song(&song_chords(&song)).unwrap();
+        let wave = play(&mut engine, &[], frames);
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &by_hand(&song, 0), frames);
+        assert_same_samples(&wave, &live_wave);
+    }
+
+    #[test]
+    fn a_song_with_no_room_in_the_mailbox_is_refused_whole() {
+        // A 512-chord song takes 514 of the mailbox's 1,024 slots: a stop,
+        // its chords and a play. That leaves 510, so before the engine has
+        // taken it, a song of 509 chords doesn't fit and none of it is sent,
+        // but one of 508 fits exactly.
+        let first = longest_song();
+        let mut engine = Engine::new().unwrap();
+        engine.play_song(&song_chords(&first)).unwrap();
+        let too_big = song_chords(&[chord(F_CHORD, 1); 509]);
+        assert!(engine.play_song(&too_big).is_err());
+        let just_fits = vec![chord(G_CHORD, 1); 508];
+        engine.play_song(&song_chords(&just_fits)).unwrap();
+
+        // The engine takes them all at once, so the last song plays, and
+        // the engine says where in it it is.
+        let frames = song_samples(&just_fits) + RELEASE_SAMPLES;
+        let first_part = play(&mut engine, &[], 100 * SAMPLES_PER_MS);
+        assert_eq!(engine.song_place(), place(100, 0));
+        let rest = play(&mut engine, &[], frames - first_part.len());
+        let mut wave = first_part;
+        wave.extend(rest);
+
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &by_hand(&just_fits, 0), frames);
+        assert_same_samples(&wave, &live_wave);
+
+        // Once the engine has taken them, there is room again.
+        assert!(engine.play_song(&too_big).is_ok());
+    }
+
+    #[test]
+    fn a_refused_song_leaves_the_playhead_on_the_song_playing() {
+        // The refused song's chords are 2 ms long and the playing song's
+        // 1 ms, so measuring with the wrong lengths puts the playhead on
+        // chord 50 instead of 100.
+        let playing = longest_song();
+        let mut engine = Engine::new().unwrap();
+        engine.play_song(&song_chords(&playing)).unwrap();
+        let refused = song_chords(&[chord(F_CHORD, 2); 509]);
+        assert!(engine.play_song(&refused).is_err());
+
+        render_frames_left(&mut engine, 100 * SAMPLES_PER_MS, 480);
+        assert_eq!(engine.song_place(), place(100, 0));
+    }
+
+    #[test]
+    fn a_song_with_an_odd_chord_plays_nothing() {
+        let good = SongChord {
+            notes: vec![MIDDLE_C],
+            velocity: VELOCITY,
+            length_ms: 100,
+        };
+        let odd_chords = [
+            SongChord {
+                notes: vec![128],
+                ..good.clone()
+            },
+            SongChord {
+                velocity: 0,
+                ..good.clone()
+            },
+            SongChord {
+                velocity: 128,
+                ..good.clone()
+            },
+            SongChord {
+                notes: vec![60, 64, 67, 70, 72],
+                ..good.clone()
+            },
+        ];
+
+        let mut engine = Engine::new().unwrap();
+        for odd in odd_chords {
+            let song = [good.clone(), odd];
+            assert!(engine.play_song(&song).is_err());
+        }
+
+        // Asked directly, the engine refuses chords with more notes than it
+        // has room for, or fewer than none.
+        for note_count in [5, -1] {
+            let mut raw = engine.raw_song_chord(&good).unwrap();
+            raw.note_count = note_count;
+            // SAFETY: `raw` points to a live engine until Drop, and `raw` is
+            // one chord.
+            let played = unsafe { jello_engine_play_song(engine.raw, &raw, 1) };
+            assert!(!played, "a chord of {note_count} notes was played");
+        }
+
+        assert_eq!(engine.song_place(), None);
+        let wave = render_left(&mut engine, 200);
+        assert_eq!(peak(&wave), 0.0);
     }
 }

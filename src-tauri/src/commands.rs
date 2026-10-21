@@ -3,11 +3,15 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::engine::Engine;
-use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi};
+use crate::compose::{ComposeView, Composer};
+use crate::engine::{BEATS_PER_BAR, Engine, LoopLayer, LoopNote, LooperState, LooperStatus};
+use crate::harmony::{Key, Mode};
+use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
 use crate::wav::write_wav;
 
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
@@ -17,6 +21,188 @@ const MIDDLE_C: u8 = 60;
 const TEST_VELOCITY: u8 = 100;
 const HOLD_MS: u32 = 2000;
 const TAIL_MS: u32 = 400;
+
+// What the screen shows about the sound: the wave new notes play, the beat's
+// tempo in beats per minute, whether loops snap to the beat and what the
+// looper is doing.
+#[derive(Serialize)]
+pub struct SoundView {
+    wave: &'static str,
+    tempo: u32,
+    snap: bool,
+    looper: LooperView,
+}
+
+// What the looper is doing.
+#[derive(Serialize)]
+pub struct LooperView {
+    // "idle", "counting in", "recording", "looping" or "layering": playing
+    // the loop and recording a layer over it.
+    state: &'static str,
+    // While counting in, the beat (1 to 4). While recording, the bar being
+    // recorded, from 1. While looping or layering, how many bars the loop
+    // lasts.
+    number: u32,
+    // True from the first press until the loop is cleared. The UI asks
+    // again and again while it is, since the state changes on the beat.
+    busy: bool,
+    // How many beats into the count-in, the recording or the repeat playing
+    // now, as of the engine's last chunk of sound. Each starts on beat 1 of
+    // a bar. While looping or layering, it stays inside the loop. 0 when
+    // idle.
+    beats_in: f64,
+    // The loop's layers while recording, looping or layering, oldest first,
+    // for the lane under the keyboard: a box each
+    // (docs/adr/0026-layers.md). Empty otherwise.
+    layers: Vec<LayerView>,
+    // While Esc waits for a layer's number, the layer it removes if none
+    // comes: the newest, counted from 1. None (null for the UI) otherwise.
+    removing: Option<u32>,
+    // A message about the looper for the top bar, like "8 layers is the
+    // most, Esc removes one". It comes in one answer only; None (null)
+    // otherwise.
+    message: Option<String>,
+}
+
+// One layer of the loop.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct LayerView {
+    // Its notes. While it is recorded, as played, in the order they
+    // started. Once it plays, where each time around plays them, in the
+    // order they start.
+    notes: Vec<LoopNoteView>,
+    // How loud it plays, in percent, from 0 to 100.
+    volume: u32,
+    // True while it is being recorded.
+    recording: bool,
+}
+
+// One note of the loop, in beats from the loop's start.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct LoopNoteView {
+    note: u8,
+    start: f64,
+    // None (null for the UI) while its key is still held.
+    end: Option<f64>,
+}
+
+// What the screen shows about the sound at `now`. Esc's half second may be
+// up, so that comes first.
+fn sound_view_of(engine: &mut Engine, now: Instant) -> SoundView {
+    engine.finish_esc_wait(now);
+
+    let wave = engine.wave();
+    let tempo = engine.tempo();
+    let sample_rate = engine.sample_rate();
+    let status = engine.looper_status();
+    let busy = engine.is_looper_busy();
+    let position = engine.looper_position();
+    let mut layers = engine.loop_layers().to_vec();
+    // Once a layer plays, the lane shows each note where the loop plays it.
+    if is_loop_playing(status.state) {
+        for layer in &mut layers {
+            if !layer.recording {
+                layer.notes = engine.plan_loop(&layer.notes, status.number);
+            }
+        }
+    }
+
+    let mut looper = looper_view_of(status, busy, position, &layers, tempo, sample_rate);
+    looper.removing = engine.esc_removes(now);
+    looper.message = engine.take_looper_message();
+    SoundView {
+        wave: wave.name(),
+        tempo,
+        snap: engine.snap(),
+        looper,
+    }
+}
+
+// True while the loop plays: looping, or recording a layer over it.
+fn is_loop_playing(state: LooperState) -> bool {
+    match state {
+        LooperState::Looping => true,
+        LooperState::Layering => true,
+        _ => false,
+    }
+}
+
+// What the screen shows about the looper. `position` is how many samples
+// into the count-in, the recording or the repeat playing now it is. Esc and
+// messages are left for the caller to fill in.
+fn looper_view_of(
+    status: LooperStatus,
+    busy: bool,
+    position: u64,
+    layers: &[LoopLayer],
+    tempo: u32,
+    sample_rate: u32,
+) -> LooperView {
+    let mut beats_in = beats_of(position, tempo, sample_rate);
+
+    // Rust reads the state and the place one after the other, so right as
+    // the loop closes it can see "looping" with the recording's place, past
+    // the loop's end. The loop closes on a bar line, so wrapping the place
+    // into the loop finds the same spot in the bar.
+    if is_loop_playing(status.state) {
+        let loop_beats = f64::from(status.number * BEATS_PER_BAR);
+        if loop_beats > 0.0 {
+            beats_in %= loop_beats;
+        }
+    }
+
+    // Before recording starts there is nothing to show yet.
+    let shows_layers = match status.state {
+        LooperState::Recording => true,
+        LooperState::Looping => true,
+        LooperState::Layering => true,
+        _ => false,
+    };
+    let mut layer_views = Vec::new();
+    if shows_layers {
+        for layer in layers {
+            let view = LayerView {
+                notes: note_views_of(&layer.notes, tempo, sample_rate),
+                volume: layer.volume,
+                recording: layer.recording,
+            };
+            layer_views.push(view);
+        }
+    }
+
+    LooperView {
+        state: status.state.name(),
+        number: status.number,
+        busy,
+        beats_in,
+        layers: layer_views,
+        removing: None,
+        message: None,
+    }
+}
+
+// `notes`, in beats at `tempo`.
+fn note_views_of(notes: &[LoopNote], tempo: u32, sample_rate: u32) -> Vec<LoopNoteView> {
+    let mut views = Vec::new();
+    for played in notes {
+        let mut end = None;
+        if let Some(end_sample) = played.end {
+            end = Some(beats_of(end_sample, tempo, sample_rate));
+        }
+        views.push(LoopNoteView {
+            note: played.note,
+            start: beats_of(played.start, tempo, sample_rate),
+            end,
+        });
+    }
+    views
+}
+
+// How many beats `samples` samples last at `tempo` beats per minute.
+fn beats_of(samples: u64, tempo: u32, sample_rate: u32) -> f64 {
+    let samples_per_beat = f64::from(sample_rate) * 60.0 / f64::from(tempo);
+    samples as f64 / samples_per_beat
+}
 
 // Plays `note` at `velocity` until `release_note` lets go of it. The first
 // note opens the speakers, so it may start a little late.
@@ -43,13 +229,17 @@ pub fn release_note(engine: State<'_, Mutex<Engine>>, note: u8) {
 // Lets go of every note and forgets every held key, for when the window loses
 // focus and a held key's release would never arrive.
 #[tauri::command]
-pub fn release_all_notes(engine: State<'_, Mutex<Engine>>, key_map: State<'_, Mutex<KeyMap>>) {
+pub fn release_all_notes(
+    engine: State<'_, Mutex<Engine>>,
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+) {
+    let now = Instant::now();
     let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
 
-    // Otherwise a key held when the window lost focus would still count as
-    // held, and its next press would be ignored.
-    key_map.release_all();
+    all_keys_up(&mut key_map, &mut composer, now);
 
     // Same reason as in `release_note`.
     if engine.is_audio_running() {
@@ -58,54 +248,122 @@ pub fn release_all_notes(engine: State<'_, Mutex<Engine>>, key_map: State<'_, Mu
 }
 
 // Moves notes played from now on to the next wave (sine, triangle, square,
-// saw, then sine again) and returns its name. Notes already playing keep
-// their wave. Like `play_note`, it opens the speakers first: before they
-// open, nothing empties the engine's mailbox, so switches would pile up there.
+// saw, then sine again), and returns what the screen shows about the sound.
+// Notes already playing keep their wave. Like `play_note`, it opens the
+// speakers first: before they open, nothing empties the engine's mailbox, so
+// switches would pile up there.
 #[tauri::command]
-pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
+pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<SoundView, String> {
+    let now = Instant::now();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    let wave = engine.switch_wave();
-    Ok(String::from(wave.name()))
+    engine.switch_wave();
+    Ok(sound_view_of(&mut engine, now))
 }
 
-// Does what a laptop key does when pressed: plays its note or chord, or
-// switches the wave. `key` is the key's place on the keyboard, like "KeyQ". Returns the
-// wave new notes play, so the UI can show it.
+// Turns "snap to beat" off if it is on, and on if it is off, and returns
+// what the screen shows about the sound. A loop already playing changes
+// right away. Like `switch_wave`, it opens the speakers first.
+#[tauri::command]
+pub fn switch_snap(engine: State<'_, Mutex<Engine>>) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.switch_snap();
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// Sets layer `layer`'s volume, counted from 1, to `volume` percent, from 0
+// to 100 (docs/adr/0026-layers.md), and returns what the screen shows about
+// the sound. The layer's notes already sounding change too. A layer's volume
+// knob does this. Like `switch_wave`, it opens the speakers first.
+#[tauri::command]
+pub fn set_layer_volume(engine: State<'_, Mutex<Engine>>, layer: u32, volume: u32) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.set_layer_volume(layer, volume)?;
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// Does what a laptop key does when pressed: plays its note or chord,
+// switches the wave, runs the looper or changes the tempo. `key` is the
+// key's place on the keyboard, like "KeyQ". Returns what the screen shows
+// about the sound, so the UI can show it.
 //
-// Commands that need both the key map and the engine lock the key map first,
-// so two of them can never end up waiting on each other.
+// Commands read the clock before anything else, so waiting for a lock never
+// counts toward how long a chord was held. Then they lock what they need in
+// this order: the key map, Compose, the engine. So two of them can never end
+// up waiting on each other.
 #[tauri::command]
 pub fn press_key(
     engine: State<'_, Mutex<Engine>>,
     key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
     key: String,
-) -> Result<String, String> {
+) -> Result<SoundView, String> {
+    let now = Instant::now();
     let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
 
-    let action = key_map.press(&key);
+    // A key that picks a layer for Esc plays nothing. Esc only waits once a
+    // loop has layers, so the speakers are already open.
+    if picks_layer(&mut engine, &key, now) {
+        return Ok(sound_view_of(&mut engine, now));
+    }
+
+    // Like `switch_wave`, every key that does something opens the speakers
+    // first: before they open, nothing empties the engine's mailbox.
+    if let Some(action) = key_down(&mut key_map, &mut composer, &key, now) {
+        engine.start_audio()?;
+        take_key_action(&mut engine, action, now);
+    }
+
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// While Esc waits, 1 to 8 pick a layer for it to remove instead of playing
+// (docs/adr/0026-layers.md). Returns true if `key`, going down at `now`,
+// picked one. Esc's half second may be up first, and then the key does what
+// it always does.
+fn picks_layer(engine: &mut Engine, key: &str, now: Instant) -> bool {
+    engine.finish_esc_wait(now);
+    let number = match layer_number_of(key) {
+        Some(number) => number,
+        None => return false,
+    };
+    engine.pick_layer(number, now)
+}
+
+// What a key pressed at `now` does to the engine. Kept apart from opening
+// the speakers, so the tests can check every key on an engine without them.
+fn take_key_action(engine: &mut Engine, action: KeyAction, now: Instant) {
     match action {
-        Some(KeyAction::PlayNote(note)) => {
-            engine.start_audio()?;
+        KeyAction::PlayNote(note) => {
             engine.note_on(note, LAPTOP_VELOCITY);
         }
-        Some(KeyAction::PlayChord(notes)) => {
-            engine.start_audio()?;
-            for note in notes {
+        KeyAction::PlayChord(chord) => {
+            for note in chord.notes() {
                 engine.note_on(note, LAPTOP_VELOCITY);
             }
         }
-        Some(KeyAction::SwitchWave) => {
-            // Like `switch_wave`, it opens the speakers first.
-            engine.start_audio()?;
+        KeyAction::SwitchWave => {
             engine.switch_wave();
         }
-        None => {}
+        KeyAction::PressLooper => {
+            engine.press_looper();
+        }
+        KeyAction::RemoveLayer => {
+            engine.press_esc(now);
+        }
+        KeyAction::SlowDown => {
+            engine.slow_down();
+        }
+        KeyAction::SpeedUp => {
+            engine.speed_up();
+        }
     }
-
-    let wave = engine.wave();
-    Ok(String::from(wave.name()))
 }
 
 // Lets go of the notes a laptop key started, except any that another held
@@ -114,13 +372,16 @@ pub fn press_key(
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
     key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
     key: String,
 ) {
+    let now = Instant::now();
     let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
 
     // Forget the key first, whether or not the speakers are open.
-    let notes = key_map.release(&key);
+    let notes = key_up(&mut key_map, &mut composer, &key, now);
 
     // Same reason as in `release_note`.
     if !engine.is_audio_running() {
@@ -131,12 +392,48 @@ pub fn release_key(
     }
 }
 
-// The wave new notes play, so the UI can show it when it opens.
+// The next three tell the key map and Compose about a key, at the time its
+// command read the clock. They are kept apart from the engine, so the tests
+// can play keys through the same steps without one.
+
+// `key` went down at `now`. Returns what it does, or None for nothing.
+pub(crate) fn key_down(key_map: &mut KeyMap, composer: &mut Composer, key: &str, now: Instant) -> Option<KeyAction> {
+    let action = match key_map.press(key) {
+        Some(action) => action,
+        None => return None,
+    };
+    // Compose times every chord, so a chord added to the song keeps how long
+    // it was held.
+    if let KeyAction::PlayChord(chord) = action {
+        composer.chord_pressed(key, chord, now);
+    }
+    Some(action)
+}
+
+// `key` came up at `now`, so a chord it is still holding ends. Returns the
+// notes to stop.
+pub(crate) fn key_up(key_map: &mut KeyMap, composer: &mut Composer, key: &str, now: Instant) -> Vec<u8> {
+    let notes = key_map.release(key);
+    composer.key_released(key, now);
+    notes
+}
+
+// Every key came up at once at `now`.
+pub(crate) fn all_keys_up(key_map: &mut KeyMap, composer: &mut Composer, now: Instant) {
+    // Otherwise a key held when the window lost focus would still count as
+    // held, and its next press would be ignored.
+    key_map.release_all();
+    // Every chord still held ends now.
+    composer.all_released(now);
+}
+
+// What the screen shows about the sound, so the UI can show it when it
+// opens.
 #[tauri::command]
-pub fn current_wave(engine: State<'_, Mutex<Engine>>) -> String {
-    let engine = engine.lock().unwrap();
-    let wave = engine.wave();
-    String::from(wave.name())
+pub fn sound_view(engine: State<'_, Mutex<Engine>>) -> SoundView {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    sound_view_of(&mut engine, now)
 }
 
 // What every laptop key does, so the UI can draw each key's note or chord on
@@ -145,6 +442,134 @@ pub fn current_wave(engine: State<'_, Mutex<Engine>>) -> String {
 pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>) -> LayoutForUi {
     let key_map = key_map.lock().unwrap();
     key_map.layout_for_ui()
+}
+
+// Compose's commands. Each answers with everything Compose shows, so the UI
+// can redraw it, including where the song is playing. Like the commands
+// above, they read the clock first, then lock the key map, Compose and the
+// engine, in that order.
+
+// What Compose shows right now.
+#[tauri::command]
+pub fn compose_view(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> ComposeView {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let composer = composer.lock().unwrap();
+    let engine = engine.lock().unwrap();
+    composer.view(&key_map, engine.song_place(), now)
+}
+
+// Sets the song's key: `tonic` is its home note, from 0 (C) to 11 (B), and
+// `mode` is "major" or "minor".
+#[tauri::command]
+pub fn pick_key(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    tonic: u8,
+    mode: Mode,
+) -> Result<ComposeView, String> {
+    if tonic > 11 {
+        return Err(format!("no key has home note {tonic}: it goes from 0 (C) to 11 (B)"));
+    }
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let engine = engine.lock().unwrap();
+    composer.pick_key(Key { tonic, mode });
+    Ok(composer.view(&key_map, engine.song_place(), now))
+}
+
+// Adds the chord played last to the end of the song, leaving out the chords
+// tried before it. It keeps how long it was held, and if it still is, it
+// keeps growing until it is let go. Compose's Return key does this.
+#[tauri::command]
+pub fn add_last_chord(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> ComposeView {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let engine = engine.lock().unwrap();
+    composer.add_last_chord();
+    composer.view(&key_map, engine.song_place(), now)
+}
+
+// Takes the last chord off the end of the song. Compose's Delete key does
+// this.
+#[tauri::command]
+pub fn remove_last_chord(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> ComposeView {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let engine = engine.lock().unwrap();
+    composer.remove_last_chord();
+    composer.view(&key_map, engine.song_place(), now)
+}
+
+// Plays the chord at `place` in the song, from 0, for as long as it was
+// held. Clicking a chord on the tape does this. Like `switch_wave`, it opens
+// the speakers first.
+#[tauri::command]
+pub fn play_chord_in_song(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    place: usize,
+) -> Result<ComposeView, String> {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.play_chord(place, &mut engine, now)?;
+    Ok(composer.view(&key_map, engine.song_place(), now))
+}
+
+// Plays the whole song from its first chord. The tape's play button does
+// this. Like `switch_wave`, it opens the speakers first.
+#[tauri::command]
+pub fn play_song(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> Result<ComposeView, String> {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.play_song(&mut engine, now)?;
+    Ok(composer.view(&key_map, engine.song_place(), now))
+}
+
+// Stops the song. Live notes and the loop play on.
+#[tauri::command]
+pub fn stop_song(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> ComposeView {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    // Same reason as in `release_note`: before the speakers open, no song
+    // can be playing.
+    if engine.is_audio_running() {
+        engine.stop_song();
+    }
+    composer.view(&key_map, engine.song_place(), now)
 }
 
 // Renders a held middle C to Music/Jello/test-note.wav and returns where it
@@ -180,4 +605,579 @@ fn jello_music_folder(app: &AppHandle) -> Result<PathBuf, String> {
     let folder = music.join("Jello");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     Ok(folder)
+}
+
+// These tests look at what the commands answer and what each key does to
+// the engine. They render without speakers.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::Duration;
+
+    // What key `key` does in the default layout.
+    fn action_of(key: &str) -> KeyAction {
+        let mut key_map = KeyMap::new();
+        key_map.press(key).unwrap()
+    }
+
+    // Takes key `key`'s action now.
+    fn press(engine: &mut Engine, key: &str) {
+        take_key_action(engine, action_of(key), Instant::now());
+    }
+
+    // Renders `frames` frames and returns the loudest sample.
+    fn loudest(engine: &mut Engine, frames: usize) -> f32 {
+        let samples = engine.render(frames);
+        let mut loudest = 0.0;
+        for sample in samples {
+            if sample.abs() > loudest {
+                loudest = sample.abs();
+            }
+        }
+        loudest
+    }
+
+    #[test]
+    fn note_and_chord_keys_play() {
+        // M plays middle C, and C plays the C chord, whose three notes
+        // together are louder than one.
+        let mut note = Engine::new().unwrap();
+        press(&mut note, "KeyM");
+        let mut chord = Engine::new().unwrap();
+        press(&mut chord, "KeyC");
+
+        let note_loudness = loudest(&mut note, 4800);
+        assert!(note_loudness > 0.0);
+        assert!(loudest(&mut chord, 4800) > note_loudness);
+    }
+
+    #[test]
+    fn backslash_switches_the_wave() {
+        let mut engine = Engine::new().unwrap();
+        press(&mut engine, "Backslash");
+        assert_eq!(engine.wave().name(), "square");
+    }
+
+    #[test]
+    fn right_shift_runs_the_looper_and_esc_cancels_the_count_in_at_once() {
+        // During the count-in there is only the one layer, so Esc has
+        // nothing to wait for.
+        let mut engine = Engine::new().unwrap();
+        press(&mut engine, "ShiftRight");
+        engine.render(10);
+        assert_eq!(engine.looper_status().state, LooperState::CountingIn);
+
+        press(&mut engine, "Escape");
+        engine.render(10);
+        assert_eq!(engine.looper_status().state, LooperState::Idle);
+    }
+
+    #[test]
+    fn minus_and_equal_change_the_tempo_until_the_looper_starts() {
+        let mut engine = Engine::new().unwrap();
+        press(&mut engine, "Equal");
+        assert_eq!(engine.tempo(), 125);
+        press(&mut engine, "Minus");
+        press(&mut engine, "Minus");
+        assert_eq!(engine.tempo(), 115);
+
+        press(&mut engine, "ShiftRight");
+        press(&mut engine, "Equal");
+        assert_eq!(engine.tempo(), 115);
+    }
+
+    #[test]
+    fn the_ui_reads_the_sound_by_these_names() {
+        // ui/sound.ts reads these names, so renaming them here would leave
+        // the wave, beat and looper keys blank.
+        let mut engine = Engine::new().unwrap();
+        engine.speed_up();
+        engine.press_looper();
+        engine.render(10);
+
+        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        assert_eq!(json["wave"], "triangle");
+        assert_eq!(json["tempo"], 125);
+        assert_eq!(json["snap"], true);
+        assert_eq!(json["looper"]["state"], "counting in");
+        assert_eq!(json["looper"]["number"], 1);
+        assert_eq!(json["looper"]["busy"], true);
+        assert!(json["looper"]["beats_in"].as_f64().unwrap() > 0.0);
+        assert_eq!(json["looper"]["layers"], serde_json::json!([]));
+        assert_eq!(json["looper"]["removing"], serde_json::Value::Null);
+        assert_eq!(json["looper"]["message"], serde_json::Value::Null);
+
+        // And the loop's layers, by the names ui/sound.ts reads.
+        let layers = [layer_of(&[LoopNote {
+            note: A4,
+            start: 12_000,
+            end: None,
+        }])];
+        let mut view = looper_view_of(looping(1), true, 0, &layers, 120, SAMPLE_RATE);
+        view.removing = Some(1);
+        view.message = Some(String::from("There is no layer 7"));
+        let json = serde_json::to_value(view).unwrap();
+        let expected = serde_json::json!([{
+            "notes": [{ "note": 69, "start": 0.5, "end": null }],
+            "volume": 100,
+            "recording": false,
+        }]);
+        assert_eq!(json["layers"], expected);
+        assert_eq!(json["removing"], 1);
+        assert_eq!(json["message"], "There is no layer 7");
+    }
+
+    const SAMPLE_RATE: u32 = 48_000;
+    const A4: u8 = 69;
+    const C5: u8 = 72;
+
+    // At 120 a beat is 24,000 samples, and a bar 96,000.
+    const BAR: usize = 96_000;
+
+    fn status(state: LooperState, number: u32) -> LooperStatus {
+        LooperStatus {
+            state,
+            number,
+            waiting: false,
+        }
+    }
+
+    fn looping(bars: u32) -> LooperStatus {
+        status(LooperState::Looping, bars)
+    }
+
+    // A layer played back at full volume, with `notes`.
+    fn layer_of(notes: &[LoopNote]) -> LoopLayer {
+        LoopLayer {
+            notes: notes.to_vec(),
+            volume: 100,
+            recording: false,
+        }
+    }
+
+    #[test]
+    fn the_looper_s_place_is_counted_in_beats_at_the_tempo() {
+        // At 120 a beat is 24,000 samples, so 36,000 is a beat and a half.
+        let counting_in = status(LooperState::CountingIn, 2);
+        let view = looper_view_of(counting_in, true, 36_000, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 1.5);
+
+        // At 125 a beat is 23,040 samples.
+        let recording = status(LooperState::Recording, 1);
+        let view = looper_view_of(recording, true, 34_560, &[], 125, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 1.5);
+
+        // Recording counts on past the first bar: 9 beats is bar 3.
+        let view = looper_view_of(recording, true, 9 * 24_000, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 9.0);
+
+        let idle = status(LooperState::Idle, 0);
+        let view = looper_view_of(idle, false, 0, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 0.0);
+    }
+
+    #[test]
+    fn a_place_past_the_loop_s_end_wraps_into_the_loop() {
+        // Read right as a 2-bar loop closed: the recording's place, 8 and a
+        // half beats in, is half a beat into the loop.
+        let view = looper_view_of(looping(2), true, 204_000, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 0.5);
+
+        // Inside the loop it stays as it is, and so it does while a layer
+        // is recorded.
+        let view = looper_view_of(looping(2), true, 180_000, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 7.5);
+        let layering = status(LooperState::Layering, 2);
+        let view = looper_view_of(layering, true, 204_000, &[], 120, SAMPLE_RATE);
+        assert_eq!(view.beats_in, 0.5);
+    }
+
+    #[test]
+    fn the_loop_s_layers_are_in_beats_while_recording_looping_or_layering() {
+        let notes = [
+            LoopNote {
+                note: A4,
+                start: 12_000,
+                end: Some(36_000),
+            },
+            LoopNote {
+                note: C5,
+                start: 48_000,
+                end: None,
+            },
+        ];
+        let expected = vec![
+            LoopNoteView {
+                note: A4,
+                start: 0.5,
+                end: Some(1.5),
+            },
+            LoopNoteView {
+                note: C5,
+                start: 2.0,
+                end: None,
+            },
+        ];
+        let mut quiet = layer_of(&notes[..1]);
+        quiet.volume = 40;
+        let mut recorded = layer_of(&notes);
+        recorded.recording = true;
+        let layers = [quiet, recorded];
+
+        for state in [LooperState::Recording, LooperState::Looping, LooperState::Layering] {
+            let view = looper_view_of(status(state, 1), true, 0, &layers, 120, SAMPLE_RATE);
+            assert_eq!(view.layers.len(), 2);
+            assert_eq!(view.layers[0].notes[..], expected[..1]);
+            assert_eq!(view.layers[0].volume, 40);
+            assert!(!view.layers[0].recording);
+            assert_eq!(view.layers[1].notes, expected);
+            assert_eq!(view.layers[1].volume, 100);
+            assert!(view.layers[1].recording);
+        }
+
+        // At 60 a beat is twice as long, so the same samples are half the
+        // beats.
+        let view = looper_view_of(looping(1), true, 0, &layers, 60, SAMPLE_RATE);
+        assert_eq!(view.layers[1].notes[0].start, 0.25);
+
+        // Nothing is shown before recording starts, or once cleared.
+        let counting_in = status(LooperState::CountingIn, 3);
+        let view = looper_view_of(counting_in, true, 0, &layers, 120, SAMPLE_RATE);
+        assert!(view.layers.is_empty());
+        let idle = status(LooperState::Idle, 0);
+        let view = looper_view_of(idle, false, 0, &layers, 120, SAMPLE_RATE);
+        assert!(view.layers.is_empty());
+    }
+
+    #[test]
+    fn the_sound_view_shows_the_loop_as_it_is_recorded() {
+        // The count-in takes the first bar, 96,000 samples at 120. A4 goes
+        // down on the sample recording starts and up half a beat later; C5
+        // goes down a beat in and is still held.
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+        engine.render(96_000);
+        engine.note_on(A4, 100);
+        engine.render(12_000);
+        engine.note_off(A4);
+        engine.render(12_000);
+        engine.note_on(C5, 100);
+        engine.render(6_000);
+
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.state, "recording");
+        assert_eq!(view.looper.beats_in, 1.25);
+        let expected = vec![
+            LoopNoteView {
+                note: A4,
+                start: 0.0,
+                end: Some(0.5),
+            },
+            LoopNoteView {
+                note: C5,
+                start: 1.0,
+                end: None,
+            },
+        ];
+        assert_eq!(view.looper.layers.len(), 1);
+        assert_eq!(view.looper.layers[0].notes, expected);
+        assert!(view.looper.layers[0].recording);
+    }
+
+    #[test]
+    fn the_sound_view_shows_the_loop_where_it_plays() {
+        // A4 is played from 13,000 to 29,000 samples into the second bar
+        // recorded, after the count-in's 96,000 and the first bar's. A beat
+        // is 24,000 samples.
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+        engine.render(96_000 + 96_000 + 13_000);
+        engine.note_on(A4, 100);
+        engine.render(16_000);
+        engine.note_off(A4);
+        engine.render(60_000);
+        let as_played = vec![LoopNoteView {
+            note: A4,
+            start: 109_000.0 / 24_000.0,
+            end: Some(125_000.0 / 24_000.0),
+        }];
+
+        // While recording it shows as played, even with snap on.
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert!(view.snap);
+        assert_eq!(view.looper.state, "recording");
+        assert_eq!(view.looper.layers[0].notes, as_played);
+
+        // Pressed late in bar 2, the loop closes at its end, 2 bars long.
+        // From then on it shows where the loop plays A4: on the nearest half
+        // beats.
+        engine.press_looper();
+        engine.render(30_000);
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.state, "looping");
+        let snapped = vec![LoopNoteView {
+            note: A4,
+            start: 4.5,
+            end: Some(5.0),
+        }];
+        assert_eq!(view.looper.layers[0].notes, snapped);
+
+        // With snap off, as played again.
+        engine.switch_snap();
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert!(!view.snap);
+        assert_eq!(view.looper.layers[0].notes, as_played);
+    }
+
+    // Plays A4 for half a beat, from now.
+    fn play_a4(engine: &mut Engine) {
+        engine.note_on(A4, 100);
+        engine.render(12_000);
+        engine.note_off(A4);
+    }
+
+    // An engine looping a 1-bar loop of `layers` layers, each holding one
+    // A4, with the repeat after the last layer's just started.
+    fn engine_with_layers(layers: usize) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        // The count-in, then the first loop, closed at the end of its bar.
+        engine.press_looper();
+        engine.render(BAR);
+        play_a4(&mut engine);
+        engine.press_looper();
+        engine.render(BAR - 12_000);
+
+        // Each layer is recorded from beat 1 and stopped half a bar in.
+        for _ in 1..layers {
+            engine.press_looper();
+            engine.render(10);
+            play_a4(&mut engine);
+            engine.render(BAR / 2 - 12_010);
+            engine.press_looper();
+            engine.render(BAR / 2);
+        }
+        engine.render(10);
+        assert_eq!(engine.loop_layers().len(), layers);
+        assert_eq!(engine.looper_status().state, LooperState::Looping);
+        engine
+    }
+
+    // How many layers the engine has once it has acted on everything sent.
+    fn layers_after_a_chunk(engine: &mut Engine) -> usize {
+        engine.render(10);
+        engine.loop_layers().len()
+    }
+
+    // Each layer's volume, oldest first.
+    fn volumes(engine: &mut Engine) -> Vec<u32> {
+        let mut volumes = Vec::new();
+        for layer in engine.loop_layers() {
+            volumes.push(layer.volume);
+        }
+        volumes
+    }
+
+    #[test]
+    fn with_two_layers_esc_waits_half_a_second_then_removes_the_newest() {
+        // Layer 1 is turned down, so we can tell which one goes.
+        let mut engine = engine_with_layers(3);
+        engine.set_layer_volume(1, 30).unwrap();
+        let esc = Instant::now();
+        take_key_action(&mut engine, KeyAction::RemoveLayer, esc);
+
+        // Waiting: the screen shows which layer will go, and nothing has.
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(100));
+        assert_eq!(view.looper.removing, Some(3));
+        assert_eq!(layers_after_a_chunk(&mut engine), 3);
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(499));
+        assert_eq!(view.looper.removing, Some(3));
+        assert_eq!(layers_after_a_chunk(&mut engine), 3);
+
+        // Half a second later the newest goes, the next time the screen
+        // asks.
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(500));
+        assert_eq!(view.looper.removing, None);
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+        assert_eq!(volumes(&mut engine), vec![30, 100]);
+        assert_eq!(engine.looper_status().state, LooperState::Looping);
+
+        // A layer removed leaves no message.
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(600));
+        assert_eq!(view.looper.message, None);
+    }
+
+    #[test]
+    fn esc_twice_removes_the_newest_at_once() {
+        let mut engine = engine_with_layers(3);
+        let esc = Instant::now();
+        engine.press_esc(esc);
+        engine.press_esc(esc + Duration::from_millis(200));
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+        assert_eq!(volumes(&mut engine), vec![100, 100]);
+        assert_eq!(engine.loop_layers()[1].notes.len(), 1);
+
+        // And nothing more goes once the half second is up.
+        sound_view_of(&mut engine, esc + Duration::from_millis(900));
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+    }
+
+    #[test]
+    fn esc_then_a_number_removes_that_layer_instead() {
+        // Layer 2's volume goes down first, so we can tell which one went.
+        let mut engine = engine_with_layers(3);
+        engine.set_layer_volume(2, 30).unwrap();
+        let esc = Instant::now();
+        engine.press_esc(esc);
+
+        // Other keys play as usual while Esc waits.
+        assert!(!picks_layer(&mut engine, "KeyM", esc + Duration::from_millis(100)));
+        assert!(picks_layer(&mut engine, "Digit2", esc + Duration::from_millis(300)));
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+        assert_eq!(volumes(&mut engine), vec![100, 100]);
+
+        // Once picked, the half second is over, and numbers play again.
+        sound_view_of(&mut engine, esc + Duration::from_millis(900));
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+        assert!(!picks_layer(&mut engine, "Digit1", esc + Duration::from_millis(950)));
+
+        // The newest can be picked too.
+        let again = esc + Duration::from_millis(1_000);
+        engine.press_esc(again);
+        assert!(picks_layer(&mut engine, "Digit2", again + Duration::from_millis(100)));
+        assert_eq!(layers_after_a_chunk(&mut engine), 1);
+    }
+
+    #[test]
+    fn a_number_after_the_half_second_plays_as_usual() {
+        // The newest goes first, then 1 plays its chord.
+        let mut engine = engine_with_layers(2);
+        let esc = Instant::now();
+        engine.press_esc(esc);
+        let later = esc + Duration::from_millis(600);
+        assert!(!picks_layer(&mut engine, "Digit1", later));
+        assert_eq!(layers_after_a_chunk(&mut engine), 1);
+    }
+
+    #[test]
+    fn esc_then_a_number_with_no_layer_says_so() {
+        let mut engine = engine_with_layers(2);
+        let esc = Instant::now();
+        engine.press_esc(esc);
+        assert!(engine.pick_layer(7, esc + Duration::from_millis(100)));
+        assert_eq!(layers_after_a_chunk(&mut engine), 2);
+
+        // The message comes once.
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(150));
+        assert_eq!(view.looper.message, Some(String::from("There is no layer 7")));
+        assert_eq!(view.looper.removing, None);
+        let view = sound_view_of(&mut engine, esc + Duration::from_millis(200));
+        assert_eq!(view.looper.message, None);
+    }
+
+    #[test]
+    fn esc_on_the_only_layer_clears_the_loop_at_once() {
+        let mut engine = engine_with_layers(1);
+        engine.press_esc(Instant::now());
+        engine.render(10);
+        assert_eq!(engine.looper_status().state, LooperState::Idle);
+        assert!(engine.loop_layers().is_empty());
+    }
+
+    #[test]
+    fn the_layer_keys_are_1_to_8() {
+        assert_eq!(layer_number_of("Digit1"), Some(1));
+        assert_eq!(layer_number_of("Digit8"), Some(8));
+        assert_eq!(layer_number_of("Digit9"), None);
+        assert_eq!(layer_number_of("Digit0"), None);
+        assert_eq!(layer_number_of("KeyA"), None);
+    }
+
+    #[test]
+    fn a_ninth_layer_is_refused_with_a_message() {
+        let mut engine = engine_with_layers(8);
+        engine.press_looper();
+        engine.render(10);
+        assert_eq!(engine.looper_status().state, LooperState::Looping);
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(
+            view.looper.message,
+            Some(String::from("8 layers is the most, Esc removes one"))
+        );
+        assert_eq!(view.looper.layers.len(), 8);
+    }
+
+    #[test]
+    fn a_layer_stopped_with_nothing_played_is_dropped_with_a_message() {
+        let mut engine = engine_with_layers(2);
+        engine.press_looper();
+        engine.render(10);
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.state, "layering");
+        assert_eq!(view.looper.layers.len(), 3);
+        assert!(view.looper.layers[2].recording);
+
+        engine.press_looper();
+        engine.render(10);
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.state, "looping");
+        assert_eq!(view.looper.layers.len(), 2);
+        assert_eq!(view.looper.message, Some(String::from("Nothing played, no layer added")));
+    }
+
+    #[test]
+    fn a_layer_s_volume_shows_and_odd_volumes_fail() {
+        let mut engine = engine_with_layers(2);
+        engine.set_layer_volume(2, 55).unwrap();
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.layers[0].volume, 100);
+        assert_eq!(view.looper.layers[1].volume, 55);
+
+        assert!(engine.set_layer_volume(2, 101).is_err());
+        assert!(engine.set_layer_volume(3, 50).is_err());
+        assert!(engine.set_layer_volume(0, 50).is_err());
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.layers[1].volume, 55);
+    }
+
+    #[test]
+    fn the_layer_being_recorded_shows_as_played_and_the_others_where_they_play() {
+        // The first loop's A4, played from beat 1 for half a beat, snaps to
+        // 0 to 0.5. The layer's C5, played 13,000 samples into the repeat,
+        // shows as played until the layer stops.
+        let mut engine = engine_with_layers(1);
+        engine.press_looper();
+        engine.render(13_000);
+        engine.note_on(C5, 100);
+        engine.render(16_000);
+        engine.note_off(C5);
+        engine.render(10);
+
+        let view = sound_view_of(&mut engine, Instant::now());
+        assert_eq!(view.looper.state, "layering");
+        let a4 = LoopNoteView {
+            note: A4,
+            start: 0.0,
+            end: Some(0.5),
+        };
+        assert_eq!(view.looper.layers[0].notes, vec![a4]);
+        let c5 = LoopNoteView {
+            note: C5,
+            start: 13_010.0 / 24_000.0,
+            end: Some(29_010.0 / 24_000.0),
+        };
+        assert_eq!(view.looper.layers[1].notes, vec![c5]);
+
+        // Stopped, it shows where it plays: C5 snaps to 0.5 to 1.0.
+        engine.press_looper();
+        engine.render(10);
+        let view = sound_view_of(&mut engine, Instant::now());
+        let snapped = LoopNoteView {
+            note: C5,
+            start: 0.5,
+            end: Some(1.0),
+        };
+        assert_eq!(view.looper.layers[1].notes, vec![snapped]);
+        assert!(!view.looper.layers[1].recording);
+    }
 }

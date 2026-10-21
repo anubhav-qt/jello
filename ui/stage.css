@@ -1,17 +1,32 @@
-/* The start page, "Stage": a dark stage of dots, lit in amber, like the
+/* The start page, "Stage": a dark stage of dots, lit by note family, like the
    dot-matrix display on a piece of studio gear. */
 
 .stage {
   /* The lamps' color, as three numbers so it can be used at any strength. */
-  --amber: 255, 176, 72;
-  --text: rgba(255, 255, 255, 0.86);
-  --text-2: rgba(255, 255, 255, 0.5);
-  --text-3: rgba(255, 255, 255, 0.3);
-  /* The grid of dots: one in the middle of every 12 by 12 pixel square.
-     beams.ts lights these same dots, so the two must match. */
-  background-color: #08080a;
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.075) 1.1px, transparent 1.6px);
-  background-size: 12px 12px;
+  --accent: 191, 165, 255;
+  --accent-core: 245, 239, 255;
+  --ink: 255, 255, 255;
+  --page-rgb: 8, 8, 10;
+  --panel-bg: #0d0d10;
+  --key-bg: #121216;
+  --plain-key-bg: #0f0f12;
+  --held-key-bg: #1c1c21;
+  --key-radius: calc(var(--u) * 0.08);
+  --panel-padding: calc(var(--u) * 0.22);
+  --panel-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.9);
+  --dot-cell: 12px;
+  --dot-size: 1.1px;
+  --dot-edge: 1.6px;
+  --dot-opacity: 0.075;
+  --text: rgba(var(--ink), 0.86);
+  --text-2: rgba(var(--ink), 0.5);
+  --text-3: rgba(var(--ink), 0.3);
+  /* The looper's red, while it records. */
+  --rec: 255, 92, 92;
+  /* The dot spacing comes from the same design as the canvas beams. */
+  background-color: rgb(var(--page-rgb));
+  background-image: radial-gradient(circle, rgba(var(--ink), var(--dot-opacity)) var(--dot-size), transparent var(--dot-edge));
+  background-size: var(--dot-cell) var(--dot-cell);
   color: var(--text);
 }
 
@@ -33,10 +48,10 @@
   right: 0;
   z-index: 3;
   height: 2px;
-  background: rgb(255, 228, 190);
+  background: rgb(var(--accent-core));
   box-shadow:
-    0 0 12px 2px rgba(var(--amber), 0.75),
-    0 0 48px 10px rgba(var(--amber), 0.25);
+    0 0 12px 2px rgba(var(--accent), 0.75),
+    0 0 48px 10px rgba(var(--accent), 0.25);
   opacity: 0;
   pointer-events: none;
 }
@@ -46,7 +61,7 @@
   position: relative;
   z-index: 1;
   padding: 0 20px;
-  background: rgba(8, 8, 10, 0.8);
+  background: rgba(var(--page-rgb), 0.8);
 }
 
 .stage .topbar::after {
@@ -56,7 +71,7 @@
   right: 0;
   bottom: -2px;
   height: 4px;
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.2) 1px, transparent 1.5px);
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.2) 1px, transparent 1.5px);
   background-size: 6px 4px;
   background-repeat: repeat-x;
 }
@@ -74,20 +89,20 @@
   text-transform: uppercase;
 }
 
-/* The logo: four rows of four amber dots, glowing brighter while notes
+/* The logo: four rows of four lavender dots, glowing brighter while notes
    play. */
 .stage .logo {
   width: 20px;
   height: 20px;
   margin-right: 4px;
-  background-image: radial-gradient(circle, rgb(var(--amber)) 1.7px, transparent 2.2px);
+  background-image: radial-gradient(circle, rgb(var(--accent)) 1.7px, transparent 2.2px);
   background-size: 5px 5px;
-  filter: drop-shadow(0 0 3px rgba(var(--amber), 0.5));
+  filter: drop-shadow(0 0 3px rgba(var(--accent), 0.5));
   transition: filter 900ms ease-out;
 }
 
 .stage.is-playing .logo {
-  filter: drop-shadow(0 0 7px rgba(var(--amber), 0.95));
+  filter: drop-shadow(0 0 7px rgba(var(--accent), 0.95));
   transition: filter 40ms;
 }
 
@@ -99,16 +114,51 @@
   color: var(--text-2);
 }
 
+/* Messages, typed out after the title with a blinking cursor, on up to
+   two lines. They take the room between the title and the buttons, and
+   never squeeze the buttons. */
+.stage .topbar-message {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 32px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transition: opacity 600ms ease-out;
+  pointer-events: none;
+}
+
+.stage .topbar-message.is-shown {
+  opacity: 1;
+  transition: opacity 40ms;
+}
+
+.stage .topbar-message-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: rgb(var(--accent));
+  animation: stage-blink 1s steps(1) infinite;
+}
+
 .stage .actions {
   gap: 10px;
 }
 
-/* Buttons: thin outlines that light up amber under the pointer. */
+/* Buttons: thin outlines that light up under the pointer. */
 .stage .action {
   gap: 10px;
   height: 32px;
   padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(var(--ink), 0.16);
   border-radius: 4px;
   background: transparent;
   color: var(--text);
@@ -118,14 +168,14 @@
 }
 
 .stage .action:hover {
-  border-color: rgba(var(--amber), 0.75);
+  border-color: rgba(var(--accent), 0.75);
   transition:
     border-color 40ms,
     background-color 40ms;
 }
 
 .stage .action:active {
-  background-color: rgba(var(--amber), 0.2);
+  background-color: rgba(var(--accent), 0.2);
 }
 
 .stage .action-label {
@@ -141,7 +191,7 @@
   font-size: 16px;
   font-weight: 800;
   text-transform: uppercase;
-  color: rgb(var(--amber));
+  color: rgb(var(--accent));
 }
 
 .stage .action:last-child .action-value {
@@ -149,22 +199,38 @@
 }
 
 .stage .tabs {
+  gap: 24px;
   height: 40px;
 }
 
+/* Tabs: the open one lit in lavender, the others grey until pointed at. */
 .stage .tab {
   position: relative;
   align-self: stretch;
   gap: 8px;
+  margin: 0;
   padding: 0 2px;
+  border: none;
+  background: none;
   font-family: "Doto", monospace;
   font-size: 16px;
   font-weight: 800;
   text-transform: uppercase;
-  color: rgb(var(--amber));
+  color: var(--text-2);
+  cursor: default;
+  transition: color 600ms ease-out;
 }
 
-/* The open tab is underlined with a row of amber dots, over the grey ones. */
+.stage .tab:hover {
+  color: var(--text);
+  transition: color 40ms;
+}
+
+.stage .tab.is-active {
+  color: rgb(var(--accent));
+}
+
+/* The open tab is underlined with a row of lavender dots, over the grey ones. */
 .stage .tab.is-active::after {
   content: "";
   position: absolute;
@@ -172,8 +238,8 @@
   right: 0;
   bottom: -2px;
   height: 4px;
-  background-color: #08080a;
-  background-image: radial-gradient(circle, rgb(var(--amber)) 1.2px, transparent 1.7px);
+  background-color: rgb(var(--page-rgb));
+  background-image: radial-gradient(circle, rgb(var(--accent)) 1.2px, transparent 1.7px);
   background-size: 6px 4px;
   background-repeat: repeat-x;
 }
@@ -188,10 +254,10 @@
   font-family: "Doto", monospace;
   font-size: calc(var(--u) * 0.9);
   font-weight: 900;
-  color: rgb(var(--amber));
+  color: rgb(var(--accent));
   text-shadow:
-    0 0 2px rgba(var(--amber), 0.9),
-    0 0 22px rgba(var(--amber), 0.55);
+    0 0 2px rgba(var(--accent), 0.9),
+    0 0 22px rgba(var(--accent), 0.55);
   transition: opacity 40ms;
 }
 
@@ -205,6 +271,10 @@
 .stage-note {
   display: flex;
   align-items: baseline;
+  color: rgb(var(--accent));
+  text-shadow:
+    0 0 2px rgba(var(--accent), 0.9),
+    0 0 22px rgba(var(--accent), 0.55);
 }
 
 .stage-note-octave {
@@ -222,20 +292,21 @@
 
 /* The dark panel the keyboard sits on. */
 .stage-panel {
-  padding: calc(var(--u) * 0.22);
+  padding: var(--panel-padding);
   border-radius: calc(var(--u) * 0.14);
-  background: #0d0d10;
+  background: var(--panel-bg);
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.07),
-    0 40px 80px -30px rgba(0, 0, 0, 0.9);
+    0 0 0 1px rgba(var(--ink), 0.07),
+    var(--panel-shadow);
 }
 
 /* Keys: dark tiles. A held key lights up at once; let go, it fades out
    slowly (the transition here, on the resting key). */
 .stage .key {
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: calc(var(--u) * 0.08);
-  background-color: #121216;
+  border: 1px solid rgba(var(--ink), 0.09);
+  border-radius: var(--key-radius);
+  --held-text: var(--accent-core);
+  background-color: var(--key-bg);
   color: var(--text);
   transition:
     background-color 900ms ease-out,
@@ -258,7 +329,7 @@
 .stage .key-note {
   font-weight: 700;
   font-variation-settings: "ROND" 0;
-  color: rgba(var(--amber), 0.75);
+  color: rgba(var(--accent), 0.75);
   transition:
     font-variation-settings 900ms ease-out,
     color 900ms ease-out,
@@ -272,8 +343,8 @@
 /* Keys that play nothing sink into the panel. */
 .stage .key[data-kind="plain"],
 .stage .key[data-kind="blank"] {
-  border-color: rgba(255, 255, 255, 0.05);
-  background-color: #0f0f12;
+  border-color: rgba(var(--ink), 0.05);
+  background-color: var(--plain-key-bg);
 }
 
 .stage .key[data-kind="plain"] .key-label,
@@ -282,15 +353,134 @@
   color: var(--text-3);
 }
 
-.stage .key[data-kind="wave"] .key-note {
+/* Keys that do something other than play: the wave key, the beat keys and
+   the open tab's action keys. */
+.stage .key[data-kind="wave"] .key-note,
+.stage .key[data-kind="beat"] .key-note,
+.stage .key[data-kind="action"] .key-note {
   font-size: calc(var(--u) * 0.15);
   text-transform: uppercase;
   color: var(--text-2);
 }
 
+/* Right Shift's face (docs/adr/0024-the-looper-s-look.md): four beat
+   lights beside a few words, and a bar along the key's bottom edge that
+   fills as the loop goes round, never over the words. */
+.stage .key.is-looper {
+  overflow: hidden;
+}
+
+.stage .looper-face {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.1);
+}
+
+.stage .looper-beats {
+  display: flex;
+  gap: calc(var(--u) * 0.05);
+}
+
+.stage .looper-beat {
+  box-sizing: border-box;
+  width: calc(var(--u) * 0.12);
+  height: calc(var(--u) * 0.12);
+  border: 1px solid rgba(var(--ink), 0.28);
+  border-radius: 1px;
+}
+
+/* During the count-in, the beats already counted stay half lit. */
+.stage .looper-beat.is-counted {
+  border-color: rgba(var(--accent), 0.5);
+  background-color: rgba(var(--accent), 0.35);
+}
+
+.stage .looper-beat.is-on {
+  border-color: rgb(var(--accent));
+  background-color: rgb(var(--accent-core));
+  box-shadow: 0 0 8px rgba(var(--accent), 0.9);
+}
+
+.stage .looper-rec {
+  width: calc(var(--u) * 0.12);
+  height: calc(var(--u) * 0.12);
+  border-radius: 1px;
+  background-color: rgb(var(--rec));
+  box-shadow: 0 0 8px rgba(var(--rec), 0.8);
+}
+
+.stage .looper-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background-color: rgb(var(--accent));
+  box-shadow: 0 0 8px rgba(var(--accent), 0.9);
+}
+
+.stage .looper-bar.is-recording {
+  background-color: rgb(var(--rec));
+  box-shadow: 0 0 8px rgba(var(--rec), 0.9);
+}
+
+/* Compose's guidance on the chord keys. Not designed yet: a plain outline,
+   drawn over the key so the key's own slow fades stay as they are. Solid
+   is in the key, dashed is outside it but can work. */
+.stage .key[data-fit]::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.stage .key[data-fit="in_key"]::before {
+  border: 2px solid rgba(var(--accent), 0.85);
+}
+
+.stage .key[data-fit="can_work"]::before {
+  border: 2px dashed rgba(var(--accent), 0.6);
+}
+
+.stage .key[data-fit="outside"] .key-label,
+.stage .key[data-fit="outside"] .key-note {
+  opacity: 0.35;
+}
+
+/* Compose's guidance on the melody keys: a note outside the song's key
+   dims like an outside chord. The notes of the chords held now fill with
+   their color, even outside the key: at once, then fading out slowly when
+   the chord is let go, like a held key. */
+.stage .key.is-outside .key-label,
+.stage .key.is-outside .key-note {
+  opacity: 0.35;
+}
+
+.stage .key.is-chord-note {
+  background-color: rgba(var(--accent), 0.2);
+  transition:
+    background-color 40ms,
+    border-color 40ms,
+    box-shadow 40ms,
+    color 40ms;
+}
+
+.stage .key.is-chord-note .key-label,
+.stage .key.is-chord-note .key-note {
+  opacity: 1;
+}
+
+.stage .key.is-chord-note .key-note {
+  color: rgb(var(--accent));
+  transition:
+    font-variation-settings 40ms,
+    color 40ms,
+    text-shadow 40ms;
+}
+
 .stage .key.is-held {
-  border-color: rgba(255, 255, 255, 0.45);
-  background-color: #1c1c21;
+  border-color: rgba(var(--ink), 0.45);
+  background-color: var(--held-key-bg);
   transition:
     background-color 40ms,
     border-color 40ms,
@@ -300,53 +490,664 @@
 
 .stage .key[data-kind="note"].is-held,
 .stage .key[data-kind="chord"].is-held {
-  border-color: rgba(var(--amber), 0.95);
-  background-color: rgba(var(--amber), 0.16);
+  border-color: rgba(var(--accent), 0.95);
+  background-color: rgba(var(--accent), 0.16);
   box-shadow:
-    0 0 18px rgba(var(--amber), 0.45),
-    inset 0 0 14px rgba(var(--amber), 0.25);
-  color: rgb(255, 222, 176);
+    0 0 18px rgba(var(--accent), 0.45),
+    inset 0 0 14px rgba(var(--accent), 0.25);
+  color: rgb(var(--held-text));
 }
 
 .stage .key.is-held .key-note {
   font-variation-settings: "ROND" 100;
-  color: rgb(var(--amber));
-  text-shadow: 0 0 10px rgba(var(--amber), 0.8);
+  color: rgb(var(--accent));
+  text-shadow: 0 0 10px rgba(var(--accent), 0.8);
   transition:
     font-variation-settings 40ms,
     color 40ms,
     text-shadow 40ms;
 }
 
-/* Messages, typed out at the bottom left with a blinking cursor. */
-.stage-ticker {
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: 40px;
-  z-index: 2;
-  margin: 0;
+/* Dev panels: plain stand-ins for screens not designed yet. One sits above
+   the keyboard, pushing nothing else around. */
+.dev-panel {
+  position: relative;
+  z-index: 1;
+  width: min(900px, calc(100% - 48px));
+  margin: 16px auto auto;
+  padding: 10px 14px;
+  border: 1px dashed rgba(var(--ink), 0.3);
+  border-radius: 4px;
+  background: rgba(var(--page-rgb), 0.92);
   font-size: 13px;
+  line-height: 1.45;
   color: var(--text);
-  overflow-wrap: anywhere;
-  opacity: 0;
-  transition: opacity 600ms ease-out;
-  pointer-events: none;
 }
 
-.stage-ticker.is-shown {
-  opacity: 1;
-  transition: opacity 40ms;
+.dev-panel-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 
-.stage-ticker-cursor {
-  display: inline-block;
-  width: 0.55em;
-  height: 1.1em;
+.dev-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 4px 0;
+}
+
+.dev-quiet {
+  color: var(--text-2);
+}
+
+/* Compose's tape (ui/ComposeTape.svelte): the key, the song and the chord
+   tried last, between the tabs and the keyboard. */
+
+/* The keyboard keeps its place, and in Compose the tape keeps its own room
+   above it instead of the gap the other tabs use. */
+.screen-body.is-composing {
+  gap: 0;
+}
+
+/* The tape fills the room between the tabs and the keyboard, as wide as the
+   keyboard's panel. Its room above and below (::before and ::after) are
+   16px each. In a short window both shrink alike; in a tall one only the
+   room below grows, so the tape stays just under the tabs. */
+.tape {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  /* Lets it shrink below its full room in a short window. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: calc(var(--u) * var(--keys-across) + 2 * var(--panel-padding));
+}
+
+.tape::before {
+  content: "";
+  flex: 0 1 16px;
+}
+
+.tape::after {
+  content: "";
+  flex: 1 1 16px;
+}
+
+/* Key, Song and Trying, each a small label over its value. */
+.tape-top {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 56px;
+  height: 38px;
+}
+
+.tape-field {
+  flex: none;
+}
+
+/* Trying sits on the right and gives way first: its words end in "..."
+   before they run into Song. */
+.tape-field.is-trying {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  text-align: right;
+}
+
+.tape-label {
+  margin: 0;
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(var(--ink), 0.38);
+}
+
+/* Chord and key names keep their case, as on the keys: "Am", not "AM". */
+.tape-key {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: "Doto", monospace;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 24px;
+  letter-spacing: 0.05em;
+  color: rgb(var(--accent));
+  cursor: default;
+}
+
+.tape-key.is-unpicked {
+  color: rgba(var(--ink), 0.55);
+}
+
+.tape-key-arrow {
+  font-size: 14px;
+  color: rgba(var(--ink), 0.4);
+}
+
+.tape-key:hover .tape-key-arrow {
+  color: var(--text);
+}
+
+.tape-value {
+  margin: 0;
+  font-size: 12px;
+  line-height: 20px;
+  color: rgba(var(--ink), 0.7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tape-value.is-quiet {
+  color: var(--text-2);
+}
+
+.tape-trying-name {
+  font-family: "Doto", monospace;
+  font-size: 14px;
+  font-weight: 800;
+  color: rgb(var(--accent));
+}
+
+/* The song lane, or the key picker in its place. */
+.tape-slot {
+  flex: none;
+  height: 58px;
+  margin-top: 8px;
+}
+
+/* Two rows of 12 keys, major above minor, each in its home note's color. */
+.tape-picker {
+  display: grid;
+  grid-template-columns: 60px repeat(12, 1fr);
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+}
+
+.tape-cell {
+  height: 27px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+  background: none;
+  font-family: "Doto", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  color: rgb(var(--accent));
+  cursor: default;
+}
+
+.tape-cell:hover {
+  border-color: rgba(var(--accent), 0.6);
+}
+
+.tape-empty {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px dashed rgba(var(--ink), 0.2);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* The play button stays put; the blocks scroll beside it. */
+.tape-lane {
+  display: flex;
+  gap: 4px;
+  height: 100%;
+}
+
+.tape-play {
+  flex: none;
+  width: 34px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 4px;
+  background: none;
+  font-size: 14px;
+  color: var(--text);
+  cursor: default;
+}
+
+.tape-play:hover {
+  border-color: rgba(var(--ink), 0.45);
+}
+
+/* It scrolls with a trackpad or Shift and the wheel, with no scrollbar. */
+.tape-scroller {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tape-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.tape-track {
+  display: flex;
+  gap: 4px;
+  width: max-content;
+  height: 100%;
+}
+
+/* One chord: as wide as it was held, but never narrower than its name and
+   length, outlined and tinted in its root's color. */
+.tape-block {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: max-content;
+  height: 100%;
+  margin: 0;
+  padding: 6px 7px;
+  border: 1px solid rgb(var(--accent));
+  border-radius: 4px;
+  background: rgba(var(--accent), 0.1);
+  overflow: hidden;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.tape-block:hover {
+  background: rgba(var(--accent), 0.16);
+}
+
+.tape-block.is-playing {
+  background: rgba(var(--accent), 0.28);
+}
+
+.tape-block-name {
+  font-family: "Doto", monospace;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 22px;
+  letter-spacing: 0.05em;
+  color: rgb(var(--accent));
+}
+
+.tape-block-length {
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-2);
+}
+
+/* The chord held right now that isn't in the song yet: dashed, growing at
+   the end. */
+.tape-block.is-holding {
+  border-style: dashed;
+  border-color: rgba(var(--accent), 0.65);
+  background: none;
+}
+
+.tape-block.is-holding .tape-block-name {
+  color: rgba(var(--accent), 0.75);
+}
+
+.tape-block.is-holding .tape-block-length {
+  color: rgba(var(--ink), 0.45);
+}
+
+/* The playhead: a thin white line, --played of the way through the chord
+   playing, from 0 to 1. Kept inside the block at the very end. */
+.tape-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--played) * (100% - 2px));
+  width: 2px;
+  background: rgba(var(--ink), 0.9);
+}
+
+.tape-hint {
+  flex: none;
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: rgba(var(--ink), 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* While the picker is open, the hint keeps its room but isn't shown. */
+.tape-hint.is-hidden {
+  visibility: hidden;
+}
+
+/* The looper's lane under the keyboard
+   (docs/adr/0025-the-looper-s-lane-as-wide-as-the-keyboard.md), as wide as
+   the keyboard's panel and as tall as the room under the keyboard less 10px
+   above and below. */
+.looper-lane {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  gap: 14px;
+  height: calc(10vh - 20px);
+}
+
+/* The loop's boxes, each with its number on its left. Before the loop,
+   one box with a plain number. */
+.lane-loops {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  column-gap: 5px;
+}
+
+.lane-number {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-family: "Doto", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(var(--ink), 0.38);
+}
+
+.lane-box {
+  box-sizing: border-box;
+  position: relative;
+  min-height: 0;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 3px;
+  background-color: var(--panel-bg);
+  overflow: hidden;
+}
+
+/* Before the first press: how to start. */
+.lane-box.is-empty {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-style: dashed;
+  background-color: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+/* The count-in: 1 2 3 4, lit one per beat. */
+.lane-box.is-counting {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  border-style: dashed;
+  background-color: transparent;
+}
+
+.lane-count {
+  font-family: "Doto", monospace;
+  font-size: 22px;
+  font-weight: 800;
+  color: rgba(var(--ink), 0.18);
+}
+
+.lane-count.is-counted {
+  color: rgba(var(--accent), 0.45);
+}
+
+.lane-count.is-on {
+  color: rgb(var(--accent-core));
+  text-shadow: 0 0 10px rgba(var(--accent), 0.95);
+}
+
+/* Recording: dashed red, filling up to the playhead. */
+.lane-box.is-recording {
+  border-color: rgba(var(--rec), 0.45);
+  border-style: dashed;
+  background-color: transparent;
+}
+
+/* The loop's layers (docs/adr/0026-layers.md): a box each, with its volume
+   knob on its left. Up to four share a level; from the fifth on, four sit on
+   each level, and the levels share the lane's height. */
+.lane-loops.is-layers {
+  grid-template-columns: repeat(var(--columns), var(--head) minmax(0, 1fr));
+  grid-template-rows: repeat(var(--levels), minmax(0, 1fr));
+  row-gap: 4px;
+}
+
+/* A little more room between a box and the next one's knob. */
+.lane-loops.is-layers > .lane-box + .lane-head {
+  margin-left: 5px;
+}
+
+.lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* The volume knob: a ring of dots around the layer's number, lit up to its
+   volume. */
+.lane-knob {
+  position: relative;
+  display: block;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.lane-knob svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+}
+
+.ring-dot {
+  fill: rgba(var(--ink), 0.2);
+}
+
+.ring-dot.is-lit {
+  fill: rgb(var(--accent));
+  filter: drop-shadow(0 0 1.5px rgba(var(--accent), 0.9));
+}
+
+.ring-number {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Doto", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(var(--ink), 0.62);
+}
+
+.lane-loops.is-stacked .ring-number {
+  font-size: 9px;
+}
+
+/* Turned all the way down. */
+.ring-number.is-quiet {
+  color: rgba(var(--ink), 0.28);
+}
+
+/* While it turns, it glows brighter. */
+.lane-head.is-turning .ring-dot.is-lit {
+  fill: rgb(var(--accent-core));
+  filter: drop-shadow(0 0 2.5px rgba(var(--accent), 1));
+}
+
+.lane-head.is-turning .ring-number {
+  color: rgb(var(--accent-core));
+}
+
+/* While Esc waits for a layer's number, every number lights, and the box
+   that goes if none comes turns red. */
+.lane-loops.is-picking .ring-dot:not(.is-lit) {
+  fill: rgba(var(--ink), 0.34);
+}
+
+.lane-loops.is-picking .ring-number {
+  color: rgb(var(--accent-core));
+  text-shadow: 0 0 6px rgba(var(--accent), 0.95);
+}
+
+.lane-box.is-going {
+  border-color: rgba(var(--rec), 0.75);
+  border-style: dashed;
+}
+
+.lane-recorded {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background-color: rgba(var(--rec), 0.09);
+}
+
+/* A note: a row of dots in its note color. */
+.lane-note {
+  position: absolute;
+  height: 2px;
   margin-left: 2px;
-  vertical-align: text-bottom;
-  background: rgb(var(--amber));
-  animation: stage-blink 1s steps(1) infinite;
+  background-image: radial-gradient(circle, rgb(var(--note)) 0.9px, transparent 1.3px);
+  background-size: 3px 2px;
+  filter: drop-shadow(0 0 2px rgba(var(--note), 0.6));
+}
+
+.lane-bar-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: rgba(var(--ink), 0.18);
+}
+
+/* Each box has its own playhead. */
+.lane-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background-color: rgb(var(--accent-core));
+  box-shadow: 0 0 8px rgba(var(--accent), 0.95);
+}
+
+.lane-playhead.is-recording {
+  background-color: rgb(255, 200, 200);
+  box-shadow: 0 0 8px rgba(var(--rec), 0.95);
+}
+
+/* The right end: how long the loop is, and the snap switch. */
+.lane-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  width: 104px;
+}
+
+.lane-side-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.lane-label {
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(var(--ink), 0.38);
+}
+
+.lane-value {
+  font-size: 12px;
+  line-height: 15px;
+  color: rgba(var(--ink), 0.7);
+}
+
+/* The snap switch, styled like the top bar's Wave button. */
+.lane-snap {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+  transition:
+    border-color 600ms ease-out,
+    background-color 600ms ease-out;
+}
+
+.lane-snap:hover {
+  border-color: rgba(var(--accent), 0.75);
+  transition:
+    border-color 40ms,
+    background-color 40ms;
+}
+
+.lane-snap:active {
+  background-color: rgba(var(--accent), 0.2);
+}
+
+.lane-snap-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.lane-snap-value {
+  font-family: "Doto", monospace;
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: rgb(var(--accent));
+}
+
+.lane-snap.is-off .lane-snap-value {
+  color: var(--text-2);
 }
 
 @keyframes stage-blink {

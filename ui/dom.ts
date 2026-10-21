@@ -18,3 +18,11 @@ export function findElement<T extends HTMLElement>(selector: string): T {
   }
   return element;
 }
+
+// Runs a button's action, then takes the focus off it, so Space or Enter
+// played later can never press it again.
+export function clickThenLetGo(event: Event, action: () => void) {
+  action();
+  const control = event.currentTarget as HTMLElement;
+  control.blur();
+}

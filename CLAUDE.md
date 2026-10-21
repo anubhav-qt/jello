@@ -7,8 +7,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 - **Webview UI** (TypeScript, Tauri 2): only draws and forwards laptop keys.
 - **Rust core** (Tauri backend): commands, input, song files, scoring, file I/O.
-- **C++ engine**: makes all sound. Sequencer, instruments, effects, mixer,
-  audio out and offline render to WAV.
+- **C++ engine**: all sound, sequencer, instruments, effects, mixer and WAV.
 - Platforms: macOS (laptop) and Windows (desktop), both from day one.
 - Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
   dependencies with GPL-3.0-compatible licenses (see ADR 0007).
@@ -17,12 +16,15 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 ## Status
 
-- Step 1 (skeleton) is done: test tone, WAV render, CI on macOS and Windows.
-  Not yet heard on Windows.
-- Now: step 2, built in [slices](docs/design.md#step-2-slices), all done: the
-  laptop keys play on the Stage start page (ADR 0010), tuned by ear, in
-  Svelte 5 (ADR 0011). Default layout: chords left, melody right (ADR 0012).
-  Next: key mapping and the on-screen piano.
+- Step 1 is done: test tone, WAV and CI on both OSes. Windows sound unheard.
+- Step 2 [slices](docs/design.md#step-2-slices) are done and tuned by ear:
+  Stage (0010), Svelte 5 (0011), chords left and melody right (0012), note
+  colors (0014). Keep this layout. Every chord has its own key (0020).
+- Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
+  keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
+- Looper (0021): slices 1, 2, 3 (snap) done. Look (0024) built, lane as
+  wide as the keyboard with the snap switch (0025). Next: layers (slice 4).
+  Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout
 
@@ -43,15 +45,13 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 - The user wants to understand all code. Explain each new piece in plain
   words and get a yes before writing it, then explain what was written.
 - Never write C++ engine code before the user has approved its design.
-- The user is still learning music theory. Explain music terms briefly when
-  they first come up.
+- Explain new music terms briefly; the user is learning music theory.
 - Sound choices are the user's. Ask before rendering any sound demo, change
   one thing at a time, and let the user pick by ear.
 
 ### UI
 
-- The user is very particular about UI. UI is never a one-off task; expect
-  many rounds before a design is accepted.
+- The user is particular about UI. Expect many rounds before acceptance.
 - Never build a UI design the user has not approved. Show mockups first,
   iterate one screen or component at a time, then build.
 - Until a screen's design is approved, it is a plain "dev panel" placeholder,
@@ -59,8 +59,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 ### Code
 
-- Very simple and easy to read. The most beautiful code is the easiest to read
-  and still does the job as well as clever code.
+- Keep code very simple, easy to read and as effective as clever code.
 - No one-liners that pack several steps together.
 - No clever or nested conditionals (chained ternaries, `&&`/`||` tricks).
   Use a plain if/else.
@@ -79,8 +78,7 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
 
 - Update this file whenever code, docs or ADRs change something a new session
   needs to know: status, layout, commands, rules.
-- Keep this file brief (under about 80 lines). Details go in `docs/design.md`
-  or an ADR.
+- Keep this file under about 80 lines; details go in `docs/design.md` or ADRs.
 - Every significant decision gets an ADR in `docs/adr/`: a short brief of a
   few lines. Small decisions are just todos. Never rewrite an accepted ADR;
   write a new one that supersedes it.

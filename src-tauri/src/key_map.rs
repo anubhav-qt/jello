@@ -9,6 +9,8 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::harmony::{Chord, Quality, chord_name};
+
 // Laptop keys can't feel how hard they are hit, so every note they play uses
 // this velocity (1 to 127).
 pub const LAPTOP_VELOCITY: u8 = 100;
@@ -16,19 +18,59 @@ pub const LAPTOP_VELOCITY: u8 = 100;
 // The default layout (docs/design.md, "Computer keyboard"): the left hand
 // plays chords and the right hand plays the melody, like on an accordion.
 
-// The left hand's chords. Each letter key from A to G plays the major chord
-// with its name, so a chord chart like "C G F" is played by typing it. In
-// touch typing, all seven are left-hand keys. Each chord's root, the note it
-// is named after, is in octave 3, from C3 up to B3.
-const CHORD_ROOTS: [(&str, u8); 7] = [
-    ("KeyC", 48), // C3
-    ("KeyD", 50), // D3
-    ("KeyE", 52), // E3
-    ("KeyF", 53), // F3
-    ("KeyG", 55), // G3
-    ("KeyA", 57), // A3
-    ("KeyB", 59), // B3
+// The left hand's chords: all 24 major and minor chords, each on a key of
+// its own (docs/adr/0020-every-chord-on-its-own-key.md), so no chord needs
+// a key held down first. Each chord's root, the note it is named after, is
+// in octave 3, from C3 up to B3.
+const CHORDS: [(&str, Chord); 24] = [
+    // Each letter key from A to G plays the major chord with its name, so a
+    // chord chart like "C G F" is played by typing it. In touch typing, all
+    // seven are left-hand keys.
+    ("KeyC", major(48)), // C3 E3 G3
+    ("KeyD", major(50)), // D
+    ("KeyE", major(52)), // E
+    ("KeyF", major(53)), // F
+    ("KeyG", major(55)), // G
+    ("KeyA", major(57)), // A
+    ("KeyB", major(59)), // B
+    // Each one's minor chord sits next to it: one key to the left, or one
+    // key up where the key to the left already plays a chord.
+    ("KeyX", minor(48)), // Cm, C3 Eb3 G3
+    ("KeyS", minor(50)), // Dm
+    ("KeyW", minor(52)), // Em
+    ("KeyR", minor(53)), // Fm
+    ("KeyT", minor(55)), // Gm
+    ("KeyQ", minor(57)), // Am
+    ("KeyV", minor(59)), // Bm
+    // The major chords on the piano's five black keys sit on the number
+    // row, low to high, the way the black keys sit above the white keys.
+    ("Digit1", major(49)), // C#
+    ("Digit2", major(51)), // Eb
+    ("Digit3", major(54)), // F#
+    ("Digit4", major(56)), // Ab
+    ("Digit5", major(58)), // Bb
+    // Their minor chords go around the left edge, low to high: from ` in the
+    // top left corner down to Space, under the thumb.
+    ("Backquote", minor(49)), // C#m
+    ("Tab", minor(51)),       // Ebm
+    ("ShiftLeft", minor(54)), // F#m
+    ("KeyZ", minor(56)),      // G#m
+    ("Space", minor(58)),     // Bbm
 ];
+
+const fn major(root: u8) -> Chord {
+    Chord {
+        root,
+        quality: Quality::Major,
+    }
+}
+
+const fn minor(root: u8) -> Chord {
+    Chord {
+        root,
+        quality: Quality::Minor,
+    }
+}
 
 // The right hand's melody, one note per key. Each finger plays a column of
 // four keys, from the bottom row up to the number row, each a half step
@@ -64,15 +106,59 @@ const MELODY_NOTES: [(&str, u8); 20] = [
     ("Digit0", 75),    // D#5
 ];
 
-// The default layout's key for moving new notes on to the next wave: ` in the
-// top left corner, away from every note.
-const WAVE_KEY: &str = "Backquote";
+// The default layout's key for moving new notes on to the next wave: \ at
+// the end of the top letter row, past the melody keys.
+const WAVE_KEY: &str = "Backslash";
 
-// The major chord on `root`, lowest note first: the root, the note four half
-// steps above it and the note seven half steps above it. C major is C, E
-// and G.
-fn major_chord(root: u8) -> [u8; 3] {
-    [root, root + 4, root + 7]
+// The keys that run the beat and the looper
+// (docs/adr/0021-a-looper-on-a-beat.md). Right Shift counts in, records and
+// closes the loop, then starts and stops layers, and Esc removes a layer
+// (docs/adr/0026-layers.md). - and = slow the beat down and speed it up.
+const LOOPER_KEY: &str = "ShiftRight";
+const CLEAR_KEY: &str = "Escape";
+const SLOWER_KEY: &str = "Minus";
+const FASTER_KEY: &str = "Equal";
+
+// While Esc waits, the number row's 1 to 8 pick which layer goes instead of
+// the newest (docs/adr/0026-layers.md).
+const LAYER_KEYS: [(&str, u32); 8] = [
+    ("Digit1", 1),
+    ("Digit2", 2),
+    ("Digit3", 3),
+    ("Digit4", 4),
+    ("Digit5", 5),
+    ("Digit6", 6),
+    ("Digit7", 7),
+    ("Digit8", 8),
+];
+
+// The layer `key` picks while Esc waits, or None for a key that picks none.
+pub fn layer_number_of(key: &str) -> Option<u32> {
+    for (layer_key, number) in LAYER_KEYS {
+        if layer_key == key {
+            return Some(number);
+        }
+    }
+    None
+}
+
+// What a key in the layout is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum KeyRole {
+    // Plays this note.
+    Note(u8),
+    // Plays this chord.
+    Chord(Chord),
+    // Moves new notes on to the next wave.
+    Wave,
+    // Runs the looper.
+    Looper,
+    // Removes a layer of the loop.
+    RemoveLayer,
+    // Slows the beat down.
+    Slower,
+    // Speeds the beat up.
+    Faster,
 }
 
 // What pressing a key does.
@@ -80,18 +166,36 @@ fn major_chord(root: u8) -> [u8; 3] {
 pub enum KeyAction {
     // Plays this note until the key is let go.
     PlayNote(u8),
-    // Plays these notes together until the key is let go: a chord, lowest
-    // note first.
-    PlayChord([u8; 3]),
+    // Plays this chord's notes together until the key is let go.
+    PlayChord(Chord),
     // Moves new notes on to the next wave.
     SwitchWave,
+    // Counts in, records or closes the loop, or starts or stops a layer,
+    // depending on what the looper is doing.
+    PressLooper,
+    // Removes the newest layer of the loop, or the one whose number comes
+    // next (docs/adr/0026-layers.md).
+    RemoveLayer,
+    // Slows the beat down.
+    SlowDown,
+    // Speeds the beat up.
+    SpeedUp,
 }
 
 pub struct KeyMap {
     // What each key does. A key that isn't in here does nothing.
-    layout: HashMap<String, KeyAction>,
+    layout: HashMap<String, KeyRole>,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
+}
+
+// A chord as the UI draws it on its key.
+#[derive(Serialize)]
+pub struct ChordForUi {
+    // Its name the way chord charts write it, like "Bb" or "F#m".
+    name: String,
+    // Its notes, lowest first.
+    notes: [u8; 3],
 }
 
 // What each key in the layout does, for the UI to draw on the keys.
@@ -99,25 +203,30 @@ pub struct KeyMap {
 pub struct LayoutForUi {
     // Each key that plays one note, with its note: "KeyM" plays 60.
     notes: HashMap<String, u8>,
-    // Each key that plays a chord, with its notes, lowest first: "KeyC"
-    // plays [48, 52, 55].
-    chords: HashMap<String, [u8; 3]>,
+    // Each key that plays a chord, with its chord: "KeyX" plays Cm.
+    chords: HashMap<String, ChordForUi>,
     // The keys that move new notes on to the next wave.
     wave_keys: Vec<String>,
+    // The keys that run the beat and the looper, each with what it does:
+    // "looper", "clear", "slower" or "faster".
+    beat_keys: HashMap<String, &'static str>,
 }
 
 impl KeyMap {
     // The default layout, with no keys held.
     pub fn new() -> KeyMap {
         let mut layout = HashMap::new();
-        for (key, root) in CHORD_ROOTS {
-            let chord = major_chord(root);
-            layout.insert(String::from(key), KeyAction::PlayChord(chord));
+        for (key, chord) in CHORDS {
+            layout.insert(String::from(key), KeyRole::Chord(chord));
         }
         for (key, note) in MELODY_NOTES {
-            layout.insert(String::from(key), KeyAction::PlayNote(note));
+            layout.insert(String::from(key), KeyRole::Note(note));
         }
-        layout.insert(String::from(WAVE_KEY), KeyAction::SwitchWave);
+        layout.insert(String::from(WAVE_KEY), KeyRole::Wave);
+        layout.insert(String::from(LOOPER_KEY), KeyRole::Looper);
+        layout.insert(String::from(CLEAR_KEY), KeyRole::RemoveLayer);
+        layout.insert(String::from(SLOWER_KEY), KeyRole::Slower);
+        layout.insert(String::from(FASTER_KEY), KeyRole::Faster);
 
         KeyMap {
             layout,
@@ -134,24 +243,29 @@ impl KeyMap {
         }
 
         // A key that isn't in the layout does nothing.
-        let action = match self.layout.get(key) {
-            Some(action) => *action,
+        let role = match self.layout.get(key) {
+            Some(role) => *role,
             None => return None,
         };
 
         // Remember the notes, so letting go of the key stops these ones. If
         // another held key is already playing one of them, the engine plays
         // it again on the voice it already has, so the note sounds once.
-        match action {
-            KeyAction::PlayNote(note) => {
+        match role {
+            KeyRole::Note(note) => {
                 self.held.insert(String::from(key), vec![note]);
+                Some(KeyAction::PlayNote(note))
             }
-            KeyAction::PlayChord(notes) => {
-                self.held.insert(String::from(key), notes.to_vec());
+            KeyRole::Chord(chord) => {
+                self.held.insert(String::from(key), chord.notes().to_vec());
+                Some(KeyAction::PlayChord(chord))
             }
-            KeyAction::SwitchWave => {}
+            KeyRole::Wave => Some(KeyAction::SwitchWave),
+            KeyRole::Looper => Some(KeyAction::PressLooper),
+            KeyRole::RemoveLayer => Some(KeyAction::RemoveLayer),
+            KeyRole::Slower => Some(KeyAction::SlowDown),
+            KeyRole::Faster => Some(KeyAction::SpeedUp),
         }
-        Some(action)
     }
 
     // The notes to stop when `key` is let go: the ones it started, even if the
@@ -188,21 +302,56 @@ impl KeyMap {
         self.held.clear();
     }
 
+    // Each chord key, with the chord it plays.
+    pub fn chord_keys(&self) -> HashMap<String, Chord> {
+        let mut chord_keys = HashMap::new();
+        for (key, role) in &self.layout {
+            if let KeyRole::Chord(chord) = role {
+                chord_keys.insert(key.clone(), *chord);
+            }
+        }
+        chord_keys
+    }
+
+    // Each melody key, with the note it plays.
+    pub fn note_keys(&self) -> HashMap<String, u8> {
+        let mut note_keys = HashMap::new();
+        for (key, role) in &self.layout {
+            if let KeyRole::Note(note) = role {
+                note_keys.insert(key.clone(), *note);
+            }
+        }
+        note_keys
+    }
+
     // What every key in the layout does right now, for the UI to draw.
     pub fn layout_for_ui(&self) -> LayoutForUi {
         let mut notes = HashMap::new();
         let mut chords = HashMap::new();
         let mut wave_keys = Vec::new();
-        for (key, action) in &self.layout {
-            match action {
-                KeyAction::PlayNote(note) => {
+        let mut beat_keys = HashMap::new();
+        for (key, role) in &self.layout {
+            match role {
+                KeyRole::Note(note) => {
                     notes.insert(key.clone(), *note);
                 }
-                KeyAction::PlayChord(chord) => {
-                    chords.insert(key.clone(), *chord);
+                KeyRole::Chord(chord) => {
+                    chords.insert(key.clone(), chord_for_ui(*chord));
                 }
-                KeyAction::SwitchWave => {
+                KeyRole::Wave => {
                     wave_keys.push(key.clone());
+                }
+                KeyRole::Looper => {
+                    beat_keys.insert(key.clone(), "looper");
+                }
+                KeyRole::RemoveLayer => {
+                    beat_keys.insert(key.clone(), "clear");
+                }
+                KeyRole::Slower => {
+                    beat_keys.insert(key.clone(), "slower");
+                }
+                KeyRole::Faster => {
+                    beat_keys.insert(key.clone(), "faster");
                 }
             }
         }
@@ -215,7 +364,16 @@ impl KeyMap {
             notes,
             chords,
             wave_keys,
+            beat_keys,
         }
+    }
+}
+
+// With no song key to follow, chords get the names chord charts use most.
+fn chord_for_ui(chord: Chord) -> ChordForUi {
+    ChordForUi {
+        name: chord_name(chord, None),
+        notes: chord.notes(),
     }
 }
 
@@ -223,6 +381,14 @@ impl KeyMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The notes a press played, if it played a chord.
+    fn chord_notes(action: Option<KeyAction>) -> Option<[u8; 3]> {
+        match action {
+            Some(KeyAction::PlayChord(chord)) => Some(chord.notes()),
+            _ => None,
+        }
+    }
 
     // Presses each finger's keys, bottom row first, one finger after another,
     // and checks they play every note from `lowest` up, each one half step
@@ -236,6 +402,15 @@ mod tests {
                 assert_eq!(action, Some(KeyAction::PlayNote(note)), "key {key}");
                 note += 1;
             }
+        }
+    }
+
+    // Presses each key on a fresh key map, and checks it plays its chord's
+    // notes, given as (key, notes).
+    fn assert_chords(chords: &[(&str, [u8; 3])]) {
+        for (key, notes) in chords {
+            let mut key_map = KeyMap::new();
+            assert_eq!(chord_notes(key_map.press(key)), Some(*notes), "key {key}");
         }
     }
 
@@ -255,7 +430,7 @@ mod tests {
     #[test]
     fn each_letter_from_a_to_g_plays_its_major_chord() {
         // Each chord's root is in octave 3: C3 is note 48.
-        let chords = [
+        assert_chords(&[
             ("KeyC", [48, 52, 55]), // C3 E3 G3
             ("KeyD", [50, 54, 57]), // D3 F#3 A3
             ("KeyE", [52, 56, 59]), // E3 G#3 B3
@@ -263,54 +438,120 @@ mod tests {
             ("KeyG", [55, 59, 62]), // G3 B3 D4
             ("KeyA", [57, 61, 64]), // A3 C#4 E4
             ("KeyB", [59, 63, 66]), // B3 D#4 F#4
-        ];
-        let mut key_map = KeyMap::new();
-        for (key, chord) in chords {
-            let action = key_map.press(key);
-            assert_eq!(action, Some(KeyAction::PlayChord(chord)), "key {key}");
+        ]);
+    }
+
+    #[test]
+    fn each_minor_chord_sits_next_to_its_major() {
+        // The middle note is a half step lower than in the major chord.
+        assert_chords(&[
+            ("KeyX", [48, 51, 55]), // Cm: C3 Eb3 G3, left of C
+            ("KeyS", [50, 53, 57]), // Dm: D3 F3 A3, left of D
+            ("KeyW", [52, 55, 59]), // Em: E3 G3 B3, left of E
+            ("KeyR", [53, 56, 60]), // Fm: F3 Ab3 C4, above F
+            ("KeyT", [55, 58, 62]), // Gm: G3 Bb3 D4, above G
+            ("KeyQ", [57, 60, 64]), // Am: A3 C4 E4, above A
+            ("KeyV", [59, 62, 66]), // Bm: B3 D4 F#4, left of B
+        ]);
+    }
+
+    #[test]
+    fn the_number_row_plays_the_black_key_majors_low_to_high() {
+        assert_chords(&[
+            ("Digit1", [49, 53, 56]), // C#3 F3 G#3
+            ("Digit2", [51, 55, 58]), // Eb3 G3 Bb3
+            ("Digit3", [54, 58, 61]), // F#3 A#3 C#4
+            ("Digit4", [56, 60, 63]), // Ab3 C4 Eb4
+            ("Digit5", [58, 62, 65]), // Bb3 D4 F4
+        ]);
+    }
+
+    #[test]
+    fn the_left_edge_plays_the_black_key_minors_low_to_high() {
+        assert_chords(&[
+            ("Backquote", [49, 52, 56]), // C#m: C#3 E3 G#3
+            ("Tab", [51, 54, 58]),       // Ebm: Eb3 Gb3 Bb3
+            ("ShiftLeft", [54, 57, 61]), // F#m: F#3 A3 C#4
+            ("KeyZ", [56, 59, 63]),      // G#m: G#3 B3 D#4
+            ("Space", [58, 61, 65]),     // Bbm: Bb3 Db4 F4
+        ]);
+    }
+
+    #[test]
+    fn all_24_chords_are_playable_each_on_one_key() {
+        let chord_keys = KeyMap::new().chord_keys();
+        assert_eq!(chord_keys.len(), 24);
+
+        // Every root from C3 to B3, once as a major chord and once as a
+        // minor chord.
+        for root in 48..60 {
+            for quality in [Quality::Major, Quality::Minor] {
+                let chord = Chord { root, quality };
+                let mut keys = Vec::new();
+                for (key, played) in &chord_keys {
+                    if *played == chord {
+                        keys.push(key.clone());
+                    }
+                }
+                assert_eq!(keys.len(), 1, "{chord:?} is on {keys:?}");
+            }
         }
     }
 
     #[test]
-    fn backquote_switches_the_wave() {
+    fn holding_a_chord_key_changes_no_other_key() {
+        // Space and left Shift play chords of their own now, so holding
+        // them leaves C a C chord and M middle C.
         let mut key_map = KeyMap::new();
-        assert_eq!(key_map.press("Backquote"), Some(KeyAction::SwitchWave));
+        key_map.press("Space");
+        key_map.press("ShiftLeft");
+        assert_eq!(chord_notes(key_map.press("KeyC")), Some([48, 52, 55]));
+        assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
+    }
+
+    #[test]
+    fn backslash_switches_the_wave() {
+        let mut key_map = KeyMap::new();
+        assert_eq!(key_map.press("Backslash"), Some(KeyAction::SwitchWave));
+    }
+
+    #[test]
+    fn right_shift_runs_the_looper_and_esc_removes_a_layer() {
+        let mut key_map = KeyMap::new();
+        assert_eq!(key_map.press("ShiftRight"), Some(KeyAction::PressLooper));
+        assert_eq!(key_map.press("Escape"), Some(KeyAction::RemoveLayer));
+    }
+
+    #[test]
+    fn minus_and_equal_slow_the_beat_down_and_speed_it_up() {
+        let mut key_map = KeyMap::new();
+        assert_eq!(key_map.press("Minus"), Some(KeyAction::SlowDown));
+        assert_eq!(key_map.press("Equal"), Some(KeyAction::SpeedUp));
     }
 
     #[test]
     fn keys_outside_the_layout_do_nothing() {
-        // The left hand's other keys, the keys past the right pinky, Space
-        // and the Shifts.
+        // The keys past the right pinky, and the keys every tab keeps for
+        // itself.
         let mut key_map = KeyMap::new();
         let keys = [
-            "Digit1",
-            "Digit5",
-            "KeyQ",
-            "KeyW",
-            "KeyR",
-            "KeyT",
-            "KeyS",
-            "KeyZ",
-            "KeyX",
-            "KeyV",
-            "Tab",
             "CapsLock",
-            "Minus",
             "BracketLeft",
+            "BracketRight",
             "Quote",
-            "Backslash",
             "Enter",
-            "Space",
-            "ShiftLeft",
-            "ShiftRight",
+            "Backspace",
+            "ControlLeft",
+            "AltLeft",
+            "MetaLeft",
         ];
         for key in keys {
             assert_eq!(key_map.press(key), None, "key {key}");
         }
 
-        // The layout holds the 7 chords, the 20 notes and the wave key, and
-        // nothing else.
-        assert_eq!(key_map.layout.len(), 28);
+        // The layout holds the 24 chords, the 20 notes, the wave key and the
+        // 4 beat and looper keys, and nothing else.
+        assert_eq!(key_map.layout.len(), 49);
     }
 
     #[test]
@@ -324,11 +565,10 @@ mod tests {
         assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
 
         // The same goes for a chord.
-        let c_major = KeyAction::PlayChord([48, 52, 55]);
-        assert_eq!(key_map.press("KeyC"), Some(c_major));
+        assert_eq!(chord_notes(key_map.press("KeyC")), Some([48, 52, 55]));
         assert_eq!(key_map.press("KeyC"), None);
         assert_eq!(key_map.release("KeyC"), vec![48, 52, 55]);
-        assert_eq!(key_map.press("KeyC"), Some(c_major));
+        assert_eq!(chord_notes(key_map.press("KeyC")), Some([48, 52, 55]));
     }
 
     #[test]
@@ -345,8 +585,7 @@ mod tests {
         // The A chord (A3 C#4 E4) and H both play A3. The second press plays
         // it again.
         let mut key_map = KeyMap::new();
-        let a_major = KeyAction::PlayChord([57, 61, 64]);
-        assert_eq!(key_map.press("KeyA"), Some(a_major));
+        assert_eq!(chord_notes(key_map.press("KeyA")), Some([57, 61, 64]));
         assert_eq!(key_map.press("KeyH"), Some(KeyAction::PlayNote(57)));
 
         // Letting go of the chord stops its other notes, but A3 keeps
@@ -370,6 +609,17 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_and_its_minor_share_notes_until_both_are_let_go() {
+        // C (C3 E3 G3) and Cm (C3 Eb3 G3), on C and X side by side, both play
+        // C3 and G3.
+        let mut key_map = KeyMap::new();
+        key_map.press("KeyC");
+        key_map.press("KeyX");
+        assert_eq!(key_map.release("KeyC"), vec![52]);
+        assert_eq!(key_map.release("KeyX"), vec![48, 51, 55]);
+    }
+
+    #[test]
     fn letting_go_of_a_key_that_started_no_note_does_nothing() {
         let mut key_map = KeyMap::new();
         let nothing: Vec<u8> = Vec::new();
@@ -378,10 +628,10 @@ mod tests {
         assert_eq!(key_map.release("KeyM"), nothing);
 
         // Pressed, but it plays no note.
-        key_map.press("Backquote");
-        assert_eq!(key_map.release("Backquote"), nothing);
-        key_map.press("Space");
-        assert_eq!(key_map.release("Space"), nothing);
+        key_map.press("Backslash");
+        assert_eq!(key_map.release("Backslash"), nothing);
+        key_map.press("ShiftRight");
+        assert_eq!(key_map.release("ShiftRight"), nothing);
 
         // Let go of already.
         key_map.press("KeyM");
@@ -395,8 +645,7 @@ mod tests {
         // middle C, the note M started, so it can't get stuck.
         let mut key_map = KeyMap::new();
         key_map.press("KeyM");
-        let play_d4 = KeyAction::PlayNote(62);
-        key_map.layout.insert(String::from("KeyM"), play_d4);
+        key_map.layout.insert(String::from("KeyM"), KeyRole::Note(62));
         assert_eq!(key_map.release("KeyM"), vec![60]);
 
         // The next press plays the new note.
@@ -404,8 +653,7 @@ mod tests {
 
         // The same goes for a chord: hold C, then move C to the D chord.
         key_map.press("KeyC");
-        let play_d_major = KeyAction::PlayChord([50, 54, 57]);
-        key_map.layout.insert(String::from("KeyC"), play_d_major);
+        key_map.layout.insert(String::from("KeyC"), KeyRole::Chord(major(50)));
         assert_eq!(key_map.release("KeyC"), vec![48, 52, 55]);
     }
 
@@ -414,18 +662,43 @@ mod tests {
         let mut key_map = KeyMap::new();
         key_map.press("KeyM");
         key_map.press("KeyC");
+        key_map.press("Space");
         key_map.release_all();
 
         // Nothing is left to let go of, and the keys play again.
         let nothing: Vec<u8> = Vec::new();
         assert_eq!(key_map.release("KeyM"), nothing);
         assert_eq!(key_map.release("KeyC"), nothing);
+        assert_eq!(key_map.release("Space"), nothing);
         assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
-        assert_eq!(key_map.press("KeyC"), Some(KeyAction::PlayChord([48, 52, 55])));
+        assert_eq!(chord_notes(key_map.press("KeyC")), Some([48, 52, 55]));
+        assert_eq!(chord_notes(key_map.press("Space")), Some([58, 61, 65]));
     }
 
     #[test]
-    fn the_ui_is_told_every_note_chord_and_the_wave_key() {
+    fn the_chord_keys_list_what_each_press_plays() {
+        // Compose shows guidance for each of these, so each must be what
+        // the key really plays.
+        let chord_keys = KeyMap::new().chord_keys();
+        for (key, chord) in chord_keys {
+            let mut key_map = KeyMap::new();
+            assert_eq!(key_map.press(&key), Some(KeyAction::PlayChord(chord)), "key {key}");
+        }
+    }
+
+    #[test]
+    fn the_note_keys_list_what_each_press_plays() {
+        // Compose shows guidance for each of these too.
+        let note_keys = KeyMap::new().note_keys();
+        assert_eq!(note_keys.len(), 20);
+        for (key, note) in note_keys {
+            let mut key_map = KeyMap::new();
+            assert_eq!(key_map.press(&key), Some(KeyAction::PlayNote(note)), "key {key}");
+        }
+    }
+
+    #[test]
+    fn the_ui_is_told_every_note_chord_wave_and_beat_key() {
         let key_map = KeyMap::new();
         let layout = key_map.layout_for_ui();
 
@@ -433,18 +706,46 @@ mod tests {
         for (key, note) in MELODY_NOTES {
             assert_eq!(layout.notes.get(key), Some(&note), "key {key}");
         }
-        assert_eq!(layout.chords.len(), 7);
-        assert_eq!(layout.chords.get("KeyC"), Some(&[48, 52, 55]));
-        assert_eq!(layout.chords.get("KeyB"), Some(&[59, 63, 66]));
-        assert_eq!(layout.wave_keys, vec![String::from("Backquote")]);
+        assert_eq!(layout.chords.len(), 24);
+        for (key, chord) in CHORDS {
+            assert_eq!(layout.chords[key].notes, chord.notes(), "key {key}");
+        }
+        assert_eq!(layout.wave_keys, vec![String::from("Backslash")]);
+        assert_eq!(layout.beat_keys.len(), 4);
+        assert_eq!(layout.beat_keys["ShiftRight"], "looper");
+        assert_eq!(layout.beat_keys["Escape"], "clear");
+        assert_eq!(layout.beat_keys["Minus"], "slower");
+        assert_eq!(layout.beat_keys["Equal"], "faster");
+    }
+
+    #[test]
+    fn the_ui_is_told_each_chord_by_its_common_name() {
+        let chords = KeyMap::new().layout_for_ui().chords;
+        let names = [
+            ("KeyC", "C"),
+            ("KeyX", "Cm"),
+            ("KeyQ", "Am"),
+            ("Digit1", "C#"),
+            ("Digit2", "Eb"),
+            ("Digit3", "F#"),
+            ("Digit4", "Ab"),
+            ("Digit5", "Bb"),
+            ("Backquote", "C#m"),
+            ("Tab", "Ebm"),
+            ("ShiftLeft", "F#m"),
+            ("KeyZ", "G#m"),
+            ("Space", "Bbm"),
+        ];
+        for (key, name) in names {
+            assert_eq!(chords[key].name, name, "key {key}");
+        }
     }
 
     #[test]
     fn the_ui_is_told_the_layout_as_it_is_now() {
         // Move M to D4, and the UI is told M plays D4.
         let mut key_map = KeyMap::new();
-        let play_d4 = KeyAction::PlayNote(62);
-        key_map.layout.insert(String::from("KeyM"), play_d4);
+        key_map.layout.insert(String::from("KeyM"), KeyRole::Note(62));
 
         let layout = key_map.layout_for_ui();
         assert_eq!(layout.notes.get("KeyM"), Some(&62));
@@ -452,13 +753,16 @@ mod tests {
 
     #[test]
     fn the_ui_reads_the_layout_by_these_names() {
-        // The UI reads `notes`, `chords` and `wave_keys` (KeyLayout in
-        // ui/keyboard.ts), so renaming them here would leave keys blank.
+        // The UI reads these names (KeyLayout in ui/keyboard.ts), so
+        // renaming them here would leave keys blank.
         let key_map = KeyMap::new();
         let json = serde_json::to_value(key_map.layout_for_ui()).unwrap();
         assert_eq!(json["notes"]["KeyM"], 60);
-        assert_eq!(json["chords"]["KeyC"][0], 48);
-        assert_eq!(json["chords"]["KeyC"][2], 55);
-        assert_eq!(json["wave_keys"][0], "Backquote");
+        assert_eq!(json["chords"]["KeyC"]["name"], "C");
+        assert_eq!(json["chords"]["KeyC"]["notes"][0], 48);
+        assert_eq!(json["chords"]["KeyC"]["notes"][2], 55);
+        assert_eq!(json["chords"]["KeyX"]["name"], "Cm");
+        assert_eq!(json["wave_keys"][0], "Backslash");
+        assert_eq!(json["beat_keys"]["ShiftRight"], "looper");
     }
 }

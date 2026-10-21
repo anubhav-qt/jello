@@ -1,41 +1,71 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
-#include "mailbox.h"
 #include "voice.h"
+#include "wave.h"
 
-// The instrument as a whole. Other threads send it note events, and the audio
-// thread turns them into sound (docs/adr/0009-how-notes-become-sound.md).
-// It has 32 voices, so up to 32 notes sound at once.
+// The instrument as a whole (docs/adr/0009-how-notes-become-sound.md). The
+// conductor passes it notes on the audio thread, and it turns them into
+// sound. It has 32 voices, so up to 32 notes sound at once. Only the audio
+// thread uses it, so nothing in here locks, allocates or waits.
 class Synth {
 public:
+    // How many layers a loop can have, each with its own volume
+    // (docs/adr/0026-layers.md).
+    static constexpr int layer_count = 8;
+
     explicit Synth(int sample_rate);
 
-    // These only put an event in the mailbox. The audio thread acts on it at
-    // the start of its next chunk of sound. Only one thread may call them at
-    // a time.
-    void note_on(int note, int velocity);
-    void note_off(int note);
-    void all_notes_off();
-    // Notes sent after this play `wave`. Notes sent before it keep theirs.
+    // These act at once, so the next sound rendered hears them. `source`
+    // says who plays the note: a note only ever touches the notes of its own
+    // source, so the loop's C and a C played live never cut each other off.
+
+    // Starts `note` on a voice. For live notes and the song; the loop plays
+    // its notes by layer, below.
+    void note_on(int note, int velocity, Source source);
+    // Lets go of `note`, so it fades out.
+    void note_off(int note, Source source);
+    // Lets go of every note `source` plays, every layer's for the loop.
+    void all_notes_off(Source source);
+
+    // The same for a loop's notes, each played by its layer. `layer` is the
+    // slot the looper gave the layer, 0 to 7. A layer's notes only ever touch
+    // its own, so two layers' Cs never cut each other off.
+    void loop_note_on(int note, int velocity, int layer);
+    void loop_note_off(int note, int layer);
+    void layer_notes_off(int layer);
+
+    // How loud layer `layer` plays, from 0 (silent) to 1 (as played), its
+    // notes already sounding too. Each voice eases there, so it never clicks.
+    // Every layer starts at 1. Live notes and the song always play at 1.
+    void set_layer_volume(int layer, float volume);
+
+    // Notes started after this play `wave`. Notes started before it keep
+    // theirs.
     void set_wave(Wave wave);
 
-    // Acts on every waiting event, then fills `frames` frames of stereo
-    // (left, right, left, ...), every sample between -1.0 and 1.0. Runs on
-    // the audio thread, so it never locks, allocates or waits.
+    // Adds every voice to `frames` frames of stereo (left, right, left,
+    // ...). It adds instead of overwriting, so the conductor can render a
+    // chunk in pieces and put the click in the same buffer. Many voices can
+    // add up to more than 1.0: the conductor keeps the sum in range with the
+    // soft clip.
     void render(float* out, int frames);
 
 private:
-    // Does what one event asks.
-    void handle(const Event& event);
+    // Starts `note` for `source`, and for the loop, layer `layer`. Every
+    // other note says layer 0.
+    void start_note(int note, int velocity, Source source, int layer);
 
-    // Starts `note` on a voice.
-    void play(int note, int velocity);
+    // The voice still sounding `note` for `source` and `layer`, held or
+    // fading, or nullptr if none is.
+    Voice* find_ringing_voice(int note, Source source, int layer);
 
-    // The voice still sounding `note`, held or fading, or nullptr if none is.
-    Voice* find_ringing_voice(int note);
+    // How loud `voice` should play: its layer's volume for a loop's note, and
+    // 1 for any other.
+    float volume_for(const Voice& voice) const;
 
     // A silent voice, or nullptr if every voice is busy.
     Voice* find_free_voice();
@@ -48,14 +78,15 @@ private:
     // voice is held, so that is the note held the longest.
     Voice* find_oldest_voice();
 
-    Mailbox mailbox_;
-
     // Made once, when the synth is created, and never resized, so the audio
     // thread never allocates.
     std::vector<Voice> voices_;
 
     // The wave new notes play. Jello starts on triangle.
     Wave wave_ = Wave::triangle;
+
+    // Each layer's volume, by its slot.
+    std::array<float, layer_count> layer_volumes_{};
 
     // How many notes have been pressed so far. Each press gets the next
     // number, so a smaller number means pressed earlier. A counter, not a

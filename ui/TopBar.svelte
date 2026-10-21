@@ -1,23 +1,25 @@
 <!-- The page's top bar, built like GitHub's repository header: a title row
      with where you are on the left and actions on the right, then a row of
-     tabs. It starts sparse: one tab and two actions. -->
+     tabs: Play, Compose and Produce. Messages for the player are typed out
+     after the title, wrapping onto a second line when long. -->
 <script lang="ts">
+  import { clickThenLetGo } from "./dom";
+  import type { Tab } from "./tabs";
+
   interface Props {
+    // The tab open now.
+    tab: Tab;
+    onTabClick: (tab: Tab) => void;
     // The wave new notes play, like "saw", or "" until Rust has said.
     wave: string;
     onWaveClick: () => void;
     onRenderClick: () => void;
+    // The message typed out so far, and whether it is shown.
+    message: string;
+    messageShown: boolean;
   }
 
-  let { wave, onWaveClick, onRenderClick }: Props = $props();
-
-  // Runs the button's action, then gives up the focus, so Space or Enter
-  // played later can never press it again.
-  function clickThenLetGo(event: MouseEvent, action: () => void) {
-    action();
-    const button = event.currentTarget as HTMLButtonElement;
-    button.blur();
-  }
+  let { tab, onTabClick, wave, onWaveClick, onRenderClick, message, messageShown }: Props = $props();
 </script>
 
 <header class="topbar">
@@ -29,11 +31,14 @@
       <span class="crumb is-current">Keyboard</span>
     </div>
 
+    <!-- The text and cursor sit on one line, so no space comes between them. -->
+    <p class="topbar-message" class:is-shown={messageShown}><span class="topbar-message-text">{message}</span><span class="topbar-message-cursor"></span></p>
+
     <div class="actions">
       <button
         type="button"
         class="action"
-        title="Next wave (the ` key)"
+        title="Next wave (the \ key)"
         onclick={(event) => clickThenLetGo(event, onWaveClick)}
       >
         <span class="action-label">Wave</span>
@@ -51,7 +56,12 @@
   </div>
 
   <nav class="tabs">
-    <span class="tab is-active">
+    <button
+      type="button"
+      class="tab"
+      class:is-active={tab === "play"}
+      onclick={(event) => clickThenLetGo(event, () => onTabClick("play"))}
+    >
       <!-- A small piano, drawn in the text's color. -->
       <svg class="tab-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
         <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -59,6 +69,34 @@
         <path d="M4.75 2.75h2.5V9h-2.5zM8.75 2.75h2.5V9h-2.5z" fill="currentColor" />
       </svg>
       <span class="tab-label">Play</span>
-    </span>
+    </button>
+
+    <button
+      type="button"
+      class="tab"
+      class:is-active={tab === "compose"}
+      onclick={(event) => clickThenLetGo(event, () => onTabClick("compose"))}
+    >
+      <!-- A pencil. -->
+      <svg class="tab-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d="M10.5 2.25l3.25 3.25-8 8H2.5v-3.25z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+        <path d="M8.75 4l3.25 3.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+      <span class="tab-label">Compose</span>
+    </button>
+
+    <button
+      type="button"
+      class="tab"
+      class:is-active={tab === "produce"}
+      onclick={(event) => clickThenLetGo(event, () => onTabClick("produce"))}
+    >
+      <!-- Three mixer faders. -->
+      <svg class="tab-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d="M3.5 1.75v12.5M8 1.75v12.5M12.5 1.75v12.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M1.75 9h3.5v2.5h-3.5zM6.25 4h3.5v2.5h-3.5zM10.75 7h3.5v2.5h-3.5z" fill="currentColor" />
+      </svg>
+      <span class="tab-label">Produce</span>
+    </button>
   </nav>
 </header>

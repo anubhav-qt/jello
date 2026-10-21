@@ -5,16 +5,27 @@
 
 export type Platform = "mac" | "windows";
 
+// A chord as Rust names it, like "Bb" or "F#m", with its notes, lowest first.
+export interface LayoutChord {
+  name: string;
+  notes: number[];
+}
+
 // What each key does, as Rust's `key_layout` command answers.
 export interface KeyLayout {
   // Each key that plays one note, with its note: "KeyM" plays 60.
   notes: Record<string, number>;
-  // Each key that plays a chord, with its notes, lowest first: "KeyC" plays
-  // [48, 52, 55].
-  chords: Record<string, number[]>;
+  // Each key that plays a chord, with its chord: "KeyX" plays Cm.
+  chords: Record<string, LayoutChord>;
   // The keys that move new notes on to the next wave.
   wave_keys: string[];
+  // The keys that run the beat, each with what it does: right Shift runs
+  // the looper, Esc clears it, - slows the beat down and = speeds it up.
+  beat_keys: Record<string, BeatKey>;
 }
+
+// What a key that runs the beat does.
+export type BeatKey = "looper" | "clear" | "slower" | "faster";
 
 // One key, as drawn.
 export interface KeySpec {
@@ -42,8 +53,10 @@ export interface KeyRow {
   short?: boolean;
 }
 
-// What a key is for, which decides how it is drawn.
-export type KeyKind = "note" | "chord" | "wave" | "plain" | "blank";
+// What a key is for, which decides how it is drawn. A "beat" key runs the
+// beat, and an "action" key does something on the open tab, like Compose's
+// Return.
+export type KeyKind = "note" | "chord" | "wave" | "beat" | "action" | "plain" | "blank";
 
 // The keyboard to draw: a Mac's, or a PC's on Windows.
 export function detectPlatform(): Platform {
@@ -61,16 +74,6 @@ export function noteName(note: number): { pitch: string; octave: number } {
   const pitch = PITCH_NAMES[note % 12];
   const octave = Math.floor(note / 12) - 1;
   return { pitch, octave };
-}
-
-// A color for each of the 12 pitches, as a hue on the color wheel (0 to 360).
-// Pitches are placed round the wheel in the order of the circle of fifths
-// (C, G, D, A, E...), where neighbours share most of their notes and sound
-// good together. So a chord's notes get colors that sit close together.
-export function pitchHue(note: number): number {
-  const pitch = note % 12;
-  const placeOnCircle = (pitch * 7) % 12;
-  return (placeOnCircle * 30 + 200) % 360;
 }
 
 function key(code: string, label: string, width = 1): KeySpec {
@@ -254,10 +257,13 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   if (layout.wave_keys.includes(code)) {
     return "wave";
   }
+  if (layout.beat_keys[code] !== undefined) {
+    return "beat";
+  }
   return "plain";
 }
 
-// The notes key `code` plays, lowest first: one for a note key, a few for a
+// The notes key `code` plays, lowest first: one for a note key, three for a
 // chord key, and none for any other key.
 export function notesOf(code: string, layout: KeyLayout): number[] {
   const note = layout.notes[code];
@@ -266,7 +272,7 @@ export function notesOf(code: string, layout: KeyLayout): number[] {
   }
   const chord = layout.chords[code];
   if (chord !== undefined) {
-    return chord;
+    return chord.notes;
   }
   return [];
 }
@@ -277,4 +283,15 @@ export function keyRows(platform: Platform): KeyRow[] {
     return macRows();
   }
   return windowsRows();
+}
+
+// How many key widths wide the keyboard is on `platform`: 14.5 on a Mac and
+// 15 on Windows. Every row is as wide, so it adds up the number row.
+export function keysAcross(platform: Platform): number {
+  const numberRow = keyRows(platform)[1];
+  let width = 0;
+  for (const spec of numberRow.keys) {
+    width += spec.width;
+  }
+  return width;
 }

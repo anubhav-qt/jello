@@ -1,5 +1,6 @@
 #include "voice.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -7,6 +8,10 @@ namespace {
 // How loud one voice is. With it, a 4-note chord is about as loud as the
 // step 1 test tone. Chosen by ear in slice 5.
 constexpr float voice_level = 0.35f;
+
+// How long a voice's volume takes to ease from silent to full, or back. A
+// starting value, to be tuned by ear.
+constexpr int volume_ease_ms = 10;
 
 // How long a gap takes to shrink away, the same as the envelope's attack.
 // Short enough that the new wave takes over at once, long enough not to
@@ -32,9 +37,11 @@ float velocity_to_peak(int velocity) {
 Voice::Voice(int sample_rate)
     : sample_rate_(sample_rate),
       gap_samples_(sample_rate * gap_ms / 1000),
-      envelope_(sample_rate) {}
+      envelope_(sample_rate),
+      volume_step_(1000.0f / static_cast<float>(sample_rate * volume_ease_ms)) {}
 
-void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave) {
+void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer,
+                  float volume) {
     // Where the sound was heading next: the old wave, plus what is left of
     // any earlier gap.
     bool was_sounding = !is_free();
@@ -44,6 +51,8 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave)
     // on from the same point in its wave instead of jumping.
     note_ = note;
     press_number_ = press_number;
+    source_ = source;
+    layer_ = layer;
     wave_ = wave;
     phase_step_ = note_to_frequency(note) / sample_rate_;
     envelope_.start(velocity_to_peak(velocity));
@@ -57,6 +66,12 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave)
     } else {
         gap_ = 0.0;
         gap_samples_left_ = 0;
+    }
+
+    // A silent voice has nothing to ease from, so it starts right at its
+    // volume. One still sounding keeps its own and eases there as it renders.
+    if (!was_sounding) {
+        volume_ = volume;
     }
 }
 
@@ -84,17 +99,36 @@ std::uint64_t Voice::press_number() const {
     return press_number_;
 }
 
-void Voice::render(float* out, int frames) {
-    // A free voice is silent, so there is nothing to add.
-    if (is_free()) {
-        return;
-    }
+Source Voice::source() const {
+    return source_;
+}
 
+int Voice::layer() const {
+    return layer_;
+}
+
+void Voice::render(float* out, int frames, float volume) {
     for (int i = 0; i < frames; i++) {
+        // A free voice is silent, so there is nothing to add. It stops on
+        // the sample it falls silent, so the point in the wave where its
+        // next note starts never depends on how the sound was split into
+        // chunks.
+        if (is_free()) {
+            return;
+        }
+
+        // A step toward the volume asked for, never past it.
+        if (volume_ < volume) {
+            volume_ = std::min(volume_ + volume_step_, volume);
+        } else if (volume_ > volume) {
+            volume_ = std::max(volume_ - volume_step_, volume);
+        }
+
         double exact_height = height_now() + gap_now();
         float height = static_cast<float>(exact_height);
         float loudness = envelope_.next();
         float sample = height * loudness * voice_level;
+        sample = sample * volume_;
 
         // The gap shrinks a step each sample, until it is gone.
         if (gap_samples_left_ > 0) {

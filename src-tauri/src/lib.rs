@@ -2,12 +2,15 @@
 // commands to call.
 
 mod commands;
+mod compose;
 mod engine;
+mod harmony;
 mod key_map;
 mod wav;
 
 use std::sync::Mutex;
 
+use compose::Composer;
 use engine::Engine;
 use key_map::KeyMap;
 
@@ -21,15 +24,27 @@ pub fn run() {
         .manage(Mutex::new(engine))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
+        // Compose's key, the chords added to the song so far, and where the
+        // song played last starts.
+        .manage(Mutex::new(Composer::new()))
         .invoke_handler(tauri::generate_handler![
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,
             commands::switch_wave,
+            commands::switch_snap,
+            commands::set_layer_volume,
             commands::press_key,
             commands::release_key,
-            commands::current_wave,
+            commands::sound_view,
             commands::key_layout,
+            commands::compose_view,
+            commands::pick_key,
+            commands::add_last_chord,
+            commands::remove_last_chord,
+            commands::play_chord_in_song,
+            commands::play_song,
+            commands::stop_song,
             commands::render_test_note,
         ])
         .run(tauri::generate_context!())
