@@ -1,6 +1,6 @@
 # 0021: A looper on a beat
 
-- Status: Accepted
+- Status: Accepted; Esc superseded by 0026
 - Date: 2026-10-20
 
 Right Shift is a looper, in every tab. Loops follow a beat: 120 beats per

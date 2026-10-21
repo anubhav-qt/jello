@@ -22,8 +22,8 @@ MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
   colors (0014). Keep this layout. Every chord has its own key (0020).
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
-- Looper (0021): slices 1, 2, 3 (snap) done. Look (0024) built, lane as
-  wide as the keyboard with the snap switch (0025). Next: layers (slice 4).
+- Looper (0021): all 4 slices done, snap and layers (0026) last. Look
+  (0024) built, lane as wide as the keyboard with the snap switch (0025).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout

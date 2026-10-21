@@ -166,7 +166,8 @@
   }
 
   function startDrag(event: PointerEvent, number: number, layer: LayerView) {
-    // Holding the knob never gives it the focus, so keys still play.
+    // Holding the knob never gives it the focus, so keys still play. A
+    // double click is two presses, so it never does either.
     event.preventDefault();
     const knob = event.currentTarget as HTMLElement;
     knob.setPointerCapture(event.pointerId);
@@ -188,13 +189,11 @@
     turnTo(number, dragStartVolume + (moved / DRAG_FOR_FULL) * 100);
   }
 
-  function endDrag(event: PointerEvent) {
+  function endDrag() {
     if (!dragging) {
       return;
     }
     dragging = false;
-    const knob = event.currentTarget as HTMLElement;
-    knob.blur();
     stopTurningSoon();
   }
 
@@ -210,10 +209,8 @@
   }
 
   // A double click sets it back to full.
-  function reset(event: MouseEvent, number: number) {
+  function reset(number: number) {
     turnTo(number, 100);
-    const knob = event.currentTarget as HTMLElement;
-    knob.blur();
     stopTurningSoon();
   }
 
@@ -349,7 +346,7 @@
             onpointerup={endDrag}
             onpointercancel={endDrag}
             onwheel={(event) => scroll(event, number, layer)}
-            ondblclick={(event) => reset(event, number)}
+            ondblclick={() => reset(number)}
           >
             <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`}>
               {#each DOTS as dot}

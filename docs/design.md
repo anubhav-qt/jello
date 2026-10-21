@@ -111,12 +111,11 @@ in turn:
    [chord guidance](#chord-guidance).
 4. Shift as a looper: the first press records, the next loops it. Designed
    in [ADR 0021](adr/0021-a-looper-on-a-beat.md): loops follow a beat, and
-   recorded notes snap to it. See [Looper](#looper). Being built: slices
-   1, 2 and 3 (snap) are done. Its look
+   recorded notes snap to it. See [Looper](#looper). All four slices are
+   done, with layers ([ADR 0026](adr/0026-layers.md)) last. Its look
    ([ADR 0024](adr/0024-the-looper-s-look.md)) is built, with the lane
    redesigned in [ADR 0025](adr/0025-the-looper-s-lane-as-wide-as-the-keyboard.md):
-   as wide as the keyboard, with the snap switch. Next, layers (slice 4),
-   which bring a box per layer.
+   as wide as the keyboard, with the snap switch and a box per layer.
 
 ### v1.5: vocals
 
@@ -231,7 +230,9 @@ and being built.
     while the looper counts in or records.
   - `voice.*`: plays one note on one of the four waves. The wave trim, the
     velocity curve and the voice level set how loud it is. It knows who
-    started its note: the player (live), the looper or the song player.
+    started its note: the player (live), the looper or the song player,
+    and for the looper, which layer. A loop note also plays at its layer's
+    volume (see [Looper](#looper)).
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
     off, and the trims that make them equally loud.
   - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
@@ -416,7 +417,8 @@ Then each key press gets the next note. Details:
     past the pinky play nothing yet.
   - A note that a chord and a melody key both play keeps sounding until
     every key playing it is let go. The backslash key (`\`) steps to the
-    next wave. Right Shift runs the [looper](#looper) and Esc clears it.
+    next wave. Right Shift runs the [looper](#looper) and Esc removes a
+    layer from it.
     `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option play nothing, saved for layer keys that will
     switch whole mappings.
   - Before ADR 0012, the default was the accordion grid: three keys per
@@ -514,16 +516,29 @@ chords and play a melody over them
      a little early or late both work. A loop is at least 1 bar. It repeats
      without the click, because the loop keeps the beat, and the player can
      play live over it.
-  3. The third press records a new layer on top while the loop plays: the
-     click comes back and new notes join the loop. The fourth press stops
-     adding. Each later pair of presses adds another layer.
-  - Esc removes the last layer added, one layer per press: the layer
-    being recorded or counted in if there is one, otherwise the newest
-    layer played. Removing the only layer clears the loop and unlocks the
-    tempo. Until layers are built a loop has one layer, so Esc clears it.
+  3. The third press records a new layer on top while the loop plays
+     ([ADR 0026](adr/0026-layers.md)): the click comes back and the layer
+     records round and round. Notes played in one time around play from
+     the next. The fourth press stops adding. Each later pair of presses
+     adds another layer.
+  - A loop holds at most 8 layers. A ninth press says "8 layers is the
+    most, Esc removes one", and a layer stopped with nothing played is
+    dropped with "Nothing played, no layer added".
+  - Esc removes one layer. With two layers or more it waits half a second:
+    a number from 1 to 8 on the number row picks the layer that goes,
+    instead of playing its chord or note. With no number, or on a second
+    Esc, the newest goes: the layer being recorded if there is one. A
+    number with no layer says "There is no layer 5" and removes nothing.
+    With fewer than two layers Esc acts at once: it cancels the count-in or
+    the recording, or clears a loop of one layer and unlocks the tempo.
+    The other layers play on, each with its own voices and volume, and
+    their numbers close up.
+  - Each layer has a volume from 0 to 100, set by its knob on screen. Live
+    notes always play as loud as played.
 - **The click:** our own code, a short tick that is higher on beat 1. It
-  plays during the count-in and while recording, and is off while the loop
-  only plays. Its sound was kept by ear as it first was.
+  plays during the count-in and while recording the loop or a layer, and
+  is off while the loop only plays. Its sound was kept by ear as it first
+  was.
 - **Snap to beat:** recorded notes move to the nearest half beat (an eighth
   note), so small timing slips disappear. A "snap to beat" toggle turns it
   on and off, and it is on by default. Choosing another grid can come later.
@@ -571,13 +586,28 @@ chords and play a melody over them
     so a press the engine hasn't acted on yet already locks the tempo.
   - A loop holds up to 4,096 notes. Past that, new notes still sound live
     but aren't recorded.
+  - Layers share those 4,096 notes, one stretch after another, with the
+    layer being recorded last. Each layer also has a slot from 0 to 7 that
+    keeps its voices and volume, so removing a layer closes up the notes
+    but never moves another layer's sound. The C API gains
+    `jello_engine_remove_layer` and `jello_engine_set_layer_volume`.
+  - While a layer records, its plan is worked out again at the start of
+    each time around if new notes came in, so they play from the next one.
+  - A layer's volume scales its notes, those already sounding too. A
+    change eases in over 10 ms in a straight line, so it never clicks; a
+    voice that is silent starts right at its volume.
+  - Esc's half second is kept in Rust. Every command that shows the looper
+    first checks whether it is up, so the newest layer goes at most 50 ms
+    late.
   - The plan: the looper keeps the notes as played, and works out where
     each time around plays them (`plan_loop` in `snap.cpp`) when the loop
     closes and whenever the switch flips. Playback goes through the plan's
     starts in order and its ends in order. Notes moved round to beat 1 go
-    first. The ends are sorted, since a chord held under a quicker note
-    ends after it, and snapping can change their order too. Sorting works
-    in place, so the audio thread asks for no memory.
+    first, and notes starting together go by their end, pitch and
+    velocity, so the plan never depends on the order they were played in.
+    The ends are sorted, since a chord held under a quicker note ends
+    after it, and snapping can change their order too. Sorting works in
+    place, so the audio thread asks for no memory.
   - Half beats are worked out from the beat's two numbers, a minute's
     samples and the tempo, and each starts on the whole sample before. So
     the last one never falls after the loop's end.
@@ -594,10 +624,10 @@ chords and play a melody over them
   the half beat after. Built-in speakers or wired headphones keep loops
   tight. Moving recorded notes earlier by the measured delay can come later.
 - **On screen** ([ADR 0024](adr/0024-the-looper-s-look.md), lane
-  redesigned in [ADR 0025](adr/0025-the-looper-s-lane-as-wide-as-the-keyboard.md)):
-  built, except what comes with layers: the "rec layer" words and more
-  than one box in the lane. It shows in every tab, in two places: right
-  Shift (`ui/LooperFace.svelte`) and the lane (`ui/LooperLane.svelte`).
+  redesigned in [ADR 0025](adr/0025-the-looper-s-lane-as-wide-as-the-keyboard.md),
+  layers in [ADR 0026](adr/0026-layers.md)): built. It shows in every tab,
+  in two places: right Shift (`ui/LooperFace.svelte`) and the lane
+  (`ui/LooperLane.svelte`).
   - Right Shift says what the looper is doing. Four beat lights: the beat
     now is lit, and during the count-in the beats already counted stay half
     lit. Beside them, a short state: "looper, 120 bpm", "count-in 3", "rec
@@ -615,16 +645,28 @@ chords and play a melody over them
     - Recording: the box is dashed and marked out in 4 bars, and fills
       red up to the playhead. The bar being recorded shows at the right
       end.
-    - Looping: one box per layer, numbered on its left. Each note is a row
-      of dots in its note color, low notes at the bottom of its box, and
-      bar lines split the box. Each box has its own playhead; the layers
-      are one length, so the playheads move together. The loop's length
-      shows at the right end.
+    - Looping: one box per layer, with its knob on its left. Each note is
+      a row of dots in its note color, low notes at the bottom of its box,
+      and bar lines split the box. Each box has its own playhead; the
+      layers are one length, so the playheads move together. The loop's
+      length shows at the right end.
     - Boxes sit side by side: one fills the lane, and up to four share its
       width. From the fifth on, four sit on a level and the levels share
-      the lane's height: two levels of about 24 px. Past eight layers is
-      decided when layers are built.
-    - A layer being recorded is a dashed red box after the others.
+      the lane's height: two levels of about 24 px, for the 8 layers a
+      loop can hold.
+    - A layer being recorded is a dashed red box after the others, spread
+      over the loop's length, and fills red up to its red playhead.
+    - Each knob is a ring of 9 dots, 22 px across (20 px once boxes
+      stack), with the layer's number in the middle. The dots light up to
+      its volume. Dragging up turns it up, 100 px from 0 to 100; two
+      fingers on the trackpad turn it too, and a double click sets it back
+      to full. While it turns it glows, follows the hand rather than
+      Rust's answer, and the right end shows "Vol 2" and its volume, until
+      a moment after it stops. Holding it never takes the focus, so keys
+      still play. Notes dim with their layer's volume but never quite
+      vanish, and at 0 the number dims.
+    - While Esc waits, every knob's number lights, the box that goes turns
+      dashed red, and the right end says "Remove layer 3".
     - The snap switch sits at the right end, under the loop's length,
       styled like the Wave button: "Snap", then "on" in lavender or "off"
       in grey.
@@ -643,11 +685,12 @@ chords and play a melody over them
     either way, and while looping Rust wraps it into the loop's length.
   - The loop's notes: the looper sends Rust each change to them through a
     second mailbox, the other way from the first: a note started, a note
-    ended, the loop closed and kept only its first notes, or the loop was
-    cleared. Rust applies them in order to its own copy each time the
-    page asks, and sends the notes in beats. The mailbox holds 4,096
-    changes; Rust empties it every 50 ms while the looper is busy, so it
-    never fills.
+    ended, the loop closed and kept only its first notes, the loop was
+    cleared, or a layer started, stopped, was dropped or was removed. Each
+    change says which layer. Rust applies them in order to its own copy
+    each time the page asks, and sends the notes in beats. The mailbox
+    holds 4,096 changes; Rust empties it every 50 ms while the looper is
+    busy, so it never fills.
   - While looping, Rust asks the engine where each time around plays the
     notes (`jello_engine_plan_loop`, the same function the looper plays
     by) and sends those, so the lane draws every note where it is heard.
@@ -667,7 +710,8 @@ chords and play a melody over them
      first was. Right Shift turned the click on and off until slice 2.
   2. Record and loop, and Esc. Done.
   3. Snap to beat and its switch. Done, with the lane rebuilt to ADR 0025.
-  4. Layers, with Esc removing the last layer added.
+  4. Layers, with Esc removing one layer and a volume knob on each
+     ([ADR 0026](adr/0026-layers.md)). Done.
   Each slice adds its own placeholders.
 
 ## Sound

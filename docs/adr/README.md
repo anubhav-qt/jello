@@ -29,11 +29,12 @@ To change a decision, write a new ADR and mark the old one as
 | [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Accepted |
 | [0019](0019-instruments-built-from-scratch-no-guitar.md) | Instruments built from scratch, no guitar | Accepted |
 | [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted |
-| [0021](0021-a-looper-on-a-beat.md) | A looper on a beat | Accepted |
+| [0021](0021-a-looper-on-a-beat.md) | A looper on a beat | Accepted; Esc superseded by 0026 |
 | [0022](0022-compose-as-a-tape.md) | Compose as a tape | Accepted |
 | [0023](0023-guidance-on-the-melody-keys.md) | Guidance on the melody keys | Accepted |
 | [0024](0024-the-looper-s-look.md) | The looper's look | Accepted; lane superseded by 0025 |
 | [0025](0025-the-looper-s-lane-as-wide-as-the-keyboard.md) | The looper's lane, as wide as the keyboard | Accepted |
+| [0026](0026-layers.md) | Layers | Accepted |
 
 ## Template
 
