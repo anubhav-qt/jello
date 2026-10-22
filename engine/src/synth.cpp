@@ -83,7 +83,7 @@ void Synth::start_note(int note, int velocity, Source source, int layer) {
     if (source == Source::loop) {
         volume = layer_volumes_[layer];
     }
-    voice->start(note, velocity, press_count_, wave_, source, layer, volume);
+    voice->start(note, velocity, press_count_, wave_, source, layer, volume, filter_targets_, filter_envelope_);
 }
 
 void Synth::set_wave(Wave wave) {
@@ -92,9 +92,17 @@ void Synth::set_wave(Wave wave) {
     wave_ = wave;
 }
 
+void Synth::set_filter(const FilterSettings& settings) {
+    filter_targets_ = filter_targets_of(settings);
+}
+
+void Synth::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
+    filter_envelope_ = envelope;
+}
+
 void Synth::render(float* out, int frames) {
     for (Voice& voice : voices_) {
-        voice.render(out, frames, volume_for(voice));
+        voice.render(out, frames, volume_for(voice), filter_targets_);
     }
 }
 

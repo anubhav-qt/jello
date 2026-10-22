@@ -27,9 +27,9 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// The functions from here to jello_engine_stop_song are for playing notes,
-// picking their wave, running the click and the looper, and playing
-// Compose's song. They are safe to call while the audio is running, from one
+// The functions from here to jello_engine_set_filter_envelope are for
+// playing notes, picking their wave, running the click and the looper,
+// playing Compose's song and moving the filter. They are safe to call while the audio is running, from one
 // thread at a time. Each one only leaves a message for the audio thread,
 // which acts on it at the start of its next chunk of sound (about every
 // 10 ms). If 1024 messages are already waiting, new ones are dropped
@@ -156,6 +156,40 @@ bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, i
 // Lets go of what the song is playing and forgets it. Live notes and the
 // loop play on.
 void jello_engine_stop_song(JelloEngine* engine);
+
+// The low-pass filter's ranges (docs/adr/0028-a-low-pass-filter.md): the
+// lowest cutoff and the cutoff that means open, in Hz, the most octaves the
+// filter envelope opens it, and the longest any of its stages takes.
+enum {
+    JELLO_FILTER_LOWEST_HZ = 20,
+    JELLO_FILTER_OPEN_HZ = 20000,
+    JELLO_FILTER_MOST_OCTAVES = 8,
+    JELLO_FILTER_LONGEST_MS = 10000,
+};
+
+// Every note goes through a low-pass filter of its own: it lets low sounds
+// through and turns high ones down, 12 dB per octave above its cutoff.
+// `cutoff_hz` is middle C's cutoff, from JELLO_FILTER_LOWEST_HZ to
+// JELLO_FILTER_OPEN_HZ, and every other note's follows it, an octave higher
+// for each octave up. At JELLO_FILTER_OPEN_HZ the filter is open: off, so
+// notes sound exactly as without it. `resonance`, from 0 to 1, boosts the
+// sound right at the cutoff. Every note hears a change, even those already
+// sounding, each gliding there over 20 ms so it never clicks. Values
+// outside those ranges are ignored. A new engine starts open, with no
+// resonance.
+void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonance);
+
+// The filter envelope: when a note starts, it opens the cutoff by up to
+// `amount` octaves, from 0 to JELLO_FILTER_MOST_OCTAVES. It rises over
+// `attack_ms`, falls over `decay_ms` to `sustain` (a share of the amount,
+// from 0 to 1) while the key is held, and closes over `release_ms` once it
+// is let go; each from 0 to JELLO_FILTER_LONGEST_MS. Notes started after
+// this use it, and notes started before keep theirs. Values outside those
+// ranges are ignored. A new engine starts at an amount of 0, which changes
+// nothing, with an attack of 5 ms, a decay of 300 ms, a sustain of 0 and a
+// release of 300 ms.
+void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int attack_ms, int decay_ms, float sustain,
+                                      int release_ms);
 
 // What the looper can be doing.
 enum {

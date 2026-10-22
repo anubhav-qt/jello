@@ -5,19 +5,22 @@
      (ui/beams.ts). The page powers on from the top down. Its tabs share the
      keyboard: Play shows the notes held, Compose adds its tape, outlines
      the chord keys and guides the melody keys, and Produce is a placeholder
-     for now. In every tab, right Shift and a lane under the keyboard show
-     the looper, and messages are typed out in the top bar. -->
+     for now. Compose also has the filter's dev panel. In every tab, right
+     Shift and a lane under the keyboard show the looper, and messages are
+     typed out in the top bar. -->
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { createBeams, type Beams } from "./beams";
   import type { ChordGuide, ComposeView, Fit } from "./compose";
   import ComposeTape from "./ComposeTape.svelte";
+  import { clickThenLetGo } from "./dom";
+  import FilterDevPanel from "./FilterDevPanel.svelte";
   import { colorForNote, DOT_CELL, NOTE_COLORS } from "./note-colors";
   import Keyboard from "./Keyboard.svelte";
   import LooperLane from "./LooperLane.svelte";
   import { keysAcross, noteName, notesOf, type KeyLayout, type Platform } from "./keyboard";
-  import { beatsNow, type SoundView } from "./sound";
+  import { beatsNow, type FilterEnvelope, type SoundView } from "./sound";
   import type { Tab } from "./tabs";
   import TopBar from "./TopBar.svelte";
 
@@ -34,10 +37,25 @@
     onKeyPick: (tonic: number, mode: "major" | "minor") => void;
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
+    // What the filter's dev panel does. `cutoffHz` is middle C's cutoff,
+    // and `resonance` is in percent.
+    onFilterChange: (cutoffHz: number, resonance: number) => void;
+    onFilterEnvelopeChange: (envelope: FilterEnvelope) => void;
   }
 
-  let { platform, layout, onWaveClick, onRenderClick, onSnapClick, onVolumeChange, onKeyPick, onChordClick, onPlayClick }: Props =
-    $props();
+  let {
+    platform,
+    layout,
+    onWaveClick,
+    onRenderClick,
+    onSnapClick,
+    onVolumeChange,
+    onKeyPick,
+    onChordClick,
+    onPlayClick,
+    onFilterChange,
+    onFilterEnvelopeChange,
+  }: Props = $props();
 
   // How long the page takes to power on, in milliseconds, and how it moves:
   // slow, then fast, then slow.
@@ -147,6 +165,12 @@
   let composeAt = $state(0);
   // The chord key pressed last, by place, like "KeyX".
   let tried: string | null = $state(null);
+  // Whether the filter's dev panel is open. It opens over Compose's tape.
+  let filterPanelOpen = $state(false);
+
+  function switchFilterPanel() {
+    filterPanelOpen = !filterPanelOpen;
+  }
 
   // Compose outlines the chord keys by how well they fit the song's key.
   let keyboardGuide = $derived.by(() => {
@@ -427,7 +451,21 @@
   <!-- The line of light that sweeps down as the page powers on. -->
   <div class="stage-scan-line" bind:this={scanLine}></div>
 
-  <TopBar {tab} onTabClick={openTab} {wave} {onWaveClick} {onRenderClick} message={messageText} {messageShown} />
+  <!-- Compose has a button for the filter's dev panel. -->
+  {#snippet devButtons()}
+    {#if tab === "compose"}
+      <button
+        type="button"
+        class="dev-button"
+        class:is-open={filterPanelOpen}
+        onclick={(event) => clickThenLetGo(event, switchFilterPanel)}
+      >
+        Dev: filter
+      </button>
+    {/if}
+  {/snippet}
+
+  <TopBar {tab} onTabClick={openTab} {wave} {onWaveClick} {onRenderClick} message={messageText} {messageShown} {devButtons} />
 
   <main class="screen-body" class:is-composing={tab === "compose"}>
     {#if tab === "play"}
@@ -442,8 +480,9 @@
       </div>
     {/if}
 
-    <!-- Compose shows its tape where Play shows the notes held, and Produce
-         a dev panel until it is designed. -->
+    <!-- Compose shows its tape where Play shows the notes held, with the
+         filter's dev panel over it while open, and Produce a dev panel until
+         it is designed. -->
     {#if tab === "compose"}
       <ComposeTape
         view={compose}
@@ -455,6 +494,16 @@
         {onChordClick}
         {onPlayClick}
       />
+      {#if filterPanelOpen}
+        {#if sound !== null}
+          <FilterDevPanel
+            filter={sound.filter}
+            keysAcross={keysAcross(platform)}
+            {onFilterChange}
+            onEnvelopeChange={onFilterEnvelopeChange}
+          />
+        {/if}
+      {/if}
     {/if}
     {#if tab === "produce"}
       <section class="dev-panel">

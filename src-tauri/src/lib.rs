@@ -34,6 +34,8 @@ pub fn run() {
             commands::switch_wave,
             commands::switch_snap,
             commands::set_layer_volume,
+            commands::set_filter,
+            commands::set_filter_envelope,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

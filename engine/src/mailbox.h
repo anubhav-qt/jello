@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "filter.h"
 #include "song_player.h"
 #include "wave.h"
 
@@ -24,6 +25,8 @@ enum class EventType {
     stop_song,
     add_song_chord,
     play_song,
+    set_filter,
+    set_filter_envelope,
 };
 
 // One message for the audio thread.
@@ -53,6 +56,11 @@ struct Event {
     // The chord to add to the song's queue; only for add_song_chord. The
     // other messages can leave it out too.
     SongChord chord{};
+
+    // The filter's controls; only for set_filter. And the filter envelope;
+    // only for set_filter_envelope. The other messages can leave them out.
+    FilterSettings filter{};
+    FilterEnvelopeSettings filter_envelope{};
 };
 
 // Carries messages from one thread to another without locks

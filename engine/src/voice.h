@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "envelope.h"
+#include "filter.h"
 #include "wave.h"
 
 // Who started a note: the player at the keys, the looper playing a loop back
@@ -16,7 +17,8 @@ enum class Source {
     song,
 };
 
-// Plays one note: a wave at the note's pitch, shaped by its own envelope
+// Plays one note: a wave at the note's pitch, through its own low-pass filter
+// (docs/adr/0028-a-low-pass-filter.md), shaped by its own envelope
 // (docs/adr/0009-how-notes-become-sound.md). Only the audio thread touches a
 // voice, so nothing in here locks, allocates or waits.
 class Voice {
@@ -30,7 +32,10 @@ public:
     // earlier. A silent voice starts at `volume`, from 0 to 1. If the voice is
     // still sounding, it is taken over without a click, even when `wave` is a
     // different wave, and its volume eases to the new one as it renders.
-    void start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer, float volume);
+    // Its filter starts at `filter` and its filter envelope is `envelope`;
+    // one still sounding keeps its filter's memory and glides on.
+    void start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer, float volume,
+               const FilterTargets& filter, const FilterEnvelopeSettings& envelope);
 
     // Starts the fade to silence.
     void release();
@@ -60,7 +65,8 @@ public:
     // It adds instead of overwriting, so many voices can share one buffer.
     // The voice plays at `volume`, from 0 to 1. When that changes, it eases
     // there a step each sample, so turning a layer up or down never clicks.
-    void render(float* out, int frames, float volume);
+    // Its filter glides toward `filter` the same way.
+    void render(float* out, int frames, float volume, const FilterTargets& filter);
 
 private:
     // The wave's height at the current phase, trimmed so every wave is
@@ -75,6 +81,7 @@ private:
     int sample_rate_;
     int gap_samples_;  // how many samples a gap takes to shrink away
     Envelope envelope_;
+    VoiceFilter filter_;
     int note_ = 0;
     std::uint64_t press_number_ = 0;
     Source source_ = Source::live;

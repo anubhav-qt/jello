@@ -38,6 +38,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
 4. **Sound.** A deep synth and a sampler (for piano and drums), all our own
    code, with no guitar
    ([ADR 0019](adr/0019-instruments-built-from-scratch-no-guitar.md)).
+   Started with a low-pass filter on every voice, with its own envelope
+   ([ADR 0028](adr/0028-a-low-pass-filter.md)). A dev panel in Compose
+   sets it until its screen is designed.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -187,12 +190,13 @@ and being built.
   create, destroy, start and stop audio, note on, note off, all notes off,
   set wave, start click, stop click, set tempo, press looper, clear loop,
   set snap, looper status (with its place), next loop change, plan loop,
-  play song, stop song, song position, sample rate, render.
+  play song, stop song, song position, set filter, set filter envelope,
+  sample rate, render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
   - `mailbox.h`: carries messages from one thread to another without
-    locks. One carries note, wave, click, tempo, looper, snap and song
-    messages to the audio thread; another carries the loop's changes back
+    locks. One carries note, wave, click, tempo, looper, snap, song and
+    filter messages to the audio thread; another carries the loop's changes back
     to Rust.
     Sending says whether the message got in, and the sender can ask how
     much room is left.
@@ -236,9 +240,11 @@ and being built.
     volume (see [Looper](#looper)).
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
     off, and the trims that make them equally loud.
+  - `filter.*`: each voice's low-pass filter, its filter envelope, and the
+    glides that keep a moved control from clicking (see Filter below).
   - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
     to the held level (decay, sustain) and a fade out after letting go
-    (release).
+    (release). The filter envelope is one too, with stages of its own.
   - `miniaudio.cpp` and `miniaudio_settings.h`: the audio library
     ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
 - **Build:** `src-tauri/build.rs` compiles the engine as C++17 with the `cc`
@@ -273,6 +279,46 @@ and being built.
   - Trims make every wave as loud as the triangle, measured by RMS (the
     square root of the average squared height): sine 0.8165, triangle 1,
     square 0.5774, saw 1. Starting values, to be tuned by ear.
+- **Filter** ([ADR 0028](adr/0028-a-low-pass-filter.md)): every voice puts
+  its wave through a low-pass filter of its own, before the loudness
+  envelope, so a quiet note is filtered just like a loud one. It is a
+  state variable filter, 12 dB per octave, built the zero-delay-feedback
+  way from Andrew Simper's published math (Cytomic), so it stays steady
+  even when its cutoff moves on every sample.
+  - The cutoff control sets middle C's cutoff, from 20 Hz to 20,000 Hz.
+    Every other note's sits an octave higher for each octave up (key
+    tracking). Cutoffs move in octaves, not Hz, and never go past
+    21,600 Hz (0.45 of the sample rate), where the math stops behaving.
+  - At 20,000 Hz the filter is open: the wave skips it and comes out
+    exactly as it went in. The filter still runs underneath, so closing it
+    mid-note starts it from where the wave is. Closing and opening fade
+    between the two over 20 ms.
+  - Resonance goes from 0 to 100%, squared on the way, so Q goes from
+    0.7071 (no bump) to 10 (a strong peak). Squaring keeps the first half
+    gentle.
+  - Cutoff and resonance are live: every voice, even one sounding, glides
+    to a moved value in a straight line over 20 ms, so a jump never
+    clicks.
+  - The filter envelope opens the cutoff by its amount, from 0 to 8
+    octaves, at its peak, then falls to its sustain, a share of the
+    amount, and closes over its release after letting go. Each stage takes
+    0 to 10,000 ms. A note keeps the envelope it started with.
+  - A note on a silent voice starts right at its own cutoff, with nothing
+    left over from the voice's last note. A note that takes over a
+    sounding voice keeps its filter's memory and glides from the old
+    note's cutoff to its own, so it never clicks.
+  - A new engine starts open, with resonance 0 and an envelope amount of
+    0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
+    exactly as before the filter. Values outside their ranges are ignored
+    by the C API and brought within them by Rust.
+  - Until its screen is designed, a dev panel sets it
+    (`ui/FilterDevPanel.svelte`), and its values are picked there by ear.
+    In Compose, a "Dev: filter" button at the right end of the tabs opens
+    it over the tape. Cutoff moves in octaves along its slider, and the
+    stages on a curve that gives short times most of it (halfway is
+    1250 ms). Each slider sends every value as it moves, through
+    `set_filter` or `set_filter_envelope`, and its readout shows Rust's
+    answer. Nothing is saved: each launch starts open.
 - **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
   loudness were, so the sound never jumps. If the new note plays another
@@ -334,6 +380,17 @@ and being built.
   it playing, where the song is, 512 chords and no more, a song refused
   whole when the mailbox lacks room (and the playhead staying on the song
   playing), and odd chords refused.
+  For the filter, they check that an open filter leaves every sample as it
+  was, that each harmonic of a saw comes through as much as the analog
+  filter's math says (within 1%), 12 dB quieter an octave up, that key
+  tracking makes A3, A4 and A5 equally bright, that A7's cutoff at 7040 Hz
+  lands right on its pitch, the boost at the cutoff for
+  each resonance, the 20 ms glide on notes already sounding, a full sweep
+  with no click, full resonance staying steady and below 1.0 with all 32
+  voices, the extremes staying finite and ending in exact silence, a note
+  on a silent voice starting right at its cutoff, a takeover with no click,
+  the same samples in any chunk size, the filter envelope's attack, decay,
+  sustain and release, that a held note keeps its envelope, and odd values.
   The key map tests check the melody keys finger by finger and each chord,
   that other keys do nothing, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
@@ -857,7 +914,8 @@ themes and saved theme selection are removed. Development and packaged
 builds use the same colors, with no palette name shown in the app.
 
 Still to design: the Produce screen (a dev panel for now,
-[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the look of the
+[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the filter's
+controls (a dev panel in Compose for now), the look of the
 guidance outlines on the chord keys, and the tab icons (a pencil for
 Compose, faders for Produce). Compose's tape (below) is built.
 

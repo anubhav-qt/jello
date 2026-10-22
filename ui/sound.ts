@@ -10,6 +10,80 @@ export interface SoundView {
   snap: boolean;
   // What the looper is doing.
   looper: LooperView;
+  // Where the low-pass filter and its envelope are.
+  filter: FilterView;
+}
+
+// Where the low-pass filter and its envelope are (`FilterView` in
+// src-tauri/src/commands.rs, docs/adr/0028-a-low-pass-filter.md).
+export interface FilterView {
+  // Middle C's cutoff, in Hz. At FILTER_OPEN_HZ the filter is open: off.
+  cutoff_hz: number;
+  // In percent.
+  resonance: number;
+  // How far the filter envelope opens the cutoff, in octaves.
+  amount: number;
+  attack_ms: number;
+  decay_ms: number;
+  // In percent of the amount.
+  sustain: number;
+  release_ms: number;
+}
+
+// A filter envelope as the filter's dev panel sends it
+// (`set_filter_envelope` in src-tauri/src/commands.rs).
+export interface FilterEnvelope {
+  amount: number;
+  attackMs: number;
+  decayMs: number;
+  sustain: number;
+  releaseMs: number;
+}
+
+// The filter's ranges (`FILTER_` in src-tauri/src/engine.rs): the lowest
+// cutoff and the cutoff that means open, in Hz, the most octaves the
+// envelope opens it, and the longest any of its stages takes.
+export const FILTER_LOWEST_HZ = 20;
+export const FILTER_OPEN_HZ = 20000;
+export const FILTER_MOST_OCTAVES = 8;
+export const FILTER_LONGEST_MS = 10000;
+
+// The dev panel's cutoff and stage sliders go from 0 to this.
+export const SLIDER_STEPS = 1000;
+
+// The cutoff at a slider position. Each step is the same number of
+// octaves, so low cutoffs get as much of the slider as high ones.
+export function cutoffAt(position: number): number {
+  const share = position / SLIDER_STEPS;
+  return FILTER_LOWEST_HZ * Math.pow(FILTER_OPEN_HZ / FILTER_LOWEST_HZ, share);
+}
+
+// Where the slider sits for a cutoff.
+export function cutoffPosition(hz: number): number {
+  const share = Math.log(hz / FILTER_LOWEST_HZ) / Math.log(FILTER_OPEN_HZ / FILTER_LOWEST_HZ);
+  return Math.round(share * SLIDER_STEPS);
+}
+
+// The cutoff in words: "open" at the top, its Hz below it, like "880 Hz".
+export function cutoffWords(hz: number): string {
+  if (hz >= FILTER_OPEN_HZ) {
+    return "open";
+  }
+  return `${Math.round(hz)} Hz`;
+}
+
+// A filter envelope stage's length at a slider position, in ms. The slider
+// is curved, so short times, where small changes are heard, get most of it:
+// halfway is 1250 ms.
+export function stageMsAt(position: number): number {
+  const share = position / SLIDER_STEPS;
+  return Math.round(FILTER_LONGEST_MS * share * share * share);
+}
+
+// Where the slider sits for a stage's length.
+export function stagePosition(ms: number): number {
+  const share = Math.cbrt(ms / FILTER_LONGEST_MS);
+  return Math.round(share * SLIDER_STEPS);
 }
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).

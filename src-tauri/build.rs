@@ -14,6 +14,7 @@ fn build_engine() {
         .include("../engine/third_party")
         .file("../engine/src/engine.cpp")
         .file("../engine/src/envelope.cpp")
+        .file("../engine/src/filter.cpp")
         .file("../engine/src/wave.cpp")
         .file("../engine/src/voice.cpp")
         .file("../engine/src/synth.cpp")

@@ -22,8 +22,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   colors (0014). Keep this layout. Every chord has its own key (0020).
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
-- Looper (0021): all 4 slices done, snap and layers (0026) last. Look
-  (0024) built, lane as wide as the keyboard with the snap switch (0025).
+- Looper (0021) done: snap, layers (0026), look (0024) and a lane as wide
+  as the keyboard (0025). Step 4 began: low-pass filter (0028), dev panel.
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout

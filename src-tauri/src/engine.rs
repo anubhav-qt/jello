@@ -96,6 +96,15 @@ unsafe extern "C" {
     fn jello_engine_next_loop_change(engine: *mut JelloEngine, change: *mut RawLoopChange) -> bool;
     fn jello_engine_play_song(engine: *mut JelloEngine, chords: *const RawSongChord, count: c_int) -> bool;
     fn jello_engine_stop_song(engine: *mut JelloEngine);
+    fn jello_engine_set_filter(engine: *mut JelloEngine, cutoff_hz: f32, resonance: f32);
+    fn jello_engine_set_filter_envelope(
+        engine: *mut JelloEngine,
+        amount: f32,
+        attack_ms: c_int,
+        decay_ms: c_int,
+        sustain: f32,
+        release_ms: c_int,
+    );
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
@@ -136,6 +145,74 @@ const ESC_WAIT: Duration = Duration::from_millis(500);
 // engine/include/jello_engine.h).
 pub const SONG_MAX_CHORDS: usize = 512;
 const CHORD_MAX_NOTES: usize = 4;
+
+// A share in percent: 100 is all of it.
+pub const FULL_PERCENT: u32 = 100;
+
+// The low-pass filter's ranges (`JELLO_FILTER_` in
+// engine/include/jello_engine.h): the lowest cutoff and the cutoff that
+// means open, in Hz, the most octaves the filter envelope opens it, and the
+// longest any of its stages takes.
+pub const FILTER_LOWEST_HZ: f32 = 20.0;
+pub const FILTER_OPEN_HZ: f32 = 20000.0;
+pub const FILTER_MOST_OCTAVES: f32 = 8.0;
+pub const FILTER_LONGEST_MS: u32 = 10000;
+
+// Where the low-pass filter's controls are
+// (docs/adr/0028-a-low-pass-filter.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Filter {
+    // Middle C's cutoff, in Hz, from FILTER_LOWEST_HZ to FILTER_OPEN_HZ,
+    // where the filter is open: off. Every other note's cutoff follows it,
+    // an octave higher for each octave up.
+    pub cutoff_hz: f32,
+    // How much it boosts the sound right at the cutoff, in percent.
+    pub resonance: u32,
+}
+
+// A new engine's filter: open, with no resonance. The C++ engine starts
+// there too.
+pub const START_FILTER: Filter = Filter {
+    cutoff_hz: FILTER_OPEN_HZ,
+    resonance: 0,
+};
+
+// The filter envelope: how far it opens the cutoff when a note starts, in
+// octaves, and its stages.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterEnvelope {
+    // From 0, which changes nothing, to FILTER_MOST_OCTAVES.
+    pub amount: f32,
+    pub attack_ms: u32,
+    pub decay_ms: u32,
+    // Where it holds while the key is held, in percent of the amount.
+    pub sustain: u32,
+    pub release_ms: u32,
+}
+
+// A new engine's filter envelope. The C++ engine starts there too.
+pub const START_FILTER_ENVELOPE: FilterEnvelope = FilterEnvelope {
+    amount: 0.0,
+    attack_ms: 5,
+    decay_ms: 300,
+    sustain: 0,
+    release_ms: 300,
+};
+
+// `value` brought within `lowest` to `highest`. NaN, not a number at all,
+// counts as `lowest`; no slider sends it.
+fn within(value: f32, lowest: f32, highest: f32) -> f32 {
+    if value.is_nan() {
+        return lowest;
+    }
+    value.clamp(lowest, highest)
+}
+
+// A filter envelope stage's length brought within its range, as a C int.
+fn stage_ms(ms: u32) -> c_int {
+    let ms = ms.min(FILTER_LONGEST_MS);
+    ms as c_int
+}
 
 // The shapes a note can play (docs/adr/0009-how-notes-become-sound.md).
 #[derive(Clone, Copy)]
@@ -285,6 +362,9 @@ pub struct Engine {
     tempo: u32,
     // Whether loops snap to the beat. The C++ engine starts with it on too.
     snap: bool,
+    // Where the filter and its envelope are.
+    filter: Filter,
+    filter_envelope: FilterEnvelope,
     // How many samples each chord of the song sent last plays, so the
     // engine's position in the song can be turned into a chord.
     song_lengths: Vec<u64>,
@@ -316,6 +396,8 @@ impl Engine {
             wave: Wave::Triangle,
             tempo: START_TEMPO,
             snap: true,
+            filter: START_FILTER,
+            filter_envelope: START_FILTER_ENVELOPE,
             song_lengths: Vec::new(),
             layers: Vec::new(),
             looper_message: None,
@@ -873,6 +955,47 @@ impl Engine {
     // The beat's tempo, in beats per minute.
     pub fn tempo(&self) -> u32 {
         self.tempo
+    }
+
+    // Moves the filter (`jello_engine_set_filter`). Values outside its
+    // ranges are brought within them. Every note hears it, even those
+    // already sounding.
+    pub fn set_filter(&mut self, filter: Filter) {
+        let cutoff_hz = within(filter.cutoff_hz, FILTER_LOWEST_HZ, FILTER_OPEN_HZ);
+        let resonance = filter.resonance.min(FULL_PERCENT);
+        let share = resonance as f32 / FULL_PERCENT as f32;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_filter(self.raw, cutoff_hz, share) };
+        self.filter = Filter { cutoff_hz, resonance };
+    }
+
+    pub fn filter(&self) -> Filter {
+        self.filter
+    }
+
+    // Sets the filter envelope (`jello_engine_set_filter_envelope`) for the
+    // notes started after this. Values outside its ranges are brought
+    // within them.
+    pub fn set_filter_envelope(&mut self, envelope: FilterEnvelope) {
+        let amount = within(envelope.amount, 0.0, FILTER_MOST_OCTAVES);
+        let sustain = envelope.sustain.min(FULL_PERCENT);
+        let share = sustain as f32 / FULL_PERCENT as f32;
+        let attack = stage_ms(envelope.attack_ms);
+        let decay = stage_ms(envelope.decay_ms);
+        let release = stage_ms(envelope.release_ms);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_filter_envelope(self.raw, amount, attack, decay, share, release) };
+        self.filter_envelope = FilterEnvelope {
+            amount,
+            attack_ms: attack as u32,
+            decay_ms: decay as u32,
+            sustain,
+            release_ms: release as u32,
+        };
+    }
+
+    pub fn filter_envelope(&self) -> FilterEnvelope {
+        self.filter_envelope
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -4677,5 +4800,657 @@ mod tests {
         assert_eq!(engine.song_place(), None);
         let wave = render_left(&mut engine, 200);
         assert_eq!(peak(&wave), 0.0);
+    }
+
+    // The low-pass filter (docs/adr/0028-a-low-pass-filter.md). Every test
+    // above plays with it open, as a new engine starts, and hears exactly
+    // the sound the engine made before it had a filter.
+
+    const GLIDE_MS: u32 = 20; // `glide_ms` in engine/src/filter.cpp
+    const LOWEST_Q: f64 = 0.7071; // `lowest_q` in engine/src/filter.cpp
+    const HIGHEST_Q: f64 = 10.0; // `highest_q` in engine/src/filter.cpp
+
+    const A3: u8 = 57;
+    const A5: u8 = 81;
+
+    // A press soft enough that even a full resonance stays under the soft
+    // clip, which would bend the sound being measured.
+    const SOFT: u8 = 64;
+
+    // The cutoff for middle C that puts A4's at 880 Hz, its second harmonic.
+    // A4 is 9 half steps above middle C, and 880 Hz is 9 half steps above C5.
+    const CUTOFF_FOR_A4_AT_880: f32 = C5_HZ as f32;
+
+    fn filter(cutoff_hz: f32, resonance: u32) -> Filter {
+        Filter { cutoff_hz, resonance }
+    }
+
+    fn filter_envelope(amount: f32, attack_ms: u32, decay_ms: u32, sustain: u32, release_ms: u32) -> FilterEnvelope {
+        FilterEnvelope {
+            amount,
+            attack_ms,
+            decay_ms,
+            sustain,
+            release_ms,
+        }
+    }
+
+    // A new engine playing a saw, which has every harmonic, so it shows the
+    // filter's whole shape.
+    fn saw_engine() -> Engine {
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Saw);
+        engine
+    }
+
+    // The biggest difference between two sounds, sample by sample.
+    fn biggest_difference(actual: &[f32], expected: &[f32]) -> f32 {
+        assert_eq!(actual.len(), expected.len());
+        let mut biggest = 0.0;
+        for i in 0..actual.len() {
+            let difference = (actual[i] - expected[i]).abs();
+            if difference > biggest {
+                biggest = difference;
+            }
+        }
+        biggest
+    }
+
+    // Checks that two sounds differ by at most `allowed` at every sample.
+    fn assert_nearly_same_sound(actual: &[f32], expected: &[f32], allowed: f32) {
+        let difference = biggest_difference(actual, expected);
+        assert!(
+            difference <= allowed,
+            "the sounds differ by {difference}, more than {allowed}"
+        );
+    }
+
+    // Checks that every sample is a number. A filter whose math blows up
+    // makes infinity or NaN, and peak() can't see NaN.
+    fn assert_all_finite(samples: &[f32]) {
+        for i in 0..samples.len() {
+            assert!(samples[i].is_finite(), "sample {i} is {}", samples[i]);
+        }
+    }
+
+    // How much a low-pass with its cutoff at `cutoff_hz` and sharpness `q`
+    // lets through at `hz`: 1 is all of it. This is the analog filter's math,
+    // with its pitches bent for samples the way the engine's filter bends
+    // them, so the engine must match it almost exactly.
+    fn low_pass_gain(engine: &Engine, hz: f64, cutoff_hz: f64, q: f64) -> f64 {
+        let rate = engine.sample_rate() as f64;
+        let ratio = (PI * hz / rate).tan() / (PI * cutoff_hz / rate).tan();
+        let below = 1.0 - ratio * ratio;
+        let damping = ratio / q;
+        1.0 / (below * below + damping * damping).sqrt()
+    }
+
+    // How much of each harmonic of a held saw, from the first to `count`,
+    // gets through `filter`: its size held through the filter, next to its
+    // size held with the filter open. `hz` is the note's pitch.
+    fn harmonics_let_through(note: u8, hz: f64, velocity: u8, filter: Filter, count: usize) -> Vec<f64> {
+        let mut open = saw_engine();
+        let dry = hold(&mut open, note, velocity);
+
+        let mut filtered = saw_engine();
+        filtered.set_filter(filter);
+        let wet = hold(&mut filtered, note, velocity);
+        // Past the soft clip, the measurement would be bent too.
+        assert!(peak(&wet) < CLIP_START);
+
+        let mut through = Vec::new();
+        for harmonic in 1..=count {
+            let harmonic_hz = hz * harmonic as f64;
+            let size = tone_size(&open, &wet, harmonic_hz) / tone_size(&open, &dry, harmonic_hz);
+            through.push(size);
+        }
+        through
+    }
+
+    #[test]
+    fn an_open_filter_leaves_the_sound_exactly_as_it_was() {
+        // A held saw: the filter closes partway, then opens again. Once the
+        // glide is over, every sample is the same as on an engine whose
+        // filter was never touched.
+        let mut touched = saw_engine();
+        let mut untouched = saw_engine();
+        touched.note_on(A4, VELOCITY);
+        untouched.note_on(A4, VELOCITY);
+        render_left(&mut touched, 100);
+        render_left(&mut untouched, 100);
+
+        touched.set_filter(filter(1000.0, 50));
+        let closed = render_left(&mut touched, 100);
+        let plain = render_left(&mut untouched, 100);
+        assert!(biggest_difference(&closed, &plain) > 0.01);
+
+        touched.set_filter(START_FILTER);
+        render_left(&mut touched, GLIDE_MS);
+        render_left(&mut untouched, GLIDE_MS);
+        let opened = render_left(&mut touched, 500);
+        let plain = render_left(&mut untouched, 500);
+        assert!(opened == plain, "the opened filter still changed the sound");
+    }
+
+    #[test]
+    fn a_low_cutoff_turns_harmonics_down_12_db_an_octave() {
+        // A4's cutoff at 880 Hz, its second harmonic. Each harmonic comes
+        // through as much as the filter's math says, give or take 1%: the
+        // first, an octave below the cutoff, nearly whole, the second at
+        // 0.71, then less and less.
+        let engine = Engine::new().unwrap();
+        let through = harmonics_let_through(A4, A4_HZ, VELOCITY, filter(CUTOFF_FOR_A4_AT_880, 0), 8);
+        for i in 0..through.len() {
+            let harmonic = i + 1;
+            let expected = low_pass_gain(&engine, A4_HZ * harmonic as f64, 880.0, LOWEST_Q);
+            let difference = (through[i] - expected).abs();
+            assert!(
+                difference <= expected * 0.01,
+                "harmonic {harmonic} came through at {}, expected {expected}",
+                through[i]
+            );
+        }
+
+        // Well above the cutoff, each octave up lets through about a quarter
+        // as much: 12 dB quieter. Harmonic 8 is an octave above harmonic 4.
+        let octave_up = through[7] / through[3];
+        assert!(
+            (octave_up - 0.25).abs() <= 0.01,
+            "an octave up let through {octave_up} as much"
+        );
+    }
+
+    #[test]
+    fn every_note_is_equally_bright() {
+        // The cutoff follows the note, an octave up for each octave up, so a
+        // cutoff that keeps low chords warm doesn't mute the melody above
+        // them. A3, A4 and A5 each get their cutoff on their second harmonic,
+        // so each lets through 0.71 of it, give or take 1%, and the same share
+        // of its fourth harmonic as A4, give or take 3%.
+        let setting = filter(CUTOFF_FOR_A4_AT_880, 0);
+        let a4 = harmonics_let_through(A4, A4_HZ, VELOCITY, setting, 4);
+        for (note, hz) in [(A3, A4_HZ / 2.0), (A4, A4_HZ), (A5, A4_HZ * 2.0)] {
+            let through = harmonics_let_through(note, hz, VELOCITY, setting, 4);
+            assert!(
+                (through[1] - LOWEST_Q).abs() <= LOWEST_Q * 0.01,
+                "note {note} let through {} of its second harmonic",
+                through[1]
+            );
+            assert!(
+                (through[3] - a4[3]).abs() <= a4[3] * 0.03,
+                "note {note} let through {} of its fourth harmonic, A4 {}",
+                through[3],
+                a4[3]
+            );
+        }
+    }
+
+    #[test]
+    fn a_high_note_s_cutoff_lands_right_on_its_pitch() {
+        // A filter made of samples crowds its pitches together toward the
+        // top, so the engine bends every cutoff up to make up for it. A7
+        // gets its cutoff on its second harmonic, 7040 Hz, and lets through
+        // 0.71 of it, give or take 1%, like A3, A4 and A5 above. Unbent, the
+        // cutoff would land about 6% low, near 6600 Hz, and let through 0.65.
+        let setting = filter(CUTOFF_FOR_A4_AT_880, 0);
+        let through = harmonics_let_through(A7, A7_HZ, VELOCITY, setting, 2);
+        assert!(
+            (through[1] - LOWEST_Q).abs() <= LOWEST_Q * 0.01,
+            "A7 let through {} of its second harmonic",
+            through[1]
+        );
+    }
+
+    #[test]
+    fn resonance_boosts_the_harmonic_at_the_cutoff() {
+        // Right at the cutoff, the filter lets through its Q: 0.71 with no
+        // resonance, and 10 times as much as an open filter at full. The
+        // resonance is squared on the way, so halfway is a quarter of the way
+        // up: 0.71 + (10 - 0.71) / 4, about 3.03.
+        let halfway = LOWEST_Q + (HIGHEST_Q - LOWEST_Q) / 4.0;
+        for (resonance, q) in [(0, LOWEST_Q), (50, halfway), (100, HIGHEST_Q)] {
+            let through = harmonics_let_through(A4, A4_HZ, SOFT, filter(CUTOFF_FOR_A4_AT_880, resonance), 2);
+            assert!(
+                (through[1] - q).abs() <= q * 0.01,
+                "at {resonance}% the cutoff's harmonic came through at {}, expected {q}",
+                through[1]
+            );
+        }
+    }
+
+    #[test]
+    fn a_moved_cutoff_glides_there_in_20_ms_on_notes_already_sounding() {
+        // A held saw, then the cutoff moves from open. The note already
+        // sounding hears it: next to a note that started with the cutoff
+        // already there, it is still on its way 17 ms after the move, and
+        // from 22 ms on it sounds the same: the glide has landed, and the
+        // filter has settled.
+        let mut moved = saw_engine();
+        moved.note_on(A4, VELOCITY);
+        render_left(&mut moved, 500);
+        moved.set_filter(filter(CUTOFF_FOR_A4_AT_880, 0));
+        let after_move = render_left(&mut moved, 40);
+
+        let mut already = saw_engine();
+        already.set_filter(filter(CUTOFF_FOR_A4_AT_880, 0));
+        already.note_on(A4, VELOCITY);
+        render_left(&mut already, 500);
+        let steady = render_left(&mut already, 40);
+
+        let at_17_ms = frames_in_ms(&moved, 17);
+        let at_18_ms = frames_in_ms(&moved, 18);
+        let on_its_way = biggest_difference(&after_move[at_17_ms..at_18_ms], &steady[at_17_ms..at_18_ms]);
+        assert!(on_its_way > 0.001, "the glide was over too soon");
+
+        let at_22_ms = frames_in_ms(&moved, 22);
+        assert_nearly_same_sound(&after_move[at_22_ms..], &steady[at_22_ms..], 0.0001);
+    }
+
+    #[test]
+    fn sweeping_the_cutoff_all_the_way_never_clicks() {
+        // On a held triangle, the cutoff jumps from open to 20 Hz, where
+        // little of A4 is left, then back to open. Each glides, so the sound
+        // never jumps.
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        let mut wave = render_left(&mut engine, 100);
+
+        engine.set_filter(filter(FILTER_LOWEST_HZ, 0));
+        let closed = render_left(&mut engine, 100);
+        let last_50_ms = &closed[closed.len() - frames_in_ms(&engine, 50)..];
+        assert!(peak(last_50_ms) < held_level() / 50.0);
+        wave.extend(closed);
+
+        engine.set_filter(START_FILTER);
+        wave.extend(render_left(&mut engine, 100));
+        assert_no_click(&engine, &wave, A4_HZ);
+    }
+
+    #[test]
+    fn full_resonance_rings_steady_and_never_runs_away() {
+        // A held saw at full resonance, with A4's cutoff on its second
+        // harmonic. Two seconds later it is exactly as loud, give or take 1%.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(CUTOFF_FOR_A4_AT_880, 100));
+        engine.note_on(A4, SOFT);
+        render_left(&mut engine, ATTACK_MS + DECAY_MS);
+        let early = render_left(&mut engine, 100);
+        render_left(&mut engine, 2000);
+        let late = render_left(&mut engine, 100);
+
+        assert_all_finite(&late);
+        assert_within_percent(peak(&late), peak(&early), 1.0);
+    }
+
+    #[test]
+    fn nothing_clips_at_full_resonance() {
+        // The loudest chord there is, 32 saws at the hardest press, through a
+        // full resonance at a low cutoff.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(200.0, 100));
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+
+        let samples = engine.render(frames_in_ms(&engine, 1000));
+        assert_all_finite(&samples);
+        assert!(peak(&samples) < 1.0);
+    }
+
+    #[test]
+    fn the_filter_s_edges_never_blow_up_and_letting_go_still_ends_in_silence() {
+        // The lowest and highest notes, through the lowest cutoff and the one
+        // just below open, with no resonance and full, while the filter
+        // envelope opens all 8 octaves at once. The cutoffs reach from below
+        // 1 Hz to past the highest the filter allows.
+        for cutoff_hz in [FILTER_LOWEST_HZ, FILTER_OPEN_HZ - 1.0] {
+            for resonance in [0, 100] {
+                for note in [0, 127] {
+                    let mut engine = saw_engine();
+                    engine.set_filter(filter(cutoff_hz, resonance));
+                    engine.set_filter_envelope(filter_envelope(FILTER_MOST_OCTAVES, 0, 100, 50, 100));
+                    engine.note_on(note, 127);
+                    let mut wave = render_left(&mut engine, 500);
+                    engine.note_off(note);
+                    wave.extend(render_left(&mut engine, RELEASE_MS));
+                    let after = render_left(&mut engine, 100);
+
+                    assert_all_finite(&wave);
+                    assert!(peak(&wave) < 1.0);
+                    assert_eq!(peak(&after), 0.0, "note {note} at {cutoff_hz} Hz never went silent");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_note_on_a_silent_voice_starts_right_at_its_own_cutoff() {
+        // A5, with its cutoff on its second harmonic. Once its attack is
+        // over, it already sounds exactly as it does half a second later:
+        // it doesn't glide to its cutoff or fade into the filter. Half a
+        // second is exactly 440 cycles of A5, so its wave lines up.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(CUTOFF_FOR_A4_AT_880, 0));
+        engine.note_on(A5, VELOCITY);
+        let wave = render_left(&mut engine, 520);
+
+        let start = between(&engine, &wave, ATTACK_MS + 1, ATTACK_MS + 13);
+        let later = between(&engine, &wave, ATTACK_MS + 501, ATTACK_MS + 513);
+        assert_nearly_same_sound(start, later, 0.0001);
+    }
+
+    #[test]
+    fn a_new_note_takes_over_a_filtered_voice_without_a_click() {
+        // As a_new_note_takes_over_the_oldest_held_one_without_a_click, with
+        // the filter on and its envelope opening each note. The voice keeps
+        // its filter's memory, and its cutoff glides from middle C's to C5's.
+        for extra_ms in 0..10 {
+            let mut engine = Engine::new().unwrap();
+            engine.set_filter(filter(1000.0, 0));
+            engine.set_filter_envelope(filter_envelope(1.0, 5, 300, 50, 300));
+
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
+            engine.note_on(MIDDLE_C, VELOCITY);
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
+            let mut wave = render_left(&mut engine, 500 + extra_ms);
+
+            engine.note_on(C5, VELOCITY);
+            let after = render_left(&mut engine, 1000);
+
+            // While the cutoff moves, the filter holds the wave back by a
+            // little more or less each moment, which shifts where it crosses
+            // zero and reads as a pitch a few hundredths of a Hz off. By
+            // 400 ms the envelope sits at its sustain and the cutoff is still.
+            let settled = &after[frames_in_ms(&engine, 400)..];
+            assert_pitch(&engine, settled, C5_HZ);
+
+            wave.extend(after);
+            assert_no_click(&engine, &wave, C5_HZ);
+        }
+    }
+
+    #[test]
+    fn the_filter_sounds_the_same_however_the_sound_is_asked_for() {
+        // As the_same_notes_always_make_the_same_sound, with the filter, its
+        // envelope and a move of the cutoff while the note is held.
+        let mut whole = saw_engine();
+        let mut chunked = saw_engine();
+        for engine in [&mut whole, &mut chunked] {
+            engine.set_filter(filter(500.0, 60));
+            engine.set_filter_envelope(filter_envelope(3.0, 50, 200, 30, 400));
+            engine.note_on(MIDDLE_C, VELOCITY);
+        }
+        let mut whole_wave = render_left(&mut whole, 300);
+        let mut chunked_wave = render_in_chunks(&mut chunked, 300, 10);
+
+        for engine in [&mut whole, &mut chunked] {
+            engine.set_filter(filter(2000.0, 90));
+        }
+        whole_wave.extend(render_left(&mut whole, 300));
+        chunked_wave.extend(render_in_chunks(&mut chunked, 300, 10));
+
+        whole.note_off(MIDDLE_C);
+        chunked.note_off(MIDDLE_C);
+        whole_wave.extend(render_left(&mut whole, 400));
+        chunked_wave.extend(render_in_chunks(&mut chunked, 400, 10));
+
+        assert!(
+            whole_wave == chunked_wave,
+            "the two engines sounded different"
+        );
+    }
+
+    #[test]
+    fn a_filter_envelope_with_no_amount_changes_nothing() {
+        // Its stages can be anything: at an amount of 0 it never moves the
+        // cutoff, so every sample is the same as with the envelope untouched.
+        let mut envelope = saw_engine();
+        let mut plain = saw_engine();
+        for engine in [&mut envelope, &mut plain] {
+            engine.set_filter(filter(800.0, 40));
+            engine.note_on(A4, VELOCITY);
+        }
+        envelope.set_filter_envelope(filter_envelope(0.0, 70, 900, 30, 2000));
+
+        let mut envelope_wave = render_left(&mut envelope, 500);
+        let mut plain_wave = render_left(&mut plain, 500);
+        envelope.note_off(A4);
+        plain.note_off(A4);
+        envelope_wave.extend(render_left(&mut envelope, 400));
+        plain_wave.extend(render_left(&mut plain, 400));
+        assert!(envelope_wave == plain_wave, "an envelope of 0 changed the sound");
+    }
+
+    // A held A4 saw whose filter envelope opens its cutoff from 220 Hz, two
+    // octaves below 880 Hz, by `envelope`.
+    fn a4_opened_by(envelope: FilterEnvelope) -> Engine {
+        let mut engine = saw_engine();
+        engine.set_filter(filter(CUTOFF_FOR_A4_AT_880 / 4.0, 0));
+        engine.set_filter_envelope(envelope);
+        engine.note_on(A4, VELOCITY);
+        engine
+    }
+
+    // A held A4 saw whose cutoff sits at `cutoff_for_a4` all along, with no
+    // filter envelope.
+    fn a4_through(cutoff_for_a4: f32) -> Engine {
+        let mut engine = saw_engine();
+        let middle_c_s = cutoff_for_a4 * CUTOFF_FOR_A4_AT_880 / 880.0;
+        engine.set_filter(filter(middle_c_s, 0));
+        engine.note_on(A4, VELOCITY);
+        engine
+    }
+
+    // The part of `wave` from `from_ms` to `to_ms`.
+    fn between<'a>(engine: &Engine, wave: &'a [f32], from_ms: u32, to_ms: u32) -> &'a [f32] {
+        &wave[frames_in_ms(engine, from_ms)..frames_in_ms(engine, to_ms)]
+    }
+
+    #[test]
+    fn the_filter_envelope_opens_the_cutoff_by_its_amount_over_its_attack() {
+        // Two octaves over a 100 ms attack, then held there: a sustain of
+        // 100%. Next to a note through 880 Hz all along, it is still opening
+        // at 85 to 90 ms, and from 110 ms on it sounds the same.
+        let mut opening = a4_opened_by(filter_envelope(2.0, 100, 300, 100, 300));
+        let opened = render_left(&mut opening, 300);
+        let mut open = a4_through(880.0);
+        let all_along = render_left(&mut open, 300);
+
+        let still_opening = biggest_difference(
+            between(&open, &opened, 85, 90),
+            between(&open, &all_along, 85, 90),
+        );
+        assert!(still_opening > 0.001, "it opened too soon");
+        assert_nearly_same_sound(
+            between(&open, &opened, 110, 300),
+            between(&open, &all_along, 110, 300),
+            0.0001,
+        );
+    }
+
+    #[test]
+    fn the_filter_envelope_falls_to_its_sustain_over_its_decay() {
+        // Two octaves over a 50 ms attack, then down to a sustain of 50% over
+        // a 200 ms decay: one octave up, at 440 Hz. It is still falling at
+        // 200 to 230 ms, and from 270 ms on it sounds like 440 Hz all along.
+        let mut falling = a4_opened_by(filter_envelope(2.0, 50, 200, 50, 300));
+        let fell = render_left(&mut falling, 500);
+        let mut sustain = a4_through(440.0);
+        let all_along = render_left(&mut sustain, 500);
+
+        let still_falling = biggest_difference(
+            between(&sustain, &fell, 200, 230),
+            between(&sustain, &all_along, 200, 230),
+        );
+        assert!(still_falling > 0.001, "it reached its sustain too soon");
+        assert_nearly_same_sound(
+            between(&sustain, &fell, 270, 500),
+            between(&sustain, &all_along, 270, 500),
+            0.0001,
+        );
+    }
+
+    #[test]
+    fn letting_go_closes_the_filter_envelope_over_its_release() {
+        // Opened two octaves and held there, then let go with a 100 ms
+        // release. It is still closing at 50 to 90 ms, and from 120 ms on it
+        // sounds like the cutoff alone, though its loudness is still fading.
+        let mut closing = a4_opened_by(filter_envelope(2.0, 5, 300, 100, 100));
+        let mut cutoff_alone = a4_through(220.0);
+        render_left(&mut closing, 500);
+        render_left(&mut cutoff_alone, 500);
+        closing.note_off(A4);
+        cutoff_alone.note_off(A4);
+        let closed = render_left(&mut closing, 250);
+        let alone = render_left(&mut cutoff_alone, 250);
+
+        let still_closing = biggest_difference(
+            between(&closing, &closed, 50, 90),
+            between(&closing, &alone, 50, 90),
+        );
+        assert!(still_closing > 0.001, "it closed too soon");
+        assert_nearly_same_sound(
+            between(&closing, &closed, 120, 250),
+            between(&closing, &alone, 120, 250),
+            0.0001,
+        );
+    }
+
+    #[test]
+    fn a_held_note_keeps_its_filter_envelope_and_the_next_note_gets_the_new_one() {
+        // The envelope changes while A4 is held. A4 sounds exactly as if it
+        // never changed. Once A4 has faded out, the next A4 sounds exactly as
+        // if the new envelope had been there all along, though the old one,
+        // with its 2 second release, was still letting go when A4 went
+        // silent: a silent voice keeps nothing of its last note's filter.
+        let old = filter_envelope(3.0, 5, 300, 50, 2000);
+        let new = filter_envelope(1.5, 80, 100, 20, 300);
+
+        let mut changed = saw_engine();
+        let mut kept = saw_engine();
+        let mut new_all_along = saw_engine();
+        changed.set_filter_envelope(old);
+        kept.set_filter_envelope(old);
+        new_all_along.set_filter_envelope(new);
+        for engine in [&mut changed, &mut kept, &mut new_all_along] {
+            engine.set_filter(filter(300.0, 30));
+            engine.note_on(A4, VELOCITY);
+            render_left(engine, 100);
+        }
+
+        changed.set_filter_envelope(new);
+        let changed_held = render_left(&mut changed, 500);
+        let kept_held = render_left(&mut kept, 500);
+        assert!(changed_held == kept_held, "the held note's envelope changed");
+
+        render_left(&mut new_all_along, 500);
+        for engine in [&mut changed, &mut new_all_along] {
+            engine.note_off(A4);
+            render_left(engine, RELEASE_MS + 100);
+            engine.note_on(A4, VELOCITY);
+        }
+        let next = render_left(&mut changed, 500);
+        let expected = render_left(&mut new_all_along, 500);
+        assert!(next == expected, "the next note didn't get the new envelope");
+    }
+
+    // A4 on a saw through the filter at 1000 Hz and 50%, with its envelope
+    // opening it 2 octaves, after `send` asks the engine for something
+    // directly. The note is let go, so every stage is heard.
+    fn filtered_a4_after(send: impl Fn(&Engine)) -> Vec<f32> {
+        let mut engine = saw_engine();
+        engine.set_filter(filter(1000.0, 50));
+        engine.set_filter_envelope(filter_envelope(2.0, 5, 300, 50, 300));
+        send(&engine);
+
+        engine.note_on(A4, VELOCITY);
+        let mut wave = render_left(&mut engine, 500);
+        engine.note_off(A4);
+        wave.extend(render_left(&mut engine, RELEASE_MS + 100));
+        wave
+    }
+
+    #[test]
+    fn odd_filter_values_change_nothing() {
+        // Asked directly, the engine ignores values outside the filter's
+        // ranges, and NaN. Each odd value goes to an engine of its own, so
+        // one that got through can't hide behind the next.
+        let plain = filtered_a4_after(|_| {});
+
+        let odd_filters = [
+            (f32::NAN, 0.5),
+            (19.9, 0.5),
+            (20000.1, 0.5),
+            (1000.0, -0.1),
+            (1000.0, 1.1),
+            (1000.0, f32::NAN),
+        ];
+        for (cutoff_hz, resonance) in odd_filters {
+            let odd = filtered_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_filter(engine.raw, cutoff_hz, resonance) };
+            });
+            assert!(odd == plain, "{cutoff_hz} Hz at {resonance} changed the sound");
+        }
+        let odd_envelopes = [
+            (f32::NAN, 5, 300, 0.5, 300),
+            (-0.1, 5, 300, 0.5, 300),
+            (8.1, 5, 300, 0.5, 300),
+            (2.0, -1, 300, 0.5, 300),
+            (2.0, 10001, 300, 0.5, 300),
+            (2.0, 5, -1, 0.5, 300),
+            (2.0, 5, 10001, 0.5, 300),
+            (2.0, 5, 300, -0.1, 300),
+            (2.0, 5, 300, 1.1, 300),
+            (2.0, 5, 300, f32::NAN, 300),
+            (2.0, 5, 300, 0.5, -1),
+            (2.0, 5, 300, 0.5, 10001),
+        ];
+        for (amount, attack, decay, sustain, release) in odd_envelopes {
+            let odd = filtered_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_filter_envelope(engine.raw, amount, attack, decay, sustain, release) };
+            });
+            assert!(
+                odd == plain,
+                "the envelope {amount}, {attack}, {decay}, {sustain}, {release} changed the sound"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_brings_filter_values_within_their_ranges() {
+        // A cutoff below the lowest is sent as the lowest, so it sounds the
+        // same as the lowest. Everything else out of range stops at its edge.
+        let mut below = saw_engine();
+        below.set_filter(filter(5.0, 150));
+        assert_eq!(below.filter(), filter(FILTER_LOWEST_HZ, FULL_PERCENT));
+        let mut lowest = saw_engine();
+        lowest.set_filter(filter(FILTER_LOWEST_HZ, FULL_PERCENT));
+        below.note_on(A4, VELOCITY);
+        lowest.note_on(A4, VELOCITY);
+        let below_wave = render_left(&mut below, 300);
+        let lowest_wave = render_left(&mut lowest, 300);
+        assert!(below_wave == lowest_wave, "the cutoff below the lowest was not sent as the lowest");
+
+        let mut engine = Engine::new().unwrap();
+        engine.set_filter(filter(50000.0, 0));
+        assert_eq!(engine.filter(), START_FILTER);
+        engine.set_filter(filter(f32::NAN, 0));
+        assert_eq!(engine.filter(), filter(FILTER_LOWEST_HZ, 0));
+
+        engine.set_filter_envelope(filter_envelope(9.5, 20000, 20000, 150, 20000));
+        let longest = FILTER_LONGEST_MS;
+        let edges = filter_envelope(FILTER_MOST_OCTAVES, longest, longest, FULL_PERCENT, longest);
+        assert_eq!(engine.filter_envelope(), edges);
+        engine.set_filter_envelope(filter_envelope(-1.0, 0, 0, 0, 0));
+        assert_eq!(engine.filter_envelope(), filter_envelope(0.0, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_new_engine_starts_with_the_filter_open_and_no_envelope() {
+        let engine = Engine::new().unwrap();
+        assert_eq!(engine.filter(), filter(FILTER_OPEN_HZ, 0));
+        assert_eq!(engine.filter_envelope(), filter_envelope(0.0, 5, 300, 0, 300));
     }
 }

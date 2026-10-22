@@ -60,6 +60,35 @@ bool is_valid_volume(float volume) {
     return volume <= 1.0f;
 }
 
+// The C API and the filter agree on its ranges.
+static_assert(JELLO_FILTER_LOWEST_HZ == static_cast<int>(filter_lowest_hz),
+              "the C API and the filter have the same lowest cutoff");
+static_assert(JELLO_FILTER_OPEN_HZ == static_cast<int>(filter_open_hz),
+              "the C API and the filter open at the same cutoff");
+static_assert(JELLO_FILTER_MOST_OCTAVES == static_cast<int>(filter_most_octaves),
+              "the C API and the filter open the cutoff as far");
+static_assert(JELLO_FILTER_LONGEST_MS == filter_longest_ms, "the C API and the filter have the same longest stage");
+
+// True if `value` is a number from `lowest` to `highest`. NaN, not a number
+// at all, is not.
+bool is_within(float value, float lowest, float highest) {
+    if (std::isnan(value)) {
+        return false;
+    }
+    if (value < lowest) {
+        return false;
+    }
+    return value <= highest;
+}
+
+// How long a filter envelope's stage takes, in ms.
+bool is_valid_stage_ms(int ms) {
+    if (ms < 0) {
+        return false;
+    }
+    return ms <= JELLO_FILTER_LONGEST_MS;
+}
+
 // The C API and the song player agree on how big a song and a chord can be.
 static_assert(JELLO_SONG_MAX_CHORDS == SongPlayer::max_chords,
               "the C API and the song player hold the same number of chords");
@@ -310,6 +339,47 @@ bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, i
 
 void jello_engine_stop_song(JelloEngine* engine) {
     engine->conductor.stop_song();
+}
+
+void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonance) {
+    if (!is_within(cutoff_hz, JELLO_FILTER_LOWEST_HZ, JELLO_FILTER_OPEN_HZ)) {
+        return;
+    }
+    if (!is_within(resonance, 0.0f, 1.0f)) {
+        return;
+    }
+
+    FilterSettings settings;
+    settings.cutoff_hz = cutoff_hz;
+    settings.resonance = resonance;
+    engine->conductor.set_filter(settings);
+}
+
+void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int attack_ms, int decay_ms, float sustain,
+                                      int release_ms) {
+    if (!is_within(amount, 0.0f, JELLO_FILTER_MOST_OCTAVES)) {
+        return;
+    }
+    if (!is_valid_stage_ms(attack_ms)) {
+        return;
+    }
+    if (!is_valid_stage_ms(decay_ms)) {
+        return;
+    }
+    if (!is_within(sustain, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_valid_stage_ms(release_ms)) {
+        return;
+    }
+
+    FilterEnvelopeSettings envelope;
+    envelope.amount = amount;
+    envelope.attack_ms = attack_ms;
+    envelope.decay_ms = decay_ms;
+    envelope.sustain = sustain;
+    envelope.release_ms = release_ms;
+    engine->conductor.set_filter_envelope(envelope);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {

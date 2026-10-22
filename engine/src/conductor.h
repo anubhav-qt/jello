@@ -57,6 +57,10 @@ public:
     void set_layer_volume(int layer, float volume);
     // The "snap to beat" switch (Looper::set_snap).
     void set_snap(bool snap);
+    // The filter's controls (Synth::set_filter), and the filter envelope
+    // (Synth::set_filter_envelope).
+    void set_filter(const FilterSettings& settings);
+    void set_filter_envelope(const FilterEnvelopeSettings& envelope);
 
     // What the looper is doing. Only the thread that sends the messages may
     // ask.

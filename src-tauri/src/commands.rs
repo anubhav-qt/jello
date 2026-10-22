@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
-use crate::engine::{BEATS_PER_BAR, Engine, LoopLayer, LoopNote, LooperState, LooperStatus};
+use crate::engine::{BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus};
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
 use crate::wav::write_wav;
@@ -23,14 +23,46 @@ const HOLD_MS: u32 = 2000;
 const TAIL_MS: u32 = 400;
 
 // What the screen shows about the sound: the wave new notes play, the beat's
-// tempo in beats per minute, whether loops snap to the beat and what the
-// looper is doing.
+// tempo in beats per minute, whether loops snap to the beat, what the looper
+// is doing and where the filter is.
 #[derive(Serialize)]
 pub struct SoundView {
     wave: &'static str,
     tempo: u32,
     snap: bool,
     looper: LooperView,
+    filter: FilterView,
+}
+
+// Where the low-pass filter and its envelope are
+// (docs/adr/0028-a-low-pass-filter.md).
+#[derive(Serialize)]
+pub struct FilterView {
+    // Middle C's cutoff, in Hz. At 20000 the filter is open: off.
+    cutoff_hz: f32,
+    // In percent.
+    resonance: u32,
+    // How far the filter envelope opens the cutoff, in octaves.
+    amount: f32,
+    attack_ms: u32,
+    decay_ms: u32,
+    // In percent of the amount.
+    sustain: u32,
+    release_ms: u32,
+}
+
+fn filter_view_of(engine: &Engine) -> FilterView {
+    let filter = engine.filter();
+    let envelope = engine.filter_envelope();
+    FilterView {
+        cutoff_hz: filter.cutoff_hz,
+        resonance: filter.resonance,
+        amount: envelope.amount,
+        attack_ms: envelope.attack_ms,
+        decay_ms: envelope.decay_ms,
+        sustain: envelope.sustain,
+        release_ms: envelope.release_ms,
+    }
 }
 
 // What the looper is doing.
@@ -115,6 +147,7 @@ fn sound_view_of(engine: &mut Engine, now: Instant) -> SoundView {
         tempo,
         snap: engine.snap(),
         looper,
+        filter: filter_view_of(engine),
     }
 }
 
@@ -283,6 +316,50 @@ pub fn set_layer_volume(engine: State<'_, Mutex<Engine>>, layer: u32, volume: u3
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.set_layer_volume(layer, volume)?;
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// Moves the filter: middle C's cutoff to `cutoff_hz`, where 20000 is open,
+// and the resonance to `resonance` percent (docs/adr/0028-a-low-pass-filter.md).
+// Values outside their ranges are brought within them. Every note hears it,
+// even those already sounding. Returns what the screen shows about the
+// sound. The filter's dev panel in Compose sends it, naming the arguments
+// in camelCase, like `cutoffHz`. Like `switch_wave`, it opens the speakers
+// first.
+#[tauri::command]
+pub fn set_filter(engine: State<'_, Mutex<Engine>>, cutoff_hz: f32, resonance: u32) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.set_filter(Filter { cutoff_hz, resonance });
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// Sets the filter envelope for notes started from now on: how far it opens
+// the cutoff, in octaves, its stages in ms, and its sustain in percent of
+// the amount. Values outside their ranges are brought within them. Returns
+// what the screen shows about the sound. Like `set_filter`, it opens the
+// speakers first.
+#[tauri::command]
+pub fn set_filter_envelope(
+    engine: State<'_, Mutex<Engine>>,
+    amount: f32,
+    attack_ms: u32,
+    decay_ms: u32,
+    sustain: u32,
+    release_ms: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let envelope = FilterEnvelope {
+        amount,
+        attack_ms,
+        decay_ms,
+        sustain,
+        release_ms,
+    };
+    engine.set_filter_envelope(envelope);
     Ok(sound_view_of(&mut engine, now))
 }
 
@@ -707,6 +784,28 @@ mod tests {
         assert_eq!(json["looper"]["layers"], serde_json::json!([]));
         assert_eq!(json["looper"]["removing"], serde_json::Value::Null);
         assert_eq!(json["looper"]["message"], serde_json::Value::Null);
+
+        // And the filter, by the names the UI will read. Every value is
+        // different, so two names mixed up would show.
+        engine.set_filter(Filter {
+            cutoff_hz: 1000.0,
+            resonance: 40,
+        });
+        engine.set_filter_envelope(FilterEnvelope {
+            amount: 2.5,
+            attack_ms: 10,
+            decay_ms: 200,
+            sustain: 60,
+            release_ms: 400,
+        });
+        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        assert_eq!(json["filter"]["cutoff_hz"], 1000.0);
+        assert_eq!(json["filter"]["resonance"], 40);
+        assert_eq!(json["filter"]["amount"], 2.5);
+        assert_eq!(json["filter"]["attack_ms"], 10);
+        assert_eq!(json["filter"]["decay_ms"], 200);
+        assert_eq!(json["filter"]["sustain"], 60);
+        assert_eq!(json["filter"]["release_ms"], 400);
 
         // And the loop's layers, by the names ui/sound.ts reads.
         let layers = [layer_of(&[LoopNote {

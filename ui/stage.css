@@ -545,6 +545,99 @@
   color: var(--text-2);
 }
 
+/* Buttons that open dev panels sit at the right end of the tabs, dashed
+   like the panels. */
+.tabs-dev {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.dev-button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px dashed rgba(var(--ink), 0.35);
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: default;
+}
+
+.dev-button.is-open {
+  background: rgba(var(--ink), 0.08);
+  color: var(--text);
+}
+
+/* The filter's dev panel (ui/FilterDevPanel.svelte) opens over Compose's
+   tape, as wide as it, with the same 16px of room above. */
+.filter-panel {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(var(--u) * var(--keys-across) + 2 * var(--panel-padding));
+  margin: 0;
+  background: var(--panel-bg);
+}
+
+/* A row's name, then its sliders, five to a row. */
+.filter-rows {
+  display: grid;
+  grid-template-columns: 120px repeat(5, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 14px;
+}
+
+/* Each row's name starts a new row. */
+.filter-row-name {
+  grid-column: 1;
+  padding-bottom: 3px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A slider, with its name and readout over it. */
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The name and readout stay on one line, so the panel stays short. In a
+   narrow window the name ends in "..." before the readout runs over. */
+.filter-field-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.filter-field-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+
+.filter-field-value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-field input {
+  width: 100%;
+  margin: 0;
+  accent-color: rgb(var(--ink));
+}
+
 /* Compose's tape (ui/ComposeTape.svelte): the key, the song and the chord
    tried last, between the tabs and the keyboard. */
 

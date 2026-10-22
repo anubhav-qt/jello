@@ -6,7 +6,7 @@ import { mount } from "svelte";
 import type { ComposeView } from "./compose";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
-import type { SoundView } from "./sound";
+import type { FilterEnvelope, SoundView } from "./sound";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -174,6 +174,33 @@ async function setLayerVolume(layer: number, volume: number) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the volume: ${error}`);
+  }
+}
+
+// The filter's dev panel moves the filter. `cutoffHz` is middle C's cutoff,
+// and `resonance` is in percent, from 0 to 100.
+async function setFilter(cutoffHz: number, resonance: number) {
+  try {
+    const view = await invoke<SoundView>("set_filter", { cutoffHz, resonance });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not move the filter: ${error}`);
+  }
+}
+
+// It also sets the filter envelope for the next notes.
+async function setFilterEnvelope(envelope: FilterEnvelope) {
+  try {
+    const view = await invoke<SoundView>("set_filter_envelope", {
+      amount: envelope.amount,
+      attackMs: envelope.attackMs,
+      decayMs: envelope.decayMs,
+      sustain: envelope.sustain,
+      releaseMs: envelope.releaseMs,
+    });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the filter envelope: ${error}`);
   }
 }
 
@@ -354,6 +381,8 @@ async function start() {
       onKeyPick: (tonic: number, mode: "major" | "minor") => sendInOrder(() => pickKey(tonic, mode)),
       onChordClick: (place: number) => sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),
+      onFilterChange: (cutoffHz: number, resonance: number) => sendInOrder(() => setFilter(cutoffHz, resonance)),
+      onFilterEnvelopeChange: (envelope: FilterEnvelope) => sendInOrder(() => setFilterEnvelope(envelope)),
     },
   });
   sendInOrder(askForSound);

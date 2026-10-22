@@ -38,10 +38,11 @@ Voice::Voice(int sample_rate)
     : sample_rate_(sample_rate),
       gap_samples_(sample_rate * gap_ms / 1000),
       envelope_(sample_rate),
+      filter_(sample_rate),
       volume_step_(1000.0f / static_cast<float>(sample_rate * volume_ease_ms)) {}
 
 void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer,
-                  float volume) {
+                  float volume, const FilterTargets& filter, const FilterEnvelopeSettings& envelope) {
     // Where the sound was heading next: the old wave, plus what is left of
     // any earlier gap.
     bool was_sounding = !is_free();
@@ -56,6 +57,7 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave,
     wave_ = wave;
     phase_step_ = note_to_frequency(note) / sample_rate_;
     envelope_.start(velocity_to_peak(velocity));
+    filter_.start(note, !was_sounding, filter, envelope);
 
     // A new wave can be at a different height here. The gap makes up the
     // difference, so the sound carries on from where it was, then shrinks
@@ -77,6 +79,7 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave,
 
 void Voice::release() {
     envelope_.release();
+    filter_.release();
 }
 
 bool Voice::is_free() const {
@@ -107,7 +110,7 @@ int Voice::layer() const {
     return layer_;
 }
 
-void Voice::render(float* out, int frames, float volume) {
+void Voice::render(float* out, int frames, float volume, const FilterTargets& filter) {
     for (int i = 0; i < frames; i++) {
         // A free voice is silent, so there is nothing to add. It stops on
         // the sample it falls silent, so the point in the wave where its
@@ -124,8 +127,11 @@ void Voice::render(float* out, int frames, float volume) {
             volume_ = std::max(volume_ - volume_step_, volume);
         }
 
+        // The wave goes through the filter before the envelope, so the
+        // filter always hears the whole wave, however quiet the note is.
         double exact_height = height_now() + gap_now();
-        float height = static_cast<float>(exact_height);
+        double filtered = filter_.next(exact_height, filter);
+        float height = static_cast<float>(filtered);
         float loudness = envelope_.next();
         float sample = height * loudness * voice_level;
         sample = sample * volume_;

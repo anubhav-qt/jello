@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "filter.h"
 #include "voice.h"
 #include "wave.h"
 
@@ -47,6 +48,16 @@ public:
     // theirs.
     void set_wave(Wave wave);
 
+    // Moves the filter's cutoff and resonance (docs/adr/0028-a-low-pass-filter.md).
+    // Every note hears it, even those already sounding, each gliding there
+    // so it never clicks. The filter starts open.
+    void set_filter(const FilterSettings& settings);
+
+    // Notes started after this use `envelope` as their filter envelope.
+    // Notes started before it keep theirs. It starts at an amount of 0, so
+    // it changes nothing.
+    void set_filter_envelope(const FilterEnvelopeSettings& envelope);
+
     // Adds every voice to `frames` frames of stereo (left, right, left,
     // ...). It adds instead of overwriting, so the conductor can render a
     // chunk in pieces and put the click in the same buffer. Many voices can
@@ -84,6 +95,11 @@ private:
 
     // The wave new notes play. Jello starts on triangle.
     Wave wave_ = Wave::triangle;
+
+    // Where every voice's filter glides to, and the filter envelope new notes
+    // start with.
+    FilterTargets filter_targets_ = filter_targets_of(FilterSettings{});
+    FilterEnvelopeSettings filter_envelope_{};
 
     // Each layer's volume, by its slot.
     std::array<float, layer_count> layer_volumes_{};
