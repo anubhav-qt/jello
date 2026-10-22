@@ -63,6 +63,11 @@ public:
     void set_filter_envelope(const FilterEnvelopeSettings& envelope);
     // Unison's copies (Synth::set_unison).
     void set_unison(const UnisonSettings& unison);
+    // The loudness envelope, the key tracking and the tuning
+    // (Synth::set_loudness_envelope, set_key_tracking and set_tuning).
+    void set_loudness_envelope(const LoudnessEnvelopeSettings& envelope);
+    void set_key_tracking(float key_tracking);
+    void set_tuning(float a4_hz);
 
     // What the looper is doing. Only the thread that sends the messages may
     // ask.

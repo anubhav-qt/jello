@@ -9,8 +9,30 @@
 //   release: falls to silence after the key is let go
 //
 // Every stage is one glide in a straight line from wherever the level is now,
-// and always takes its full time, so the level never jumps. A new envelope
-// has the loudness envelope's stages; the filter envelope sets its own.
+// and always takes its full time, so the level never jumps. Every note sets
+// its stages as it starts: its loudness envelope's, or its filter envelope's.
+
+// The shortest and longest any stage of the loudness envelope can take. At
+// 0 ms a stage would jump the loudness in one sample, which clicks.
+constexpr int loudness_shortest_ms = 1;
+constexpr int loudness_longest_ms = 10000;
+
+// The loudness envelope: how a note's loudness rises when it starts, falls
+// to where it holds while the key is held, and fades out once it is let go.
+// Each song has its own (docs/adr/0030-a-sound-profile-per-song.md).
+// Changing it changes the notes started after. A new song starts here,
+// checked by ear in slice 5: the attack made no audible difference between 2
+// and 20 ms, and with the sustain at the full peak a held note never dips,
+// so the decay has nothing to do until the sustain is turned down.
+struct LoudnessEnvelopeSettings {
+    int attack_ms = 5;
+    int decay_ms = 300;
+    // Where it holds while the key is held, as a share of the peak, from 0
+    // to 1.
+    float sustain = 1.0f;
+    int release_ms = 300;
+};
+
 class Envelope {
 public:
     explicit Envelope(int sample_rate);
@@ -52,10 +74,11 @@ private:
     void glide(Stage stage, double target, int samples);
 
     int sample_rate_;
-    int attack_samples_;
-    int decay_samples_;
-    double sustain_;  // a share of the peak
-    int release_samples_;
+    // Set by set_stages, which the constructor calls first.
+    int attack_samples_ = 0;
+    int decay_samples_ = 0;
+    double sustain_ = 0.0;  // a share of the peak
+    int release_samples_ = 0;
 
     Stage stage_ = Stage::silent;
     int samples_left_ = 0;  // samples until the glide reaches its target

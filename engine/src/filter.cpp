@@ -116,8 +116,10 @@ VoiceFilter::VoiceFilter(int sample_rate)
       resonance_(glide_samples(sample_rate)),
       share_(glide_samples(sample_rate)) {}
 
-void VoiceFilter::start(int note, bool fresh, const FilterTargets& targets, const FilterEnvelopeSettings& envelope) {
-    tracking_ = (note - middle_c) / 12.0;
+void VoiceFilter::start(int note, bool fresh, const FilterTargets& targets, const FilterEnvelopeSettings& envelope,
+                        float key_tracking) {
+    double octaves_above_middle_c = (note - middle_c) / 12.0;
+    tracking_ = key_tracking * octaves_above_middle_c;
     amount_ = envelope.amount;
 
     // A silent voice's filter envelope starts from nothing, even if its last

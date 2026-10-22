@@ -1,17 +1,20 @@
 // Guided composing (docs/design.md, "Chord guidance" and "Compose screen"):
 // the song's key, the chords added to the song so far with how long each was
 // held, how well each chord and melody key fits the key, playing the song
-// back, and the song's sound profile.
+// back, the song's tempo and its sound profile.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::engine::{Engine, SONG_MAX_CHORDS, SongChord, SongPlace};
+use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::sound_profile::SoundProfile;
+
+// How much slowing down or speeding up changes the song's tempo.
+const TEMPO_STEP: u32 = 5;
 
 pub struct Composer {
     // The song's key, picked before starting. None until then.
@@ -24,9 +27,12 @@ pub struct Composer {
     // Where in the song the chords played last start, so the playhead can
     // tell which chord is playing.
     playing_from: usize,
-    // How the song's notes sound: its wave, filter and unison
-    // (docs/adr/0030-a-sound-profile-per-song.md). Every note played while
-    // the song is open plays it, in Play too.
+    // The song's tempo, in beats per minute: the click and the looper play
+    // at it. A new song starts at 120.
+    tempo: u32,
+    // How the song's notes sound: its wave, envelopes, filter, unison and
+    // tuning (docs/adr/0030-a-sound-profile-per-song.md). Every note played
+    // while the song is open plays it, in Play too.
     sound_profile: SoundProfile,
 }
 
@@ -140,15 +146,56 @@ pub struct ComposeView {
 }
 
 impl Composer {
-    // No key yet, no chords, and a new song's sound profile.
+    // No key yet, no chords, a new song's tempo and a new song's sound
+    // profile.
     pub fn new() -> Composer {
         Composer {
             key: None,
             tried: None,
             progression: Vec::new(),
             playing_from: 0,
+            tempo: START_TEMPO,
             sound_profile: SoundProfile::new(),
         }
+    }
+
+    // Sends the song's tempo and its whole sound profile to `engine`, so
+    // everything after this plays them. The app does this as it starts,
+    // before the first note.
+    pub fn send_all(&self, engine: &mut Engine) {
+        engine.set_tempo(self.tempo);
+        self.sound_profile.send_all(engine);
+    }
+
+    // Plays the song at `tempo` beats per minute from the next beat on, on
+    // `engine` too. The song keeps the tempo the engine plays, which is the
+    // one it had for a tempo outside SLOWEST_TEMPO to FASTEST_TEMPO, or while
+    // the looper is busy.
+    fn set_tempo(&mut self, engine: &mut Engine, tempo: u32) {
+        self.tempo = engine.set_tempo(tempo);
+    }
+
+    // Slows the song down by 5 beats per minute, but never below
+    // SLOWEST_TEMPO.
+    pub fn slow_down(&mut self, engine: &mut Engine) {
+        let slower = self.tempo - TEMPO_STEP;
+        if slower >= SLOWEST_TEMPO {
+            self.set_tempo(engine, slower);
+        }
+    }
+
+    // Speeds the song up by 5 beats per minute, but never above
+    // FASTEST_TEMPO.
+    pub fn speed_up(&mut self, engine: &mut Engine) {
+        let faster = self.tempo + TEMPO_STEP;
+        if faster <= FASTEST_TEMPO {
+            self.set_tempo(engine, faster);
+        }
+    }
+
+    // The song's tempo, in beats per minute.
+    pub fn tempo(&self) -> u32 {
+        self.tempo
     }
 
     pub fn sound_profile(&self) -> &SoundProfile {
@@ -345,6 +392,7 @@ fn key_choice(key: Key) -> KeyChoice {
 mod tests {
     use super::*;
     use crate::commands::{all_keys_up, key_down, key_up};
+    use crate::engine::Wave;
     use crate::key_map::KeyAction;
 
     // How many samples the engine makes in 10 ms, the size of chunk the
@@ -461,6 +509,77 @@ mod tests {
         } else {
             format!("{} for {} ms", chord.name, chord.held_ms)
         }
+    }
+
+    #[test]
+    fn a_new_song_beats_at_120() {
+        let player = Player::new();
+        assert_eq!(player.composer.tempo(), START_TEMPO);
+    }
+
+    #[test]
+    fn slowing_down_and_speeding_up_go_by_5_and_stop_at_the_ends() {
+        // The engine plays each new tempo too.
+        let mut player = Player::new();
+        player.composer.speed_up(&mut player.engine);
+        assert_eq!(player.composer.tempo(), 125);
+        assert_eq!(player.engine.tempo(), 125);
+        player.composer.slow_down(&mut player.engine);
+        player.composer.slow_down(&mut player.engine);
+        assert_eq!(player.composer.tempo(), 115);
+        assert_eq!(player.engine.tempo(), 115);
+
+        // From 120 it takes 16 steps to reach 40, and then it stays there.
+        let mut player = Player::new();
+        for _ in 0..20 {
+            player.composer.slow_down(&mut player.engine);
+        }
+        assert_eq!(player.composer.tempo(), SLOWEST_TEMPO);
+        assert_eq!(player.engine.tempo(), SLOWEST_TEMPO);
+
+        // And 24 steps to reach 240.
+        for _ in 0..50 {
+            player.composer.speed_up(&mut player.engine);
+        }
+        assert_eq!(player.composer.tempo(), FASTEST_TEMPO);
+        assert_eq!(player.engine.tempo(), FASTEST_TEMPO);
+    }
+
+    #[test]
+    fn the_song_keeps_the_tempo_the_engine_plays() {
+        // While the looper is busy, the engine keeps its beat, and so does
+        // the song. Once the loop is cleared, both move on together.
+        let mut player = Player::new();
+        player.engine.press_looper();
+        player.composer.speed_up(&mut player.engine);
+        assert_eq!(player.composer.tempo(), START_TEMPO);
+
+        player.engine.clear_loop();
+        player.engine.render(CHUNK);
+        player.composer.speed_up(&mut player.engine);
+        assert_eq!(player.composer.tempo(), 125);
+        assert_eq!(player.engine.tempo(), 125);
+    }
+
+    #[test]
+    fn sending_the_song_sends_its_tempo_and_its_sound_profile() {
+        // A song at 125 on a square wave, sent to a new engine, plays at 125
+        // there, on a square.
+        let mut player = Player::new();
+        player.composer.speed_up(&mut player.engine);
+        player.composer.sound_profile_mut().switch_wave(&mut player.engine);
+        let mut engine = Engine::new().unwrap();
+        player.composer.send_all(&mut engine);
+        assert_eq!(engine.tempo(), 125);
+
+        let mut square = Engine::new().unwrap();
+        square.set_wave(Wave::Square);
+        let a4 = 69;
+        engine.note_on(a4, LAPTOP_VELOCITY);
+        square.note_on(a4, LAPTOP_VELOCITY);
+        let sent_sound = engine.render(CHUNK);
+        let square_sound = square.render(CHUNK);
+        assert!(sent_sound == square_sound, "sending the song did not send its sound profile");
     }
 
     #[test]

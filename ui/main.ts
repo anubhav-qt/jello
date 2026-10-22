@@ -6,7 +6,7 @@ import { mount } from "svelte";
 import type { ComposeView } from "./compose";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
-import type { FilterEnvelope, SoundView, Unison } from "./sound";
+import type { FilterEnvelope, LoudnessEnvelope, SoundView, Unison } from "./sound";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -177,8 +177,23 @@ async function setLayerVolume(layer: number, volume: number) {
   }
 }
 
-// The sound's dev panel moves the filter. `cutoffHz` is middle C's cutoff,
-// and `resonance` is in percent, from 0 to 100.
+// The sound's dev panel sets the loudness envelope for the next notes.
+async function setLoudnessEnvelope(envelope: LoudnessEnvelope) {
+  try {
+    const view = await invoke<SoundView>("set_loudness_envelope", {
+      attackMs: envelope.attackMs,
+      decayMs: envelope.decayMs,
+      sustain: envelope.sustain,
+      releaseMs: envelope.releaseMs,
+    });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the loudness envelope: ${error}`);
+  }
+}
+
+// It moves the filter. `cutoffHz` is middle C's cutoff, and `resonance` is
+// in percent, from 0 to 100.
 async function setFilter(cutoffHz: number, resonance: number) {
   try {
     const view = await invoke<SoundView>("set_filter", { cutoffHz, resonance });
@@ -201,6 +216,26 @@ async function setFilterEnvelope(envelope: FilterEnvelope) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the filter envelope: ${error}`);
+  }
+}
+
+// It sets key tracking for the next notes, in percent, from 0 to 100.
+async function setKeyTracking(keyTracking: number) {
+  try {
+    const view = await invoke<SoundView>("set_key_tracking", { keyTracking });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set key tracking: ${error}`);
+  }
+}
+
+// It tunes the next notes from A4 at `a4Hz`.
+async function setTuning(a4Hz: number) {
+  try {
+    const view = await invoke<SoundView>("set_tuning", { a4Hz });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the tuning: ${error}`);
   }
 }
 
@@ -396,9 +431,12 @@ async function start() {
       onKeyPick: (tonic: number, mode: "major" | "minor") => sendInOrder(() => pickKey(tonic, mode)),
       onChordClick: (place: number) => sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),
+      onLoudnessChange: (envelope: LoudnessEnvelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
       onFilterChange: (cutoffHz: number, resonance: number) => sendInOrder(() => setFilter(cutoffHz, resonance)),
       onFilterEnvelopeChange: (envelope: FilterEnvelope) => sendInOrder(() => setFilterEnvelope(envelope)),
+      onKeyTrackingChange: (keyTracking: number) => sendInOrder(() => setKeyTracking(keyTracking)),
       onUnisonChange: (unison: Unison) => sendInOrder(() => setUnison(unison)),
+      onTuningChange: (a4Hz: number) => sendInOrder(() => setTuning(a4Hz)),
     },
   });
   sendInOrder(askForSound);

@@ -42,8 +42,10 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    ([ADR 0028](adr/0028-a-low-pass-filter.md)), then unison: up to 7
    detuned copies of each note's wave, which makes the saw a supersaw
    ([ADR 0029](adr/0029-unison.md)). Both belong to each song, in its own
-   sound profile ([ADR 0030](adr/0030-a-sound-profile-per-song.md)), and a
-   dev panel in Compose sets them until their screen is designed.
+   sound profile ([ADR 0030](adr/0030-a-sound-profile-per-song.md)), along
+   with its loudness envelope, key tracking and tuning, and the song keeps
+   its own tempo. A dev panel in Compose sets them until their screen is
+   designed.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -242,7 +244,10 @@ and being built.
     velocity curve and the voice level set how loud it is. It knows who
     started its note: the player (live), the looper or the song player,
     and for the looper, which layer. A loop note also plays at its layer's
-    volume (see [Looper](#looper)).
+    volume (see [Looper](#looper)). Everything a note starts with and keeps
+    until it ends comes in one `NoteSound`: its wave, loudness envelope,
+    filter envelope, key tracking, copies and tuning. The synth keeps one
+    for new notes, and each setter changes its part.
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
     off, and the trims that make them equally loud.
   - `unison.h`: unison's controls and their ranges.
@@ -250,9 +255,10 @@ and being built.
   - `filter.*`: each voice's low-pass filter, one per speaker, its filter
     envelope, and the glides that keep a moved control from clicking (see
     Filter below).
-  - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
-    to the held level (decay, sustain) and a fade out after letting go
-    (release). The filter envelope is one too, with stages of its own.
+  - `envelope.*`: a note's loudness over time: a rise (attack), a dip to
+    the held level (decay, sustain) and a fade out after letting go
+    (release). Each song sets its own stages (see Sound profile below). The
+    filter envelope is one too, with stages of its own.
   - `miniaudio.cpp` and `miniaudio_settings.h`: the audio library
     ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
 - **Build:** `src-tauri/build.rs` compiles the engine as C++17 with the `cc`
@@ -330,9 +336,13 @@ and being built.
   way from Andrew Simper's published math (Cytomic), so it stays steady
   even when its cutoff moves on every sample.
   - The cutoff control sets middle C's cutoff, from 20 Hz to 20,000 Hz.
-    Every other note's sits an octave higher for each octave up (key
-    tracking). Cutoffs move in octaves, not Hz, and never go past
-    21,600 Hz (0.45 of the sample rate), where the math stops behaving.
+    Every other note's follows it by the song's key tracking, from 0 to
+    100%: at 100%, where a new song starts, an octave higher for each
+    octave up, so every note is equally bright; at 0%, every note has
+    middle C's cutoff, so higher notes sound darker. A note keeps the key
+    tracking it started with. Cutoffs move in octaves, not Hz, and never
+    go past 21,600 Hz (0.45 of the sample rate), where the math stops
+    behaving.
   - At 20,000 Hz the filter is open: the wave skips it and comes out
     exactly as it went in. The filter still runs underneath, so closing it
     mid-note starts it from where the wave is. Closing and opening fade
@@ -358,39 +368,63 @@ and being built.
 - **Sound profile** ([ADR 0030](adr/0030-a-sound-profile-per-song.md)):
   how a song's notes sound belongs to the song, so no setting is tuned to
   one value for every song. Its sound profile
-  (`src-tauri/src/sound_profile.rs`) holds the wave, the filter and filter
-  envelope, and unison, and the song in Compose (`compose.rs`) holds the
-  profile.
+  (`src-tauri/src/sound_profile.rs`) holds the wave, the loudness envelope,
+  the filter and filter envelope, key tracking, unison and tuning, and the
+  song in Compose (`compose.rs`) holds the profile.
   - Every change, from the dev panel or the backslash key, goes to the
     profile, which sends it on to the engine and keeps it as the engine
     sent it, with values outside their ranges brought within them. Rust's
     engine wrapper keeps no sound of its own, and the screen reads the
     sound from the profile.
-  - As the app starts, the song sends its whole profile, before the first
-    note: four messages, which arrive in order.
-  - A new song starts where a new engine does: a triangle, the filter
-    open, no filter envelope and 1 copy. It is only a starting point.
+  - As the app starts, the song sends its tempo and its whole profile,
+    before the first note: eight messages, which arrive in order.
+  - A new song starts where a new engine does: a triangle, a 5 ms attack
+    held at the full peak with a 300 ms release, the filter open, no
+    filter envelope, full key tracking, 1 copy, A4 at 440 Hz and 120 beats
+    per minute. It is only a starting point.
+  - The loudness envelope's attack, decay and release each take 1 to
+    10,000 ms; at 0 ms a stage would jump the loudness in one sample, which
+    clicks. Its sustain goes from 0 to 100% of the peak. Tuning sets A4's
+    pitch from 415 to 466 Hz, about a half step either way (further is a
+    key change), and every other note keeps its distance from A4. Both, and
+    key tracking, reach the notes started after a change, like the wave: a
+    held note keeps its own.
+  - The song keeps its tempo too, though it is not sound: `-` and `=` change
+    the song's tempo, which goes on to the engine, and the song keeps the
+    tempo the engine plays, so while the looper is busy it stays put.
+  - Some values stay the same for every song, since they are about how the
+    engine works, not how a song sounds: the 5 ms takeover gap, the 10 ms
+    volume ease, the 20 ms filter glide, the wave trims, where the copies
+    start, the 32 voices, 48 kHz, the filter's limits and the click. The
+    voice level and the soft clip become each track's volume and the
+    master limiter in step 6.
   - Play plays the open song's profile. Song files keep it from step 5,
     and so do copying a profile from another song and a profile per track.
 - **The sound's dev panel:** until their screen is designed, a dev panel
-  sets the song's unison and filter (`ui/SoundDevPanel.svelte`). In
-  Compose, a "Dev: sound" button at the right end of the tabs opens it
-  over the tape. It has two rows, so it clears
-  the keyboard even in an 800 by 600 window: unison's copies, detune and
-  spread, then the filter's cutoff and resonance, and below them the filter
-  envelope. Cutoff moves in octaves along its slider, and the stages on a
-  curve that gives short times most of it (halfway is 1250 ms). Each slider
-  sends every value as it moves, through `set_unison`, `set_filter` or
-  `set_filter_envelope`, to the song's sound profile, and its readout shows
-  Rust's answer. Nothing is saved until song files: each launch starts a
-  new song, at 1 copy, with the filter open.
-- **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
+  sets the song's sound profile (`ui/SoundDevPanel.svelte`). In Compose, a
+  "Dev: sound" button at the right end of the tabs opens it over the tape.
+  It has two pages, picked by the "Notes" and "Filter" buttons beside its
+  title, and opens on Notes. Each page has two rows, so it clears the
+  keyboard even in an 800 by 600 window. Notes: the loudness envelope's
+  attack, decay, sustain and release, then unison's copies, detune and
+  spread, and the tuning, A4 from 415 to 466 Hz. Filter: cutoff, resonance
+  and key tracking, then the filter envelope. Cutoff moves in octaves along
+  its slider, and both envelopes' stages on a curve that gives short times
+  most of it (halfway is 1250 ms). Each slider sends every value of its
+  group as it moves, through `set_loudness_envelope`, `set_unison`,
+  `set_tuning`, `set_filter`, `set_key_tracking` or `set_filter_envelope`,
+  to the song's sound profile, and its readout shows Rust's answer. Nothing
+  is saved until song files: each launch starts a new song, at 1 copy, A4
+  at 440 Hz, with the filter open.
+- **No clicks:** a new song's notes fade in over 5 ms and out over 300 ms,
+  and no stage is shorter than 1 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
   loudness were, so the sound never jumps. If the new note plays another
   wave, that wave starts at a different height. The gap between them is
   added back and shrinks to nothing over 5 ms, so the sound glides across.
   A silent voice has nothing to glide from, so it gets no gap.
-- **The beat:** 120 beats per minute to start, from 40 to 240. A beat lasts
+- **The beat:** at the song's tempo, from 40 to 240 beats per minute; a new
+  song starts at 120. A beat lasts
   a minute divided by the tempo, so 24,000 samples at 120. Each beat's start
   is worked out from the sample its tempo started on, rounded down to a
   whole sample, instead of adding up beat lengths, so the beat never drifts.
@@ -473,6 +507,15 @@ and being built.
   keeps values as the engine sent them, that every change reaches the
   engine, that sending a profile sends every part (leaving any one out
   changes the sound), and that the backslash key switches the song's wave.
+  For the loudness envelope, key tracking and tuning, they check every
+  sample of a shaped note through all four stages against the envelope's
+  math, that a held note keeps its envelope and its pitch while the next
+  note gets the new ones, how far A4's cutoff follows middle C's at 100,
+  50 and 0% key tracking, that tuning moves every note with A4, odd values,
+  Rust's ranges, and that a new engine starts where a new song does. For
+  the song's tempo, they check that `-` and `=` step by 5 and stop at 40
+  and 240, that the song keeps the tempo the engine plays while the looper
+  locks it, and that sending the song sends its tempo and sound profile.
   The key map tests check the melody keys finger by finger and each chord,
   that other keys do nothing, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
@@ -1008,7 +1051,7 @@ builds use the same colors, with no palette name shown in the app.
 
 Still to design: the Produce screen (a dev panel for now,
 [ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the sound's
-controls for unison and the filter (a dev panel in Compose for now), the
+controls (a dev panel in Compose for now), the
 look of the
 guidance outlines on the chord keys, and the tab icons (a pencil for
 Compose, faders for Produce). Compose's tape (below) is built.

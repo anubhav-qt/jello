@@ -106,6 +106,15 @@ unsafe extern "C" {
         release_ms: c_int,
     );
     fn jello_engine_set_unison(engine: *mut JelloEngine, copies: c_int, detune_cents: f32, spread: f32);
+    fn jello_engine_set_loudness_envelope(
+        engine: *mut JelloEngine,
+        attack_ms: c_int,
+        decay_ms: c_int,
+        sustain: f32,
+        release_ms: c_int,
+    );
+    fn jello_engine_set_key_tracking(engine: *mut JelloEngine, key_tracking: f32);
+    fn jello_engine_set_tuning(engine: *mut JelloEngine, a4_hz: f32);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
@@ -121,11 +130,8 @@ pub const SLOWEST_TEMPO: u32 = 40;
 pub const FASTEST_TEMPO: u32 = 240;
 
 // A new engine's tempo, the usual default in music software. The C++ engine
-// starts there too.
+// starts there too, and so does a new song (src/compose.rs).
 pub const START_TEMPO: u32 = 120;
-
-// How much slowing down or speeding up changes the tempo.
-const TEMPO_STEP: u32 = 5;
 
 // How many beats make a bar (`beats_per_bar` in engine/src/clock.h).
 pub const BEATS_PER_BAR: u32 = 4;
@@ -230,6 +236,46 @@ pub const START_UNISON: Unison = Unison {
     spread: 100,
 };
 
+// The shortest and longest any stage of the loudness envelope takes, in ms
+// (`JELLO_LOUDNESS_` in engine/include/jello_engine.h).
+pub const LOUDNESS_SHORTEST_MS: u32 = 1;
+pub const LOUDNESS_LONGEST_MS: u32 = 10000;
+
+// The loudness envelope: how a note's loudness rises when it starts, falls
+// to where it holds while the key is held, and fades out once it is let go.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoudnessEnvelope {
+    pub attack_ms: u32,
+    pub decay_ms: u32,
+    // Where it holds while the key is held, in percent of the peak.
+    pub sustain: u32,
+    pub release_ms: u32,
+}
+
+// Where the C++ engine's loudness envelope starts: a 5 ms attack, held at
+// the full peak, and a 300 ms release. A new song's sound profile starts
+// there too.
+pub const START_LOUDNESS_ENVELOPE: LoudnessEnvelope = LoudnessEnvelope {
+    attack_ms: 5,
+    decay_ms: 300,
+    sustain: 100,
+    release_ms: 300,
+};
+
+// Where the C++ engine's key tracking starts, in percent: every note's
+// cutoff follows middle C's all the way. A new song's sound profile starts
+// there too.
+pub const START_KEY_TRACKING: u32 = 100;
+
+// The lowest and highest A4 notes can be tuned to, in Hz
+// (`JELLO_TUNING_` in engine/include/jello_engine.h).
+pub const TUNING_LOWEST_HZ: f32 = 415.0;
+pub const TUNING_HIGHEST_HZ: f32 = 466.0;
+
+// Where the C++ engine's tuning starts: A4 at 440 Hz. A new song's sound
+// profile starts there too.
+pub const START_TUNING_HZ: f32 = 440.0;
+
 // `value` brought within `lowest` to `highest`. NaN, not a number at all,
 // counts as `lowest`; no slider sends it.
 fn within(value: f32, lowest: f32, highest: f32) -> f32 {
@@ -242,6 +288,12 @@ fn within(value: f32, lowest: f32, highest: f32) -> f32 {
 // A filter envelope stage's length brought within its range, as a C int.
 fn stage_ms(ms: u32) -> c_int {
     let ms = ms.min(FILTER_LONGEST_MS);
+    ms as c_int
+}
+
+// A loudness envelope stage's length brought within its range, as a C int.
+fn loudness_ms(ms: u32) -> c_int {
+    let ms = ms.clamp(LOUDNESS_SHORTEST_MS, LOUDNESS_LONGEST_MS);
     ms as c_int
 }
 
@@ -388,9 +440,9 @@ pub struct SongPlace {
     pub ms_in: u64,
 }
 
-// The engine keeps no sound of its own: the song's sound profile says which
-// wave, filter and unison the notes play, and sends them here
-// (docs/adr/0030-a-sound-profile-per-song.md).
+// The engine keeps no sound of its own: the song's sound profile says how
+// the notes sound, and sends it here
+// (docs/adr/0030-a-sound-profile-per-song.md). The song sends its tempo too.
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
@@ -927,13 +979,14 @@ impl Engine {
     // Plays the beat at `tempo` beats per minute from the next beat on. The
     // engine ignores a tempo outside SLOWEST_TEMPO to FASTEST_TEMPO, and so
     // does the tempo kept here. While the looper is busy, the engine keeps
-    // its beat, so this changes nothing.
-    pub fn set_tempo(&mut self, tempo: u32) {
+    // its beat, so this changes nothing. Returns the tempo the beat plays
+    // now, which the song keeps (src/compose.rs).
+    pub fn set_tempo(&mut self, tempo: u32) -> u32 {
         // Not sent at all, so the tempo kept here and the engine's always
         // agree. Sent anyway, it could go wrong: with Esc still on its way,
         // the engine would clear the loop first and then take the tempo.
         if self.is_looper_busy() {
-            return;
+            return self.tempo;
         }
 
         // A number too big for a C int becomes -1, which the engine ignores.
@@ -942,33 +995,16 @@ impl Engine {
         unsafe { jello_engine_set_tempo(self.raw, number) };
 
         if tempo < SLOWEST_TEMPO {
-            return;
+            return self.tempo;
         }
         if tempo > FASTEST_TEMPO {
-            return;
+            return self.tempo;
         }
         self.tempo = tempo;
+        self.tempo
     }
 
-    // Slows the beat down by 5 beats per minute, but never below
-    // SLOWEST_TEMPO.
-    pub fn slow_down(&mut self) {
-        let slower = self.tempo - TEMPO_STEP;
-        if slower >= SLOWEST_TEMPO {
-            self.set_tempo(slower);
-        }
-    }
-
-    // Speeds the beat up by 5 beats per minute, but never above
-    // FASTEST_TEMPO.
-    pub fn speed_up(&mut self) {
-        let faster = self.tempo + TEMPO_STEP;
-        if faster <= FASTEST_TEMPO {
-            self.set_tempo(faster);
-        }
-    }
-
-    // The beat's tempo, in beats per minute.
+    // The tempo the beat plays, in beats per minute.
     pub fn tempo(&self) -> u32 {
         self.tempo
     }
@@ -1023,6 +1059,46 @@ impl Engine {
         }
     }
 
+    // Sets the loudness envelope (`jello_engine_set_loudness_envelope`) for
+    // the notes started after this. Values outside its ranges are brought
+    // within them. Returns the envelope as sent.
+    pub fn set_loudness_envelope(&mut self, envelope: LoudnessEnvelope) -> LoudnessEnvelope {
+        let attack = loudness_ms(envelope.attack_ms);
+        let decay = loudness_ms(envelope.decay_ms);
+        let sustain = envelope.sustain.min(FULL_PERCENT);
+        let share = sustain as f32 / FULL_PERCENT as f32;
+        let release = loudness_ms(envelope.release_ms);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_loudness_envelope(self.raw, attack, decay, share, release) };
+        LoudnessEnvelope {
+            attack_ms: attack as u32,
+            decay_ms: decay as u32,
+            sustain,
+            release_ms: release as u32,
+        }
+    }
+
+    // Sets key tracking (`jello_engine_set_key_tracking`), in percent, for
+    // the notes started after this: how much each note's cutoff follows
+    // middle C's. Above 100 counts as 100. Returns it as sent.
+    pub fn set_key_tracking(&mut self, key_tracking: u32) -> u32 {
+        let key_tracking = key_tracking.min(FULL_PERCENT);
+        let share = key_tracking as f32 / FULL_PERCENT as f32;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_key_tracking(self.raw, share) };
+        key_tracking
+    }
+
+    // Tunes the notes started after this from A4 at `a4_hz`
+    // (`jello_engine_set_tuning`), brought within TUNING_LOWEST_HZ to
+    // TUNING_HIGHEST_HZ. Returns it as sent.
+    pub fn set_tuning(&mut self, a4_hz: f32) -> f32 {
+        let a4_hz = within(a4_hz, TUNING_LOWEST_HZ, TUNING_HIGHEST_HZ);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_tuning(self.raw, a4_hz) };
+        a4_hz
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -1068,10 +1144,12 @@ mod tests {
     // The sound the C++ engine makes. When it is changed there on purpose,
     // change it here too.
     const VOICE_LEVEL: f32 = 0.35; // `voice_level` in engine/src/voice.cpp
-    const ATTACK_MS: u32 = 5; // `attack_ms` in engine/src/envelope.cpp
-    const DECAY_MS: u32 = 300; // `decay_ms` in engine/src/envelope.cpp
-    const SUSTAIN: f32 = 1.0; // `sustain_level` in engine/src/envelope.cpp
-    const RELEASE_MS: u32 = 300; // `release_ms` in engine/src/envelope.cpp
+    // A new engine's loudness envelope (`LoudnessEnvelopeSettings` in
+    // engine/src/envelope.h, and START_LOUDNESS_ENVELOPE).
+    const ATTACK_MS: u32 = 5;
+    const DECAY_MS: u32 = 300;
+    const SUSTAIN: f32 = 1.0;
+    const RELEASE_MS: u32 = 300;
     const MAILBOX_SLOTS: usize = 1024; // `EventMailbox` in engine/src/mailbox.h
     const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
     const CLIP_START: f32 = 0.8; // `clip_start` in engine/src/conductor.cpp
@@ -2422,32 +2500,18 @@ mod tests {
     }
 
     #[test]
-    fn slowing_down_and_speeding_up_go_by_5_and_stop_at_the_ends() {
+    fn setting_the_tempo_answers_the_tempo_the_beat_plays() {
         let mut engine = Engine::new().unwrap();
-        engine.speed_up();
-        assert_eq!(engine.tempo(), 125);
+        assert_eq!(engine.set_tempo(125), 125);
 
         // The engine plays it too: a beat at 125 is 23,040 samples.
         engine.start_click();
         let wave = render_left(&mut engine, 500);
         assert_eq!(tick_starts(&wave), vec![0, 23_040]);
 
-        engine.slow_down();
-        engine.slow_down();
-        assert_eq!(engine.tempo(), 115);
-
-        // From 120 it takes 16 steps to reach 40, and then it stays there.
-        let mut engine = Engine::new().unwrap();
-        for _ in 0..20 {
-            engine.slow_down();
-        }
-        assert_eq!(engine.tempo(), SLOWEST_TEMPO);
-
-        // And 24 steps to reach 240.
-        for _ in 0..50 {
-            engine.speed_up();
-        }
-        assert_eq!(engine.tempo(), FASTEST_TEMPO);
+        // A tempo it ignores answers the one it still plays.
+        assert_eq!(engine.set_tempo(SLOWEST_TEMPO - 1), 125);
+        assert_eq!(engine.set_tempo(FASTEST_TEMPO + 1), 125);
     }
 
     // The looper (docs/adr/0021-a-looper-on-a-beat.md). Most of these tests
@@ -3235,8 +3299,7 @@ mod tests {
         // The tempo is free again, and the next press counts in afresh at
         // it: a beat at 125 is 23,040 samples, so recording starts on the
         // fifth.
-        engine.speed_up();
-        assert_eq!(engine.tempo(), 125);
+        assert_eq!(engine.set_tempo(125), 125);
         engine.press_looper();
         let wave = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
         assert_eq!(tick_starts(&wave), vec![0, 23_040, 46_080, 69_120, 92_160]);
@@ -3269,8 +3332,7 @@ mod tests {
         assert_eq!(tick_starts(&wave), vec![0, BEAT_AT_120]);
         assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
 
-        engine.speed_up();
-        assert_eq!(engine.tempo(), 125);
+        assert_eq!(engine.set_tempo(125), 125);
     }
 
     #[test]
@@ -3366,11 +3428,9 @@ mod tests {
 
         // Locked from the moment of the press, even before the engine has
         // acted on it.
-        engine.speed_up();
-        assert_eq!(engine.tempo(), START_TEMPO);
+        assert_eq!(engine.set_tempo(125), START_TEMPO);
         let count_in = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
-        engine.slow_down();
-        assert_eq!(engine.tempo(), START_TEMPO);
+        assert_eq!(engine.set_tempo(115), START_TEMPO);
 
         // Asked directly, the engine keeps its beat as well.
         // SAFETY: `raw` points to a live engine until Drop.
@@ -3381,11 +3441,9 @@ mod tests {
 
         // Esc unlocks it, once the engine has acted on it.
         engine.remove_newest_layer();
-        engine.speed_up();
-        assert_eq!(engine.tempo(), START_TEMPO);
+        assert_eq!(engine.set_tempo(125), START_TEMPO);
         render_left(&mut engine, 10);
-        engine.speed_up();
-        assert_eq!(engine.tempo(), 125);
+        assert_eq!(engine.set_tempo(125), 125);
     }
 
     // Snap to beat (docs/adr/0021-a-looper-on-a-beat.md): each time around,
@@ -3901,8 +3959,7 @@ mod tests {
         let mut engine = assert_layers_play(&looped, &live, time_around(6));
         assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
         assert!(engine.loop_layers().is_empty());
-        engine.speed_up();
-        assert_eq!(engine.tempo(), 125);
+        assert_eq!(engine.set_tempo(125), 125);
     }
 
     #[test]
@@ -5957,5 +6014,288 @@ mod tests {
         let started_sound = render_stereo(&mut started, 300);
         let sent_sound = render_stereo(&mut sent, 300);
         assert!(started_sound == sent_sound, "a new engine's unison is not where START_UNISON says");
+    }
+
+    // The loudness envelope, key tracking and tuning, each the song's own
+    // (docs/adr/0030-a-sound-profile-per-song.md). Every test above plays a
+    // new engine's: a 5 ms attack, held at the full peak, a 300 ms release,
+    // key tracking at 100% and A4 at 440 Hz.
+
+    fn loudness(attack_ms: u32, decay_ms: u32, sustain: u32, release_ms: u32) -> LoudnessEnvelope {
+        LoudnessEnvelope {
+            attack_ms,
+            decay_ms,
+            sustain,
+            release_ms,
+        }
+    }
+
+    // How loud `envelope` has a note at sample `i`, as a share of its peak,
+    // for a note started on sample 0 and let go on sample `let_go`, once it
+    // holds at its sustain. Each stage is a straight line, ending on its
+    // last sample.
+    fn envelope_share(engine: &Engine, envelope: LoudnessEnvelope, i: usize, let_go: usize) -> f64 {
+        let attack = frames_in_ms(engine, envelope.attack_ms);
+        let decay = frames_in_ms(engine, envelope.decay_ms);
+        let sustain = envelope.sustain as f64 / FULL_PERCENT as f64;
+        let release = frames_in_ms(engine, envelope.release_ms);
+
+        if i >= let_go {
+            let into_release = i + 1 - let_go;
+            if into_release >= release {
+                return 0.0;
+            }
+            return sustain * (1.0 - into_release as f64 / release as f64);
+        }
+        if i < attack {
+            return (i + 1) as f64 / attack as f64;
+        }
+        let into_decay = i + 1 - attack;
+        if into_decay < decay {
+            return 1.0 - (1.0 - sustain) * into_decay as f64 / decay as f64;
+        }
+        sustain
+    }
+
+    #[test]
+    fn a_note_follows_its_loudness_envelope_through_every_stage() {
+        // A 100 ms attack, a 200 ms decay to half the peak, held until 500
+        // ms, then a 400 ms release. Next to a note held at the full peak,
+        // every sample is exactly as loud as the envelope says, from the end
+        // of that note's own 5 ms attack on. Then it is exact silence.
+        let envelope = loudness(100, 200, 50, 400);
+        let mut shaped = Engine::new().unwrap();
+        shaped.set_loudness_envelope(envelope);
+        let mut full = Engine::new().unwrap();
+        shaped.note_on(A4, VELOCITY);
+        full.note_on(A4, VELOCITY);
+
+        let mut shaped_wave = render_left(&mut shaped, 500);
+        let mut full_wave = render_left(&mut full, 500);
+        let let_go = shaped_wave.len();
+        shaped.note_off(A4);
+        shaped_wave.extend(render_left(&mut shaped, 400));
+        full_wave.extend(render_left(&mut full, 400));
+
+        for i in frames_in_ms(&full, ATTACK_MS)..shaped_wave.len() {
+            let share = envelope_share(&shaped, envelope, i, let_go);
+            let expected = full_wave[i] as f64 * share;
+            let difference = (shaped_wave[i] as f64 - expected).abs();
+            assert!(
+                difference < 0.000001,
+                "sample {i} is {}, expected {expected}",
+                shaped_wave[i]
+            );
+        }
+        let after = render_left(&mut shaped, 100);
+        assert_eq!(peak(&after), 0.0);
+    }
+
+    #[test]
+    fn a_held_note_keeps_its_loudness_envelope_and_the_next_note_gets_the_new_one() {
+        // The release changes from 300 ms to 1 second while A4 is held. A4
+        // still fades out in 300 ms. The next A4 takes the whole second.
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        engine.set_loudness_envelope(loudness(ATTACK_MS, DECAY_MS, 100, 1000));
+        render_left(&mut engine, 100);
+        engine.note_off(A4);
+        render_left(&mut engine, RELEASE_MS);
+        let after_old_release = render_left(&mut engine, 100);
+        assert_eq!(peak(&after_old_release), 0.0, "the held note took the new release");
+
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        engine.note_off(A4);
+        render_left(&mut engine, RELEASE_MS);
+        let still_fading = render_left(&mut engine, 100);
+        assert!(peak(&still_fading) > 0.0, "the next note didn't get the new release");
+        render_left(&mut engine, 600);
+        let after_new_release = render_left(&mut engine, 100);
+        assert_eq!(peak(&after_new_release), 0.0);
+    }
+
+    // How much of A4's second harmonic, 880 Hz, held on a saw, gets through
+    // the filter with middle C's cutoff at CUTOFF_FOR_A4_AT_880 and key
+    // tracking at `key_tracking` percent.
+    fn a4_second_harmonic_through(key_tracking: u32) -> f64 {
+        let mut open = saw_engine();
+        let dry = hold(&mut open, A4, VELOCITY);
+        let mut filtered = saw_engine();
+        filtered.set_filter(filter(CUTOFF_FOR_A4_AT_880, 0));
+        filtered.set_key_tracking(key_tracking);
+        let wet = hold(&mut filtered, A4, VELOCITY);
+        tone_size(&open, &wet, 880.0) / tone_size(&open, &dry, 880.0)
+    }
+
+    #[test]
+    fn key_tracking_sets_how_far_a_note_s_cutoff_follows_middle_c() {
+        // A4 is three quarters of an octave above middle C. At 100% its
+        // cutoff is that far above middle C's, right on its second harmonic.
+        // At 50% it is half as far, and at 0% right at middle C's. Each lets
+        // the harmonic through as much as the filter's math says, give or
+        // take 1%.
+        let engine = Engine::new().unwrap();
+        for key_tracking in [100, 50, 0] {
+            let share = key_tracking as f64 / FULL_PERCENT as f64;
+            let octaves_up = 0.75 * share;
+            let cutoff_hz = CUTOFF_FOR_A4_AT_880 as f64 * octaves_up.exp2();
+            let expected = low_pass_gain(&engine, 880.0, cutoff_hz, LOWEST_Q);
+            let through = a4_second_harmonic_through(key_tracking);
+            assert!(
+                (through - expected).abs() <= expected * 0.01,
+                "at {key_tracking}% it let through {through}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn tuning_moves_every_note_with_a4() {
+        // Tuned to 432, A4 plays at 432 Hz and middle C keeps its distance
+        // below it.
+        let mut engine = Engine::new().unwrap();
+        engine.set_tuning(432.0);
+        let a4 = hold(&mut engine, A4, VELOCITY);
+        assert_pitch(&engine, &a4, 432.0);
+
+        let mut engine = Engine::new().unwrap();
+        engine.set_tuning(432.0);
+        let middle_c = hold(&mut engine, MIDDLE_C, VELOCITY);
+        assert_pitch(&engine, &middle_c, MIDDLE_C_HZ * 432.0 / A4_HZ);
+    }
+
+    #[test]
+    fn a_held_note_keeps_its_pitch_and_the_next_note_gets_the_new_tuning() {
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, ATTACK_MS + DECAY_MS);
+        engine.set_tuning(TUNING_HIGHEST_HZ);
+        let held = render_left(&mut engine, 1000);
+        assert_pitch(&engine, &held, A4_HZ);
+
+        engine.note_off(A4);
+        render_left(&mut engine, RELEASE_MS + 100);
+        let next = hold(&mut engine, A4, VELOCITY);
+        assert_pitch(&engine, &next, TUNING_HIGHEST_HZ as f64);
+    }
+
+    // A4 on a saw through the filter at 1000 Hz, with a loudness envelope,
+    // key tracking and tuning all unlike a new engine's, after `send` asks
+    // the engine for something directly. The note is let go, so every stage
+    // is heard.
+    fn shaped_a4_after(send: impl Fn(&Engine)) -> Vec<f32> {
+        let mut engine = saw_engine();
+        engine.set_filter(filter(1000.0, 0));
+        engine.set_loudness_envelope(loudness(20, 100, 50, 200));
+        engine.set_key_tracking(50);
+        engine.set_tuning(450.0);
+        send(&engine);
+
+        engine.note_on(A4, VELOCITY);
+        let mut wave = render_left(&mut engine, 300);
+        engine.note_off(A4);
+        wave.extend(render_left(&mut engine, 300));
+        wave
+    }
+
+    #[test]
+    fn odd_loudness_key_tracking_and_tuning_values_change_nothing() {
+        // Asked directly, the engine ignores values outside their ranges,
+        // and NaN. Each odd value goes to an engine of its own, so one that
+        // got through can't hide behind the next.
+        let plain = shaped_a4_after(|_| {});
+
+        let odd_envelopes = [
+            (0, 100, 0.5, 200),
+            (10001, 100, 0.5, 200),
+            (20, 0, 0.5, 200),
+            (20, 10001, 0.5, 200),
+            (20, 100, -0.1, 200),
+            (20, 100, 1.1, 200),
+            (20, 100, f32::NAN, 200),
+            (20, 100, 0.5, 0),
+            (20, 100, 0.5, 10001),
+        ];
+        for (attack, decay, sustain, release) in odd_envelopes {
+            let odd = shaped_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_loudness_envelope(engine.raw, attack, decay, sustain, release) };
+            });
+            assert!(
+                odd == plain,
+                "the envelope {attack}, {decay}, {sustain}, {release} changed the sound"
+            );
+        }
+        for key_tracking in [-0.1, 1.1, f32::NAN] {
+            let odd = shaped_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_key_tracking(engine.raw, key_tracking) };
+            });
+            assert!(odd == plain, "key tracking at {key_tracking} changed the sound");
+        }
+        for a4_hz in [414.9, 466.1, f32::NAN] {
+            let odd = shaped_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_tuning(engine.raw, a4_hz) };
+            });
+            assert!(odd == plain, "tuning to {a4_hz} changed the sound");
+        }
+    }
+
+    #[test]
+    fn rust_brings_loudness_key_tracking_and_tuning_within_their_ranges() {
+        // Every value out of range comes back at its edge.
+        let mut engine = Engine::new().unwrap();
+        let sent = engine.set_loudness_envelope(loudness(0, 20000, 150, 0));
+        let shortest = LOUDNESS_SHORTEST_MS;
+        let longest = LOUDNESS_LONGEST_MS;
+        assert_eq!(sent, loudness(shortest, longest, FULL_PERCENT, shortest));
+        let sent = engine.set_loudness_envelope(loudness(20000, 0, 50, 20000));
+        assert_eq!(sent, loudness(longest, shortest, 50, longest));
+        assert_eq!(engine.set_key_tracking(150), FULL_PERCENT);
+        assert_eq!(engine.set_tuning(400.0), TUNING_LOWEST_HZ);
+        assert_eq!(engine.set_tuning(500.0), TUNING_HIGHEST_HZ);
+        assert_eq!(engine.set_tuning(f32::NAN), TUNING_LOWEST_HZ);
+
+        // The engine takes the edges. A 0 ms attack is sent as 1 ms, which
+        // starts the note faster than a new engine's 5 ms.
+        let mut fastest = Engine::new().unwrap();
+        fastest.set_loudness_envelope(loudness(0, DECAY_MS, 100, RELEASE_MS));
+        let mut plain = Engine::new().unwrap();
+        fastest.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let fastest_start = render_left(&mut fastest, ATTACK_MS);
+        let plain_start = render_left(&mut plain, ATTACK_MS);
+        assert!(peak(&fastest_start) > peak(&plain_start), "the engine refused the shortest attack");
+
+        // And a tuning below the lowest plays as the lowest.
+        let mut below = Engine::new().unwrap();
+        below.set_tuning(400.0);
+        let wave = hold(&mut below, A4, VELOCITY);
+        assert_pitch(&below, &wave, TUNING_LOWEST_HZ as f64);
+    }
+
+    #[test]
+    fn a_new_engine_starts_with_a_new_song_s_loudness_key_tracking_and_tuning() {
+        // As the START_ values say, so a new song's sound profile, sent as
+        // the app starts, changes nothing.
+        assert_eq!(START_LOUDNESS_ENVELOPE, loudness(ATTACK_MS, DECAY_MS, 100, RELEASE_MS));
+        assert_eq!(START_KEY_TRACKING, 100);
+        assert_eq!(START_TUNING_HZ, 440.0);
+
+        let mut started = saw_engine();
+        let mut sent = saw_engine();
+        for engine in [&mut started, &mut sent] {
+            engine.set_filter(filter(1000.0, 0));
+        }
+        sent.set_loudness_envelope(START_LOUDNESS_ENVELOPE);
+        sent.set_key_tracking(START_KEY_TRACKING);
+        sent.set_tuning(START_TUNING_HZ);
+        started.note_on(A4, VELOCITY);
+        sent.note_on(A4, VELOCITY);
+        let started_wave = render_left(&mut started, 300);
+        let sent_wave = render_left(&mut sent, 300);
+        assert!(started_wave == sent_wave, "a new engine does not start where the START_ values say");
     }
 }

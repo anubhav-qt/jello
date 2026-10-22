@@ -13,9 +13,10 @@ constexpr float voice_level = 0.35f;
 // starting value, to be tuned by ear.
 constexpr int volume_ease_ms = 10;
 
-// How long a gap takes to shrink away, the same as the envelope's attack.
-// Short enough that the new wave takes over at once, long enough not to
-// click. A starting value, to be tuned by ear in slice 5.
+// How long a gap takes to shrink away, the same as a new song's loudness
+// attack. Short enough that the new wave takes over at once, long enough not
+// to click. Part of how a voice takes over without a click, not of how a
+// song sounds, so it stays the same for every song.
 constexpr int gap_ms = 5;
 
 // How far apart the copies start in their cycles when the engine starts:
@@ -27,11 +28,11 @@ constexpr double copy_start_step = 0.6180339887498949;
 // How many cents make a half step, and so 12 times as many an octave.
 constexpr double cents_per_octave = 1200.0;
 
-// A note's pitch in Hz. Note 69 is A4 at 440 Hz. Every 12 notes is an octave,
-// and each octave up doubles the pitch.
-double note_to_frequency(int note) {
+// A note's pitch in Hz, with A4, note 69, at `a4_hz`. Every 12 notes is an
+// octave, and each octave up doubles the pitch.
+double note_to_frequency(int note, double a4_hz) {
     double octaves_from_a4 = (note - 69) / 12.0;
-    return 440.0 * std::pow(2.0, octaves_from_a4);
+    return a4_hz * std::pow(2.0, octaves_from_a4);
 }
 
 // Where copy `index` of `count` sits among them, from -1 (the lowest and
@@ -67,9 +68,8 @@ Voice::Voice(int sample_rate)
     }
 }
 
-void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer,
-                  float volume, const FilterTargets& filter, const FilterEnvelopeSettings& envelope,
-                  const UnisonSettings& unison) {
+void Voice::start(int note, int velocity, std::uint64_t press_number, Source source, int layer, float volume,
+                  const FilterTargets& filter, const NoteSound& sound) {
     // Where the sound was heading next on each side: the old wave, plus what
     // is left of any earlier gap.
     bool was_sounding = !is_free();
@@ -84,10 +84,14 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave,
     press_number_ = press_number;
     source_ = source;
     layer_ = layer;
-    wave_ = wave;
-    set_copies(note, unison);
+    wave_ = sound.wave;
+    set_copies(note_to_frequency(note, sound.a4_hz), sound.unison);
+
+    // The note's own loudness envelope, kept until it ends.
+    const LoudnessEnvelopeSettings& loudness = sound.loudness_envelope;
+    envelope_.set_stages(loudness.attack_ms, loudness.decay_ms, loudness.sustain, loudness.release_ms);
     envelope_.start(velocity_to_peak(velocity));
-    filter_.start(note, !was_sounding, filter, envelope);
+    filter_.start(note, !was_sounding, filter, sound.filter_envelope, sound.key_tracking);
 
     // A new wave can be at a different height here. The gap makes up the
     // difference, so the sound carries on from where it was, then shrinks
@@ -193,11 +197,10 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
     }
 }
 
-void Voice::set_copies(int note, const UnisonSettings& unison) {
+void Voice::set_copies(double hz, const UnisonSettings& unison) {
     copy_count_ = unison.copies;
     copy_scale_ = 1.0 / std::sqrt(static_cast<double>(unison.copies));
 
-    double hz = note_to_frequency(note);
     for (int i = 0; i < copy_count_; i++) {
         Copy& copy = copies_[i];
         double place = place_among(i, copy_count_);

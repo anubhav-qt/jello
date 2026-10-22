@@ -83,14 +83,13 @@ void Synth::start_note(int note, int velocity, Source source, int layer) {
     if (source == Source::loop) {
         volume = layer_volumes_[layer];
     }
-    voice->start(note, velocity, press_count_, wave_, source, layer, volume, filter_targets_, filter_envelope_,
-                 unison_);
+    voice->start(note, velocity, press_count_, source, layer, volume, filter_targets_, note_sound_);
 }
 
 void Synth::set_wave(Wave wave) {
     // Only notes started from here on play it. Each voice keeps the wave
     // its note started with.
-    wave_ = wave;
+    note_sound_.wave = wave;
 }
 
 void Synth::set_filter(const FilterSettings& settings) {
@@ -98,13 +97,25 @@ void Synth::set_filter(const FilterSettings& settings) {
 }
 
 void Synth::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
-    filter_envelope_ = envelope;
+    note_sound_.filter_envelope = envelope;
 }
 
 void Synth::set_unison(const UnisonSettings& unison) {
     // Like the wave, only notes started from here on hear it. Each voice
     // keeps the copies its note started with.
-    unison_ = unison;
+    note_sound_.unison = unison;
+}
+
+void Synth::set_loudness_envelope(const LoudnessEnvelopeSettings& envelope) {
+    note_sound_.loudness_envelope = envelope;
+}
+
+void Synth::set_key_tracking(float key_tracking) {
+    note_sound_.key_tracking = key_tracking;
+}
+
+void Synth::set_tuning(float a4_hz) {
+    note_sound_.a4_hz = a4_hz;
 }
 
 void Synth::render(float* out, int frames) {

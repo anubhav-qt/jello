@@ -10,7 +10,8 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
-    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, Unison,
+    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, LoudnessEnvelope,
+    Unison,
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
@@ -25,18 +26,42 @@ const TEST_VELOCITY: u8 = 100;
 const HOLD_MS: u32 = 2000;
 const TAIL_MS: u32 = 400;
 
-// What the screen shows about the sound: the wave new notes play, the beat's
+// What the screen shows about the sound: the wave new notes play, the song's
 // tempo in beats per minute, whether loops snap to the beat, what the looper
-// is doing, where the filter is and unison's copies. The wave, the filter and
-// unison come from the song's sound profile.
+// is doing, the loudness envelope, where the filter is, unison's copies and
+// the tuning. Everything but the looper and snap comes from the song: its
+// tempo and its sound profile.
 #[derive(Serialize)]
 pub struct SoundView {
     wave: &'static str,
     tempo: u32,
     snap: bool,
     looper: LooperView,
+    loudness: LoudnessView,
     filter: FilterView,
     unison: UnisonView,
+    // A4's pitch in Hz, which every other note is tuned from.
+    tuning_hz: f32,
+}
+
+// The loudness envelope new notes start with.
+#[derive(Serialize)]
+pub struct LoudnessView {
+    attack_ms: u32,
+    decay_ms: u32,
+    // In percent of the peak.
+    sustain: u32,
+    release_ms: u32,
+}
+
+fn loudness_view_of(sound_profile: &SoundProfile) -> LoudnessView {
+    let envelope = sound_profile.loudness_envelope();
+    LoudnessView {
+        attack_ms: envelope.attack_ms,
+        decay_ms: envelope.decay_ms,
+        sustain: envelope.sustain,
+        release_ms: envelope.release_ms,
+    }
 }
 
 // The copies new notes are played by (docs/adr/0029-unison.md).
@@ -74,6 +99,8 @@ pub struct FilterView {
     // In percent of the amount.
     sustain: u32,
     release_ms: u32,
+    // How much each new note's cutoff follows middle C's, in percent.
+    key_tracking: u32,
 }
 
 fn filter_view_of(sound_profile: &SoundProfile) -> FilterView {
@@ -87,6 +114,7 @@ fn filter_view_of(sound_profile: &SoundProfile) -> FilterView {
         decay_ms: envelope.decay_ms,
         sustain: envelope.sustain,
         release_ms: envelope.release_ms,
+        key_tracking: sound_profile.key_tracking(),
     }
 }
 
@@ -143,12 +171,15 @@ pub struct LoopNoteView {
     end: Option<f64>,
 }
 
-// What the screen shows about the sound at `now`, with the song's
-// `sound_profile`. Esc's half second may be up, so that comes first.
-fn sound_view_of(engine: &mut Engine, sound_profile: &SoundProfile, now: Instant) -> SoundView {
+// What the screen shows about the sound at `now`, with the song in
+// `composer`. Esc's half second may be up, so that comes first.
+fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> SoundView {
     engine.finish_esc_wait(now);
 
+    let sound_profile = composer.sound_profile();
     let wave = sound_profile.wave();
+    // The beat plays at the song's tempo. The loop's boxes are placed by the
+    // beat's own, which is where the engine played the loop.
     let tempo = engine.tempo();
     let sample_rate = engine.sample_rate();
     let status = engine.looper_status();
@@ -169,11 +200,13 @@ fn sound_view_of(engine: &mut Engine, sound_profile: &SoundProfile, now: Instant
     looper.message = engine.take_looper_message();
     SoundView {
         wave: wave.name(),
-        tempo,
+        tempo: composer.tempo(),
         snap: engine.snap(),
         looper,
+        loudness: loudness_view_of(sound_profile),
         filter: filter_view_of(sound_profile),
         unison: unison_view_of(sound_profile),
+        tuning_hz: sound_profile.tuning_hz(),
     }
 }
 
@@ -313,7 +346,7 @@ pub fn release_all_notes(
 // engine's mailbox, so switches would pile up there.
 //
 // The commands that answer with the sound lock Compose before the engine,
-// since the song holds its sound profile.
+// since the song holds its tempo and sound profile.
 #[tauri::command]
 pub fn switch_wave(
     composer: State<'_, Mutex<Composer>>,
@@ -323,9 +356,8 @@ pub fn switch_wave(
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    let sound_profile = composer.sound_profile_mut();
-    sound_profile.switch_wave(&mut engine);
-    Ok(sound_view_of(&mut engine, sound_profile, now))
+    composer.sound_profile_mut().switch_wave(&mut engine);
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Turns "snap to beat" off if it is on, and on if it is off, and returns
@@ -341,7 +373,7 @@ pub fn switch_snap(
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.switch_snap();
-    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Sets layer `layer`'s volume, counted from 1, to `volume` percent, from 0
@@ -360,7 +392,7 @@ pub fn set_layer_volume(
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.set_layer_volume(layer, volume)?;
-    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Moves the song's filter: middle C's cutoff to `cutoff_hz`, where 20000 is
@@ -381,9 +413,9 @@ pub fn set_filter(
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    let sound_profile = composer.sound_profile_mut();
-    sound_profile.set_filter(&mut engine, Filter { cutoff_hz, resonance });
-    Ok(sound_view_of(&mut engine, sound_profile, now))
+    let filter = Filter { cutoff_hz, resonance };
+    composer.sound_profile_mut().set_filter(&mut engine, filter);
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Sets the song's filter envelope for notes started from now on: how far it
@@ -412,9 +444,8 @@ pub fn set_filter_envelope(
         sustain,
         release_ms,
     };
-    let sound_profile = composer.sound_profile_mut();
-    sound_profile.set_filter_envelope(&mut engine, envelope);
-    Ok(sound_view_of(&mut engine, sound_profile, now))
+    composer.sound_profile_mut().set_filter_envelope(&mut engine, envelope);
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Sets the song's unison for notes started from now on
@@ -440,9 +471,74 @@ pub fn set_unison(
         detune_cents,
         spread,
     };
-    let sound_profile = composer.sound_profile_mut();
-    sound_profile.set_unison(&mut engine, unison);
-    Ok(sound_view_of(&mut engine, sound_profile, now))
+    composer.sound_profile_mut().set_unison(&mut engine, unison);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets the song's loudness envelope for notes started from now on: how long
+// its attack, decay and release take in ms, from 1 to 10000, and its
+// sustain in percent of the peak. Values outside their ranges are brought
+// within them. Returns what the screen shows about the sound. The sound's
+// dev panel in Compose sends it, as `attackMs`, `decayMs` and `releaseMs`.
+// Like `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_loudness_envelope(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    attack_ms: u32,
+    decay_ms: u32,
+    sustain: u32,
+    release_ms: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let envelope = LoudnessEnvelope {
+        attack_ms,
+        decay_ms,
+        sustain,
+        release_ms,
+    };
+    composer.sound_profile_mut().set_loudness_envelope(&mut engine, envelope);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets how much the cutoff of the song's notes started from now on follows
+// middle C's, in percent: at 100 every note is equally bright, at 0 higher
+// notes sound darker. Above 100 counts as 100. Returns what the screen shows
+// about the sound. The sound's dev panel in Compose sends it, as
+// `keyTracking`. Like `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_key_tracking(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    key_tracking: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_key_tracking(&mut engine, key_tracking);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Tunes the song's notes started from now on from A4 at `a4_hz`, from 415 to
+// 466, brought within that range. Returns what the screen shows about the
+// sound. The sound's dev panel in Compose sends it, as `a4Hz`. Like
+// `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_tuning(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    a4_hz: f32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_tuning(&mut engine, a4_hz);
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Does what a laptop key does when pressed: plays its note or chord,
@@ -469,17 +565,17 @@ pub fn press_key(
     // A key that picks a layer for Esc plays nothing. Esc only waits once a
     // loop has layers, so the speakers are already open.
     if picks_layer(&mut engine, &key, now) {
-        return Ok(sound_view_of(&mut engine, composer.sound_profile(), now));
+        return Ok(sound_view_of(&mut engine, &composer, now));
     }
 
     // Like `switch_wave`, every key that does something opens the speakers
     // first: before they open, nothing empties the engine's mailbox.
     if let Some(action) = key_down(&mut key_map, &mut composer, &key, now) {
         engine.start_audio()?;
-        take_key_action(&mut engine, composer.sound_profile_mut(), action, now);
+        take_key_action(&mut engine, &mut composer, action, now);
     }
 
-    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
+    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // While Esc waits, 1 to 8 pick a layer for it to remove instead of playing
@@ -495,11 +591,11 @@ fn picks_layer(engine: &mut Engine, key: &str, now: Instant) -> bool {
     engine.pick_layer(number, now)
 }
 
-// What a key pressed at `now` does to the engine. The wave key changes the
-// song's `sound_profile`, which passes the change on to the engine. Kept
-// apart from opening the speakers, so the tests can check every key on an
-// engine without them.
-fn take_key_action(engine: &mut Engine, sound_profile: &mut SoundProfile, action: KeyAction, now: Instant) {
+// What a key pressed at `now` does to the engine. The wave key and the tempo
+// keys change the song in `composer`, which passes the change on to the
+// engine. Kept apart from opening the speakers, so the tests can check every
+// key on an engine without them.
+fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyAction, now: Instant) {
     match action {
         KeyAction::PlayNote(note) => {
             engine.note_on(note, LAPTOP_VELOCITY);
@@ -510,7 +606,7 @@ fn take_key_action(engine: &mut Engine, sound_profile: &mut SoundProfile, action
             }
         }
         KeyAction::SwitchWave => {
-            sound_profile.switch_wave(engine);
+            composer.sound_profile_mut().switch_wave(engine);
         }
         KeyAction::PressLooper => {
             engine.press_looper();
@@ -519,10 +615,10 @@ fn take_key_action(engine: &mut Engine, sound_profile: &mut SoundProfile, action
             engine.press_esc(now);
         }
         KeyAction::SlowDown => {
-            engine.slow_down();
+            composer.slow_down(engine);
         }
         KeyAction::SpeedUp => {
-            engine.speed_up();
+            composer.speed_up(engine);
         }
     }
 }
@@ -595,7 +691,7 @@ pub fn sound_view(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<
     let now = Instant::now();
     let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
-    sound_view_of(&mut engine, composer.sound_profile(), now)
+    sound_view_of(&mut engine, &composer, now)
 }
 
 // What every laptop key does, so the UI can draw each key's note or chord on
@@ -785,16 +881,15 @@ mod tests {
         key_map.press(key).unwrap()
     }
 
-    // Takes key `key`'s action now, on `engine` and the song's
-    // `sound_profile`.
-    fn press(engine: &mut Engine, sound_profile: &mut SoundProfile, key: &str) {
-        take_key_action(engine, sound_profile, action_of(key), Instant::now());
+    // Takes key `key`'s action now, on `engine` and the song in `composer`.
+    fn press(engine: &mut Engine, composer: &mut Composer, key: &str) {
+        take_key_action(engine, composer, action_of(key), Instant::now());
     }
 
-    // What the screen shows about the sound at `now`, with a new song's
-    // sound profile, for the tests that look only at the looper.
+    // What the screen shows about the sound at `now`, with a new song, for
+    // the tests that look only at the looper.
     fn view_of(engine: &mut Engine, now: Instant) -> SoundView {
-        sound_view_of(engine, &SoundProfile::new(), now)
+        sound_view_of(engine, &Composer::new(), now)
     }
 
     // Renders `frames` frames and returns the loudest sample.
@@ -813,11 +908,11 @@ mod tests {
     fn note_and_chord_keys_play() {
         // M plays middle C, and C plays the C chord, whose three notes
         // together are louder than one.
-        let mut profile = SoundProfile::new();
+        let mut composer = Composer::new();
         let mut note = Engine::new().unwrap();
-        press(&mut note, &mut profile, "KeyM");
+        press(&mut note, &mut composer, "KeyM");
         let mut chord = Engine::new().unwrap();
-        press(&mut chord, &mut profile, "KeyC");
+        press(&mut chord, &mut composer, "KeyC");
 
         let note_loudness = loudest(&mut note, 4800);
         assert!(note_loudness > 0.0);
@@ -829,15 +924,15 @@ mod tests {
         // A new song starts on the triangle, so the switch lands on the
         // square, and the engine plays it.
         let mut engine = Engine::new().unwrap();
-        let mut profile = SoundProfile::new();
-        press(&mut engine, &mut profile, "Backslash");
-        assert_eq!(profile.wave(), Wave::Square);
+        let mut composer = Composer::new();
+        press(&mut engine, &mut composer, "Backslash");
+        assert_eq!(composer.sound_profile().wave(), Wave::Square);
 
         let mut square = Engine::new().unwrap();
         square.set_wave(Wave::Square);
-        let mut square_profile = SoundProfile::new();
-        press(&mut engine, &mut profile, "KeyM");
-        press(&mut square, &mut square_profile, "KeyM");
+        let mut square_composer = Composer::new();
+        press(&mut engine, &mut composer, "KeyM");
+        press(&mut square, &mut square_composer, "KeyM");
         let switched = engine.render(4800);
         let expected = square.render(4800);
         assert!(switched == expected, "the engine does not play the song's new wave");
@@ -848,29 +943,32 @@ mod tests {
         // During the count-in there is only the one layer, so Esc has
         // nothing to wait for.
         let mut engine = Engine::new().unwrap();
-        let mut profile = SoundProfile::new();
-        press(&mut engine, &mut profile, "ShiftRight");
+        let mut composer = Composer::new();
+        press(&mut engine, &mut composer, "ShiftRight");
         engine.render(10);
         assert_eq!(engine.looper_status().state, LooperState::CountingIn);
 
-        press(&mut engine, &mut profile, "Escape");
+        press(&mut engine, &mut composer, "Escape");
         engine.render(10);
         assert_eq!(engine.looper_status().state, LooperState::Idle);
     }
 
     #[test]
-    fn minus_and_equal_change_the_tempo_until_the_looper_starts() {
+    fn minus_and_equal_change_the_song_s_tempo_until_the_looper_starts() {
+        // The engine plays each new tempo too.
         let mut engine = Engine::new().unwrap();
-        let mut profile = SoundProfile::new();
-        press(&mut engine, &mut profile, "Equal");
+        let mut composer = Composer::new();
+        press(&mut engine, &mut composer, "Equal");
+        assert_eq!(composer.tempo(), 125);
         assert_eq!(engine.tempo(), 125);
-        press(&mut engine, &mut profile, "Minus");
-        press(&mut engine, &mut profile, "Minus");
+        press(&mut engine, &mut composer, "Minus");
+        press(&mut engine, &mut composer, "Minus");
+        assert_eq!(composer.tempo(), 115);
         assert_eq!(engine.tempo(), 115);
 
-        press(&mut engine, &mut profile, "ShiftRight");
-        press(&mut engine, &mut profile, "Equal");
-        assert_eq!(engine.tempo(), 115);
+        press(&mut engine, &mut composer, "ShiftRight");
+        press(&mut engine, &mut composer, "Equal");
+        assert_eq!(composer.tempo(), 115);
     }
 
     #[test]
@@ -878,12 +976,12 @@ mod tests {
         // ui/sound.ts reads these names, so renaming them here would leave
         // the wave, beat and looper keys blank.
         let mut engine = Engine::new().unwrap();
-        let mut profile = SoundProfile::new();
-        engine.speed_up();
+        let mut composer = Composer::new();
+        composer.speed_up(&mut engine);
         engine.press_looper();
         engine.render(10);
 
-        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
         assert_eq!(json["wave"], "triangle");
         assert_eq!(json["tempo"], 125);
         assert_eq!(json["snap"], true);
@@ -897,6 +995,7 @@ mod tests {
 
         // And the song's filter, by the names the UI will read. Every value
         // is different, so two names mixed up would show.
+        let profile = composer.sound_profile_mut();
         profile.set_filter(
             &mut engine,
             Filter {
@@ -914,7 +1013,8 @@ mod tests {
                 release_ms: 400,
             },
         );
-        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
+        profile.set_key_tracking(&mut engine, 30);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
         assert_eq!(json["filter"]["cutoff_hz"], 1000.0);
         assert_eq!(json["filter"]["resonance"], 40);
         assert_eq!(json["filter"]["amount"], 2.5);
@@ -922,8 +1022,11 @@ mod tests {
         assert_eq!(json["filter"]["decay_ms"], 200);
         assert_eq!(json["filter"]["sustain"], 60);
         assert_eq!(json["filter"]["release_ms"], 400);
+        assert_eq!(json["filter"]["key_tracking"], 30);
 
-        // And the song's unison and wave, the same way.
+        // And the song's unison, wave, loudness envelope and tuning, the
+        // same way.
+        let profile = composer.sound_profile_mut();
         profile.set_unison(
             &mut engine,
             Unison {
@@ -933,11 +1036,26 @@ mod tests {
             },
         );
         profile.switch_wave(&mut engine);
-        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
+        profile.set_loudness_envelope(
+            &mut engine,
+            LoudnessEnvelope {
+                attack_ms: 15,
+                decay_ms: 250,
+                sustain: 80,
+                release_ms: 500,
+            },
+        );
+        profile.set_tuning(&mut engine, 432.0);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
         assert_eq!(json["wave"], "square");
         assert_eq!(json["unison"]["copies"], 5);
         assert_eq!(json["unison"]["detune_cents"], 30);
         assert_eq!(json["unison"]["spread"], 70);
+        assert_eq!(json["loudness"]["attack_ms"], 15);
+        assert_eq!(json["loudness"]["decay_ms"], 250);
+        assert_eq!(json["loudness"]["sustain"], 80);
+        assert_eq!(json["loudness"]["release_ms"], 500);
+        assert_eq!(json["tuning_hz"], 432.0);
 
         // And the loop's layers, by the names ui/sound.ts reads.
         let layers = [layer_of(&[LoopNote {
@@ -1215,8 +1333,8 @@ mod tests {
         let mut engine = engine_with_layers(3);
         engine.set_layer_volume(1, 30).unwrap();
         let esc = Instant::now();
-        let mut profile = SoundProfile::new();
-        take_key_action(&mut engine, &mut profile, KeyAction::RemoveLayer, esc);
+        let mut composer = Composer::new();
+        take_key_action(&mut engine, &mut composer, KeyAction::RemoveLayer, esc);
 
         // Waiting: the screen shows which layer will go, and nothing has.
         let view = view_of(&mut engine, esc + Duration::from_millis(100));

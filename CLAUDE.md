@@ -23,7 +23,7 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
 - Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
-  Step 4: filter (0028), unison (0029), each in a song's sound profile (0030).
+  Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout
@@ -79,6 +79,6 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Update this file whenever code, docs or ADRs change something a new session
   needs to know: status, layout, commands, rules.
 - Keep this file under about 80 lines; details go in `docs/design.md` or ADRs.
-- Every significant decision gets an ADR in `docs/adr/`: a short brief of a
-  few lines. Small decisions are just todos. Never rewrite an accepted ADR;
-  write a new one that supersedes it.
+- Only a genuinely big change gets an ADR in `docs/adr/`, a short brief of a
+  few lines. Extending a decision goes in `docs/design.md`; small ones are
+  todos. Never rewrite an accepted ADR; supersede it (Status line or new ADR).

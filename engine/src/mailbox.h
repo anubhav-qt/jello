@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "envelope.h"
 #include "filter.h"
 #include "song_player.h"
 #include "unison.h"
@@ -29,6 +30,9 @@ enum class EventType {
     set_filter,
     set_filter_envelope,
     set_unison,
+    set_loudness_envelope,
+    set_key_tracking,
+    set_tuning,
 };
 
 // One message for the audio thread.
@@ -67,6 +71,13 @@ struct Event {
     // Unison's controls; only for set_unison. The other messages can leave
     // them out too.
     UnisonSettings unison{};
+
+    // The loudness envelope; only for set_loudness_envelope. The key
+    // tracking, from 0 to 1; only for set_key_tracking. And A4's pitch in
+    // Hz; only for set_tuning. The other messages can leave them out too.
+    LoudnessEnvelopeSettings loudness_envelope{};
+    float key_tracking = 1.0f;
+    float a4_hz = 440.0f;
 };
 
 // Carries messages from one thread to another without locks

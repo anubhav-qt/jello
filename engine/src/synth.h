@@ -64,6 +64,19 @@ public:
     // at 1 copy, which is off.
     void set_unison(const UnisonSettings& unison);
 
+    // Notes started after this use `envelope` as their loudness envelope.
+    // Notes started before keep theirs.
+    void set_loudness_envelope(const LoudnessEnvelopeSettings& envelope);
+
+    // Notes started after this have their cutoff follow middle C's by
+    // `key_tracking` (NoteSound::key_tracking). Notes started before keep
+    // theirs. It starts at 1.
+    void set_key_tracking(float key_tracking);
+
+    // Notes started after this are tuned from A4 at `a4_hz`. Notes started
+    // before keep their pitch. It starts at 440.
+    void set_tuning(float a4_hz);
+
     // Adds every voice to `frames` frames of stereo (left, right, left,
     // ...). It adds instead of overwriting, so the conductor can render a
     // chunk in pieces and put the click in the same buffer. Many voices can
@@ -99,16 +112,12 @@ private:
     // thread never allocates.
     std::vector<Voice> voices_;
 
-    // The wave new notes play. Jello starts on triangle.
-    Wave wave_ = Wave::triangle;
+    // How new notes sound: their wave, envelopes, key tracking, copies and
+    // tuning. It starts where a new song does.
+    NoteSound note_sound_{};
 
-    // Where every voice's filter glides to, and the filter envelope new notes
-    // start with.
+    // Where every voice's filter glides to.
     FilterTargets filter_targets_ = filter_targets_of(FilterSettings{});
-    FilterEnvelopeSettings filter_envelope_{};
-
-    // The copies new notes are played by.
-    UnisonSettings unison_{};
 
     // Each layer's volume, by its slot.
     std::array<float, layer_count> layer_volumes_{};

@@ -1,6 +1,6 @@
 # 0030: A sound profile per song
 
-- Status: Accepted
+- Status: Accepted; the profile also holds the loudness envelope, key tracking and tuning, and the song its tempo (design.md)
 - Date: 2026-10-22
 
 Sound belongs to the song, not the app. Every song has its own sound

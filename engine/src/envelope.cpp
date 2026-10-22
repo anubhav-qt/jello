@@ -2,16 +2,6 @@
 
 namespace {
 
-// The loudness envelope's stages: every voice shares these, all checked by
-// ear in slice 5. The attack made no audible difference between 2 and 20 ms,
-// so it stays at 5. With the sustain at the full peak, a held note never
-// dips, so the decay has nothing to do for now. It stays for sounds that
-// will want a dip later.
-constexpr int attack_ms = 5;
-constexpr int decay_ms = 300;
-constexpr double sustain_level = 1.0;  // the full peak
-constexpr int release_ms = 300;
-
 // At least one sample, so even a 0 ms stage still ends.
 int ms_to_samples(int ms, int sample_rate) {
     int samples = sample_rate * ms / 1000;
@@ -23,12 +13,11 @@ int ms_to_samples(int ms, int sample_rate) {
 
 }  // namespace
 
-Envelope::Envelope(int sample_rate)
-    : sample_rate_(sample_rate),
-      attack_samples_(ms_to_samples(attack_ms, sample_rate)),
-      decay_samples_(ms_to_samples(decay_ms, sample_rate)),
-      sustain_(sustain_level),
-      release_samples_(ms_to_samples(release_ms, sample_rate)) {}
+Envelope::Envelope(int sample_rate) : sample_rate_(sample_rate) {
+    // A new song's loudness envelope, until a note sets its own.
+    LoudnessEnvelopeSettings start;
+    set_stages(start.attack_ms, start.decay_ms, start.sustain, start.release_ms);
+}
 
 void Envelope::set_stages(int attack_ms, int decay_ms, double sustain, int release_ms) {
     attack_samples_ = ms_to_samples(attack_ms, sample_rate_);

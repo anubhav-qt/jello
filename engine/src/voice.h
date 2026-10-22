@@ -20,6 +20,30 @@ enum class Source {
     song,
 };
 
+// The lowest and highest A4 a song can be tuned to, in Hz: a half step below
+// and above 440, about. Further than that is a change of key.
+constexpr float tuning_lowest_hz = 415.0f;
+constexpr float tuning_highest_hz = 466.0f;
+
+// How a note sounds, all of which it starts with and keeps until it ends:
+// changing any of it changes the notes started after. Each part is the
+// song's own (docs/adr/0030-a-sound-profile-per-song.md), and a new song
+// starts with these.
+struct NoteSound {
+    Wave wave = Wave::triangle;
+    LoudnessEnvelopeSettings loudness_envelope{};
+    FilterEnvelopeSettings filter_envelope{};
+    // How much the filter's cutoff follows the note, from 0 to 1. At 1, it
+    // moves an octave up for each octave the note is above middle C, so
+    // every note is equally bright. At 0, every note has middle C's cutoff,
+    // so higher notes sound darker.
+    float key_tracking = 1.0f;
+    UnisonSettings unison{};
+    // A4's pitch in Hz, from tuning_lowest_hz to tuning_highest_hz. Every
+    // other note is tuned from it.
+    float a4_hz = 440.0f;
+};
+
 // Plays one note: a wave at the note's pitch, played by one or more copies
 // (docs/adr/0029-unison.md), through its own low-pass filter
 // (docs/adr/0028-a-low-pass-filter.md), shaped by its own envelope
@@ -30,18 +54,17 @@ public:
     explicit Voice(int sample_rate);
 
     // Starts `note` (0 to 127, middle C is 60) at `velocity` (1 to 127),
-    // playing `wave`, for `source`. A loop's note also says its `layer`, the
-    // slot the looper gave its layer, 0 to 7; every other note says 0.
-    // `press_number` says how old the note is: a smaller number was pressed
-    // earlier. A silent voice starts at `volume`, from 0 to 1. If the voice is
-    // still sounding, it is taken over without a click, even when `wave` is a
-    // different wave, and its volume eases to the new one as it renders.
-    // Its filter starts at `filter` and its filter envelope is `envelope`;
-    // one still sounding keeps its filter's memory and glides on. Its copies
-    // are tuned and placed by `unison`; each one carries on from where it
-    // was in its cycle.
-    void start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer, float volume,
-               const FilterTargets& filter, const FilterEnvelopeSettings& envelope, const UnisonSettings& unison);
+    // sounding as `sound` says, for `source`. A loop's note also says its
+    // `layer`, the slot the looper gave its layer, 0 to 7; every other note
+    // says 0. `press_number` says how old the note is: a smaller number was
+    // pressed earlier. A silent voice starts at `volume`, from 0 to 1. If the
+    // voice is still sounding, it is taken over without a click, even when
+    // the wave is a different one, and its volume eases to the new one as it
+    // renders. Its filter starts at `filter`; one still sounding keeps its
+    // filter's memory and glides on. Its copies each carry on from where
+    // they were in their cycles.
+    void start(int note, int velocity, std::uint64_t press_number, Source source, int layer, float volume,
+               const FilterTargets& filter, const NoteSound& sound);
 
     // Starts the fade to silence.
     void release();
@@ -84,9 +107,9 @@ private:
         double right = 1.0;
     };
 
-    // Tunes and places the copies for `note` and `unison`. Their phases stay
-    // where they are.
-    void set_copies(int note, const UnisonSettings& unison);
+    // Tunes and places the copies for a note at `hz`, by `unison`. Their
+    // phases stay where they are.
+    void set_copies(double hz, const UnisonSettings& unison);
 
     // The copies' heights at their current phases, added up on each side,
     // trimmed so every wave is equally loud.

@@ -17,7 +17,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0006](0006-macos-and-windows.md) | macOS and Windows from day one | Accepted |
 | [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
-| [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted |
+| [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted; fixed envelope superseded by 0030 |
 | [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted; colors superseded by 0014 |
 | [0011](0011-svelte-5-for-the-ui.md) | Svelte 5 for the UI | Accepted |
 | [0012](0012-chords-left-melody-right.md) | Chords on the left, melody on the right | Accepted |
@@ -36,9 +36,9 @@ To change a decision, write a new ADR and mark the old one as
 | [0025](0025-the-looper-s-lane-as-wide-as-the-keyboard.md) | The looper's lane, as wide as the keyboard | Accepted |
 | [0026](0026-layers.md) | Layers | Accepted |
 | [0027](0027-computer-keyboards-only.md) | Computer keyboards only | Accepted |
-| [0028](0028-a-low-pass-filter.md) | A low-pass filter | Accepted; values by ear superseded by 0030 |
+| [0028](0028-a-low-pass-filter.md) | A low-pass filter | Accepted; values by ear and fixed key tracking superseded by 0030 |
 | [0029](0029-unison.md) | Unison | Accepted; values by ear superseded by 0030 |
-| [0030](0030-a-sound-profile-per-song.md) | A sound profile per song | Accepted |
+| [0030](0030-a-sound-profile-per-song.md) | A sound profile per song | Accepted; also holds the loudness envelope, key tracking and tuning |
 
 ## Template
 

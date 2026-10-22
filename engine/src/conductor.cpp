@@ -127,6 +127,24 @@ void Conductor::set_unison(const UnisonSettings& unison) {
     mailbox_.send(event);
 }
 
+void Conductor::set_loudness_envelope(const LoudnessEnvelopeSettings& envelope) {
+    Event event{EventType::set_loudness_envelope, 0, 0};
+    event.loudness_envelope = envelope;
+    mailbox_.send(event);
+}
+
+void Conductor::set_key_tracking(float key_tracking) {
+    Event event{EventType::set_key_tracking, 0, 0};
+    event.key_tracking = key_tracking;
+    mailbox_.send(event);
+}
+
+void Conductor::set_tuning(float a4_hz) {
+    Event event{EventType::set_tuning, 0, 0};
+    event.a4_hz = a4_hz;
+    mailbox_.send(event);
+}
+
 bool Conductor::play_song(const SongChord* chords, int count) {
     // A stop, every chord, then the play.
     std::uint64_t needed = static_cast<std::uint64_t>(count) + 2;
@@ -301,6 +319,12 @@ void Conductor::handle(const Event& event) {
         synth_.set_filter_envelope(event.filter_envelope);
     } else if (event.type == EventType::set_unison) {
         synth_.set_unison(event.unison);
+    } else if (event.type == EventType::set_loudness_envelope) {
+        synth_.set_loudness_envelope(event.loudness_envelope);
+    } else if (event.type == EventType::set_key_tracking) {
+        synth_.set_key_tracking(event.key_tracking);
+    } else if (event.type == EventType::set_tuning) {
+        synth_.set_tuning(event.a4_hz);
     } else if (event.type == EventType::stop_song) {
         song_player_.stop(synth_);
         song_messages_handled_ += 1;

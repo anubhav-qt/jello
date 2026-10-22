@@ -586,8 +586,31 @@
   background: var(--panel-bg);
 }
 
-/* Two rows of sliders. A third would not clear the keyboard in a short
-   window. */
+/* The title, then the buttons that pick the page. */
+.sound-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.sound-panel-top .dev-panel-title {
+  margin: 0;
+}
+
+.sound-pages {
+  display: flex;
+  gap: 6px;
+}
+
+.sound-pages .dev-button {
+  height: 22px;
+  padding: 0 8px;
+}
+
+/* Two rows of sliders on each page. A third would not clear the keyboard
+   in a short window. */
 .sound-rows {
   display: flex;
   flex-direction: column;
@@ -602,10 +625,10 @@
   gap: 14px;
 }
 
-/* The first row holds two groups: unison's three sliders, then the
-   filter's name and its two. */
+/* The notes page's second row holds two groups: unison's three sliders,
+   then the tuning's name and its one. */
 .sound-row.has-two-groups {
-  grid-template-columns: 80px repeat(3, minmax(0, 1fr)) auto repeat(2, minmax(0, 1fr));
+  grid-template-columns: 80px repeat(3, minmax(0, 1fr)) auto minmax(0, 1fr);
 }
 
 /* A name too long for its 80px goes on two lines. */
@@ -636,6 +659,7 @@
 .sound-field-name {
   min-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-2);
 }

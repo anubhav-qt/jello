@@ -3,18 +3,46 @@
 export interface SoundView {
   // The wave new notes play, like "saw".
   wave: string;
-  // The beat's tempo, in beats per minute.
+  // The song's tempo, in beats per minute.
   tempo: number;
   // Whether loops snap to the beat: each time around, the loop plays its
   // notes moved to the nearest half beat.
   snap: boolean;
   // What the looper is doing.
   looper: LooperView;
+  // The loudness envelope new notes start with.
+  loudness: LoudnessView;
   // Where the low-pass filter and its envelope are.
   filter: FilterView;
   // The copies new notes are played by.
   unison: UnisonView;
+  // A4's pitch in Hz, which new notes are tuned from.
+  tuning_hz: number;
 }
+
+// The loudness envelope new notes start with (`LoudnessView` in
+// src-tauri/src/commands.rs).
+export interface LoudnessView {
+  attack_ms: number;
+  decay_ms: number;
+  // In percent of the peak.
+  sustain: number;
+  release_ms: number;
+}
+
+// A loudness envelope as the sound's dev panel sends it
+// (`set_loudness_envelope` in src-tauri/src/commands.rs).
+export interface LoudnessEnvelope {
+  attackMs: number;
+  decayMs: number;
+  sustain: number;
+  releaseMs: number;
+}
+
+// The lowest and highest A4 notes can be tuned to, in Hz (`TUNING_` in
+// src-tauri/src/engine.rs).
+export const TUNING_LOWEST_HZ = 415;
+export const TUNING_HIGHEST_HZ = 466;
 
 // Where the low-pass filter and its envelope are (`FilterView` in
 // src-tauri/src/commands.rs, docs/adr/0028-a-low-pass-filter.md).
@@ -30,6 +58,8 @@ export interface FilterView {
   // In percent of the amount.
   sustain: number;
   release_ms: number;
+  // How much each new note's cutoff follows middle C's, in percent.
+  key_tracking: number;
 }
 
 // A filter envelope as the filter's dev panel sends it
@@ -99,8 +129,9 @@ export function cutoffWords(hz: number): string {
   return `${Math.round(hz)} Hz`;
 }
 
-// A filter envelope stage's length at a slider position, in ms. The slider
-// is curved, so short times, where small changes are heard, get most of it:
+// An envelope stage's length at a slider position, in ms, for the loudness
+// and filter envelopes alike: both go up to 10,000 ms. The slider is
+// curved, so short times, where small changes are heard, get most of it:
 // halfway is 1250 ms.
 export function stageMsAt(position: number): number {
   const share = position / SLIDER_STEPS;

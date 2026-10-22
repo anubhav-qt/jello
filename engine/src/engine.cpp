@@ -74,6 +74,17 @@ static_assert(JELLO_UNISON_MOST_COPIES == unison_most_copies, "the C API and uni
 static_assert(JELLO_UNISON_MOST_DETUNE_CENTS == static_cast<int>(unison_most_detune_cents),
               "the C API and unison have the same most detune");
 
+// The C API and the loudness envelope agree on how short and long a stage
+// can be.
+static_assert(JELLO_LOUDNESS_SHORTEST_MS == loudness_shortest_ms,
+              "the C API and the loudness envelope have the same shortest stage");
+static_assert(JELLO_LOUDNESS_LONGEST_MS == loudness_longest_ms,
+              "the C API and the loudness envelope have the same longest stage");
+
+// The C API and the voices agree on how far notes can be tuned.
+static_assert(JELLO_TUNING_LOWEST_HZ == static_cast<int>(tuning_lowest_hz), "the C API and the voices tune as low");
+static_assert(JELLO_TUNING_HIGHEST_HZ == static_cast<int>(tuning_highest_hz), "the C API and the voices tune as high");
+
 // True if `value` is a number from `lowest` to `highest`. NaN, not a number
 // at all, is not.
 bool is_within(float value, float lowest, float highest) {
@@ -92,6 +103,14 @@ bool is_valid_stage_ms(int ms) {
         return false;
     }
     return ms <= JELLO_FILTER_LONGEST_MS;
+}
+
+// How long a loudness envelope's stage takes, in ms.
+bool is_valid_loudness_ms(int ms) {
+    if (ms < JELLO_LOUDNESS_SHORTEST_MS) {
+        return false;
+    }
+    return ms <= JELLO_LOUDNESS_LONGEST_MS;
 }
 
 // The C API and the song player agree on how big a song and a chord can be.
@@ -406,6 +425,43 @@ void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents
     unison.detune_cents = detune_cents;
     unison.spread = spread;
     engine->conductor.set_unison(unison);
+}
+
+void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int decay_ms, float sustain,
+                                        int release_ms) {
+    if (!is_valid_loudness_ms(attack_ms)) {
+        return;
+    }
+    if (!is_valid_loudness_ms(decay_ms)) {
+        return;
+    }
+    if (!is_within(sustain, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_valid_loudness_ms(release_ms)) {
+        return;
+    }
+
+    LoudnessEnvelopeSettings envelope;
+    envelope.attack_ms = attack_ms;
+    envelope.decay_ms = decay_ms;
+    envelope.sustain = sustain;
+    envelope.release_ms = release_ms;
+    engine->conductor.set_loudness_envelope(envelope);
+}
+
+void jello_engine_set_key_tracking(JelloEngine* engine, float key_tracking) {
+    if (!is_within(key_tracking, 0.0f, 1.0f)) {
+        return;
+    }
+    engine->conductor.set_key_tracking(key_tracking);
+}
+
+void jello_engine_set_tuning(JelloEngine* engine, float a4_hz) {
+    if (!is_within(a4_hz, JELLO_TUNING_LOWEST_HZ, JELLO_TUNING_HIGHEST_HZ)) {
+        return;
+    }
+    engine->conductor.set_tuning(a4_hz);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {

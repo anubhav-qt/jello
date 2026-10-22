@@ -1,6 +1,6 @@
 # 0009: How notes become sound
 
-- Status: Accepted
+- Status: Accepted; fixed envelope superseded by 0030
 - Date: 2026-10-19
 
 ## Context

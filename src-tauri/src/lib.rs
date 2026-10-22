@@ -22,10 +22,11 @@ pub fn run() {
     let mut engine = Engine::new().expect("could not create the sound engine");
 
     // Compose's key, the chords added to the song so far, where the song
-    // played last starts, and the song's sound profile. The profile goes to
-    // the engine before anything plays, so the first note already plays it.
+    // played last starts, and the song's tempo and sound profile. Those two
+    // go to the engine before anything plays, so the first note and the
+    // first beat already play them.
     let composer = Composer::new();
-    composer.sound_profile().send_all(&mut engine);
+    composer.send_all(&mut engine);
 
     tauri::Builder::default()
         .manage(Mutex::new(engine))
@@ -42,6 +43,9 @@ pub fn run() {
             commands::set_filter,
             commands::set_filter_envelope,
             commands::set_unison,
+            commands::set_loudness_envelope,
+            commands::set_key_tracking,
+            commands::set_tuning,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

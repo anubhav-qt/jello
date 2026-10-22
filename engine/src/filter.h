@@ -23,8 +23,8 @@ constexpr int filter_longest_ms = 10000;
 // even those already sounding.
 struct FilterSettings {
     // Middle C's cutoff, in Hz, from filter_lowest_hz up to filter_open_hz.
-    // Every other note's cutoff follows it, an octave higher for each
-    // octave up, so every note sounds equally bright.
+    // Every other note's cutoff follows it, as far as the song's key
+    // tracking says (NoteSound::key_tracking in voice.h).
     float cutoff_hz = filter_open_hz;
     // How much the filter boosts the sound right at its cutoff, from 0 (no
     // bump) to 1 (a strong, singing peak).
@@ -126,11 +126,14 @@ class VoiceFilter {
 public:
     explicit VoiceFilter(int sample_rate);
 
-    // Starts `note` with `envelope`. `fresh` is true for a silent voice: it
-    // starts right at `targets`, with nothing left over from its last note.
-    // A voice still sounding keeps its memory and glides on to the new
-    // note's cutoff, so it never clicks.
-    void start(int note, bool fresh, const FilterTargets& targets, const FilterEnvelopeSettings& envelope);
+    // Starts `note` with `envelope`. Its cutoff follows middle C's by
+    // `key_tracking`, from 0 to 1: at 1, an octave higher for each octave
+    // the note is above middle C, and at 0, not at all. `fresh` is true for
+    // a silent voice: it starts right at `targets`, with nothing left over
+    // from its last note. A voice still sounding keeps its memory and glides
+    // on to the new note's cutoff, so it never clicks.
+    void start(int note, bool fresh, const FilterTargets& targets, const FilterEnvelopeSettings& envelope,
+               float key_tracking);
 
     // Starts the filter envelope's release.
     void release();

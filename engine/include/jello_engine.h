@@ -27,12 +27,13 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// The functions from here to jello_engine_set_unison are for playing notes,
+// The functions from here to jello_engine_set_tuning are for playing notes,
 // picking their wave, running the click and the looper, playing Compose's
-// song, moving the filter and setting unison. They are safe to call while
-// the audio is running, from one thread at a time. Each one only leaves a message for the audio thread,
-// which acts on it at the start of its next chunk of sound (about every
-// 10 ms). If 1024 messages are already waiting, new ones are dropped
+// song, moving the filter, and setting unison, the loudness envelope, key
+// tracking and tuning. They are safe to call while the audio is running,
+// from one thread at a time. Each one only leaves a message for the audio
+// thread, which acts on it at the start of its next chunk of sound (about
+// every 10 ms). If 1024 messages are already waiting, new ones are dropped
 // (docs/adr/0009-how-notes-become-sound.md).
 
 // Starts `note` (0 to 127, middle C is 60) at `velocity`, how hard the key was
@@ -210,6 +211,45 @@ enum {
 // starts at 1 copy, which is off: notes sound exactly as without unison.
 // Its detune starts at 20 cents and its spread at 1.
 void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents, float spread);
+
+// The shortest and longest any stage of the loudness envelope takes, in ms.
+// At 0 ms a stage would jump the loudness in one sample, which clicks.
+enum {
+    JELLO_LOUDNESS_SHORTEST_MS = 1,
+    JELLO_LOUDNESS_LONGEST_MS = 10000,
+};
+
+// The loudness envelope: when a note starts, its loudness rises over
+// `attack_ms`, falls over `decay_ms` to `sustain` (a share of the peak, from
+// 0 to 1) while the key is held, and fades out over `release_ms` once it is
+// let go; each stage from JELLO_LOUDNESS_SHORTEST_MS to
+// JELLO_LOUDNESS_LONGEST_MS. Notes started after this use it, and notes
+// started before keep theirs. Values outside those ranges are ignored. A new
+// engine starts with an attack of 5 ms, a decay of 300 ms, a sustain of 1
+// and a release of 300 ms.
+void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int decay_ms, float sustain,
+                                        int release_ms);
+
+// Key tracking: how much each note's filter cutoff follows middle C's, from
+// 0 to 1. At 1, a note's cutoff is an octave higher for each octave it is
+// above middle C, so every note is equally bright. At 0, every note has
+// middle C's cutoff, so higher notes sound darker. Notes started after this
+// use it, and notes started before keep theirs. A value outside 0 to 1 is
+// ignored. A new engine starts at 1.
+void jello_engine_set_key_tracking(JelloEngine* engine, float key_tracking);
+
+// The lowest and highest A4 notes can be tuned to, in Hz: about a half step
+// below and above 440.
+enum {
+    JELLO_TUNING_LOWEST_HZ = 415,
+    JELLO_TUNING_HIGHEST_HZ = 466,
+};
+
+// Tunes notes from A4 at `a4_hz`, from JELLO_TUNING_LOWEST_HZ to
+// JELLO_TUNING_HIGHEST_HZ: every other note keeps its distance from A4.
+// Notes started after this use it, and notes started before keep their
+// pitch. A value outside that range is ignored. A new engine starts at 440.
+void jello_engine_set_tuning(JelloEngine* engine, float a4_hz);
 
 // What the looper can be doing.
 enum {

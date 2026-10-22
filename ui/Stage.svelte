@@ -19,7 +19,7 @@
   import Keyboard from "./Keyboard.svelte";
   import LooperLane from "./LooperLane.svelte";
   import { keysAcross, noteName, notesOf, type KeyLayout, type Platform } from "./keyboard";
-  import { beatsNow, type FilterEnvelope, type SoundView, type Unison } from "./sound";
+  import { beatsNow, type FilterEnvelope, type LoudnessEnvelope, type SoundView, type Unison } from "./sound";
   import SoundDevPanel from "./SoundDevPanel.svelte";
   import type { Tab } from "./tabs";
   import TopBar from "./TopBar.svelte";
@@ -38,10 +38,14 @@
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
     // What the sound's dev panel does. `cutoffHz` is middle C's cutoff,
-    // and `resonance` is in percent.
+    // `resonance` and `keyTracking` are in percent, and `a4Hz` is A4's
+    // pitch.
+    onLoudnessChange: (envelope: LoudnessEnvelope) => void;
     onFilterChange: (cutoffHz: number, resonance: number) => void;
     onFilterEnvelopeChange: (envelope: FilterEnvelope) => void;
+    onKeyTrackingChange: (keyTracking: number) => void;
     onUnisonChange: (unison: Unison) => void;
+    onTuningChange: (a4Hz: number) => void;
   }
 
   let {
@@ -54,9 +58,12 @@
     onKeyPick,
     onChordClick,
     onPlayClick,
+    onLoudnessChange,
     onFilterChange,
     onFilterEnvelopeChange,
+    onKeyTrackingChange,
     onUnisonChange,
+    onTuningChange,
   }: Props = $props();
 
   // How long the page takes to power on, in milliseconds, and how it moves:
@@ -499,12 +506,17 @@
       {#if soundPanelOpen}
         {#if sound !== null}
           <SoundDevPanel
+            loudness={sound.loudness}
             filter={sound.filter}
             unison={sound.unison}
+            tuningHz={sound.tuning_hz}
             keysAcross={keysAcross(platform)}
+            {onLoudnessChange}
             {onFilterChange}
             onEnvelopeChange={onFilterEnvelopeChange}
+            {onKeyTrackingChange}
             {onUnisonChange}
+            {onTuningChange}
           />
         {/if}
       {/if}
