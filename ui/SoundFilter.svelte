@@ -1,12 +1,16 @@
-<!-- The sound panel's Filter page (docs/design.md#sound-panel): the low-pass
-     filter's cutoff and resonance, its envelope and key tracking. The
-     cutoff and resonance move notes already sounding; the rest start with
-     the next key pressed. -->
+<!-- The sound panel's Filter page (docs/design.md#sound-panel): the filter's
+     type (docs/design.md#filter-types), cutoff and resonance, its envelope
+     and key tracking. The type, cutoff and resonance move notes already
+     sounding; the rest start with the next key pressed. -->
 <script lang="ts">
   import {
     CUTOFF,
+    cutoffScale,
     evenScale,
+    FILTER_TYPES,
     filterDb,
+    filterHint,
+    isFilterOpen,
     isPicked,
     PERCENT,
     pickedOf,
@@ -23,6 +27,7 @@
     type SoundSender,
     type SoundView,
   } from "./sound";
+  import { clickThenLetGo } from "./dom";
   import SoundHandle from "./SoundHandle.svelte";
   import SoundValue from "./SoundValue.svelte";
 
@@ -49,20 +54,33 @@
     send.setFilterEnvelope(envelope);
   }
 
+  // The filter as it is now, with its type, cutoff or resonance changed.
+  function sendFilter(filterType: string, cutoffHz: number, newResonance: number) {
+    send.setFilter(filterType, cutoffHz, newResonance);
+  }
+
   const cutoff: Setting = {
     id: "cutoff",
     name: "Cutoff",
-    scale: CUTOFF,
+    // Read each time, as where it says "open" depends on the type.
+    get scale() {
+      return cutoffScale(sound.filter.filter_type);
+    },
     now: () => sound.filter.cutoff_hz,
-    set: (cutoffHz) => send.setFilter(cutoffHz, sound.filter.resonance),
+    set: (cutoffHz) => sendFilter(sound.filter.filter_type, cutoffHz, sound.filter.resonance),
   };
   const resonance: Setting = {
     id: "resonance",
     name: "Resonance",
     scale: PERCENT,
     now: () => sound.filter.resonance,
-    set: (newResonance) => send.setFilter(sound.filter.cutoff_hz, newResonance),
+    set: (newResonance) => sendFilter(sound.filter.filter_type, sound.filter.cutoff_hz, newResonance),
   };
+
+  // Picking a type never moves the cutoff or the resonance.
+  function pickType(filterType: string) {
+    sendFilter(filterType, sound.filter.cutoff_hz, sound.filter.resonance);
+  }
   const amount: Setting = {
     id: "filter amount",
     name: "Amount",
@@ -136,7 +154,7 @@
     const points: string[] = [];
     for (let point = 0; point <= POINTS; point += 1) {
       const x = LEFT_X + ((RIGHT_X - LEFT_X) * point) / POINTS;
-      const db = filterDb(hzAtX(x), cutoffHz, sound.filter.resonance);
+      const db = filterDb(sound.filter.filter_type, hzAtX(x), cutoffHz, sound.filter.resonance);
       points.push(`${x.toFixed(1)} ${yOfDb(db).toFixed(1)}`);
     }
     return "M" + points.join(" L ");
@@ -145,12 +163,12 @@
   let cutoffCurve = $derived(curve(sound.filter.cutoff_hz));
 
   // Where the envelope's peak takes the cutoff, or null when it takes it
-  // nowhere: no amount, or the filter is open.
+  // nowhere: no amount, or the filter is open, so the engine skips it.
   let peakHz = $derived.by(() => {
     if (sound.filter.amount === 0) {
       return null;
     }
-    if (sound.filter.cutoff_hz >= FILTER_OPEN_HZ) {
+    if (isFilterOpen(sound.filter.filter_type, sound.filter.cutoff_hz)) {
       return null;
     }
     const hz = sound.filter.cutoff_hz * Math.pow(2, sound.filter.amount);
@@ -179,21 +197,30 @@
     return x;
   });
 
-  // The square sits on the curve at the cutoff, on its bump.
+  // The square sits on the curve at the cutoff: on its bump, or for a
+  // notch at the bottom of its hole.
   let cutoffX = $derived(xOfHz(sound.filter.cutoff_hz));
   let cutoffY = $derived.by(() => {
     const cutoffHz = sound.filter.cutoff_hz;
-    const db = filterDb(cutoffHz, cutoffHz, sound.filter.resonance);
+    const db = filterDb(sound.filter.filter_type, cutoffHz, cutoffHz, sound.filter.resonance);
     return yOfDb(db);
   });
 
-  // Sideways it moves the cutoff, and up and down the resonance's bump.
+  let isNotch = $derived(sound.filter.filter_type === "notch");
+
+  // Sideways it moves the cutoff, and up and down the resonance's bump. A
+  // notch has a hole at the cutoff instead of a bump, so its square only
+  // moves sideways.
   function moveCutoff(x: number, y: number) {
     // Rounded and kept within its range, as its dots do.
     const share = CUTOFF.share(hzAtX(x));
     const cutoffHz = CUTOFF.at(share);
-    const bumpDb = (ZERO_Y - y) / 2;
-    send.setFilter(cutoffHz, resonanceForDb(bumpDb));
+    let newResonance = sound.filter.resonance;
+    if (!isNotch) {
+      const bumpDb = (ZERO_Y - y) / 2;
+      newResonance = resonanceForDb(bumpDb);
+    }
+    sendFilter(sound.filter.filter_type, cutoffHz, newResonance);
   }
 
   // The envelope drawing, 356 by 140, drawn like the loudness envelope,
@@ -266,7 +293,7 @@
   <div class="sound-module">
     <div class="sound-module-top">
       <span class="sound-label">Filter</span>
-      <span class="sound-hint">takes the top off the sound</span>
+      <span class="sound-hint">{filterHint(sound.filter.filter_type)}</span>
     </div>
     <div class="sound-drawing">
       <svg viewBox="0 0 286 140" preserveAspectRatio="xMidYMid meet">
@@ -286,6 +313,19 @@
         <text class="sound-axis" x={LEFT_X} y="134">20 HZ</text>
         <text class="sound-axis" text-anchor="end" x={RIGHT_X} y="134">20 KHZ</text>
       </svg>
+    </div>
+    <div class="sound-kinds" style:grid-template-columns="repeat(4, 1fr)">
+      {#each FILTER_TYPES as type (type.name)}
+        <button
+          type="button"
+          class="sound-shape"
+          class:is-chosen={sound.filter.filter_type === type.name}
+          title={type.name}
+          onclick={(event) => clickThenLetGo(event, () => pickType(type.name))}
+        >
+          <svg class="sound-glyph" viewBox="0 0 20 12"><path d={type.glyph} /></svg>
+        </button>
+      {/each}
     </div>
     <div class="sound-fields" style:grid-template-columns="1fr 1fr">
       <SoundValue setting={cutoff} dots={17} {picked} {onPick} />

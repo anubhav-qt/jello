@@ -115,6 +115,7 @@ unsafe extern "C" {
         octaves: c_int,
         half_steps: c_int,
         cents: f32,
+        width: f32,
     );
     // Only the tests start and stop the click for now.
     #[cfg(test)]
@@ -142,7 +143,7 @@ unsafe extern "C" {
     fn jello_engine_next_loop_change(engine: *mut JelloEngine, change: *mut RawLoopChange) -> bool;
     fn jello_engine_play_song(engine: *mut JelloEngine, chords: *const RawSongChord, count: c_int) -> bool;
     fn jello_engine_stop_song(engine: *mut JelloEngine);
-    fn jello_engine_set_filter(engine: *mut JelloEngine, cutoff_hz: f32, resonance: f32);
+    fn jello_engine_set_filter(engine: *mut JelloEngine, filter_type: c_int, cutoff_hz: f32, resonance: f32);
     fn jello_engine_set_filter_envelope(
         engine: *mut JelloEngine,
         amount: f32,
@@ -165,6 +166,8 @@ unsafe extern "C" {
     fn jello_engine_set_connection(engine: *mut JelloEngine, index: c_int, connection: *const RawConnection);
     fn jello_engine_set_vibrato_key_times(engine: *mut JelloEngine, rise_ms: c_int, fall_ms: c_int);
     fn jello_engine_set_vibrato_key(engine: *mut JelloEngine, held: bool);
+    fn jello_engine_set_glide_key(engine: *mut JelloEngine, held: bool);
+    fn jello_engine_set_glide_time(engine: *mut JelloEngine, glide_ms: c_int);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
@@ -206,30 +209,86 @@ const CHORD_MAX_NOTES: usize = 4;
 // A share in percent: 100 is all of it.
 pub const FULL_PERCENT: u32 = 100;
 
-// The low-pass filter's ranges (`JELLO_FILTER_` in
-// engine/include/jello_engine.h): the lowest cutoff and the cutoff that
-// means open, in Hz, the most octaves the filter envelope opens it, and the
-// longest any of its stages takes.
+// The filter's ranges (`JELLO_FILTER_` in engine/include/jello_engine.h):
+// the lowest cutoff and the highest, in Hz, the most octaves the filter
+// envelope opens it, and the longest any of its stages takes.
 pub const FILTER_LOWEST_HZ: f32 = 20.0;
 pub const FILTER_OPEN_HZ: f32 = 20000.0;
 pub const FILTER_MOST_OCTAVES: f32 = 8.0;
 pub const FILTER_LONGEST_MS: u32 = 10000;
 
-// Where the low-pass filter's controls are
-// (docs/adr/0028-a-low-pass-filter.md).
+// What the filter takes away (docs/design.md#filter-types).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterType {
+    // Takes the top off: lets low sounds through and turns high ones down.
+    // Open at FILTER_OPEN_HZ.
+    LowPass,
+    // Takes the bottom off: the other way round. Open at FILTER_LOWEST_HZ.
+    HighPass,
+    // Keeps one band, the sounds near the cutoff.
+    BandPass,
+    // Cuts that band out, and keeps the rest.
+    Notch,
+}
+
+impl FilterType {
+    pub const ALL: [FilterType; 4] = [
+        FilterType::LowPass,
+        FilterType::HighPass,
+        FilterType::BandPass,
+        FilterType::Notch,
+    ];
+
+    // What to call the type when showing it.
+    pub fn name(self) -> &'static str {
+        match self {
+            FilterType::LowPass => "low-pass",
+            FilterType::HighPass => "high-pass",
+            FilterType::BandPass => "band-pass",
+            FilterType::Notch => "notch",
+        }
+    }
+
+    // The type called `name`, or None.
+    pub fn from_name(name: &str) -> Option<FilterType> {
+        for filter_type in FilterType::ALL {
+            if filter_type.name() == name {
+                return Some(filter_type);
+            }
+        }
+        None
+    }
+
+    // The type's number in the C API (`JELLO_FILTER_LOW_PASS` and on in
+    // engine/include/jello_engine.h).
+    fn number(self) -> c_int {
+        match self {
+            FilterType::LowPass => 0,
+            FilterType::HighPass => 1,
+            FilterType::BandPass => 2,
+            FilterType::Notch => 3,
+        }
+    }
+}
+
+// Where the filter's controls are (docs/adr/0028-a-low-pass-filter.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
-    // Middle C's cutoff, in Hz, from FILTER_LOWEST_HZ to FILTER_OPEN_HZ,
-    // where the filter is open: off. Every other note's cutoff follows it,
-    // an octave higher for each octave up.
+    pub filter_type: FilterType,
+    // Middle C's cutoff, in Hz, from FILTER_LOWEST_HZ to FILTER_OPEN_HZ.
+    // Every other note's cutoff follows it, an octave higher for each
+    // octave up. A low-pass at FILTER_OPEN_HZ, or a high-pass at
+    // FILTER_LOWEST_HZ, is open: off.
     pub cutoff_hz: f32,
     // How much it boosts the sound right at the cutoff, in percent.
     pub resonance: u32,
 }
 
-// Where the C++ engine's filter starts: open, with no resonance. A new
-// song's sound profile starts there too (src/sound_profile.rs).
+// Where the C++ engine's filter starts: an open low-pass, with no
+// resonance. A new song's sound profile starts there too
+// (src/sound_profile.rs).
 pub const START_FILTER: Filter = Filter {
+    filter_type: FilterType::LowPass,
     cutoff_hz: FILTER_OPEN_HZ,
     resonance: 0,
 };
@@ -328,8 +387,18 @@ pub const START_TUNING_HZ: f32 = 440.0;
 
 // The pitch the loop's notes have for presses of the vibrato key
 // (`JELLO_VIBRATO_KEY_NOTE` in engine/include/jello_engine.h): one past the
-// highest note.
+// highest note. And for presses of the glide key (`JELLO_GLIDE_KEY_NOTE`):
+// one past that.
 pub const VIBRATO_KEY_NOTE: u8 = 128;
+pub const GLIDE_KEY_NOTE: u8 = 129;
+
+// The longest a glide takes, in ms (`JELLO_GLIDE_LONGEST_MS`,
+// docs/adr/0036-glide.md).
+pub const GLIDE_LONGEST_MS: u32 = 10000;
+
+// Where the C++ engine's glide time starts, in ms. A new song's sound
+// profile starts there too.
+pub const START_GLIDE_MS: u32 = 100;
 
 // `value` brought within `lowest` to `highest`. NaN, not a number at all,
 // counts as `lowest`; no slider sends it.
@@ -520,8 +589,16 @@ pub const OSCILLATOR_MOST_OCTAVES: i32 = 3;
 pub const OSCILLATOR_MOST_HALF_STEPS: i32 = 12;
 pub const OSCILLATOR_MOST_CENTS: i32 = 100;
 
+// How much of each cycle a square can spend up, in percent
+// (`JELLO_PULSE_` in engine/include/jello_engine.h,
+// docs/design.md#pulse-width). 50 is the square.
+pub const PULSE_NARROWEST_PERCENT: u32 = 5;
+pub const PULSE_WIDEST_PERCENT: u32 = 95;
+pub const SQUARE_WIDTH_PERCENT: u32 = 50;
+
 // One oscillator (docs/adr/0035-oscillators-with-kinds.md): what it plays,
-// how loud, and how far it is tuned from the note.
+// how loud, how far it is tuned from the note, and how wide a square's
+// pulse is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Oscillator {
     pub kind: Kind,
@@ -533,16 +610,21 @@ pub struct Oscillator {
     pub octaves: i32,
     pub half_steps: i32,
     pub cents: i32,
+    // How much of each cycle a square spends up, in percent, from
+    // PULSE_NARROWEST_PERCENT to PULSE_WIDEST_PERCENT. The other kinds
+    // leave it be.
+    pub width: u32,
 }
 
 // An oscillator that plays nothing: a triangle at level 0, right on the
-// note.
+// note, with a square's width.
 const SILENT_OSCILLATOR: Oscillator = Oscillator {
     kind: Kind::Triangle,
     level: 0,
     octaves: 0,
     half_steps: 0,
     cents: 0,
+    width: SQUARE_WIDTH_PERCENT,
 };
 
 // Where the C++ engine's oscillators start: the first a triangle at full
@@ -565,6 +647,7 @@ fn oscillator_within_ranges(oscillator: Oscillator) -> Oscillator {
         octaves: oscillator.octaves.clamp(-OSCILLATOR_MOST_OCTAVES, OSCILLATOR_MOST_OCTAVES),
         half_steps: oscillator.half_steps.clamp(-OSCILLATOR_MOST_HALF_STEPS, OSCILLATOR_MOST_HALF_STEPS),
         cents: oscillator.cents.clamp(-OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_CENTS),
+        width: oscillator.width.clamp(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT),
     }
 }
 
@@ -763,6 +846,7 @@ impl Engine {
             return oscillator;
         }
         let level = share_of(oscillator.level) as f32;
+        let width = share_of(oscillator.width) as f32;
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe {
             jello_engine_set_oscillator(
@@ -773,6 +857,7 @@ impl Engine {
                 oscillator.octaves as c_int,
                 oscillator.half_steps as c_int,
                 oscillator.cents as f32,
+                width,
             )
         };
         oscillator
@@ -1272,9 +1357,14 @@ impl Engine {
         let cutoff_hz = within(filter.cutoff_hz, FILTER_LOWEST_HZ, FILTER_OPEN_HZ);
         let resonance = filter.resonance.min(FULL_PERCENT);
         let share = resonance as f32 / FULL_PERCENT as f32;
+        let filter_type = filter.filter_type;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_filter(self.raw, cutoff_hz, share) };
-        Filter { cutoff_hz, resonance }
+        unsafe { jello_engine_set_filter(self.raw, filter_type.number(), cutoff_hz, share) };
+        Filter {
+            filter_type,
+            cutoff_hz,
+            resonance,
+        }
     }
 
     // Sets the filter envelope (`jello_engine_set_filter_envelope`) for the
@@ -1403,6 +1493,23 @@ impl Engine {
     pub fn set_vibrato_key(&mut self, held: bool) {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_vibrato_key(self.raw, held) };
+    }
+
+    // Holds or lets go of the live glide key
+    // (`jello_engine_set_glide_key`, docs/adr/0036-glide.md).
+    pub fn set_glide_key(&mut self, held: bool) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_glide_key(self.raw, held) };
+    }
+
+    // Sets how long a glide takes for the notes started after this, in ms
+    // (`jello_engine_set_glide_time`), brought within GLIDE_LONGEST_MS.
+    // Returns it as sent.
+    pub fn set_glide_time(&mut self, glide_ms: u32) -> u32 {
+        let glide_ms = glide_ms.min(GLIDE_LONGEST_MS);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_glide_time(self.raw, glide_ms as c_int) };
+        glide_ms
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -2246,6 +2353,134 @@ mod tests {
         assert_harmonics(&engine, &wave, SAW_HARMONICS);
     }
 
+    // A new engine whose first oscillator plays a pulse `width` percent of
+    // each cycle up, at full level.
+    fn pulse_engine(width: u32) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        let pulse = Oscillator {
+            kind: Kind::Square,
+            width,
+            ..START_OSCILLATORS[0]
+        };
+        engine.set_oscillator(0, pulse);
+        engine
+    }
+
+    #[test]
+    fn a_pulse_s_width_decides_its_harmonics() {
+        // A pulse up for a share w of its cycle has harmonic n at
+        // sin(n pi w) / n, next to the main tone's sin(pi w). At 25% that
+        // leaves out every fourth harmonic, and at 50% every even one, as
+        // the square does. 75% is 25% upside down, so it sounds the same.
+        let mut expected = [0.0; 7];
+        let w = 0.25;
+        let main_tone = (PI * w).sin();
+        for i in 0..expected.len() {
+            let harmonic = (i + 2) as f64;
+            let size = (harmonic * PI * w).sin() / harmonic;
+            expected[i] = size.abs() / main_tone;
+        }
+        for width in [25, 75] {
+            let mut engine = pulse_engine(width);
+            let wave = hold(&mut engine, A4, VELOCITY);
+            assert_harmonics(&engine, &wave, expected);
+        }
+
+        let mut square = pulse_engine(SQUARE_WIDTH_PERCENT);
+        let wave = hold(&mut square, A4, VELOCITY);
+        assert_harmonics(&square, &wave, SQUARE_HARMONICS);
+    }
+
+    #[test]
+    fn a_thin_pulse_stays_balanced_on_the_middle_line() {
+        // Up for 10% of each cycle, a pulse spends most of it below the
+        // middle line, so the engine lifts it until it balances there. Over
+        // one second of whole cycles, its samples add up to nearly nothing:
+        // under 1% of its peak on average. Unlifted, they would average
+        // 80% of it below.
+        for width in [PULSE_NARROWEST_PERCENT, 10, 90, PULSE_WIDEST_PERCENT] {
+            let mut engine = pulse_engine(width);
+            let wave = hold(&mut engine, A4, VELOCITY);
+            let mut total = 0.0;
+            for sample in &wave {
+                total += *sample as f64;
+            }
+            let average = total / wave.len() as f64;
+            let allowed = peak(&wave) as f64 * 0.01;
+            assert!(average.abs() < allowed, "at {width}% it averaged {average}");
+        }
+    }
+
+    #[test]
+    fn narrower_pulses_are_quieter() {
+        // As on analog synths, a pulse is as loud overall as 2 times the
+        // square root of w(1 - w) next to the square: 1 dB down at 25%,
+        // about 4 dB at 10%, and about 7 dB at 5%. Give or take 2%. C3 is
+        // low enough that even a 5% pulse is 18 samples wide, so the
+        // rounding at its jumps barely counts.
+        let mut square = pulse_engine(SQUARE_WIDTH_PERCENT);
+        let square_rms = rms(&hold(&mut square, C3, VELOCITY));
+        for width in [25, 10, PULSE_NARROWEST_PERCENT] {
+            let mut engine = pulse_engine(width);
+            let pulse_rms = rms(&hold(&mut engine, C3, VELOCITY));
+            let w = width as f64 / 100.0;
+            let expected = 2.0 * (w * (1.0 - w)).sqrt();
+            let ratio = pulse_rms / square_rms;
+            assert!(
+                (ratio - expected).abs() <= expected * 0.02,
+                "at {width}% it was {ratio} as loud, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_square_hears_its_width() {
+        // Every other kind plays exactly the same at any width.
+        for kind in [Kind::Sine, Kind::Triangle, Kind::Saw, Kind::Noise] {
+            let mut sounds = Vec::new();
+            for width in [PULSE_NARROWEST_PERCENT, SQUARE_WIDTH_PERCENT, PULSE_WIDEST_PERCENT] {
+                let mut engine = Engine::new().unwrap();
+                let oscillator = Oscillator {
+                    kind,
+                    width,
+                    ..START_OSCILLATORS[0]
+                };
+                engine.set_oscillator(0, oscillator);
+                sounds.push(hold(&mut engine, A4, VELOCITY));
+            }
+            assert!(sounds[0] == sounds[1], "{} heard the narrowest width", kind.name());
+            assert!(sounds[2] == sounds[1], "{} heard the widest width", kind.name());
+        }
+    }
+
+    #[test]
+    fn a_new_width_reaches_the_next_notes_only() {
+        // A held square keeps its width when the width changes; the next
+        // A4 plays the new one.
+        let mut changed = pulse_engine(SQUARE_WIDTH_PERCENT);
+        let mut square = pulse_engine(SQUARE_WIDTH_PERCENT);
+        changed.note_on(A4, VELOCITY);
+        square.note_on(A4, VELOCITY);
+        render_left(&mut changed, 100);
+        render_left(&mut square, 100);
+        let thin = Oscillator {
+            kind: Kind::Square,
+            width: 20,
+            ..START_OSCILLATORS[0]
+        };
+        changed.set_oscillator(0, thin);
+        let held = render_left(&mut changed, 200);
+        let held_square = render_left(&mut square, 200);
+        assert!(held == held_square, "the held note changed its width");
+
+        changed.note_off(A4);
+        render_left(&mut changed, RELEASE_MS + 100);
+        let next = hold(&mut changed, A4, VELOCITY);
+        let mut thin_all_along = pulse_engine(20);
+        let expected = hold(&mut thin_all_along, A4, VELOCITY);
+        assert!(next == expected, "the next note did not get the new width");
+    }
+
     #[test]
     fn high_notes_keep_stray_tones_quiet() {
         // Jumps and corners are made of harmonics that go on forever. Those
@@ -2261,22 +2496,39 @@ mod tests {
         for wave in EVERY_WAVE {
             let mut engine = Engine::new().unwrap();
             engine.set_first_kind(wave);
-            let held = hold(&mut engine, A7, VELOCITY);
-            let main_tone = tone_size(&engine, &held, A7_HZ);
+            assert_a7_stray_tones_quiet(&mut engine, wave.name());
+        }
+    }
 
-            let mut hz = 320.0;
-            while hz < 5000.0 {
-                let is_harmonic = hz % A7_HZ == 0.0;
-                if !is_harmonic {
-                    let size = tone_size(&engine, &held, hz) / main_tone;
-                    assert!(
-                        size <= 0.001,
-                        "{}: the stray tone at {hz} Hz is {size} of the main tone",
-                        wave.name()
-                    );
-                }
-                hz += 320.0;
+    #[test]
+    fn thin_pulses_keep_stray_tones_quiet_too() {
+        // A pulse jumps down once its width has passed, so that is where
+        // the jump must be rounded off. Rounded off half way instead, as
+        // the square is, the jump down at 25% or 75% would fold back as
+        // loud stray tones.
+        for width in [25, 75] {
+            let mut engine = pulse_engine(width);
+            assert_a7_stray_tones_quiet(&mut engine, &format!("a {width}% pulse"));
+        }
+    }
+
+    // Holds A7 and checks that each stray tone below 5000 Hz, on the
+    // multiples of 320 Hz, is at least 1000 times quieter than the main tone.
+    fn assert_a7_stray_tones_quiet(engine: &mut Engine, wave_name: &str) {
+        let held = hold(engine, A7, VELOCITY);
+        let main_tone = tone_size(engine, &held, A7_HZ);
+
+        let mut hz = 320.0;
+        while hz < 5000.0 {
+            let is_harmonic = hz % A7_HZ == 0.0;
+            if !is_harmonic {
+                let size = tone_size(engine, &held, hz) / main_tone;
+                assert!(
+                    size <= 0.001,
+                    "{wave_name}: the stray tone at {hz} Hz is {size} of the main tone"
+                );
             }
+            hz += 320.0;
         }
     }
 
@@ -2394,16 +2646,16 @@ mod tests {
     }
 
     // One call to `jello_engine_set_oscillator`: its index, kind, level,
-    // octaves, half steps and cents.
-    type RawOscillator = (c_int, c_int, f32, c_int, c_int, f32);
+    // octaves, half steps, cents and width.
+    type RawOscillator = (c_int, c_int, f32, c_int, c_int, f32, f32);
 
     // A4 held on a new engine playing a sine, after `call` reached the C API.
     fn sine_after(call: RawOscillator) -> Vec<f32> {
         let mut engine = Engine::new().unwrap();
         engine.set_first_kind(Kind::Sine);
-        let (index, kind, level, octaves, half_steps, cents) = call;
+        let (index, kind, level, octaves, half_steps, cents, width) = call;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_oscillator(engine.raw, index, kind, level, octaves, half_steps, cents) };
+        unsafe { jello_engine_set_oscillator(engine.raw, index, kind, level, octaves, half_steps, cents, width) };
         hold(&mut engine, A4, VELOCITY)
     }
 
@@ -2413,23 +2665,27 @@ mod tests {
         // of them out of range. Rust brings its own within them, so this
         // calls the C API directly. Each call would otherwise play a saw an
         // octave up on top of the sine, so one that got through would show.
-        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0));
+        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0, 0.5));
         let saw = Kind::Saw.number();
-        let odd_calls: [(&str, RawOscillator); 14] = [
-            ("index -1", (-1, saw, 1.0, 1, 0, 0.0)),
-            ("index 3", (3, saw, 1.0, 1, 0, 0.0)),
-            ("kind -1", (1, -1, 1.0, 1, 0, 0.0)),
-            ("kind 5", (1, 5, 1.0, 1, 0, 0.0)),
-            ("level -0.1", (1, saw, -0.1, 1, 0, 0.0)),
-            ("level 1.1", (1, saw, 1.1, 1, 0, 0.0)),
-            ("level NaN", (1, saw, f32::NAN, 1, 0, 0.0)),
-            ("octaves 4", (1, saw, 1.0, 4, 0, 0.0)),
-            ("octaves -4", (1, saw, 1.0, -4, 0, 0.0)),
-            ("half steps 13", (1, saw, 1.0, 1, 13, 0.0)),
-            ("half steps -13", (1, saw, 1.0, 1, -13, 0.0)),
-            ("cents 100.5", (1, saw, 1.0, 1, 0, 100.5)),
-            ("cents -101", (1, saw, 1.0, 1, 0, -101.0)),
-            ("cents NaN", (1, saw, 1.0, 1, 0, f32::NAN)),
+        let square = Kind::Square.number();
+        let odd_calls: [(&str, RawOscillator); 17] = [
+            ("index -1", (-1, saw, 1.0, 1, 0, 0.0, 0.5)),
+            ("index 3", (3, saw, 1.0, 1, 0, 0.0, 0.5)),
+            ("kind -1", (1, -1, 1.0, 1, 0, 0.0, 0.5)),
+            ("kind 5", (1, 5, 1.0, 1, 0, 0.0, 0.5)),
+            ("level -0.1", (1, saw, -0.1, 1, 0, 0.0, 0.5)),
+            ("level 1.1", (1, saw, 1.1, 1, 0, 0.0, 0.5)),
+            ("level NaN", (1, saw, f32::NAN, 1, 0, 0.0, 0.5)),
+            ("octaves 4", (1, saw, 1.0, 4, 0, 0.0, 0.5)),
+            ("octaves -4", (1, saw, 1.0, -4, 0, 0.0, 0.5)),
+            ("half steps 13", (1, saw, 1.0, 1, 13, 0.0, 0.5)),
+            ("half steps -13", (1, saw, 1.0, 1, -13, 0.0, 0.5)),
+            ("cents 100.5", (1, saw, 1.0, 1, 0, 100.5, 0.5)),
+            ("cents -101", (1, saw, 1.0, 1, 0, -101.0, 0.5)),
+            ("cents NaN", (1, saw, 1.0, 1, 0, f32::NAN, 0.5)),
+            ("width 0.04", (1, square, 1.0, 1, 0, 0.0, 0.04)),
+            ("width 0.96", (1, square, 1.0, 1, 0, 0.0, 0.96)),
+            ("width NaN", (1, square, 1.0, 1, 0, 0.0, f32::NAN)),
         ];
         for (what, call) in odd_calls {
             assert!(sine_after(call) == plain, "an oscillator with {what} changed the sound");
@@ -2441,13 +2697,14 @@ mod tests {
         // A saw at each edge of a range, on the second oscillator, changes
         // the sine. The test above shows a hair further is ignored, so Rust
         // and the engine agree on every range.
-        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0));
+        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0, 0.5));
         let saw_on_the_note = Oscillator {
             kind: Kind::Saw,
             level: FULL_PERCENT,
             octaves: 0,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         };
         let edges = [
             Oscillator { kind: Kind::Noise, ..saw_on_the_note },
@@ -2457,6 +2714,16 @@ mod tests {
             Oscillator { half_steps: -OSCILLATOR_MOST_HALF_STEPS, ..saw_on_the_note },
             Oscillator { cents: OSCILLATOR_MOST_CENTS, ..saw_on_the_note },
             Oscillator { cents: -OSCILLATOR_MOST_CENTS, ..saw_on_the_note },
+            Oscillator {
+                kind: Kind::Square,
+                width: PULSE_NARROWEST_PERCENT,
+                ..saw_on_the_note
+            },
+            Oscillator {
+                kind: Kind::Square,
+                width: PULSE_WIDEST_PERCENT,
+                ..saw_on_the_note
+            },
         ];
         for edge in edges {
             let mut engine = Engine::new().unwrap();
@@ -2501,6 +2768,7 @@ mod tests {
                 octaves,
                 half_steps,
                 cents,
+                width: SQUARE_WIDTH_PERCENT,
             };
             let mut engine = second_oscillator_engine(tuned);
             let held = hold(&mut engine, A4, VELOCITY);
@@ -2535,6 +2803,7 @@ mod tests {
             octaves: 1,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         };
         engine.set_oscillator(1, octave_up);
         let held = hold(&mut engine, A4, VELOCITY);
@@ -2555,6 +2824,7 @@ mod tests {
             octaves: 2,
             half_steps: 5,
             cents: 30,
+            width: SQUARE_WIDTH_PERCENT,
         };
         let noise = Oscillator {
             kind: Kind::Noise,
@@ -2574,6 +2844,7 @@ mod tests {
         octaves: 0,
         half_steps: 0,
         cents: 0,
+        width: SQUARE_WIDTH_PERCENT,
     };
 
     // A new engine playing `oscillators`, one after another from the first.
@@ -2736,6 +3007,7 @@ mod tests {
             octaves: 0,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
         Oscillator {
             kind: Kind::Square,
@@ -2743,6 +3015,7 @@ mod tests {
             octaves: 1,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
         Oscillator {
             kind: Kind::Triangle,
@@ -2750,6 +3023,7 @@ mod tests {
             octaves: -1,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
     ];
     const THREE_THE_OTHER_WAY: [Oscillator; OSCILLATOR_COUNT] = [
@@ -2759,6 +3033,7 @@ mod tests {
             octaves: 0,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
         Oscillator {
             kind: Kind::Noise,
@@ -2766,6 +3041,7 @@ mod tests {
             octaves: 1,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
         Oscillator {
             kind: Kind::Saw,
@@ -2773,6 +3049,7 @@ mod tests {
             octaves: -1,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         },
     ];
 
@@ -3236,6 +3513,8 @@ mod tests {
         Snap(bool),
         HoldVibratoKey,
         LetGoOfVibratoKey,
+        HoldGlideKey,
+        LetGoOfGlideKey,
     }
 
     use Step::*;
@@ -3258,6 +3537,8 @@ mod tests {
             Snap(on) => engine.set_snap(on),
             HoldVibratoKey => engine.set_vibrato_key(true),
             LetGoOfVibratoKey => engine.set_vibrato_key(false),
+            HoldGlideKey => engine.set_glide_key(true),
+            LetGoOfGlideKey => engine.set_glide_key(false),
         }
     }
 
@@ -5555,8 +5836,13 @@ mod tests {
     // A4 is 9 half steps above middle C, and 880 Hz is 9 half steps above C5.
     const CUTOFF_FOR_A4_AT_880: f32 = C5_HZ as f32;
 
+    // A low-pass at `cutoff_hz` and `resonance` percent.
     fn filter(cutoff_hz: f32, resonance: u32) -> Filter {
-        Filter { cutoff_hz, resonance }
+        Filter {
+            filter_type: FilterType::LowPass,
+            cutoff_hz,
+            resonance,
+        }
     }
 
     fn filter_envelope(amount: f32, attack_ms: u32, decay_ms: u32, sustain: u32, release_ms: u32) -> FilterEnvelope {
@@ -5612,11 +5898,35 @@ mod tests {
     // with its pitches bent for samples the way the engine's filter bends
     // them, so the engine must match it almost exactly.
     fn low_pass_gain(engine: &Engine, hz: f64, cutoff_hz: f64, q: f64) -> f64 {
+        filter_gain(engine, FilterType::LowPass, hz, cutoff_hz, q)
+    }
+
+    // The same for every type. They share the filter's bottom line and each
+    // keeps a different part on top: the low part 1, the high part the
+    // ratio squared, the band the ratio, and the notch the low and high
+    // parts together.
+    fn filter_gain(engine: &Engine, filter_type: FilterType, hz: f64, cutoff_hz: f64, q: f64) -> f64 {
         let rate = engine.sample_rate() as f64;
         let ratio = (PI * hz / rate).tan() / (PI * cutoff_hz / rate).tan();
         let below = 1.0 - ratio * ratio;
         let damping = ratio / q;
-        1.0 / (below * below + damping * damping).sqrt()
+        let bottom = (below * below + damping * damping).sqrt();
+        let top = match filter_type {
+            FilterType::LowPass => 1.0,
+            FilterType::HighPass => ratio * ratio,
+            FilterType::BandPass => ratio,
+            FilterType::Notch => below.abs(),
+        };
+        top / bottom
+    }
+
+    // A filter of `filter_type` at `cutoff_hz` and `resonance` percent.
+    fn typed_filter(filter_type: FilterType, cutoff_hz: f32, resonance: u32) -> Filter {
+        Filter {
+            filter_type,
+            cutoff_hz,
+            resonance,
+        }
     }
 
     // How much of each harmonic of a held saw, from the first to `count`,
@@ -5748,6 +6058,165 @@ mod tests {
                 (through[1] - q).abs() <= q * 0.01,
                 "at {resonance}% the cutoff's harmonic came through at {}, expected {q}",
                 through[1]
+            );
+        }
+    }
+
+    #[test]
+    fn every_filter_type_keeps_its_own_part_of_the_sound() {
+        // A4's cutoff on its second harmonic, as for the low-pass above.
+        // Each harmonic comes through as the type's math says, give or take
+        // 1%, or 0.003 where the notch takes nearly all of it. The
+        // high-pass lets the second through at 0.71 like the low-pass, and
+        // more and more above it; the band-pass 0.71 at the cutoff and less
+        // either side; the notch nothing at the cutoff and nearly all far
+        // from it.
+        let engine = Engine::new().unwrap();
+        for filter_type in [FilterType::HighPass, FilterType::BandPass, FilterType::Notch] {
+            let setting = typed_filter(filter_type, CUTOFF_FOR_A4_AT_880, 0);
+            let through = harmonics_let_through(A4, A4_HZ, VELOCITY, setting, 8);
+            for i in 0..through.len() {
+                let harmonic = i + 1;
+                let expected = filter_gain(&engine, filter_type, A4_HZ * harmonic as f64, 880.0, LOWEST_Q);
+                let allowed = f64::max(expected * 0.01, 0.003);
+                let difference = (through[i] - expected).abs();
+                assert!(
+                    difference <= allowed,
+                    "{}: harmonic {harmonic} came through at {}, expected {expected}",
+                    filter_type.name(),
+                    through[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resonance_boosts_the_cutoff_on_high_and_band_pass_and_narrows_the_notch() {
+        // At full resonance the high-pass and band-pass let the cutoff's
+        // harmonic through at 10, like the low-pass. The notch still takes
+        // all of it, but leaves its neighbours, an octave either side, more
+        // than with no resonance: its hole is narrower.
+        for filter_type in [FilterType::HighPass, FilterType::BandPass] {
+            let setting = typed_filter(filter_type, CUTOFF_FOR_A4_AT_880, 100);
+            let through = harmonics_let_through(A4, A4_HZ, SOFT, setting, 2);
+            assert!(
+                (through[1] - HIGHEST_Q).abs() <= HIGHEST_Q * 0.01,
+                "{}: the cutoff's harmonic came through at {}",
+                filter_type.name(),
+                through[1]
+            );
+        }
+        let wide = harmonics_let_through(A4, A4_HZ, SOFT, typed_filter(FilterType::Notch, CUTOFF_FOR_A4_AT_880, 0), 4);
+        let narrow = harmonics_let_through(A4, A4_HZ, SOFT, typed_filter(FilterType::Notch, CUTOFF_FOR_A4_AT_880, 100), 4);
+        assert!(narrow[1] < 0.003, "the notch let through {} at its cutoff", narrow[1]);
+        assert!(narrow[0] > wide[0], "the first harmonic got no more through");
+        assert!(narrow[3] > wide[3], "the fourth harmonic got no more through");
+    }
+
+    #[test]
+    fn each_type_is_open_only_at_its_own_end() {
+        // A high-pass at 20 Hz lets everything through, so the engine skips
+        // it, and every sample is the same as with no filter at all. A
+        // low-pass there takes nearly all of the sound, and a band-pass or
+        // notch is never open, at either end.
+        let mut plain = saw_engine();
+        let plain_wave = hold(&mut plain, A4, VELOCITY);
+
+        let mut high_pass = saw_engine();
+        high_pass.set_filter(typed_filter(FilterType::HighPass, FILTER_LOWEST_HZ, 50));
+        let open_wave = hold(&mut high_pass, A4, VELOCITY);
+        assert!(open_wave == plain_wave, "the open high-pass changed the sound");
+
+        let shut = [
+            typed_filter(FilterType::LowPass, FILTER_LOWEST_HZ, 0),
+            typed_filter(FilterType::BandPass, FILTER_LOWEST_HZ, 0),
+            typed_filter(FilterType::BandPass, FILTER_OPEN_HZ, 0),
+            typed_filter(FilterType::Notch, FILTER_LOWEST_HZ, 0),
+            typed_filter(FilterType::Notch, FILTER_OPEN_HZ, 0),
+        ];
+        for setting in shut {
+            let mut engine = saw_engine();
+            engine.set_filter(setting);
+            let wave = hold(&mut engine, A4, VELOCITY);
+            assert!(wave != plain_wave, "{setting:?} left the sound alone");
+        }
+    }
+
+    #[test]
+    fn a_new_type_fades_in_over_20_ms_on_notes_already_sounding() {
+        // A held saw through a low-pass turns into a high-pass. Next to a
+        // note that started as a high-pass, it is still on its way 17 ms
+        // after the change, and from 22 ms on it sounds the same.
+        let mut changed = saw_engine();
+        changed.set_filter(typed_filter(FilterType::LowPass, CUTOFF_FOR_A4_AT_880, 30));
+        changed.note_on(A4, VELOCITY);
+        render_left(&mut changed, 500);
+        changed.set_filter(typed_filter(FilterType::HighPass, CUTOFF_FOR_A4_AT_880, 30));
+        let after_change = render_left(&mut changed, 40);
+
+        let mut already = saw_engine();
+        already.set_filter(typed_filter(FilterType::HighPass, CUTOFF_FOR_A4_AT_880, 30));
+        already.note_on(A4, VELOCITY);
+        render_left(&mut already, 500);
+        let steady = render_left(&mut already, 40);
+
+        let at_17_ms = frames_in_ms(&changed, 17);
+        let at_18_ms = frames_in_ms(&changed, 18);
+        let on_its_way = biggest_difference(&after_change[at_17_ms..at_18_ms], &steady[at_17_ms..at_18_ms]);
+        assert!(on_its_way > 0.001, "the fade was over too soon");
+
+        let at_22_ms = frames_in_ms(&changed, 22);
+        assert_nearly_same_sound(&after_change[at_22_ms..], &steady[at_22_ms..], 0.0001);
+    }
+
+    // The biggest jump from one sample to the next in `wave`.
+    fn biggest_jump(wave: &[f32]) -> f32 {
+        let mut biggest = 0.0;
+        for pair in wave.windows(2) {
+            let jump = (pair[1] - pair[0]).abs();
+            if jump > biggest {
+                biggest = jump;
+            }
+        }
+        biggest
+    }
+
+    #[test]
+    fn going_through_every_type_never_clicks() {
+        // A held saw goes from low-pass to high-pass, band-pass, notch and
+        // back, 100 ms apart. Each type has its own steepness, a high-pass
+        // the most, so each change is held to the two types it is between:
+        // its first 30 ms never jump more than either does once steady.
+        // Switched at once, the sound would jump by the difference between
+        // the two.
+        let types = [
+            FilterType::LowPass,
+            FilterType::HighPass,
+            FilterType::BandPass,
+            FilterType::Notch,
+            FilterType::LowPass,
+        ];
+        let mut engine = saw_engine();
+        engine.set_filter(typed_filter(types[0], 1000.0, 50));
+        engine.note_on(A4, VELOCITY);
+        let mut stretches = vec![render_left(&mut engine, 100)];
+        for filter_type in &types[1..] {
+            engine.set_filter(typed_filter(*filter_type, 1000.0, 50));
+            stretches.push(render_left(&mut engine, 100));
+        }
+
+        let steady_from = frames_in_ms(&engine, 50);
+        let change_until = frames_in_ms(&engine, 30);
+        for i in 1..stretches.len() {
+            assert_all_finite(&stretches[i]);
+            let steady_before = biggest_jump(&stretches[i - 1][steady_from..]);
+            let steady_after = biggest_jump(&stretches[i][steady_from..]);
+            let allowed = f32::max(steady_before, steady_after) * 1.05;
+            let change = biggest_jump(&stretches[i][..change_until]);
+            assert!(
+                change <= allowed,
+                "going to the {} jumped by {change}, more than {allowed}",
+                types[i].name()
             );
         }
     }
@@ -6111,20 +6580,26 @@ mod tests {
         // one that got through can't hide behind the next.
         let plain = filtered_a4_after(|_| {});
 
+        // Each would otherwise move the low-pass, or make it a high-pass.
+        let low_pass = FilterType::LowPass.number();
+        let high_pass = FilterType::HighPass.number();
         let odd_filters = [
-            (f32::NAN, 0.5),
-            (19.9, 0.5),
-            (20000.1, 0.5),
-            (1000.0, -0.1),
-            (1000.0, 1.1),
-            (1000.0, f32::NAN),
+            (low_pass, f32::NAN, 0.5),
+            (low_pass, 19.9, 0.5),
+            (low_pass, 20000.1, 0.5),
+            (low_pass, 1000.0, -0.1),
+            (low_pass, 1000.0, 1.1),
+            (low_pass, 1000.0, f32::NAN),
+            (high_pass, 19.9, 0.5),
+            (-1, 1000.0, 0.5),
+            (4, 1000.0, 0.5),
         ];
-        for (cutoff_hz, resonance) in odd_filters {
+        for (filter_type, cutoff_hz, resonance) in odd_filters {
             let odd = filtered_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_filter(engine.raw, cutoff_hz, resonance) };
+                unsafe { jello_engine_set_filter(engine.raw, filter_type, cutoff_hz, resonance) };
             });
-            assert!(odd == plain, "{cutoff_hz} Hz at {resonance} changed the sound");
+            assert!(odd == plain, "type {filter_type} at {cutoff_hz} Hz and {resonance} changed the sound");
         }
         let odd_envelopes = [
             (f32::NAN, 5, 300, 0.5, 300),
@@ -6820,6 +7295,32 @@ mod tests {
                 "at {key_tracking}% it let through {through}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn key_tracking_follows_a_glide_as_it_goes() {
+        // A4 on a saw, through the low-pass above at 100% key tracking,
+        // glides up an octave to A5 over 10 seconds. 30 to 80 ms in, its
+        // pitch has moved under 10 cents, so its cutoff has too, and it
+        // sounds as loud as A4 held on its own, give or take 1%. A cutoff
+        // that jumped ahead to A5's would let through more of its
+        // harmonics, about 12% louder.
+        let a5_at = 500;
+        let glide_steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (a5_at * SAMPLES_PER_MS, NoteOn(A5))];
+        let held_steps = [(0, NoteOn(A4))];
+        let mut waves = Vec::new();
+        for steps in [&glide_steps[..], &held_steps[..]] {
+            let mut engine = saw_engine();
+            engine.set_filter(filter(CUTOFF_FOR_A4_AT_880, 0));
+            engine.set_key_tracking(FULL_PERCENT);
+            engine.set_glide_time(GLIDE_LONGEST_MS);
+            let wave = play(&mut engine, steps, 1000 * SAMPLES_PER_MS);
+            let early = wave[(a5_at + 30) * SAMPLES_PER_MS..(a5_at + 80) * SAMPLES_PER_MS].to_vec();
+            waves.push(early);
+        }
+        let gliding = rms(&waves[0]) as f32;
+        let held = rms(&waves[1]) as f32;
+        assert_within_percent(gliding, held, 1.0);
     }
 
     #[test]
@@ -7818,6 +8319,62 @@ mod tests {
     }
 
     #[test]
+    fn the_routing_list_steps_the_filter_type_round() {
+        // From a low-pass, one step up is a high-pass, and one step down
+        // goes round to the notch. Once the 20 ms fade is over, each sounds
+        // just like that type set outright.
+        let low_pass = typed_filter(FilterType::LowPass, 1000.0, 40);
+        for (steps, filter_type) in [(1.0, FilterType::HighPass), (-1.0, FilterType::Notch)] {
+            let (moved, _) = a4_after(
+                |engine| {
+                    engine.set_first_kind(Kind::Saw);
+                    engine.set_filter(low_pass);
+                    hold_key_moving(engine, Target::FilterType, steps);
+                },
+                500,
+            );
+            let (expected, _) = a4_after(
+                |engine| {
+                    engine.set_first_kind(Kind::Saw);
+                    engine.set_filter(typed_filter(filter_type, 1000.0, 40));
+                },
+                500,
+            );
+            let from = 50 * SAMPLES_PER_MS;
+            assert_nearly_same_sound(&moved[from..], &expected[from..], 0.0001);
+        }
+    }
+
+    #[test]
+    fn the_routing_list_moves_a_pulse_s_width_while_it_sounds() {
+        // A square moved 25% narrower plays like a pulse at 25%.
+        let (moved, _) = a4_after(
+            |engine| {
+                let square = Oscillator {
+                    kind: Kind::Square,
+                    ..START_OSCILLATORS[0]
+                };
+                engine.set_oscillator(0, square);
+                hold_key_moving(engine, Target::OscillatorWidth(0), -25.0);
+            },
+            500,
+        );
+        let (expected, _) = a4_after(
+            |engine| {
+                let pulse = Oscillator {
+                    kind: Kind::Square,
+                    width: 25,
+                    ..START_OSCILLATORS[0]
+                };
+                engine.set_oscillator(0, pulse);
+            },
+            500,
+        );
+        let from = 50 * SAMPLES_PER_MS;
+        assert_nearly_same_sound(&moved[from..], &expected[from..], 0.0001);
+    }
+
+    #[test]
     fn snap_rounds_an_oscillator_s_pitch_to_half_steps() {
         // 130 cents up, snapped, is one half step: just like tuning the
         // oscillator a half step up.
@@ -7885,6 +8442,7 @@ mod tests {
             octaves: 0,
             half_steps: 0,
             cents: 0,
+            width: SQUARE_WIDTH_PERCENT,
         }
     }
 
@@ -8554,6 +9112,313 @@ mod tests {
         assert_same_samples(&with_live_key_wave, &looped_wave);
     }
 
+    // Glide (docs/adr/0036-glide.md). These play sines, whose pitch is
+    // easiest to measure, with a new engine's 100 ms glide unless a test
+    // says otherwise.
+    const GLIDE_TEST_MS: usize = 100;
+    const E5: u8 = 76;
+    const E5_HZ: f64 = 659.2551;
+
+    fn sine_engine() -> Engine {
+        let mut engine = Engine::new().unwrap();
+        engine.set_first_kind(Kind::Sine);
+        engine
+    }
+
+    // The pitch of `wave` from `from_ms` to `to_ms`, in Hz.
+    fn pitch_between(engine: &Engine, wave: &[f32], from_ms: usize, to_ms: usize) -> f64 {
+        pitch(engine, &wave[from_ms * SAMPLES_PER_MS..to_ms * SAMPLES_PER_MS])
+    }
+
+    #[test]
+    fn with_the_glide_key_held_the_held_note_bends_to_the_next_one() {
+        // A4 held, then C5 pressed with the glide key down: one voice slides
+        // up over 100 ms, with no new attack, and lands on C5. Half way, it
+        // is half way there in cents: 150 cents above A4. After, only C5
+        // sounds, so the pitch measures exactly C5.
+        let c5_at = 500;
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (c5_at * SAMPLES_PER_MS, NoteOn(C5))];
+        let mut engine = sine_engine();
+        let wave = play(&mut engine, &steps, 2000 * SAMPLES_PER_MS);
+
+        let half_way = pitch_between(&engine, &wave, c5_at + 45, c5_at + 55);
+        let expected = cents_above(A4_HZ, 150.0);
+        assert!(
+            (half_way - expected).abs() <= expected * 0.01,
+            "half way it played {half_way} Hz, expected {expected}"
+        );
+        let landed = pitch_between(&engine, &wave, c5_at + GLIDE_TEST_MS + 10, 2000);
+        assert!((landed - C5_HZ).abs() < 0.01, "it landed on {landed} Hz");
+
+        // No new attack: the 5 ms after the press are as loud as the 5 ms
+        // before it, give or take 5%.
+        let before = peak(&wave[(c5_at - 5) * SAMPLES_PER_MS..c5_at * SAMPLES_PER_MS]);
+        let after = peak(&wave[c5_at * SAMPLES_PER_MS..(c5_at + 5) * SAMPLES_PER_MS]);
+        assert_within_percent(after, before, 5.0);
+    }
+
+    #[test]
+    fn a_note_after_the_last_one_was_let_go_starts_fresh_and_slides_in() {
+        // A4 is let go and fades out, then C5 comes with the glide key down.
+        // It starts with its own attack, from silence, but at A4's pitch,
+        // and slides up to C5.
+        let c5_at = 600;
+        let steps = [
+            (0, HoldGlideKey),
+            (0, NoteOn(A4)),
+            (200 * SAMPLES_PER_MS, NoteOff(A4)),
+            (c5_at * SAMPLES_PER_MS, NoteOn(C5)),
+        ];
+        let mut engine = sine_engine();
+        let wave = play(&mut engine, &steps, 2000 * SAMPLES_PER_MS);
+
+        let first_ms = &wave[c5_at * SAMPLES_PER_MS..(c5_at + 1) * SAMPLES_PER_MS];
+        assert!(peak(first_ms) <= full_level() / ATTACK_MS as f32, "C5 did not start from silence");
+        let starting = pitch_between(&engine, &wave, c5_at, c5_at + 10);
+        assert!(starting < cents_above(A4_HZ, 50.0), "C5 started at {starting} Hz");
+        let landed = pitch_between(&engine, &wave, c5_at + GLIDE_TEST_MS + 10, 2000);
+        assert!((landed - C5_HZ).abs() < 0.01, "it landed on {landed} Hz");
+    }
+
+    #[test]
+    fn letting_go_of_the_new_key_bends_back_to_the_one_still_held() {
+        // Hold A4, tap C5 with the glide key down: letting go of C5 slides
+        // back down to A4, which sounds on at full loudness.
+        let steps = [
+            (0, HoldGlideKey),
+            (0, NoteOn(A4)),
+            (500 * SAMPLES_PER_MS, NoteOn(C5)),
+            (1000 * SAMPLES_PER_MS, NoteOff(C5)),
+        ];
+        let mut engine = sine_engine();
+        let wave = play(&mut engine, &steps, 2000 * SAMPLES_PER_MS);
+
+        let back = pitch_between(&engine, &wave, 1000 + GLIDE_TEST_MS + 10, 2000);
+        assert!((back - A4_HZ).abs() < 0.01, "it went back to {back} Hz");
+        let before = peak(&wave[900 * SAMPLES_PER_MS..1000 * SAMPLES_PER_MS]);
+        let after = peak(&wave[1900 * SAMPLES_PER_MS..2000 * SAMPLES_PER_MS]);
+        assert_within_percent(after, before, 2.0);
+
+        // It glides back like any glide: half way, 50 ms after C5 is let
+        // go, it is 150 cents above A4.
+        let half_way = pitch_between(&engine, &wave, 1045, 1055);
+        let expected = cents_above(A4_HZ, 150.0);
+        assert!(
+            (half_way - expected).abs() <= expected * 0.01,
+            "half way back it played {half_way} Hz, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn with_the_glide_key_let_go_the_bend_back_jumps() {
+        // As above, but the glide key goes up before C5 does, so the voice
+        // jumps straight back to A4. The pitch moves over the voice's usual
+        // 32 samples of smoothing, under 1 ms, so the first millisecond is
+        // left out.
+        let steps = [
+            (0, HoldGlideKey),
+            (0, NoteOn(A4)),
+            (500 * SAMPLES_PER_MS, NoteOn(C5)),
+            (900 * SAMPLES_PER_MS, LetGoOfGlideKey),
+            (1000 * SAMPLES_PER_MS, NoteOff(C5)),
+        ];
+        let mut engine = sine_engine();
+        let wave = play(&mut engine, &steps, 2000 * SAMPLES_PER_MS);
+        let right_away = pitch_between(&engine, &wave, 1001, 1021);
+        assert!((right_away - A4_HZ).abs() < 1.0, "it went back to {right_away} Hz");
+    }
+
+    #[test]
+    fn a_glide_takes_its_time_whatever_the_distance() {
+        // At 200 ms, A4 to A5, 1200 cents, moves in a straight line through
+        // the cents: a quarter of the way after 50 ms, half after 100 and
+        // three quarters after 150. A4 to E5, 700 cents, lands at 200 ms
+        // too.
+        let mut engine = sine_engine();
+        engine.set_glide_time(200);
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (500 * SAMPLES_PER_MS, NoteOn(A5))];
+        let wave = play(&mut engine, &steps, 1500 * SAMPLES_PER_MS);
+        for (ms, cents) in [(50, 300.0), (100, 600.0), (150, 900.0)] {
+            let measured = pitch_between(&engine, &wave, 500 + ms - 5, 500 + ms + 5);
+            let expected = cents_above(A4_HZ, cents);
+            assert!(
+                (measured - expected).abs() <= expected * 0.015,
+                "{ms} ms in it played {measured} Hz, expected {expected}"
+            );
+        }
+
+        let mut engine = sine_engine();
+        engine.set_glide_time(200);
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (500 * SAMPLES_PER_MS, NoteOn(E5))];
+        let wave = play(&mut engine, &steps, 1500 * SAMPLES_PER_MS);
+        let before_landing = pitch_between(&engine, &wave, 680, 690);
+        assert!(before_landing < E5_HZ - 1.0, "it landed early, at {before_landing} Hz");
+        let landed = pitch_between(&engine, &wave, 710, 1500);
+        assert!((landed - E5_HZ).abs() < 0.01, "it landed on {landed} Hz");
+    }
+
+    #[test]
+    fn a_glide_time_of_0_jumps_and_still_plays_one_voice() {
+        let mut engine = sine_engine();
+        engine.set_glide_time(0);
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (500 * SAMPLES_PER_MS, NoteOn(C5))];
+        let wave = play(&mut engine, &steps, 1500 * SAMPLES_PER_MS);
+        // The pitch moves over the voice's usual 32 samples of smoothing,
+        // under 1 ms, so the first millisecond is left out.
+        let right_away = pitch_between(&engine, &wave, 501, 521);
+        assert!((right_away - C5_HZ).abs() < 1.0, "it started at {right_away} Hz");
+        // And from then on only C5 sounds: with A4 still under it, the
+        // pitch would not measure C5 exactly.
+        let after = pitch_between(&engine, &wave, 501, 1500);
+        assert!((after - C5_HZ).abs() < 0.01, "after the jump it played {after} Hz");
+    }
+
+    #[test]
+    fn a_chord_never_glides() {
+        // With A4 held and the glide key down, a chord starts as it would
+        // without the key: every sample is the same.
+        let chord = [
+            (0, NoteOn(A4)),
+            (24_000, NoteOn(C3)),
+            (24_000, NoteOn(E4)),
+            (24_000, NoteOn(G4)),
+            (48_000, NoteOn(C5)),
+            (48_000, NoteOn(MIDDLE_C)),
+        ];
+        let mut with_key = vec![(0, HoldGlideKey)];
+        with_key.extend(chord);
+        let key_wave = play(&mut sine_engine(), &with_key, 96_000);
+        let plain_wave = play(&mut sine_engine(), &chord, 96_000);
+        assert_same_samples(&key_wave, &plain_wave);
+    }
+
+    #[test]
+    fn without_the_glide_key_notes_jump_as_before() {
+        // Held and let go before any note, the key changes nothing:
+        // overlapping notes each keep their own voice and pitch.
+        let notes = [
+            (100, NoteOn(A4)),
+            (24_000, NoteOn(C5)),
+            (36_000, NoteOff(A4)),
+            (48_000, NoteOff(C5)),
+            (60_000, NoteOn(E5)),
+        ];
+        let mut with_key = vec![(0, HoldGlideKey), (50, LetGoOfGlideKey)];
+        with_key.extend(notes);
+        let key_wave = play(&mut sine_engine(), &with_key, 96_000);
+        let plain_wave = play(&mut sine_engine(), &notes, 96_000);
+        assert_same_samples(&key_wave, &plain_wave);
+    }
+
+    #[test]
+    fn the_routing_list_moves_the_glide_time_as_each_note_starts() {
+        // One octave more glide time is twice as long: 100 ms moved up an
+        // octave plays exactly like 200 ms.
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (24_000, NoteOn(C5))];
+        let mut routed = sine_engine();
+        hold_key_moving(&mut routed, Target::GlideTime, 1.0);
+        let routed_wave = play(&mut routed, &steps, 48_000);
+        let mut longer = sine_engine();
+        longer.set_glide_time(200);
+        let longer_wave = play(&mut longer, &steps, 48_000);
+        assert_nearly_same_sound(&routed_wave, &longer_wave, 0.00001);
+    }
+
+    #[test]
+    fn letting_go_of_everything_lets_go_of_the_glide_key() {
+        // When the window loses focus, the glide key goes up with A4, just
+        // as if both had been let go, so C5 and E5 after it do not glide.
+        let later = [(24_000, NoteOn(C5)), (36_000, NoteOn(E5))];
+        let mut lost_focus = vec![(0, HoldGlideKey), (0, NoteOn(A4)), (9_600, AllNotesOff)];
+        lost_focus.extend(later);
+        let mut let_go = vec![
+            (0, HoldGlideKey),
+            (0, NoteOn(A4)),
+            (9_600, NoteOff(A4)),
+            (9_600, LetGoOfGlideKey),
+        ];
+        let_go.extend(later);
+        let lost_focus_wave = play(&mut sine_engine(), &lost_focus, 60_000);
+        let let_go_wave = play(&mut sine_engine(), &let_go, 60_000);
+        assert_same_samples(&lost_focus_wave, &let_go_wave);
+    }
+
+    #[test]
+    fn odd_glide_times_change_nothing() {
+        // Asked directly, the engine ignores a glide time outside 0 to
+        // 10000 ms, and keeps its 100 ms.
+        let steps = [(0, HoldGlideKey), (0, NoteOn(A4)), (24_000, NoteOn(C5))];
+        let plain = play(&mut sine_engine(), &steps, 48_000);
+        for glide_ms in [-1, GLIDE_LONGEST_MS as c_int + 1] {
+            let mut engine = sine_engine();
+            // SAFETY: `raw` points to a live engine until Drop.
+            unsafe { jello_engine_set_glide_time(engine.raw, glide_ms) };
+            let odd = play(&mut engine, &steps, 48_000);
+            assert!(odd == plain, "a glide time of {glide_ms} ms changed the sound");
+        }
+    }
+
+    #[test]
+    fn a_loop_plays_its_glide_key_back_on_its_own_notes() {
+        // Recorded with A4 and C5, the key plays back each time around
+        // exactly as played: C5 bends from A4 and back. Every sample matches
+        // the same played live each time. Letting go of everything at the
+        // end of the bar makes the live player forget its melody, so the
+        // live notes below have none to slide from.
+        let bar = [
+            (5_000, HoldGlideKey),
+            (10_000, NoteOn(A4)),
+            (30_000, NoteOn(C5)),
+            (50_000, NoteOff(C5)),
+            (65_000, NoteOff(A4)),
+            (70_000, LetGoOfGlideKey),
+            (75_000, AllNotesOff),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut Engine::new().unwrap(), &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+
+        // Rust's copy keeps the key's press as a note on a pitch of its own.
+        let key_press = LoopNote {
+            note: GLIDE_KEY_NOTE,
+            start: 5_000,
+            end: Some(70_000),
+        };
+        let notes = first_layer_notes(&mut looper_engine);
+        assert_eq!(notes[0], key_press);
+        assert_eq!(notes.len(), 3);
+
+        // The live glide key, held while the loop plays, moves none of its
+        // notes.
+        let first_time = start + BAR_AT_120;
+        let mut with_live_key = looped.clone();
+        with_live_key.push((first_time + 1_000, HoldGlideKey));
+        let with_live_key_wave = play(&mut engine_without_snap(), &with_live_key, frames);
+        assert_same_samples(&with_live_key_wave, &looped_wave);
+
+        // A live note, played with the live glide key held while the loop's
+        // C5 sounds, never slides from the loop's notes: it sounds just as
+        // it does without the key.
+        let mut with_live_notes = looped.clone();
+        with_live_notes.push((first_time + 40_000, NoteOn(E5)));
+        with_live_notes.push((first_time + 60_000, NoteOff(E5)));
+        let mut with_both = with_live_notes.clone();
+        with_both.push((first_time + 1_000, HoldGlideKey));
+        let with_live_notes_wave = play(&mut engine_without_snap(), &with_live_notes, frames);
+        let with_both_wave = play(&mut engine_without_snap(), &with_both, frames);
+        assert_same_samples(&with_both_wave, &with_live_notes_wave);
+    }
+
     // A4 from the first sample on `routed` and on a new engine, with
     // `change` made to `routed` `at` samples in: the left sides, moved and
     // plain, `frames` long.
@@ -8890,7 +9755,7 @@ mod tests {
             ("scaled by -1", RawConnection { scaled_by: -1, ..half_dip }),
             ("scaled by 14", RawConnection { scaled_by: 14, ..half_dip }),
             ("target -1", RawConnection { target: -1, ..half_dip }),
-            ("target 35", RawConnection { target: 35, ..half_dip }),
+            ("target 40", RawConnection { target: 40, ..half_dip }),
             ("amount NaN", RawConnection { amount: f32::NAN, ..half_dip }),
         ];
         for (what, raw) in odd_connections {

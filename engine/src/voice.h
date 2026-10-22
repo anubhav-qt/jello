@@ -32,6 +32,9 @@ int player_of(Source source, int layer);
 constexpr float tuning_lowest_hz = 415.0f;
 constexpr float tuning_highest_hz = 466.0f;
 
+// The longest a glide can take, in ms (docs/adr/0036-glide.md).
+constexpr int glide_longest_ms = 10000;
+
 // How a note sounds, all of which it starts with and keeps until it ends:
 // changing any of it changes the notes started after. Each part is the
 // song's own (docs/adr/0030-a-sound-profile-per-song.md), and a new song
@@ -50,6 +53,10 @@ struct NoteSound {
     // A4's pitch in Hz, from tuning_lowest_hz to tuning_highest_hz. Every
     // other note is tuned from it.
     float a4_hz = 440.0f;
+    // How long a melody note takes to slide to its pitch while the glide key
+    // is held (docs/adr/0036-glide.md), from 0 (it jumps) to
+    // glide_longest_ms. Without the key, notes never slide.
+    int glide_ms = 100;
 };
 
 // Who starts a note, and when.
@@ -90,6 +97,20 @@ public:
     void start(int note, int velocity, const NoteStart& start, float volume, const FilterTargets& filter,
                const NoteSound& sound, const Routing& routing);
 
+    // Slides the note just started in from `from_hz` (docs/adr/0036-glide.md):
+    // its pitch starts there and slides to the note's over `glide_ms`, as
+    // the routing list moves the glide time. Only right after start, on the
+    // same sample, before it renders.
+    void slide_in(double from_hz, int glide_ms, const Routing& routing);
+
+    // Bends the note this voice plays to `note`, tuned from A4 at `a4_hz`,
+    // and gives it `press_number`. Nothing starts again: its envelopes, its
+    // LFOs and its kinds carry on, as one note. Its pitch slides from
+    // wherever it is on sample `now` to the new note's over `glide_ms`, as
+    // the routing list moves the glide time, from its next 32 samples on.
+    void bend_to(int note, std::uint64_t press_number, std::uint64_t now, double a4_hz, int glide_ms,
+                 const Routing& routing);
+
     // Works out how far the routing list moves the note at sample
     // `block_end`, the end of the next control_samples samples, and heads
     // there in straight lines as those samples render. `routing` has just
@@ -110,6 +131,13 @@ public:
 
     // The note this voice is playing, or played last.
     int note() const;
+
+    // That note's own pitch, in Hz, where a slide to it ends.
+    double note_hz() const;
+
+    // Where its pitch is on sample `now`, in Hz, partway along a slide,
+    // before the routing list moves it.
+    double pitch_at(std::uint64_t now) const;
 
     // The press number its note started with.
     std::uint64_t press_number() const;
@@ -193,9 +221,22 @@ private:
     // `sound` with the targets read as a note starts moved by `moves`.
     NoteSound moved_sound(const NoteSound& sound, const Moves& moves) const;
 
-    // Heads every live setting for where `moves` puts it, over `samples`,
-    // or jumps there at 0.
-    void head_for(const Moves& moves, int samples);
+    // Heads every live setting for where `moves` puts it on sample
+    // `sample`, over `samples`, or jumps there at 0.
+    void head_for(const Moves& moves, int samples, std::uint64_t sample);
+
+    // The glide time `glide_ms` as the routing list moves it, read
+    // `age_ms` after the note started.
+    int moved_glide_ms(int glide_ms, const Routing& routing, double age_ms) const;
+
+    // Starts the pitch's slide on sample `sample`, from `from_hz` to the
+    // note's own, over `glide_ms`. At 0 ms there is no slide.
+    void start_glide(double from_hz, std::uint64_t sample, int glide_ms);
+
+    // How many cents the pitch is from the note's own on sample `sample`,
+    // partway along its slide: all of the way at its start, none at its
+    // end.
+    double glide_cents_at(std::uint64_t sample) const;
 
     // How high oscillator `index` of `copy` is right now, trimmed so every
     // kind is equally loud, before its level.
@@ -224,12 +265,13 @@ private:
     std::array<Kind, oscillator_count> kinds_{};
 
     // What the note started with, which the live moves are added to: its
-    // pitch in Hz, how far each oscillator is tuned from it in cents and
-    // its level, its copies' detune and spread, its key tracking, and its
-    // envelopes' sustains and filter envelope amount.
+    // pitch in Hz, how far each oscillator is tuned from it in cents, its
+    // level and its width, its copies' detune and spread, its key tracking,
+    // and its envelopes' sustains and filter envelope amount.
     double hz_ = 0.0;
     std::array<double, oscillator_count> offset_cents_{};
     std::array<double, oscillator_count> levels_{};
+    std::array<double, oscillator_count> widths_{};
     double detune_cents_ = 0.0;
     double spread_ = 0.0;
     double key_tracking_ = 1.0;
@@ -254,13 +296,27 @@ private:
     double random_ = 0.0;
     double note_height_ = 0.0;
 
+    // The note it started with, which its filter's key tracking was worked
+    // out from. A bend to another note leaves it, and moves the cutoff along
+    // with the pitch instead.
+    int tracking_note_ = 0;
+
+    // Its glide (docs/adr/0036-glide.md): how many cents its pitch started
+    // its slide from the note's own, the sample the slide started on, and
+    // how many samples it takes. 0 samples is no slide.
+    double glide_from_cents_ = 0.0;
+    std::uint64_t glide_start_ = 0;
+    int glide_samples_ = 0;
+
     // The live moves, in straight lines: each oscillator's level and the
-    // loudness, from 0 to 1, and the filter's.
+    // loudness, from 0 to 1, each oscillator's width, and the filter's.
     std::array<Line, oscillator_count> oscillator_levels_{};
+    std::array<Line, oscillator_count> oscillator_widths_{};
     Line gain_;
     Line cutoff_move_;
     Line resonance_move_;
     Line amount_move_;
+    Line type_move_;
 
     // How loud the voice plays right now, from 0 to 1, and how far that
     // moves each sample on its way to a new volume.

@@ -23,8 +23,10 @@ public:
 
     // The pitch a loop plays the vibrato key on
     // (docs/adr/0032-the-vibrato-key.md): one past the highest note, so the
-    // looper records, snaps and plays its presses back like a note's.
+    // looper records, snaps and plays its presses back like a note's. And
+    // the glide key's (docs/adr/0036-glide.md), one past that.
     static constexpr int vibrato_key_note = 128;
+    static constexpr int glide_key_note = 129;
 
     explicit Synth(int sample_rate);
 
@@ -43,8 +45,9 @@ public:
     // The same for a loop's notes, each played by its layer. `layer` is the
     // slot the looper gave the layer, 0 to 7. A layer's notes only ever touch
     // its own, so two layers' Cs never cut each other off. Its
-    // vibrato_key_note holds and lets go of the layer's own vibrato key, and
-    // letting go of its notes lets go of that too.
+    // vibrato_key_note and glide_key_note hold and let go of the layer's own
+    // vibrato and glide keys, and letting go of its notes lets go of those
+    // too.
     void loop_note_on(int note, int velocity, int layer);
     void loop_note_off(int note, int layer);
     void layer_notes_off(int layer);
@@ -53,6 +56,19 @@ public:
     // (docs/adr/0032-the-vibrato-key.md). It only moves live notes. Letting
     // go of every live note lets go of it too.
     void set_vibrato_key(bool held);
+
+    // Holds or lets go of the live glide key (docs/adr/0036-glide.md). While
+    // a player holds its glide key, each of its melody notes, a note that
+    // starts on its own, slides in from its last melody note. Pressed while
+    // the last one is still held, the voice already sounding bends to it
+    // instead, and lets go of it to bend back to the newest note still held.
+    // A chord, notes starting together, never glides. It only glides live
+    // notes. Letting go of every live note lets go of it too.
+    void set_glide_key(bool held);
+
+    // Notes started after this take `glide_ms`, from 0 to glide_longest_ms,
+    // to slide while the glide key is held. It starts at 100.
+    void set_glide_time(int glide_ms);
 
     // How loud layer `layer` plays, from 0 (silent) to 1 (as played), its
     // notes already sounding too. Each voice eases there, so it never clicks.
@@ -119,18 +135,95 @@ public:
     // routing list is worked out again.
     void render(float* out, int frames);
 
+    // How many notes can sound at once.
+    static constexpr int voice_count = 32;
+
 private:
+    // How many notes a bent voice remembers it took over, still held.
+    static constexpr int most_taken = 16;
+
+    // A note waiting to start until every note of its moment has come, so a
+    // chord can be told from a melody note: a player's notes wait while it
+    // holds its glide key. It keeps how notes sounded when it was pressed.
+    struct Waiting {
+        int note = 0;
+        int velocity = 0;
+        Source source = Source::live;
+        int layer = 0;
+        NoteSound sound{};
+        // Let go of before it started: it starts, then is let go at once.
+        bool let_go = false;
+    };
+
+    // One player's melody (docs/adr/0036-glide.md).
+    struct Melody {
+        bool glide_key = false;
+        // Its last melody note: the voice that played it, by its place in
+        // voices_, with the press number it had, so it is known whether the
+        // voice still plays it, and its pitch.
+        bool has_last = false;
+        int last_voice = 0;
+        std::uint64_t last_press = 0;
+        double last_hz = 0.0;
+        // The notes that voice bent away from that are still held, oldest
+        // first.
+        std::array<int, most_taken> taken{};
+        int taken_count = 0;
+    };
+
     // Moves the routing list on and has every sounding voice work out its
     // moves for the next control_samples samples.
     void tick();
+
+    // Once every note of the moment has come: the notes that waited start,
+    // a melody note gliding, and each player's last melody note is kept.
+    void settle();
+
+    // How many of the notes started or waiting this moment `player` has, and
+    // the first one's place.
+    int started_by(int player, int& first) const;
+    int waiting_by(int player, int& first) const;
+
+    // Starts `waiting`'s melody note for `player` with its glide.
+    void glide(int player, const Waiting& waiting);
+
+    // Starts `waiting`'s note as any note starts, and lets go of it again if
+    // it was let go of while it waited.
+    void start_waiting(const Waiting& waiting);
+
+    // `player`'s last melody note's voice, or nullptr once that voice has
+    // fallen silent or plays another note.
+    Voice* melody_voice(const Melody& melody);
+
+    // Keeps `voice`'s note as `player`'s last melody note. The notes it
+    // took over stay as they are.
+    void remember_melody(int player, const Voice& voice);
+
+    // Lets go of `note` for `source` and `layer`: a note waiting is let go
+    // as soon as it starts, and the others right away.
+    void let_go(int note, Source source, int layer);
+
+    // Lets go of `note` now. A note a bent voice took over is forgotten, and
+    // the bent voice bends back to the newest one still held instead of
+    // fading out.
+    void let_go_now(int note, Source source, int layer);
+
+    // Forgets the notes waiting for `player`, and its melody, when every
+    // one of its notes is let go at once.
+    void forget_melody(int player);
 
     // Where the voices' filters glide to: the filter's settings, brought in
     // even when open if a connection moves the cutoff.
     void update_filter_targets();
 
     // Starts `note` for `source`, and for the loop, layer `layer`. Every
-    // other note says layer 0.
+    // other note says layer 0. While its player holds the glide key, it
+    // waits for the end of the moment.
     void start_note(int note, int velocity, Source source, int layer);
+
+    // Starts `note` on a voice right away, sounding as `sound` says, and
+    // returns the voice.
+    Voice* play_note(int note, int velocity, Source source, int layer, const NoteSound& sound);
 
     // The voice still sounding `note` for `source` and `layer`, held or
     // fading, or nullptr if none is.
@@ -176,4 +269,14 @@ private:
     // number, so a smaller number means pressed earlier. A counter, not a
     // clock: two notes pressed in the same chunk still get different numbers.
     std::uint64_t press_count_ = 0;
+
+    // The notes waiting for the end of the moment, and the voices of the
+    // notes started this moment without waiting, by their place in voices_.
+    std::array<Waiting, voice_count> waiting_{};
+    int waiting_count_ = 0;
+    std::array<int, voice_count> started_{};
+    int started_count_ = 0;
+
+    // Every player's melody.
+    std::array<Melody, player_count> melodies_{};
 };

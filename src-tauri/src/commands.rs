@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
-    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, Kind, LoopLayer, LoopNote, LooperState, LooperStatus,
-    LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison, VIBRATO_KEY_NOTE,
+    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
+    LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison, VIBRATO_KEY_NOTE,
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
@@ -33,7 +33,8 @@ const TAIL_MS: u32 = 400;
 // What the screen shows about the sound: the oscillators new notes play, the
 // song's tempo in beats per minute, whether loops snap to the beat, what the
 // looper is doing, the loudness envelope, where the filter is, unison's copies, the
-// tuning, the LFOs, the routing list and the vibrato key's times. Everything
+// tuning, the LFOs, the routing list, the vibrato key's times and how long a
+// glide takes. Everything
 // but the looper and snap comes from the song: its tempo and its sound
 // profile.
 #[derive(Serialize)]
@@ -53,6 +54,9 @@ pub struct SoundView {
     lfos: Vec<LfoView>,
     connections: Vec<ConnectionView>,
     vibrato_key: VibratoKeyView,
+    // How long each melody note played with the glide key held takes to
+    // slide in, in ms (docs/adr/0036-glide.md).
+    glide_ms: u32,
 }
 
 // One oscillator, as the screen shows it. Its kind is named: "sine",
@@ -65,6 +69,9 @@ pub struct OscillatorView {
     octaves: i32,
     half_steps: i32,
     cents: i32,
+    // How much of each cycle a square spends up, in percent
+    // (docs/design.md#pulse-width).
+    width: u32,
 }
 
 fn oscillator_view_of(oscillator: &Oscillator) -> OscillatorView {
@@ -74,6 +81,7 @@ fn oscillator_view_of(oscillator: &Oscillator) -> OscillatorView {
         octaves: oscillator.octaves,
         half_steps: oscillator.half_steps,
         cents: oscillator.cents,
+        width: oscillator.width,
     }
 }
 
@@ -263,11 +271,14 @@ fn unison_view_of(sound_profile: &SoundProfile) -> UnisonView {
     }
 }
 
-// Where the low-pass filter and its envelope are
-// (docs/adr/0028-a-low-pass-filter.md).
+// Where the filter and its envelope are
+// (docs/adr/0028-a-low-pass-filter.md, docs/design.md#filter-types).
 #[derive(Serialize)]
 pub struct FilterView {
-    // Middle C's cutoff, in Hz. At 20000 the filter is open: off.
+    // "low-pass", "high-pass", "band-pass" or "notch".
+    filter_type: &'static str,
+    // Middle C's cutoff, in Hz. A low-pass at 20000, or a high-pass at 20,
+    // is open: off.
     cutoff_hz: f32,
     // In percent.
     resonance: u32,
@@ -286,6 +297,7 @@ fn filter_view_of(sound_profile: &SoundProfile) -> FilterView {
     let filter = sound_profile.filter();
     let envelope = sound_profile.filter_envelope();
     FilterView {
+        filter_type: filter.filter_type.name(),
         cutoff_hz: filter.cutoff_hz,
         resonance: filter.resonance,
         amount: envelope.amount,
@@ -364,10 +376,10 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     let busy = engine.is_looper_busy();
     let position = engine.looper_position();
     let mut layers = engine.loop_layers().to_vec();
-    // The vibrato key's presses are kept with a layer's notes, but the lane
-    // leaves them out until its design says how to draw them.
+    // The vibrato and glide keys' presses are kept with a layer's notes, but
+    // the lane leaves them out until its design says how to draw them.
     for layer in &mut layers {
-        layer.notes.retain(|note| note.note != VIBRATO_KEY_NOTE);
+        layer.notes.retain(|note| is_drawn_in_lane(note.note));
     }
     // Once a layer plays, the lane shows each note where the loop plays it.
     if is_loop_playing(status.state) {
@@ -411,7 +423,20 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
             rise_ms: key_times.rise_ms,
             fall_ms: key_times.fall_ms,
         },
+        glide_ms: sound_profile.glide_time(),
     }
+}
+
+// Whether the lane draws a loop note of pitch `note`: every real note, but
+// not the presses of the vibrato key or the glide key.
+fn is_drawn_in_lane(note: u8) -> bool {
+    if note == VIBRATO_KEY_NOTE {
+        return false;
+    }
+    if note == GLIDE_KEY_NOTE {
+        return false;
+    }
+    true
 }
 
 // True while the loop plays: looping, or recording a layer over it.
@@ -567,8 +592,10 @@ pub fn switch_kind(
 // Sets the song's oscillator `index`, from 0 to 2
 // (docs/adr/0035-oscillators-with-kinds.md), for notes played from now on:
 // its kind, "sine", "triangle", "square", "saw" or "noise", its level in
-// percent, and how far it is tuned from the note in octaves, half steps and
-// cents. Values outside their ranges are brought within them. The sound
+// percent, how far it is tuned from the note in octaves, half steps and
+// cents, and how much of each cycle a square spends up, in percent
+// (docs/design.md#pulse-width). Values outside their ranges are brought
+// within them. The sound
 // panel's Oscillators page sends it, naming the arguments in camelCase, like
 // `halfSteps`. Returns what the screen shows about the sound. Fails on an
 // index past the oscillators or a kind with no such name. Like
@@ -583,6 +610,7 @@ pub fn set_oscillator(
     octaves: i32,
     half_steps: i32,
     cents: i32,
+    width: u32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
     if index >= OSCILLATOR_COUNT {
@@ -594,6 +622,7 @@ pub fn set_oscillator(
         octaves,
         half_steps,
         cents,
+        width,
     };
 
     let mut composer = composer.lock().unwrap();
@@ -645,27 +674,42 @@ pub fn set_layer_volume(
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
-// Moves the song's filter: middle C's cutoff to `cutoff_hz`, where 20000 is
-// open, and the resonance to `resonance` percent
+// Moves the song's filter: its type to `filter_type`, "low-pass",
+// "high-pass", "band-pass" or "notch" (docs/design.md#filter-types), middle
+// C's cutoff to `cutoff_hz`, and the resonance to `resonance` percent
 // (docs/adr/0028-a-low-pass-filter.md). Values outside their ranges are
 // brought within them. Every note hears it, even those already sounding.
-// Returns what the screen shows about the sound. The sound's dev panel in
-// Compose sends it, naming the arguments in camelCase, like `cutoffHz`. Like
-// `switch_kind`, it opens the speakers first.
+// Returns what the screen shows about the sound. The sound panel's Filter
+// page sends it, naming the arguments in camelCase, like `cutoffHz`. Fails
+// on a type with no such name. Like `switch_kind`, it opens the speakers
+// first.
 #[tauri::command]
 pub fn set_filter(
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
+    filter_type: String,
     cutoff_hz: f32,
     resonance: u32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
+    let filter_type = filter_type_named(&filter_type)?;
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    let filter = Filter { cutoff_hz, resonance };
+    let filter = Filter {
+        filter_type,
+        cutoff_hz,
+        resonance,
+    };
     composer.sound_profile_mut().set_filter(&mut engine, filter);
     Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+fn filter_type_named(name: &str) -> Result<FilterType, String> {
+    match FilterType::from_name(name) {
+        Some(filter_type) => Ok(filter_type),
+        None => Err(format!("there is no filter type called {name}")),
+    }
 }
 
 // Sets the song's filter envelope for notes started from now on: how far it
@@ -863,8 +907,26 @@ pub fn set_vibrato_key_times(
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
+// Sets how long the song's melody notes take to glide while the glide key is
+// held, in ms, brought within 0 to 10000 (docs/adr/0036-glide.md), for notes
+// started from now on. Returns what the screen shows about the sound. The UI
+// sends it as `glideMs`. Like `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_glide_time(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    glide_ms: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_glide_time(&mut engine, glide_ms);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
 // Does what a laptop key does when pressed: plays its note or chord, holds
-// the vibrato key, switches the wave, runs the looper or changes the tempo.
+// the vibrato key or the glide key, switches the wave, runs the looper or changes the tempo.
 // `key` is the key's place on the keyboard, like "KeyQ". Returns what the
 // screen shows about the sound, so the UI can show it.
 //
@@ -930,6 +992,9 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HoldVibratoKey => {
             engine.set_vibrato_key(true);
         }
+        KeyAction::HoldGlideKey => {
+            engine.set_glide_key(true);
+        }
         KeyAction::SwitchWave => {
             composer.sound_profile_mut().switch_first_kind(engine);
         }
@@ -949,7 +1014,7 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
 }
 
 // Lets go of the notes a laptop key started, except any that another held
-// key is still playing, or of the vibrato key.
+// key is still playing, or of the vibrato key or the glide key.
 #[tauri::command]
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
@@ -964,6 +1029,7 @@ pub fn release_key(
 
     // Forget the key first, whether or not the speakers are open.
     let lets_go_of_vibrato_key = key_map.holds_vibrato_key(&key);
+    let lets_go_of_glide_key = key_map.holds_glide_key(&key);
     let notes = key_up(&mut key_map, &mut composer, &key, now);
 
     // Same reason as in `release_note`.
@@ -972,6 +1038,9 @@ pub fn release_key(
     }
     if lets_go_of_vibrato_key {
         engine.set_vibrato_key(false);
+    }
+    if lets_go_of_glide_key {
+        engine.set_glide_key(false);
     }
     for note in notes {
         engine.note_off(note);
@@ -1329,6 +1398,7 @@ mod tests {
         profile.set_filter(
             &mut engine,
             Filter {
+                filter_type: FilterType::HighPass,
                 cutoff_hz: 1000.0,
                 resonance: 40,
             },
@@ -1345,6 +1415,7 @@ mod tests {
         );
         profile.set_key_tracking(&mut engine, 30);
         let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["filter"]["filter_type"], "high-pass");
         assert_eq!(json["filter"]["cutoff_hz"], 1000.0);
         assert_eq!(json["filter"]["resonance"], 40);
         assert_eq!(json["filter"]["amount"], 2.5);
@@ -1372,6 +1443,7 @@ mod tests {
             octaves: -2,
             half_steps: 4,
             cents: -9,
+            width: 30,
         };
         profile.set_oscillator(&mut engine, 2, third);
         profile.set_loudness_envelope(
@@ -1384,6 +1456,7 @@ mod tests {
             },
         );
         profile.set_tuning(&mut engine, 432.0);
+        profile.set_glide_time(&mut engine, 250);
         let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
         assert_eq!(json["oscillators"][0]["kind"], "square");
         assert_eq!(json["oscillators"][2]["kind"], "noise");
@@ -1391,6 +1464,7 @@ mod tests {
         assert_eq!(json["oscillators"][2]["octaves"], -2);
         assert_eq!(json["oscillators"][2]["half_steps"], 4);
         assert_eq!(json["oscillators"][2]["cents"], -9);
+        assert_eq!(json["oscillators"][2]["width"], 30);
         assert_eq!(json["unison"]["copies"], 5);
         assert_eq!(json["unison"]["detune_cents"], 30);
         assert_eq!(json["unison"]["spread"], 70);
@@ -1399,6 +1473,7 @@ mod tests {
         assert_eq!(json["loudness"]["sustain"], 80);
         assert_eq!(json["loudness"]["release_ms"], 500);
         assert_eq!(json["tuning_hz"], 432.0);
+        assert_eq!(json["glide_ms"], 250);
 
         // And the loop's layers, by the names ui/sound.ts reads.
         let layers = [layer_of(&[LoopNote {
@@ -1445,6 +1520,36 @@ mod tests {
             by_hand.note_on(note, LAPTOP_VELOCITY);
         }
         assert!(control.render(4800) == by_hand.render(4800), "left Control did not play F#m");
+    }
+
+    #[test]
+    fn left_option_holds_the_glide_key() {
+        // With left Option held, C4 then E4 played over it glide: E4 bends
+        // from C4, so it sounds unlike the two played without it.
+        let mut composer = Composer::new();
+        let mut held = Engine::new().unwrap();
+        let mut up = Engine::new().unwrap();
+        for engine in [&mut held, &mut up] {
+            composer.send_all(engine);
+        }
+        press(&mut held, &mut composer, "AltLeft");
+        for engine in [&mut held, &mut up] {
+            press(engine, &mut composer, "KeyM");
+            engine.render(4800);
+            press(engine, &mut composer, "Comma");
+        }
+        let held_sound = held.render(48_000);
+        let up_sound = up.render(48_000);
+        assert!(held_sound != up_sound, "left Option glided nothing");
+    }
+
+    #[test]
+    fn every_filter_type_is_found_by_its_name_and_an_odd_name_fails() {
+        for filter_type in FilterType::ALL {
+            assert_eq!(filter_type_named(filter_type.name()), Ok(filter_type));
+        }
+        let odd = filter_type_named("comb");
+        assert_eq!(odd, Err(String::from("there is no filter type called comb")));
     }
 
     #[test]
@@ -1655,6 +1760,32 @@ mod tests {
         let notes = engine.loop_layers()[0].notes.clone();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[1].note, VIBRATO_KEY_NOTE);
+        let view = view_of(&mut engine, Instant::now());
+        let a4 = LoopNoteView {
+            note: A4,
+            start: 0.0,
+            end: Some(0.5),
+        };
+        assert_eq!(view.looper.layers[0].notes, vec![a4]);
+    }
+
+    #[test]
+    fn the_lane_leaves_out_the_glide_key_s_presses() {
+        // A4 recorded with the glide key held over it: the layer keeps
+        // both, and the lane shows A4 alone.
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+        engine.render(96_000);
+        engine.set_glide_key(true);
+        engine.note_on(A4, 100);
+        engine.render(12_000);
+        engine.note_off(A4);
+        engine.set_glide_key(false);
+        engine.render(12_000);
+
+        let notes = engine.loop_layers()[0].notes.clone();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].note, GLIDE_KEY_NOTE);
         let view = view_of(&mut engine, Instant::now());
         let a4 = LoopNoteView {
             note: A4,

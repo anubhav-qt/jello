@@ -39,6 +39,8 @@ enum class EventType {
     set_connection,
     set_vibrato_key,
     set_vibrato_key_times,
+    set_glide_key,
+    set_glide_time,
 };
 
 // One message for the audio thread.
@@ -88,15 +90,17 @@ struct Event {
 
     // Which oscillator, LFO or connection, from 0, for set_oscillator,
     // set_lfo and set_connection, and the LFO's or connection's settings.
-    // Whether the vibrato key is held; only for set_vibrato_key. And how
-    // long it takes to rise and fall; only for set_vibrato_key_times. The
-    // other messages can leave them out too.
+    // Whether the vibrato or glide key is held; only for set_vibrato_key and
+    // set_glide_key. How long the vibrato key takes to rise and fall; only
+    // for set_vibrato_key_times. And how long a glide takes; only for
+    // set_glide_time. The other messages can leave them out too.
     int index = 0;
     LfoSettings lfo{};
     Connection connection{};
     bool held = false;
     int rise_ms = 0;
     int fall_ms = 0;
+    int glide_ms = 0;
 };
 
 // Carries messages from one thread to another without locks

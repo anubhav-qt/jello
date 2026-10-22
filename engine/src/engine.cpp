@@ -68,6 +68,8 @@ static_assert(JELLO_FILTER_OPEN_HZ == static_cast<int>(filter_open_hz),
 static_assert(JELLO_FILTER_MOST_OCTAVES == static_cast<int>(filter_most_octaves),
               "the C API and the filter open the cutoff as far");
 static_assert(JELLO_FILTER_LONGEST_MS == filter_longest_ms, "the C API and the filter have the same longest stage");
+static_assert(JELLO_FILTER_NOTCH == static_cast<int>(FilterType::notch), "the notch is the same type");
+static_assert(JELLO_FILTER_NOTCH + 1 == filter_type_count, "every filter type has a number");
 
 // The C API and unison agree on its ranges.
 static_assert(JELLO_UNISON_MOST_COPIES == unison_most_copies, "the C API and unison have the same most copies");
@@ -92,10 +94,19 @@ static_assert(JELLO_OSCILLATOR_MOST_CENTS == static_cast<int>(oscillator_most_ce
               "the C API and the oscillators tune as many cents");
 static_assert(JELLO_KIND_NOISE == static_cast<int>(Kind::noise), "noise is the same kind");
 static_assert(JELLO_KIND_NOISE + 1 == kind_count, "every kind has a number");
+static_assert(JELLO_PULSE_NARROWEST_PERCENT == static_cast<int>(oscillator_narrowest_width * 100.0f + 0.5f),
+              "the C API and the oscillators have the same narrowest pulse");
+static_assert(JELLO_PULSE_WIDEST_PERCENT == static_cast<int>(oscillator_widest_width * 100.0f + 0.5f),
+              "the C API and the oscillators have the same widest pulse");
 
 // The C API and the voices agree on how far notes can be tuned.
 static_assert(JELLO_TUNING_LOWEST_HZ == static_cast<int>(tuning_lowest_hz), "the C API and the voices tune as low");
 static_assert(JELLO_TUNING_HIGHEST_HZ == static_cast<int>(tuning_highest_hz), "the C API and the voices tune as high");
+
+// The C API and the synth agree on how long a glide can take, and on the
+// pitch the looper records the glide key on.
+static_assert(JELLO_GLIDE_LONGEST_MS == glide_longest_ms, "the C API and the voices glide as long");
+static_assert(JELLO_GLIDE_KEY_NOTE == Synth::glide_key_note, "the C API and the synth record the glide key alike");
 
 // True if `value` is a number from `lowest` to `highest`. NaN, not a number
 // at all, is not.
@@ -162,17 +173,22 @@ static_assert(JELLO_SOURCE_VIBRATO_KEY == static_cast<int>(RoutingSource::vibrat
 static_assert(JELLO_SOURCE_FILTER_ENVELOPE == static_cast<int>(RoutingSource::filter_envelope),
               "the filter envelope is the same source");
 static_assert(JELLO_SOURCE_FILTER_ENVELOPE + 1 == source_count, "every source has a number");
+static_assert(JELLO_TARGET_FILTER_TYPE == static_cast<int>(RoutingTarget::filter_type),
+              "the filter type is the same target");
 static_assert(JELLO_TARGET_LFO_1_SPEED == static_cast<int>(RoutingTarget::lfo_1_speed), "LFO 1's speed is the same target");
 static_assert(JELLO_TARGET_OSCILLATOR_1_LEVEL == static_cast<int>(RoutingTarget::oscillator_1_level),
               "oscillator 1's level is the same target");
 static_assert(JELLO_TARGET_OSCILLATOR_1_PITCH == static_cast<int>(RoutingTarget::oscillator_1_pitch),
               "oscillator 1's pitch is the same target");
+static_assert(JELLO_TARGET_OSCILLATOR_1_WIDTH == static_cast<int>(RoutingTarget::oscillator_1_width),
+              "oscillator 1's width is the same target");
 static_assert(JELLO_TARGET_OSCILLATOR_1_KIND == static_cast<int>(RoutingTarget::oscillator_1_kind),
               "oscillator 1's kind is the same target");
 static_assert(JELLO_TARGET_COPIES == static_cast<int>(RoutingTarget::copies), "the copies are the same target");
 static_assert(JELLO_TARGET_FILTER_RELEASE == static_cast<int>(RoutingTarget::filter_release),
               "the filter release is the same target");
-static_assert(JELLO_TARGET_FILTER_RELEASE + 1 == target_count, "every target has a number");
+static_assert(JELLO_TARGET_GLIDE_TIME == static_cast<int>(RoutingTarget::glide_time), "the glide time is the same target");
+static_assert(JELLO_TARGET_GLIDE_TIME + 1 == target_count, "every target has a number");
 
 // An LFO's settings from the C API, checked: false if any is out of range.
 bool lfo_of_api(const JelloLfo& api, LfoSettings& lfo) {
@@ -273,7 +289,7 @@ bool connection_of_api(const JelloConnection& api, Connection& connection) {
     if (api.target < JELLO_TARGET_PITCH) {
         return false;
     }
-    if (api.target > JELLO_TARGET_FILTER_RELEASE) {
+    if (api.target > JELLO_TARGET_GLIDE_TIME) {
         return false;
     }
 
@@ -458,7 +474,7 @@ void jello_engine_all_notes_off(JelloEngine* engine) {
 }
 
 void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
-                                 float cents) {
+                                 float cents, float width) {
     // Anything out of range is ignored, so nothing odd reaches the synth.
     if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
         return;
@@ -478,6 +494,9 @@ void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float
     if (!is_within(cents, -JELLO_OSCILLATOR_MOST_CENTS, JELLO_OSCILLATOR_MOST_CENTS)) {
         return;
     }
+    if (!is_within(width, oscillator_narrowest_width, oscillator_widest_width)) {
+        return;
+    }
 
     OscillatorSettings oscillator;
     oscillator.kind = static_cast<Kind>(kind);
@@ -485,6 +504,7 @@ void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float
     oscillator.octaves = octaves;
     oscillator.half_steps = half_steps;
     oscillator.cents = cents;
+    oscillator.width = width;
     engine->conductor.set_oscillator(index, oscillator);
 }
 
@@ -561,7 +581,10 @@ void jello_engine_stop_song(JelloEngine* engine) {
     engine->conductor.stop_song();
 }
 
-void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonance) {
+void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, float resonance) {
+    if (!is_within_int(type, JELLO_FILTER_LOW_PASS, JELLO_FILTER_NOTCH)) {
+        return;
+    }
     if (!is_within(cutoff_hz, JELLO_FILTER_LOWEST_HZ, JELLO_FILTER_OPEN_HZ)) {
         return;
     }
@@ -570,6 +593,7 @@ void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonan
     }
 
     FilterSettings settings;
+    settings.type = static_cast<FilterType>(type);
     settings.cutoff_hz = cutoff_hz;
     settings.resonance = resonance;
     engine->conductor.set_filter(settings);
@@ -694,6 +718,17 @@ void jello_engine_set_vibrato_key_times(JelloEngine* engine, int rise_ms, int fa
 
 void jello_engine_set_vibrato_key(JelloEngine* engine, bool held) {
     engine->conductor.set_vibrato_key(held);
+}
+
+void jello_engine_set_glide_key(JelloEngine* engine, bool held) {
+    engine->conductor.set_glide_key(held);
+}
+
+void jello_engine_set_glide_time(JelloEngine* engine, int glide_ms) {
+    if (!is_within_int(glide_ms, 0, JELLO_GLIDE_LONGEST_MS)) {
+        return;
+    }
+    engine->conductor.set_glide_time(glide_ms);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {

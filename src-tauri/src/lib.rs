@@ -51,6 +51,7 @@ pub fn run() {
             commands::set_lfo,
             commands::set_connection,
             commands::set_vibrato_key_times,
+            commands::set_glide_time,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

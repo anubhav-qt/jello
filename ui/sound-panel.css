@@ -229,11 +229,6 @@
   margin-bottom: 12px;
 }
 
-/* A second name further down the same module, like the vibrato key's. */
-.sound-module-top.is-second {
-  margin-top: 24px;
-}
-
 .sound-label {
   font-family: "Doto", monospace;
   font-size: 11px;
@@ -367,9 +362,9 @@
   margin-top: 14px;
 }
 
-/* Right under a module's name, as the vibrato key's are. */
-.sound-fields.is-under-top {
-  margin-top: 0;
+/* The vibrato and glide keys' times, under the tuning on the Notes page. */
+.sound-fields.is-keys {
+  margin-top: 24px;
 }
 
 .sound-fields.is-speed {

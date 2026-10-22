@@ -214,9 +214,10 @@ export const LOUDNESS_TIME = timeScale(LOUDNESS_SHORTEST_MS, LOUDNESS_LONGEST_MS
 // vibrato key's rise and fall: all from 0 to 10,000 ms.
 export const TIME = timeScale(0, FILTER_LONGEST_MS);
 
-// The cutoff in Hz, from 20 Hz to open at 20,000 Hz. Every dot is the same
-// number of octaves, so low cutoffs get as much of the row as high ones. A
-// step is 1 Hz.
+// The cutoff in Hz, from 20 Hz to 20,000 Hz. Every dot is the same number
+// of octaves, so low cutoffs get as much of the row as high ones. A step is
+// 1 Hz. It writes a low-pass's open end as "open"; cutoffScale does the
+// same for the other types.
 export const CUTOFF: Scale = {
   share(hz: number) {
     return Math.log(hz / FILTER_LOWEST_HZ) / Math.log(FILTER_OPEN_HZ / FILTER_LOWEST_HZ);
@@ -244,6 +245,62 @@ export const CUTOFF: Scale = {
     return "Hz";
   },
 };
+
+// The cutoff of a filter of type `filterType`, which writes "open" at that
+// type's open end: 20,000 Hz for a low-pass and 20 Hz for a high-pass. A
+// band-pass and a notch always filter, so they never say it.
+export function cutoffScale(filterType: string): Scale {
+  return {
+    share: CUTOFF.share,
+    at: CUTOFF.at,
+    step: CUTOFF.step,
+    words(hz: number) {
+      if (isFilterOpen(filterType, hz)) {
+        return "open";
+      }
+      return String(Math.round(hz));
+    },
+    unit(hz: number) {
+      if (isFilterOpen(filterType, hz)) {
+        return "";
+      }
+      return "Hz";
+    },
+  };
+}
+
+// Whether a filter of type `filterType` with its cutoff at `cutoffHz` lets
+// everything through, so the engine skips it: a low-pass at the top, or a
+// high-pass at the bottom (engine/src/filter.cpp).
+export function isFilterOpen(filterType: string, cutoffHz: number): boolean {
+  if (filterType === "low-pass") {
+    return cutoffHz >= FILTER_OPEN_HZ;
+  }
+  if (filterType === "high-pass") {
+    return cutoffHz <= FILTER_LOWEST_HZ;
+  }
+  return false;
+}
+
+// The filter's types, in Rust's order (docs/design.md#filter-types), each
+// with what it does, for the hint, and a small drawing of its curve, 20 by
+// 12, for the type tiles.
+export const FILTER_TYPES = [
+  { name: "low-pass", hint: "takes the top off", glyph: "M1 3 L 10 3 L 17 11" },
+  { name: "high-pass", hint: "takes the bottom off", glyph: "M3 11 L 10 3 L 19 3" },
+  { name: "band-pass", hint: "keeps one band", glyph: "M2 11 L 10 2 L 18 11" },
+  { name: "notch", hint: "cuts one band out", glyph: "M1 3 L 7 3 L 10 11 L 13 3 L 19 3" },
+];
+
+// What a filter of type `filterType` does, for the Filter page's hint.
+export function filterHint(filterType: string): string {
+  for (const type of FILTER_TYPES) {
+    if (type.name === filterType) {
+      return type.hint;
+    }
+  }
+  return FILTER_TYPES[0].hint;
+}
 
 // How fine an LFO's speed in Hz steps at `hz`: the digit it is shown to.
 function hzStepAt(hz: number): number {
@@ -410,7 +467,7 @@ export const LFO_DELAY_BEATS = listScale([0, ...BEAT_LENGTHS], ["0", ...BEAT_WOR
 // The targets moved in cents and in octaves (`Target::unit` in
 // src-tauri/src/modulation.rs). LFOs' speeds, "lfo 1 speed" and so on, are
 // in octaves too, and the oscillators' pitches, "osc 1 pitch" and so on, in
-// cents.
+// cents. The oscillators' widths, "osc 1 width" and so on, are in percent.
 const CENTS_TARGETS = ["pitch", "detune"];
 const OCTAVE_TARGETS = [
   "cutoff",
@@ -421,6 +478,7 @@ const OCTAVE_TARGETS = [
   "filter attack",
   "filter decay",
   "filter release",
+  "glide time",
 ];
 
 // The targets read once as each note starts. Every other one moves while
@@ -434,6 +492,7 @@ const START_TARGETS = [
   "filter attack",
   "filter decay",
   "filter release",
+  "glide time",
 ];
 
 // Whether `target` is an oscillator's kind, like "osc 2 kind".
@@ -442,6 +501,14 @@ function isOscillatorKind(target: string): boolean {
     return false;
   }
   return target.endsWith(" kind");
+}
+
+// Whether `target` is an oscillator's width, like "osc 2 width".
+function isOscillatorWidth(target: string): boolean {
+  if (!target.startsWith("osc ")) {
+    return false;
+  }
+  return target.endsWith(" width");
 }
 
 // Whether `target` moves a pitch: the note's, or an oscillator's, like
@@ -457,7 +524,8 @@ export function isPitch(target: string): boolean {
 }
 
 // The unit a connection moves `target` in: "cents", "octaves", "steps"
-// (through the oscillators' kinds), "copies" or "%" (of its whole range).
+// (through the oscillators' kinds or the filter's types), "copies" or "%"
+// (of its whole range, or of a cycle for a width).
 export function targetUnit(target: string): string {
   if (CENTS_TARGETS.includes(target)) {
     return "cents";
@@ -472,6 +540,9 @@ export function targetUnit(target: string): string {
     return "octaves";
   }
   if (isOscillatorKind(target)) {
+    return "steps";
+  }
+  if (target === "filter type") {
     return "steps";
   }
   if (target === "copies") {
@@ -504,15 +575,22 @@ export function mostAmount(target: string): number {
   if (target === "filter amount") {
     return 8;
   }
-  // Round through all five kinds.
+  // Round through all five kinds, or all four types.
   if (isOscillatorKind(target)) {
     return 4;
+  }
+  if (target === "filter type") {
+    return 3;
+  }
+  // From the narrowest pulse, 5% of the cycle, to the widest, 95%.
+  if (isOscillatorWidth(target)) {
+    return 90;
   }
   if (target === "copies") {
     return 6;
   }
-  // An LFO's speed or an envelope's time, both in octaves, run over about
-  // 13 octaves.
+  // An LFO's speed or an envelope's or a glide's time, all in octaves, run
+  // over about 13 octaves.
   if (targetUnit(target) === "octaves") {
     return 14;
   }
@@ -569,19 +647,34 @@ export function amountScale(target: string): Scale {
   };
 }
 
-// How loud the low-pass filter leaves `hz`, in dB, with its cutoff at
-// `cutoffHz` and its resonance in percent: the 2-pole low-pass of
-// engine/src/filter.cpp. Its Q grows with the resonance squared, from
-// 0.7071, no bump at all, to 10. An open filter leaves everything as it is.
-export function filterDb(hz: number, cutoffHz: number, resonance: number): number {
-  if (cutoffHz >= FILTER_OPEN_HZ) {
+// How loud a filter of type `filterType` leaves `hz`, in dB, with its
+// cutoff at `cutoffHz` and its resonance in percent: the 2-pole state
+// variable filter of engine/src/filter.cpp. Its Q grows with the resonance
+// squared, from 0.7071, no bump at all, to 10. An open filter leaves
+// everything as it is. A notch's hole is as deep as -Infinity right at the
+// cutoff.
+export function filterDb(filterType: string, hz: number, cutoffHz: number, resonance: number): number {
+  if (isFilterOpen(filterType, cutoffHz)) {
     return 0;
   }
   const q = filterQ(resonance);
   const w = hz / cutoffHz;
   const below = 1 - w * w;
   const bump = w / q;
-  return -10 * Math.log10(below * below + bump * bump);
+  // Every type shares the filter's bottom line; each keeps a different
+  // part on top: the low part 1, the high part w squared, the band w over
+  // Q, times Q so it peaks like the others, and the notch the low and high
+  // parts together, 1 - w squared.
+  const bottom = below * below + bump * bump;
+  let top = 1;
+  if (filterType === "high-pass") {
+    top = w * w;
+  } else if (filterType === "band-pass") {
+    top = w;
+  } else if (filterType === "notch") {
+    top = Math.abs(below);
+  }
+  return 20 * Math.log10(top) - 10 * Math.log10(bottom);
 }
 
 const LOWEST_Q = 0.7071;
@@ -593,7 +686,8 @@ function filterQ(resonance: number): number {
 }
 
 // The resonance, in percent, that makes the filter's bump `db` loud at the
-// cutoff. There the low-pass is as loud as its Q, in dB.
+// cutoff. There a low-pass, high-pass or band-pass is as loud as its Q, in
+// dB.
 export function resonanceForDb(db: number): number {
   const q = Math.pow(10, db / 20);
   const squared = (q - LOWEST_Q) / (HIGHEST_Q - LOWEST_Q);

@@ -283,7 +283,7 @@ pub enum Unit {
     Percent,
     // Each one doubles: the cutoff's pitch, an LFO's speed, or a time.
     Octaves,
-    // Whole steps through the oscillators' kinds.
+    // Whole steps through the oscillators' kinds or the filter's types.
     Steps,
     // Whole copies.
     Copies,
@@ -316,13 +316,18 @@ pub enum Target {
     LoudnessSustain,
     FilterAmount,
     FilterSustain,
+    // Whole steps through low-pass, high-pass, band-pass and notch, and
+    // round again (docs/design.md#filter-types).
+    FilterType,
     // LFO number n's speed, from 0. Called "lfo 1 speed" to "lfo 8 speed".
     LfoSpeed(usize),
-    // Oscillator number n's level, pitch and kind, from 0
+    // Oscillator number n's level, pitch, width and kind, from 0
     // (docs/adr/0035-oscillators-with-kinds.md). Called "osc 1 level",
-    // "osc 1 pitch" and "osc 1 kind", and so on to "osc 3 kind".
+    // "osc 1 pitch", "osc 1 width" and "osc 1 kind", and so on to "osc 3
+    // kind". Only a square hears its width (docs/design.md#pulse-width).
     OscillatorLevel(usize),
     OscillatorPitch(usize),
+    OscillatorWidth(usize),
     OscillatorKind(usize),
     Copies,
     LoudnessAttack,
@@ -331,12 +336,14 @@ pub enum Target {
     FilterAttack,
     FilterDecay,
     FilterRelease,
+    // How long each melody note glides (docs/adr/0036-glide.md).
+    GlideTime,
 }
 
 impl Target {
     // Every target but the LFOs' speeds, which come in LFO_COUNT, and the
     // oscillators' targets, which come in OSCILLATOR_COUNT.
-    pub(crate) const OTHERS: [Target; 18] = [
+    pub(crate) const OTHERS: [Target; 20] = [
         Target::Pitch,
         Target::Loudness,
         Target::Pan,
@@ -348,6 +355,7 @@ impl Target {
         Target::LoudnessSustain,
         Target::FilterAmount,
         Target::FilterSustain,
+        Target::FilterType,
         Target::Copies,
         Target::LoudnessAttack,
         Target::LoudnessDecay,
@@ -355,6 +363,7 @@ impl Target {
         Target::FilterAttack,
         Target::FilterDecay,
         Target::FilterRelease,
+        Target::GlideTime,
     ];
 
     pub fn name(self) -> String {
@@ -370,9 +379,11 @@ impl Target {
             Target::LoudnessSustain => String::from("loudness sustain"),
             Target::FilterAmount => String::from("filter amount"),
             Target::FilterSustain => String::from("filter sustain"),
+            Target::FilterType => String::from("filter type"),
             Target::LfoSpeed(index) => format!("lfo {} speed", index + 1),
             Target::OscillatorLevel(index) => format!("osc {} level", index + 1),
             Target::OscillatorPitch(index) => format!("osc {} pitch", index + 1),
+            Target::OscillatorWidth(index) => format!("osc {} width", index + 1),
             Target::OscillatorKind(index) => format!("osc {} kind", index + 1),
             Target::Copies => String::from("copies"),
             Target::LoudnessAttack => String::from("loudness attack"),
@@ -381,6 +392,7 @@ impl Target {
             Target::FilterAttack => String::from("filter attack"),
             Target::FilterDecay => String::from("filter decay"),
             Target::FilterRelease => String::from("filter release"),
+            Target::GlideTime => String::from("glide time"),
         }
     }
 
@@ -401,6 +413,7 @@ impl Target {
             let oscillator_targets = [
                 Target::OscillatorLevel(index),
                 Target::OscillatorPitch(index),
+                Target::OscillatorWidth(index),
                 Target::OscillatorKind(index),
             ];
             for target in oscillator_targets {
@@ -426,17 +439,20 @@ impl Target {
             Target::LoudnessSustain => 8,
             Target::FilterAmount => 9,
             Target::FilterSustain => 10,
-            Target::LfoSpeed(index) => 11 + index as i32,
-            Target::OscillatorLevel(index) => 19 + index as i32,
-            Target::OscillatorPitch(index) => 22 + index as i32,
-            Target::OscillatorKind(index) => 25 + index as i32,
-            Target::Copies => 28,
-            Target::LoudnessAttack => 29,
-            Target::LoudnessDecay => 30,
-            Target::LoudnessRelease => 31,
-            Target::FilterAttack => 32,
-            Target::FilterDecay => 33,
-            Target::FilterRelease => 34,
+            Target::FilterType => 11,
+            Target::LfoSpeed(index) => 12 + index as i32,
+            Target::OscillatorLevel(index) => 20 + index as i32,
+            Target::OscillatorPitch(index) => 23 + index as i32,
+            Target::OscillatorWidth(index) => 26 + index as i32,
+            Target::OscillatorKind(index) => 29 + index as i32,
+            Target::Copies => 32,
+            Target::LoudnessAttack => 33,
+            Target::LoudnessDecay => 34,
+            Target::LoudnessRelease => 35,
+            Target::FilterAttack => 36,
+            Target::FilterDecay => 37,
+            Target::FilterRelease => 38,
+            Target::GlideTime => 39,
         }
     }
 
@@ -448,6 +464,7 @@ impl Target {
             Target::LfoSpeed(index) => Target::LfoSpeed(index.min(LFO_COUNT - 1)),
             Target::OscillatorLevel(index) => Target::OscillatorLevel(index.min(last_oscillator)),
             Target::OscillatorPitch(index) => Target::OscillatorPitch(index.min(last_oscillator)),
+            Target::OscillatorWidth(index) => Target::OscillatorWidth(index.min(last_oscillator)),
             Target::OscillatorKind(index) => Target::OscillatorKind(index.min(last_oscillator)),
             other => other,
         }
@@ -467,7 +484,9 @@ impl Target {
             Target::FilterAttack => Unit::Octaves,
             Target::FilterDecay => Unit::Octaves,
             Target::FilterRelease => Unit::Octaves,
+            Target::GlideTime => Unit::Octaves,
             Target::OscillatorKind(_) => Unit::Steps,
+            Target::FilterType => Unit::Steps,
             Target::Copies => Unit::Copies,
             _ => Unit::Percent,
         }
@@ -481,12 +500,16 @@ impl Target {
             Target::Detune => 50.0,
             Target::Cutoff => 10.0,
             Target::FilterAmount => 8.0,
-            // Round through all five kinds.
+            // Round through all five kinds, or all four types.
             Target::OscillatorKind(_) => 4.0,
+            Target::FilterType => 3.0,
+            // From the narrowest pulse, 5% of the cycle, to the widest, 95%.
+            Target::OscillatorWidth(_) => 90.0,
             Target::Copies => 6.0,
             _ => {
-                // An LFO's speed or an envelope's time, both in octaves, run
-                // over about 13 octaves. Everything else is in percent.
+                // An LFO's speed or an envelope's or a glide's time, all in
+                // octaves, run over about 13 octaves. Everything else is in
+                // percent.
                 if self.unit() == Unit::Octaves {
                     return 14.0;
                 }
@@ -574,6 +597,9 @@ mod tests {
                     targets.push(Target::OscillatorPitch(index));
                 }
                 for index in 0..OSCILLATOR_COUNT {
+                    targets.push(Target::OscillatorWidth(index));
+                }
+                for index in 0..OSCILLATOR_COUNT {
                     targets.push(Target::OscillatorKind(index));
                 }
             }
@@ -617,7 +643,7 @@ mod tests {
             assert_eq!(source.number(), number as i32, "{}", source.name());
         }
         let targets = every_target();
-        assert_eq!(targets.len(), 35);
+        assert_eq!(targets.len(), 40);
         for (number, target) in targets.iter().enumerate() {
             assert_eq!(target.number(), number as i32, "{}", target.name());
         }
@@ -630,6 +656,7 @@ mod tests {
         assert_eq!(Source::Random.within_range(), Source::Random);
         assert_eq!(Target::LfoSpeed(20).within_range(), Target::LfoSpeed(7));
         assert_eq!(Target::OscillatorKind(5).within_range(), Target::OscillatorKind(2));
+        assert_eq!(Target::OscillatorWidth(3).within_range(), Target::OscillatorWidth(2));
         assert_eq!(Target::OscillatorLevel(1).within_range(), Target::OscillatorLevel(1));
         assert_eq!(Target::Pan.within_range(), Target::Pan);
     }

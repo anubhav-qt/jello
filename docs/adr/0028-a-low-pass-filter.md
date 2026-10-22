@@ -1,6 +1,6 @@
 # 0028: A low-pass filter
 
-- Status: Accepted; values by ear and fixed key tracking superseded by 0030
+- Status: Accepted; values by ear and fixed key tracking superseded by 0030; extended with high-pass, band-pass and notch types (design.md, filter types)
 - Date: 2026-10-21
 
 Step 4 starts with a low-pass filter on every voice, before the loudness

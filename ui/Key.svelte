@@ -249,6 +249,9 @@
   {#if kind === "vibrato"}
     <span class="key-note">vibrato</span>
   {/if}
+  {#if kind === "glide"}
+    <span class="key-note">glide</span>
+  {/if}
   {#if isLooper}
     <LooperFace {sound} beats={looperBeats} />
   {:else if kind === "beat"}

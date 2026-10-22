@@ -43,9 +43,10 @@ double beats_per_sample(BeatLength beat) {
     return static_cast<double>(beat.tempo) / static_cast<double>(beat.samples_per_minute);
 }
 
-// How hard the vibrato key is pressed when the looper records it. Only that
-// it is held matters, so any velocity would do.
+// How hard the vibrato and glide keys are pressed when the looper records
+// them. Only that they are held matters, so any velocity would do.
 constexpr int vibrato_key_velocity = 127;
+constexpr int glide_key_velocity = 127;
 
 }  // namespace
 
@@ -183,6 +184,18 @@ void Conductor::set_vibrato_key_times(int rise_ms, int fall_ms) {
 void Conductor::set_vibrato_key(bool held) {
     Event event{EventType::set_vibrato_key, 0, 0};
     event.held = held;
+    mailbox_.send(event);
+}
+
+void Conductor::set_glide_key(bool held) {
+    Event event{EventType::set_glide_key, 0, 0};
+    event.held = held;
+    mailbox_.send(event);
+}
+
+void Conductor::set_glide_time(int glide_ms) {
+    Event event{EventType::set_glide_time, 0, 0};
+    event.glide_ms = glide_ms;
     mailbox_.send(event);
 }
 
@@ -390,6 +403,16 @@ void Conductor::handle(const Event& event) {
         } else {
             looper_.note_off(Synth::vibrato_key_note, now);
         }
+    } else if (event.type == EventType::set_glide_key) {
+        // The same for the glide key.
+        synth_.set_glide_key(event.held);
+        if (event.held) {
+            looper_.note_on(Synth::glide_key_note, glide_key_velocity, now);
+        } else {
+            looper_.note_off(Synth::glide_key_note, now);
+        }
+    } else if (event.type == EventType::set_glide_time) {
+        synth_.set_glide_time(event.glide_ms);
     } else if (event.type == EventType::stop_song) {
         song_player_.stop(synth_);
         song_messages_handled_ += 1;

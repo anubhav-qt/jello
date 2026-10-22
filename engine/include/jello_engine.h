@@ -27,11 +27,11 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// The functions from here to jello_engine_set_vibrato_key are for playing
+// The functions from here to jello_engine_set_glide_time are for playing
 // notes, setting their oscillators, running the click and the looper, playing
 // Compose's song, moving the filter, setting unison, the loudness envelope,
-// key tracking and tuning, and the LFOs, the routing list and the vibrato
-// key. They are safe to call while the audio is running,
+// key tracking and tuning, the LFOs, the routing list, the vibrato key and
+// glide. They are safe to call while the audio is running,
 // from one thread at a time. Each one only leaves a message for the audio
 // thread, which acts on it at the start of its next chunk of sound (about
 // every 10 ms). If 1024 messages are already waiting, new ones are dropped
@@ -69,15 +69,24 @@ enum {
     JELLO_KIND_NOISE = 4,
 };
 
+// How much of each cycle a square can spend up (docs/design.md#pulse-width),
+// in percent: 50 is the square, and narrower or wider a thinner pulse.
+enum {
+    JELLO_PULSE_NARROWEST_PERCENT = 5,
+    JELLO_PULSE_WIDEST_PERCENT = 95,
+};
+
 // Makes notes sent after this play oscillator `index` as `kind`, one of the
 // JELLO_KIND_ numbers above, at `level`, from 0 (silent) to 1, tuned
-// `octaves`, `half_steps` and `cents` from the note. Notes sent before it
-// keep theirs, even while they ring on. An index or any value outside the
-// ranges above is ignored. A new engine plays oscillator 0 as
-// JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level 0,
-// all tuned right on the note.
+// `octaves`, `half_steps` and `cents` from the note. A square spends `width`
+// of each cycle up, a share from JELLO_PULSE_NARROWEST_PERCENT to
+// JELLO_PULSE_WIDEST_PERCENT hundredths; the other kinds leave it be. Notes
+// sent before it keep theirs, even while they ring on. An index or any
+// value outside the ranges above is ignored. A new engine plays oscillator
+// 0 as JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level
+// 0, all tuned right on the note and at a width of 0.5.
 void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
-                                 float cents);
+                                 float cents, float width);
 
 // Starts the click: a tick on every beat, higher on the first beat of each
 // bar. Its first tick is beat 1 of a bar. Does nothing if the click is
@@ -178,9 +187,9 @@ bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, i
 // loop play on.
 void jello_engine_stop_song(JelloEngine* engine);
 
-// The low-pass filter's ranges (docs/adr/0028-a-low-pass-filter.md): the
-// lowest cutoff and the cutoff that means open, in Hz, the most octaves the
-// filter envelope opens it, and the longest any of its stages takes.
+// The filter's ranges (docs/adr/0028-a-low-pass-filter.md): the lowest
+// cutoff and the highest, in Hz, the most octaves the filter envelope opens
+// it, and the longest any of its stages takes.
 enum {
     JELLO_FILTER_LOWEST_HZ = 20,
     JELLO_FILTER_OPEN_HZ = 20000,
@@ -188,17 +197,28 @@ enum {
     JELLO_FILTER_LONGEST_MS = 10000,
 };
 
-// Every note goes through a low-pass filter of its own: it lets low sounds
-// through and turns high ones down, 12 dB per octave above its cutoff.
-// `cutoff_hz` is middle C's cutoff, from JELLO_FILTER_LOWEST_HZ to
-// JELLO_FILTER_OPEN_HZ, and every other note's follows it, an octave higher
-// for each octave up. At JELLO_FILTER_OPEN_HZ the filter is open: off, so
-// notes sound exactly as without it. `resonance`, from 0 to 1, boosts the
-// sound right at the cutoff. Every note hears a change, even those already
-// sounding, each gliding there over 20 ms so it never clicks. Values
-// outside those ranges are ignored. A new engine starts open, with no
-// resonance.
-void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonance);
+// The filter's types (docs/design.md#filter-types), each 12 dB per octave
+// away from its cutoff. A low-pass lets low sounds through and turns high
+// ones down; a high-pass the other way round. A band-pass lets only the
+// sounds near the cutoff through, and a notch all but those.
+enum {
+    JELLO_FILTER_LOW_PASS = 0,
+    JELLO_FILTER_HIGH_PASS = 1,
+    JELLO_FILTER_BAND_PASS = 2,
+    JELLO_FILTER_NOTCH = 3,
+};
+
+// Every note goes through a filter of its own, of `type`, one of the
+// JELLO_FILTER_ types above. `cutoff_hz` is middle C's cutoff, from
+// JELLO_FILTER_LOWEST_HZ to JELLO_FILTER_OPEN_HZ, and every other note's
+// follows it, an octave higher for each octave up. A low-pass at
+// JELLO_FILTER_OPEN_HZ, or a high-pass at JELLO_FILTER_LOWEST_HZ, is open:
+// off, so notes sound exactly as without it. `resonance`, from 0 to 1,
+// boosts the sound right at the cutoff. Every note hears a change, even
+// those already sounding, each gliding there over 20 ms so it never clicks,
+// a change of type too. Values outside those ranges are ignored. A new
+// engine starts as an open low-pass, with no resonance.
+void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, float resonance);
 
 // The filter envelope: when a note starts, it opens the cutoff by up to
 // `amount` octaves, from 0 to JELLO_FILTER_MOST_OCTAVES. It rises over
@@ -386,8 +406,8 @@ enum {
 // either way. The ones before JELLO_TARGET_OSCILLATOR_1_KIND move live,
 // while a note sounds; the rest are read once as each note starts. LFO
 // number n's speed (from 0) is JELLO_TARGET_LFO_1_SPEED + n, and oscillator
-// number n's level, pitch and kind are JELLO_TARGET_OSCILLATOR_1_LEVEL + n
-// and so on. Connections to one target add up, and the sum is kept within
+// number n's level, pitch, width and kind are
+// JELLO_TARGET_OSCILLATOR_1_LEVEL + n and so on. Connections to one target add up, and the sum is kept within
 // the target's own range.
 enum {
     // Cents, up to 4800.
@@ -412,24 +432,32 @@ enum {
     JELLO_TARGET_FILTER_AMOUNT = 9,
     // A share, up to 1.
     JELLO_TARGET_FILTER_SUSTAIN = 10,
+    // Whole steps through the JELLO_FILTER_ types, and round again, up to
+    // 3. Like the type itself, it glides to the next one over 20 ms.
+    JELLO_TARGET_FILTER_TYPE = 11,
     // Octaves, up to 14: 1 is twice as fast. A shared LFO's speed is only
     // moved by shared LFOs, in Hz or beats.
-    JELLO_TARGET_LFO_1_SPEED = 11,
+    JELLO_TARGET_LFO_1_SPEED = 12,
     // A share, up to 1: 1 moves it from silent to full.
-    JELLO_TARGET_OSCILLATOR_1_LEVEL = 19,
+    JELLO_TARGET_OSCILLATOR_1_LEVEL = 20,
     // Cents, up to 4800.
-    JELLO_TARGET_OSCILLATOR_1_PITCH = 22,
+    JELLO_TARGET_OSCILLATOR_1_PITCH = 23,
+    // A share of the cycle, up to 0.9: from the narrowest pulse to the
+    // widest. Only a square hears it.
+    JELLO_TARGET_OSCILLATOR_1_WIDTH = 26,
     // Whole steps through the JELLO_KIND_ kinds, and round again, up to 4.
-    JELLO_TARGET_OSCILLATOR_1_KIND = 25,
+    JELLO_TARGET_OSCILLATOR_1_KIND = 29,
     // Whole copies, up to 6.
-    JELLO_TARGET_COPIES = 28,
+    JELLO_TARGET_COPIES = 32,
     // Octaves of time, up to 14: 1 is twice as long.
-    JELLO_TARGET_LOUDNESS_ATTACK = 29,
-    JELLO_TARGET_LOUDNESS_DECAY = 30,
-    JELLO_TARGET_LOUDNESS_RELEASE = 31,
-    JELLO_TARGET_FILTER_ATTACK = 32,
-    JELLO_TARGET_FILTER_DECAY = 33,
-    JELLO_TARGET_FILTER_RELEASE = 34,
+    JELLO_TARGET_LOUDNESS_ATTACK = 33,
+    JELLO_TARGET_LOUDNESS_DECAY = 34,
+    JELLO_TARGET_LOUDNESS_RELEASE = 35,
+    JELLO_TARGET_FILTER_ATTACK = 36,
+    JELLO_TARGET_FILTER_DECAY = 37,
+    JELLO_TARGET_FILTER_RELEASE = 38,
+    // Octaves of time, up to 14, as each melody note starts to glide.
+    JELLO_TARGET_GLIDE_TIME = 39,
 };
 
 // One connection of the routing list: `source` moves `target` by `amount`,
@@ -470,6 +498,26 @@ void jello_engine_set_vibrato_key_times(JelloEngine* engine, int rise_ms, int fa
 // Letting go of every note lets go of it too.
 void jello_engine_set_vibrato_key(JelloEngine* engine, bool held);
 
+// The longest a glide takes, in ms (docs/adr/0036-glide.md).
+enum {
+    JELLO_GLIDE_LONGEST_MS = 10000,
+};
+
+// Holds or lets go of the glide key (docs/adr/0036-glide.md). While it is
+// held, each melody note, a note started on its own, slides in from the
+// last melody note's pitch. If that key is still held, the note already
+// sounding bends to the new one instead, as one note, and letting go of the
+// new key bends it back. Notes started together, a chord, never glide. It
+// only glides live notes. The looper records it with a layer's notes and
+// plays it back, as that layer's own. Letting go of every note lets go of
+// it too.
+void jello_engine_set_glide_key(JelloEngine* engine, bool held);
+
+// How long a glide takes for notes started after this, from 0 (a jump) to
+// JELLO_GLIDE_LONGEST_MS, in a straight line through the half steps. A
+// value outside that range is ignored. A new engine starts at 100.
+void jello_engine_set_glide_time(JelloEngine* engine, int glide_ms);
+
 // What the looper can be doing.
 enum {
     JELLO_LOOPER_IDLE = 0,
@@ -508,7 +556,8 @@ enum {
     // starts after that, so a new loop starts with no layers.
     JELLO_LOOP_FORGOT = 0,
     // Note `index` of layer `layer` started: its pitch `note`, on `sample`.
-    // A press of the vibrato key is a note of pitch JELLO_VIBRATO_KEY_NOTE.
+    // A press of the vibrato key is a note of pitch JELLO_VIBRATO_KEY_NOTE,
+    // and of the glide key, JELLO_GLIDE_KEY_NOTE.
     JELLO_LOOP_STARTED = 1,
     // Note `index` of layer `layer` ended on `sample`.
     JELLO_LOOP_ENDED = 2,
@@ -532,8 +581,8 @@ typedef struct JelloLoopChange {
     int layer;
     // Which note of the layer. For JELLO_LOOP_KEPT, how many notes it keeps.
     int index;
-    // Its pitch, 0 to 127, or JELLO_VIBRATO_KEY_NOTE; only for
-    // JELLO_LOOP_STARTED.
+    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE or JELLO_GLIDE_KEY_NOTE;
+    // only for JELLO_LOOP_STARTED.
     int note;
     // Counted from the loop's start.
     uint64_t sample;
@@ -546,12 +595,14 @@ typedef struct JelloLoopChange {
 // dropped, since the sound never waits for the screen.
 bool jello_engine_next_loop_change(JelloEngine* engine, JelloLoopChange* change);
 
-// The most notes a loop holds, in all its layers, and the pitch its notes
-// have for presses of the vibrato key: one past the highest note. Past the
-// most, new notes still sound live but are not recorded.
+// The most notes a loop holds, in all its layers, and the pitches its notes
+// have for presses of the vibrato key, one past the highest note, and of
+// the glide key, one past that. Past the most, new notes still sound live
+// but are not recorded.
 enum {
     JELLO_LOOP_MAX_NOTES = 4096,
     JELLO_VIBRATO_KEY_NOTE = 128,
+    JELLO_GLIDE_KEY_NOTE = 129,
 };
 
 // One note of a loop, for jello_engine_plan_loop.

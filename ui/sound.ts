@@ -13,7 +13,7 @@ export interface SoundView {
   looper: LooperView;
   // The loudness envelope new notes start with.
   loudness: LoudnessView;
-  // Where the low-pass filter and its envelope are.
+  // Where the filter and its envelope are.
   filter: FilterView;
   // The copies new notes are played by.
   unison: UnisonView;
@@ -24,6 +24,9 @@ export interface SoundView {
   lfos: LfoView[];
   connections: ConnectionView[];
   vibrato_key: VibratoKeyView;
+  // How long each melody note played with the glide key held takes to
+  // slide in, in ms (docs/adr/0036-glide.md).
+  glide_ms: number;
 }
 
 // One oscillator (`OscillatorView` in src-tauri/src/commands.rs).
@@ -37,6 +40,10 @@ export interface OscillatorView {
   octaves: number;
   half_steps: number;
   cents: number;
+  // How much of each cycle a square spends up, in percent, from
+  // PULSE_NARROWEST_PERCENT to PULSE_WIDEST_PERCENT. Only a square uses it
+  // (docs/design.md#pulse-width).
+  width: number;
 }
 
 // An oscillator as the sound panel sends it (`set_oscillator` in
@@ -47,6 +54,7 @@ export interface Oscillator {
   octaves: number;
   halfSteps: number;
   cents: number;
+  width: number;
 }
 
 // How many oscillators play each note, and how far each can be tuned from
@@ -55,6 +63,11 @@ export const OSCILLATOR_COUNT = 3;
 export const OSCILLATOR_MOST_OCTAVES = 3;
 export const OSCILLATOR_MOST_HALF_STEPS = 12;
 export const OSCILLATOR_MOST_CENTS = 100;
+
+// How much of each cycle a square can spend up, in percent (`PULSE_` in
+// src-tauri/src/engine.rs). 50 is the square.
+export const PULSE_NARROWEST_PERCENT = 5;
+export const PULSE_WIDEST_PERCENT = 95;
 
 // The loudness envelope new notes start with (`LoudnessView` in
 // src-tauri/src/commands.rs).
@@ -85,10 +98,14 @@ export const LOUDNESS_LONGEST_MS = 10000;
 export const TUNING_LOWEST_HZ = 415;
 export const TUNING_HIGHEST_HZ = 466;
 
-// Where the low-pass filter and its envelope are (`FilterView` in
+// Where the filter and its envelope are (`FilterView` in
 // src-tauri/src/commands.rs, docs/adr/0028-a-low-pass-filter.md).
 export interface FilterView {
-  // Middle C's cutoff, in Hz. At FILTER_OPEN_HZ the filter is open: off.
+  // "low-pass", "high-pass", "band-pass" or "notch"
+  // (docs/design.md#filter-types).
+  filter_type: string;
+  // Middle C's cutoff, in Hz. A low-pass at FILTER_OPEN_HZ, or a high-pass
+  // at FILTER_LOWEST_HZ, is open: off.
   cutoff_hz: number;
   // In percent.
   resonance: number;
@@ -114,8 +131,8 @@ export interface FilterEnvelope {
 }
 
 // The filter's ranges (`FILTER_` in src-tauri/src/engine.rs): the lowest
-// cutoff and the cutoff that means open, in Hz, the most octaves the
-// envelope opens it, and the longest any of its stages takes.
+// cutoff and the highest, in Hz, the most octaves the envelope opens it,
+// and the longest any of its stages takes.
 export const FILTER_LOWEST_HZ = 20;
 export const FILTER_OPEN_HZ = 20000;
 export const FILTER_MOST_OCTAVES = 8;
@@ -229,14 +246,19 @@ export const LFO_LONGEST_MS = 10000;
 // The longest the vibrato key takes to rise or fall, in ms.
 export const VIBRATO_KEY_LONGEST_MS = 10000;
 
+// The longest a glide takes, in ms (`GLIDE_LONGEST_MS` in
+// src-tauri/src/engine.rs).
+export const GLIDE_LONGEST_MS = 10000;
+
 // What the sound panel sends to Rust. ui/main.ts sends each in order, and
 // Rust's answer comes back through `showSound`.
 export interface SoundSender {
   // `index` counts from 0.
   setOscillator(index: number, oscillator: Oscillator): void;
   setLoudnessEnvelope(envelope: LoudnessEnvelope): void;
+  // `filterType` is "low-pass", "high-pass", "band-pass" or "notch",
   // `cutoffHz` is middle C's cutoff, and `resonance` is in percent.
-  setFilter(cutoffHz: number, resonance: number): void;
+  setFilter(filterType: string, cutoffHz: number, resonance: number): void;
   setFilterEnvelope(envelope: FilterEnvelope): void;
   // In percent.
   setKeyTracking(keyTracking: number): void;
@@ -244,6 +266,7 @@ export interface SoundSender {
   // A4's pitch in Hz.
   setTuning(a4Hz: number): void;
   setVibratoKeyTimes(riseMs: number, fallMs: number): void;
+  setGlideTime(glideMs: number): void;
   // `index` counts from 0.
   setLfo(index: number, lfo: LfoView): void;
   setConnection(index: number, connection: ConnectionView): void;

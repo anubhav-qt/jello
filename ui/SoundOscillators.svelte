@@ -1,14 +1,26 @@
 <!-- The sound panel's Oscillators page (docs/design.md#sound-panel): the
      three oscillators every note plays, side by side
      (docs/adr/0035-oscillators-with-kinds.md). Each has a drawing of what it
-     plays, its five kind tiles, and its level and tuning. All of them start
-     with the next key pressed. -->
+     plays, its five kind tiles, its level and a square's width
+     (docs/design.md#pulse-width), and its tuning. All of them start with
+     the next key pressed. -->
 <script lang="ts">
-  import { isPicked, KINDS, PERCENT, pickedOf, signedScale, type Picked, type Setting } from "./sound-scales";
+  import {
+    evenScale,
+    isPicked,
+    KINDS,
+    PERCENT,
+    pickedOf,
+    signedScale,
+    type Picked,
+    type Setting,
+  } from "./sound-scales";
   import {
     OSCILLATOR_MOST_CENTS,
     OSCILLATOR_MOST_HALF_STEPS,
     OSCILLATOR_MOST_OCTAVES,
+    PULSE_NARROWEST_PERCENT,
+    PULSE_WIDEST_PERCENT,
     type Oscillator,
     type OscillatorView,
     type SoundSender,
@@ -27,9 +39,13 @@
 
   let { sound, picked, onPick, send }: Props = $props();
 
-  const OCTAVES = signedScale(OSCILLATOR_MOST_OCTAVES, "octave", "octaves");
-  const HALF_STEPS = signedScale(OSCILLATOR_MOST_HALF_STEPS, "half step", "half steps");
-  const CENTS = signedScale(OSCILLATOR_MOST_CENTS, "cent", "cents");
+  // The tuning's three fields share one row with no unit after the number,
+  // since each field's name says it: "-12 half steps -100 cents" would not
+  // fit side by side.
+  const OCTAVES = signedScale(OSCILLATOR_MOST_OCTAVES, "", "");
+  const HALF_STEPS = signedScale(OSCILLATOR_MOST_HALF_STEPS, "", "");
+  const CENTS = signedScale(OSCILLATOR_MOST_CENTS, "", "");
+  const WIDTH_SCALE = evenScale(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, 1, "%", "%");
 
   // Oscillator `index` as it is now, with `change` made to it.
   function sendOscillator(index: number, change: Partial<Oscillator>) {
@@ -40,12 +56,13 @@
       octaves: now.octaves,
       halfSteps: now.half_steps,
       cents: now.cents,
+      width: now.width,
       ...change,
     };
     send.setOscillator(index, oscillator);
   }
 
-  // The four values of oscillator `index`, each picked by its own id, like
+  // The five values of oscillator `index`, each picked by its own id, like
   // "osc 2 level".
   function settingsOf(index: number) {
     const prefix = `osc ${index + 1}`;
@@ -55,6 +72,13 @@
       scale: PERCENT,
       now: () => sound.oscillators[index].level,
       set: (newLevel) => sendOscillator(index, { level: newLevel }),
+    };
+    const width: Setting = {
+      id: `${prefix} width`,
+      name: "Width",
+      scale: WIDTH_SCALE,
+      now: () => sound.oscillators[index].width,
+      set: (newWidth) => sendOscillator(index, { width: newWidth }),
     };
     const octaves: Setting = {
       id: `${prefix} octaves`,
@@ -77,7 +101,7 @@
       now: () => sound.oscillators[index].cents,
       set: (newCents) => sendOscillator(index, { cents: newCents }),
     };
-    return { level, octaves, halfSteps, cents };
+    return { level, width, octaves, halfSteps, cents };
   }
 
   const SETTINGS = [settingsOf(0), settingsOf(1), settingsOf(2)];
@@ -86,7 +110,8 @@
   // the oscillator's wave around a middle line, as tall as its level. Right
   // on the note it shows 2 cycles, and each octave up twice as many, so the
   // tuning shows too. Its square, at the right end, drags the level up and
-  // down.
+  // down. A square's pulse has a second square on its first fall, which
+  // drags its width sideways.
   const WIDTH = 280;
   const HEIGHT = 40;
   const MIDDLE_Y = 20;
@@ -99,8 +124,11 @@
   const MOST_CYCLES = 16;
 
   // How high `kind` is at `phase`, from 0 to 1 along a cycle: each wave
-  // starts its cycle rising from zero, as the engine plays it.
-  function kindHeight(kind: string, phase: number): number {
+  // starts its cycle rising from zero, as the engine plays it. A square is
+  // up for the first `width` percent of its cycle. The engine also lifts a
+  // thin pulse to balance it on the middle line, which the drawing leaves
+  // out, so the pulse always fills the same height.
+  function kindHeight(kind: string, phase: number, width: number): number {
     if (kind === "sine") {
       return Math.sin(2 * Math.PI * phase);
     }
@@ -114,7 +142,7 @@
       return 4 * phase - 4;
     }
     if (kind === "square") {
-      if (phase < 0.5) {
+      if (phase < width / 100) {
         return 1;
       }
       return -1;
@@ -162,7 +190,7 @@
         height = noiseHeight(point);
       } else {
         const phase = (along * cycles) % 1;
-        height = kindHeight(oscillator.kind, phase);
+        height = kindHeight(oscillator.kind, phase, oscillator.width);
       }
       const y = MIDDLE_Y - height * size;
       points.push(`${x.toFixed(1)} ${y.toFixed(1)}`);
@@ -171,6 +199,33 @@
   }
 
   let paths = $derived(sound.oscillators.map(pathOf));
+
+  // How wide one cycle of `oscillator` is drawn.
+  function cycleWidth(oscillator: OscillatorView): number {
+    return (RIGHT - LEFT) / cyclesOf(oscillator);
+  }
+
+  // Where a square's first fall is drawn, kept inside the drawing when a
+  // low oscillator's cycle is wider than it.
+  function fallX(oscillator: OscillatorView): number {
+    const x = LEFT + (cycleWidth(oscillator) * oscillator.width) / 100;
+    return Math.min(x, RIGHT);
+  }
+
+  // The width that puts the first fall at `x`, in percent, rounded and kept
+  // within its range, as its dots do.
+  function widthAt(oscillator: OscillatorView, x: number): number {
+    const percent = ((x - LEFT) / cycleWidth(oscillator)) * 100;
+    return WIDTH_SCALE.at(WIDTH_SCALE.share(percent));
+  }
+
+  // Only a square has a width.
+  function widthDoesNothing(oscillator: OscillatorView): boolean {
+    if (oscillator.level === 0) {
+      return true;
+    }
+    return oscillator.kind !== "square";
+  }
 
   // A silent oscillator's tuning does nothing, and nor does noise's.
   function tuningDoesNothing(oscillator: OscillatorView): boolean {
@@ -205,6 +260,15 @@
             onGrab={() => onPick(pickedOf(settings.level))}
             onMove={(_x, y) => settings.level.set(levelAt(y))}
           />
+          {#if oscillator.kind === "square"}
+            <SoundHandle
+              x={fallX(oscillator)}
+              y={MIDDLE_Y}
+              ringed={isPicked(picked, settings.width.id)}
+              onGrab={() => onPick(pickedOf(settings.width))}
+              onMove={(x) => settings.width.set(widthAt(oscillator, x))}
+            />
+          {/if}
         </svg>
       </div>
       <div class="sound-kinds">
@@ -222,6 +286,9 @@
       </div>
       <div class="sound-fields" style:grid-template-columns="1fr 1fr">
         <SoundValue setting={settings.level} dots={11} {picked} {onPick} />
+        <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
+      </div>
+      <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr">
         <SoundValue
           setting={settings.octaves}
           dots={7}
@@ -238,7 +305,7 @@
           bipolar
           dim={tuningDoesNothing(oscillator)}
         />
-        <SoundValue setting={settings.cents} dots={17} {picked} {onPick} bipolar dim={tuningDoesNothing(oscillator)} />
+        <SoundValue setting={settings.cents} dots={11} {picked} {onPick} bipolar dim={tuningDoesNothing(oscillator)} />
       </div>
     </div>
   {/each}

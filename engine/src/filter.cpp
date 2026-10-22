@@ -29,18 +29,57 @@ int glide_samples(int sample_rate) {
     return sample_rate * glide_ms / 1000;
 }
 
+// True when `settings` let everything through: a low-pass at the highest
+// cutoff, or a high-pass at the lowest.
+bool is_open(const FilterSettings& settings) {
+    if (settings.type == FilterType::low_pass) {
+        return settings.cutoff_hz >= filter_open_hz;
+    }
+    if (settings.type == FilterType::high_pass) {
+        return settings.cutoff_hz <= filter_lowest_hz;
+    }
+    return false;
+}
+
 }  // namespace
 
 FilterTargets filter_targets_of(const FilterSettings& settings) {
     FilterTargets targets;
+    targets.type = settings.type;
     targets.cutoff = std::log2(static_cast<double>(settings.cutoff_hz));
     targets.resonance = settings.resonance;
-    if (settings.cutoff_hz >= filter_open_hz) {
+    if (is_open(settings)) {
         targets.share = 0.0;
     } else {
         targets.share = 1.0;
     }
     return targets;
+}
+
+FilterType moved_filter_type(FilterType type, double steps) {
+    int index = static_cast<int>(type) + static_cast<int>(std::round(steps));
+    index = index % filter_type_count;
+    if (index < 0) {
+        index += filter_type_count;
+    }
+    return static_cast<FilterType>(index);
+}
+
+PartMix part_mix_of(FilterType type) {
+    PartMix mix;
+    if (type == FilterType::low_pass) {
+        mix.low = 1.0;
+    } else if (type == FilterType::high_pass) {
+        mix.low = 0.0;
+        mix.high = 1.0;
+    } else if (type == FilterType::band_pass) {
+        mix.low = 0.0;
+        mix.band = 1.0;
+    } else {
+        mix.low = 1.0;
+        mix.high = 1.0;
+    }
+    return mix;
 }
 
 Glide::Glide(int samples) : samples_(samples) {}
@@ -69,42 +108,48 @@ double Glide::next(double target) {
     return value_;
 }
 
-void LowPass::set(double cutoff_hz, double resonance, int sample_rate) {
+void StateVariableFilter::set(double cutoff_hz, double resonance, int sample_rate) {
     // The resonance is squared, so the first half of the control stays
     // gentle and the peak grows quickly near the top.
     double q = lowest_q + resonance * resonance * (highest_q - lowest_q);
-    double k = 1.0 / q;
+    k_ = 1.0 / q;
 
     // g is the cutoff, bent the way the analog filter's math needs before
     // it can run on samples, so the cutoff lands on the right pitch.
     double g = std::tan(pi * cutoff_hz / sample_rate);
-    a1_ = 1.0 / (1.0 + g * (g + k));
+    a1_ = 1.0 / (1.0 + g * (g + k_));
     a2_ = g * a1_;
     a3_ = g * a2_;
 }
 
-Stereo LowPass::next(Stereo input) {
+Stereo StateVariableFilter::next(Stereo input, const PartMix& mix) {
     Stereo output;
-    output.left = next_side(input.left, left_);
-    output.right = next_side(input.right, right_);
+    output.left = next_side(input.left, left_, mix);
+    output.right = next_side(input.right, right_, mix);
     return output;
 }
 
-double LowPass::next_side(double input, Memory& memory) const {
+double StateVariableFilter::next_side(double input, Memory& memory, const PartMix& mix) const {
     // How far the input is from where the second stage was.
     double difference = input - memory.second;
 
     // The first stage passes a band around the cutoff, and the second turns
-    // that into the low-pass: what comes out.
+    // that into the low part. What is left of the input once both are taken
+    // out, the band as far as it is fed back, is the high part.
     double band = a1_ * memory.first + a2_ * difference;
     double low = memory.second + a2_ * memory.first + a3_ * difference;
+    double high = input - k_ * band - low;
 
     memory.first = 2.0 * band - memory.first;
     memory.second = 2.0 * low - memory.second;
-    return low;
+
+    double out = low * mix.low;
+    out += band * mix.band;
+    out += high * mix.high;
+    return out;
 }
 
-void LowPass::clear() {
+void StateVariableFilter::clear() {
     left_ = Memory{};
     right_ = Memory{};
 }
@@ -115,10 +160,13 @@ VoiceFilter::VoiceFilter(int sample_rate)
       envelope_(sample_rate),
       cutoff_(glide_samples(sample_rate)),
       resonance_(glide_samples(sample_rate)),
-      share_(glide_samples(sample_rate)) {}
+      share_(glide_samples(sample_rate)),
+      low_(glide_samples(sample_rate)),
+      band_(glide_samples(sample_rate)),
+      high_(glide_samples(sample_rate)) {}
 
 void VoiceFilter::start(int note, bool fresh, const FilterTargets& targets, const FilterEnvelopeSettings& envelope,
-                        float key_tracking) {
+                        float key_tracking, double type_steps) {
     double octaves_above_middle_c = (note - middle_c) / 12.0;
     tracking_ = key_tracking * octaves_above_middle_c;
     amount_ = envelope.amount;
@@ -137,7 +185,11 @@ void VoiceFilter::start(int note, bool fresh, const FilterTargets& targets, cons
         cutoff_.jump_to(targets.cutoff + tracking_);
         resonance_.jump_to(targets.resonance);
         share_.jump_to(targets.share);
-        low_pass_.clear();
+        PartMix mix = part_mix_of(moved_filter_type(targets.type, type_steps));
+        low_.jump_to(mix.low);
+        band_.jump_to(mix.band);
+        high_.jump_to(mix.high);
+        filter_.clear();
     }
 }
 
@@ -163,9 +215,16 @@ Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets, const Filter
     double resonance = std::clamp(resonance_.next(targets.resonance) + moves.resonance, 0.0, 1.0);
     double share = share_.next(targets.share);
 
-    // tan and exp2 are slow next to the rest, so the low-pass's math is only
+    // Each part glides to the mix of the type the routing list moves it to.
+    PartMix to = part_mix_of(moved_filter_type(targets.type, moves.type));
+    PartMix mix;
+    mix.low = low_.next(to.low);
+    mix.band = band_.next(to.band);
+    mix.high = high_.next(to.high);
+
+    // tan and exp2 are slow next to the rest, so the filter's math is only
     // worked out again when the cutoff or the resonance moves.
-    if (!low_pass_ready_ || cutoff != set_cutoff_ || resonance != set_resonance_) {
+    if (!filter_ready_ || cutoff != set_cutoff_ || resonance != set_resonance_) {
         double hz = std::exp2(cutoff);
         if (hz > highest_hz_) {
             hz = highest_hz_;
@@ -173,16 +232,16 @@ Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets, const Filter
         if (hz < filter_lowest_hz) {
             hz = filter_lowest_hz;
         }
-        low_pass_.set(hz, resonance, sample_rate_);
+        filter_.set(hz, resonance, sample_rate_);
         set_cutoff_ = cutoff;
         set_resonance_ = resonance;
-        low_pass_ready_ = true;
+        filter_ready_ = true;
     }
 
     // The filter always runs, even when open, so turning it on mid-note
     // never starts it from nothing. Open, the share is 0 and the wave comes
     // out exactly as it went in.
-    Stereo filtered = low_pass_.next(wave);
+    Stereo filtered = filter_.next(wave, mix);
     Stereo out;
     out.left = wave.left * (1.0 - share) + filtered.left * share;
     out.right = wave.right * (1.0 - share) + filtered.right * share;

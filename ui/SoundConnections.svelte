@@ -48,6 +48,7 @@
     { words: "copies", target: "copies" },
     { words: "detune", target: "detune" },
     { words: "spread", target: "spread" },
+    { words: "glide time", target: "glide time" },
   ];
   const OSCILLATOR_TARGETS = [
     { words: "level 1", target: "osc 1 level" },
@@ -56,6 +57,9 @@
     { words: "pitch 1", target: "osc 1 pitch" },
     { words: "pitch 2", target: "osc 2 pitch" },
     { words: "pitch 3", target: "osc 3 pitch" },
+    { words: "width 1", target: "osc 1 width" },
+    { words: "width 2", target: "osc 2 width" },
+    { words: "width 3", target: "osc 3 width" },
     { words: "kind 1", target: "osc 1 kind" },
     { words: "kind 2", target: "osc 2 kind" },
     { words: "kind 3", target: "osc 3 kind" },
@@ -69,6 +73,7 @@
     { words: "sustain", target: "filter sustain" },
     { words: "release", target: "filter release" },
     { words: "key tracking", target: "key tracking" },
+    { words: "type", target: "filter type" },
   ];
 
   // Moves shows one group of targets at a time, picked by its name. The

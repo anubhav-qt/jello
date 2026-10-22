@@ -31,6 +31,12 @@ constexpr int oscillator_most_octaves = 3;
 constexpr int oscillator_most_half_steps = 12;
 constexpr float oscillator_most_cents = 100.0f;
 
+// The narrowest and widest a square's pulse can be, as a share of each
+// cycle (docs/design.md#pulse-width). At 0 or 1 the wave would never move,
+// and below 5% the thinnest pulses on high notes get narrower than a sample.
+constexpr float oscillator_narrowest_width = 0.05f;
+constexpr float oscillator_widest_width = 0.95f;
+
 // One oscillator's settings. Changing them changes the notes started after.
 struct OscillatorSettings {
     Kind kind = Kind::triangle;
@@ -41,6 +47,11 @@ struct OscillatorSettings {
     int octaves = 0;
     int half_steps = 0;
     float cents = 0.0f;
+    // How much of each cycle a square spends up, from
+    // oscillator_narrowest_width to oscillator_widest_width. At a half it is
+    // the square; narrower or wider, a thinner pulse. Only the square uses
+    // it.
+    float width = 0.5f;
 };
 
 // Where a new song's oscillators start: the first a triangle at full level,

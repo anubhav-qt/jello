@@ -64,6 +64,7 @@ enum class RoutingTarget {
     loudness_sustain,  // a share of the peak
     filter_amount,     // octaves
     filter_sustain,    // a share of the amount
+    filter_type,       // whole steps through low-pass, high-pass, band-pass, notch, and round again
     lfo_1_speed,       // octaves: 1 is twice as fast
     lfo_2_speed,
     lfo_3_speed,
@@ -78,6 +79,9 @@ enum class RoutingTarget {
     oscillator_1_pitch,  // cents
     oscillator_2_pitch,
     oscillator_3_pitch,
+    oscillator_1_width,  // a share of the cycle: 0.45 moves a square from 50% to 5%
+    oscillator_2_width,
+    oscillator_3_width,
     oscillator_1_kind,   // whole steps through sine, triangle, square, saw, noise, and round again
     oscillator_2_kind,
     oscillator_3_kind,
@@ -88,11 +92,12 @@ enum class RoutingTarget {
     filter_attack,
     filter_decay,
     filter_release,
+    glide_time,  // octaves of time: 1 is twice as long
 };
 
 // How many sources and targets there are, `none` included.
 constexpr int source_count = 14;
-constexpr int target_count = 35;
+constexpr int target_count = 40;
 
 // One connection: `source` moves `target` by `amount`, in the target's own
 // units, up to most_amount(target) either way.
@@ -120,10 +125,11 @@ int lfo_of(RoutingSource source);
 // Which LFO's speed `target` is, from 0, or -1 if it is no LFO's speed.
 int lfo_speed_of(RoutingTarget target);
 
-// Oscillator `index`'s level, pitch and kind, from 0
+// Oscillator `index`'s level, pitch, width and kind, from 0
 // (docs/adr/0035-oscillators-with-kinds.md).
 RoutingTarget oscillator_level(int index);
 RoutingTarget oscillator_pitch(int index);
+RoutingTarget oscillator_width(int index);
 RoutingTarget oscillator_kind(int index);
 
 // True for every pitch target: the note's and each oscillator's.

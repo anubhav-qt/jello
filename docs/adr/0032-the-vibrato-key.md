@@ -1,6 +1,6 @@
 # 0032: The vibrato key
 
-- Status: Accepted
+- Status: Accepted; Option/Alt as a shortcut key superseded by 0036
 - Date: 2026-10-22
 
 Left Shift becomes the vibrato key: held, it brings in whatever the song's

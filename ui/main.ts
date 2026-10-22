@@ -200,6 +200,7 @@ async function setOscillator(index: number, oscillator: Oscillator) {
       octaves: oscillator.octaves,
       halfSteps: oscillator.halfSteps,
       cents: oscillator.cents,
+      width: oscillator.width,
     });
     showSound(view);
   } catch (error) {
@@ -222,11 +223,12 @@ async function setLoudnessEnvelope(envelope: LoudnessEnvelope) {
   }
 }
 
-// It moves the filter. `cutoffHz` is middle C's cutoff, and `resonance` is
-// in percent, from 0 to 100.
-async function setFilter(cutoffHz: number, resonance: number) {
+// It moves the filter. `filterType` is "low-pass", "high-pass", "band-pass"
+// or "notch", `cutoffHz` is middle C's cutoff, and `resonance` is in
+// percent, from 0 to 100.
+async function setFilter(filterType: string, cutoffHz: number, resonance: number) {
   try {
-    const view = await invoke<SoundView>("set_filter", { cutoffHz, resonance });
+    const view = await invoke<SoundView>("set_filter", { filterType, cutoffHz, resonance });
     showSound(view);
   } catch (error) {
     showStatus(`Could not move the filter: ${error}`);
@@ -292,6 +294,17 @@ async function setVibratoKeyTimes(riseMs: number, fallMs: number) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the vibrato key: ${error}`);
+  }
+}
+
+// It sets how long each melody note takes to glide while the glide key is
+// held, in ms.
+async function setGlideTime(glideMs: number) {
+  try {
+    const view = await invoke<SoundView>("set_glide_time", { glideMs });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the glide time: ${error}`);
   }
 }
 
@@ -425,12 +438,13 @@ function stepWithArrow(key: string, steps: number, again: boolean) {
 }
 
 window.addEventListener("keydown", (event) => {
-  // While Cmd or Option/Alt is held, the key is a shortcut like Cmd+Q: it
-  // plays nothing and is left alone. Every note is let go too, because on a
-  // Mac a key let go while Cmd is held may never say so, and its note would
-  // stay stuck on. Left Control plays F#m, so Ctrl is no shortcut key
-  // (docs/adr/0032-the-vibrato-key.md).
-  if (event.metaKey || event.altKey) {
+  // While Cmd is held, the key is a shortcut like Cmd+Q: it plays nothing
+  // and is left alone. Every note is let go too, because on a Mac a key let
+  // go while Cmd is held may never say so, and its note would stay stuck
+  // on. Left Control plays F#m and left Option holds the glide key, so
+  // neither Ctrl nor Option/Alt is a shortcut key
+  // (docs/adr/0032-the-vibrato-key.md, docs/adr/0036-glide.md).
+  if (event.metaKey) {
     letGoOfEverything();
     return;
   }
@@ -506,12 +520,13 @@ window.addEventListener("blur", () => {
 const soundSender: SoundSender = {
   setOscillator: (index, oscillator) => sendInOrder(() => setOscillator(index, oscillator)),
   setLoudnessEnvelope: (envelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
-  setFilter: (cutoffHz, resonance) => sendInOrder(() => setFilter(cutoffHz, resonance)),
+  setFilter: (filterType, cutoffHz, resonance) => sendInOrder(() => setFilter(filterType, cutoffHz, resonance)),
   setFilterEnvelope: (envelope) => sendInOrder(() => setFilterEnvelope(envelope)),
   setKeyTracking: (keyTracking) => sendInOrder(() => setKeyTracking(keyTracking)),
   setUnison: (unison) => sendInOrder(() => setUnison(unison)),
   setTuning: (a4Hz) => sendInOrder(() => setTuning(a4Hz)),
   setVibratoKeyTimes: (riseMs, fallMs) => sendInOrder(() => setVibratoKeyTimes(riseMs, fallMs)),
+  setGlideTime: (glideMs) => sendInOrder(() => setGlideTime(glideMs)),
   setLfo: (index, lfo) => sendInOrder(() => setLfo(index, lfo)),
   setConnection: (index, connection) => sendInOrder(() => setConnection(index, connection)),
 };

@@ -53,7 +53,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    and every other placeholder screen goes the same way. Then 3
    oscillators per note, each a sine, triangle, square, saw or noise with
    its own level and tuning
-   ([ADR 0035](adr/0035-oscillators-with-kinds.md)).
+   ([ADR 0035](adr/0035-oscillators-with-kinds.md)). Then four filter
+   types, a width for the square (a pulse) and glide on a held left
+   Option ([ADR 0036](adr/0036-glide.md)).
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Guided composing came
    early: the Compose tab already builds a progression with guidance
@@ -204,17 +206,18 @@ and being built.
 
 - **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
   create, destroy, start and stop audio, note on, note off, all notes off,
-  set oscillator, start click, stop click, set tempo, press looper, clear
+  set oscillator (with its width), start click, stop click, set tempo, press looper, clear
   loop, set snap, looper status (with its place), next loop change, plan
-  loop, play song, stop song, song position, set filter, set filter
-  envelope, set unison, set loudness envelope, set key tracking, set tuning,
-  set LFO, set connection, set vibrato key times, set vibrato key, sample
-  rate, render.
+  loop, play song, stop song, song position, set filter (with its type),
+  set filter envelope, set unison, set loudness envelope, set key tracking,
+  set tuning, set LFO, set connection, set vibrato key times, set vibrato
+  key, set glide key, set glide time, sample rate, render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
   - `mailbox.h`: carries messages from one thread to another without
     locks. One carries note, oscillator, click, tempo, looper, snap, song,
-    sound, LFO, connection and vibrato key messages to the audio thread;
+    sound, LFO, connection, vibrato key and glide key messages to the
+    audio thread;
     another
     carries the loop's changes back to Rust.
     Sending says whether the message got in, and the sender can ask how
@@ -233,7 +236,8 @@ and being built.
   - `synth.*`: the instrument. It adds up its voices, picks the voice for
     each new note, and remembers the oscillators, filter envelope and
     unison new notes play. It holds the routing list and works it out every 32
-    samples (see LFOs and the routing list below). It adds into the
+    samples (see LFOs and the routing list below), and each player's
+    melody for the glide key (see [Glide](#glide)). It adds into the
     chunk instead of overwriting it, so the conductor can render it in
     pieces.
   - `looper.*`: records live notes and plays the loop back on the beat
@@ -266,13 +270,13 @@ and being built.
   - `oscillator.*`: the oscillators' kinds, settings and ranges, and where
     a new song's start.
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
-    off, and the trims that make them equally loud.
+    off, the square's width, and the trims that make them equally loud.
   - `noise.*`: white noise, a new random height every sample, and its trim.
   - `unison.h`: unison's controls and their ranges.
   - `stereo.h`: one moment of sound for both speakers.
-  - `filter.*`: each voice's low-pass filter, one per speaker, its filter
-    envelope, and the glides that keep a moved control from clicking (see
-    Filter below).
+  - `filter.*`: each voice's filter, one per speaker, its four types, its
+    filter envelope, and the glides that keep a moved control from
+    clicking (see Filter below).
   - `envelope.*`: a note's loudness over time: a rise (attack), a dip to
     the held level (decay, sustain) and a fade out after letting go
     (release). Each song sets its own stages (see Sound profile below). The
@@ -303,7 +307,8 @@ and being built.
   depends on how the sound was split into chunks.
 - **Oscillators** ([ADR 0035](adr/0035-oscillators-with-kinds.md)): every
   note is played by 3 oscillators, added up before the filter. Each has a
-  kind, a level from 0 to 100%, and a tuning from the note: up to 3
+  kind, a level from 0 to 100%, a width that only the square hears (see
+  [Pulse width](#pulse-width)), and a tuning from the note: up to 3
   octaves, 12 half steps and 100 cents either way, added up in cents.
   - The kinds are sine, triangle, square, saw and noise, in that order, so
     the routing list steps through them round and round. Later kinds, like
@@ -376,8 +381,10 @@ and being built.
     outside their ranges are ignored by the C API and brought within them
     by Rust.
 - **Filter** ([ADR 0028](adr/0028-a-low-pass-filter.md)): every voice puts
-  its wave through a low-pass filter of its own, before the loudness
-  envelope, so a quiet note is filtered just like a loud one. It is a
+  its wave through a filter of its own, before the loudness envelope, so a
+  quiet note is filtered just like a loud one: a low-pass, high-pass,
+  band-pass or notch, the song's own (see [Filter types](#filter-types)).
+  It is a
   state variable filter, 12 dB per octave, built the zero-delay-feedback
   way from Andrew Simper's published math (Cytomic), so it stays steady
   even when its cutoff moves on every sample.
@@ -389,8 +396,9 @@ and being built.
     tracking it started with. Cutoffs move in octaves, not Hz, and never
     go past 21,600 Hz (0.45 of the sample rate), where the math stops
     behaving.
-  - At 20,000 Hz the filter is open: the wave skips it and comes out
-    exactly as it went in. The filter still runs underneath, so closing it
+  - At its type's open end, 20,000 Hz for a low-pass and 20 Hz for a
+    high-pass, the filter is open: the wave skips it and comes out
+    exactly as it went in. A band-pass or notch is never open. The filter still runs underneath, so closing it
     mid-note starts it from where the wave is. Closing and opening fade
     between the two over 20 ms.
   - Resonance goes from 0 to 100%, squared on the way, so Q goes from
@@ -407,8 +415,8 @@ and being built.
     left over from the voice's last note. A note that takes over a
     sounding voice keeps its filter's memory and glides from the old
     note's cutoff to its own, so it never clicks.
-  - A new engine starts open, with resonance 0 and an envelope amount of
-    0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
+  - A new engine starts as an open low-pass, with resonance 0 and an
+    envelope amount of 0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
     exactly as before the filter. Values outside their ranges are ignored
     by the C API and brought within them by Rust.
 - **LFOs and the routing list**
@@ -451,12 +459,14 @@ and being built.
   - Targets, live while a note sounds: pitch (cents, up to 4,800 either
     way), loudness (only down; -100% is silence), pan, cutoff (octaves, up
     to 10), resonance, key tracking, detune (cents, up to 50), spread, both
-    sustains, the filter envelope's amount (octaves, up to 8), each LFO's
-    speed (octaves, up to 14), each oscillator's level and each
-    oscillator's pitch (cents, up to 4,800 either way). Read once as each
+    sustains, the filter envelope's amount (octaves, up to 8), the
+    filter's type (whole steps round low-pass, high-pass, band-pass and
+    notch, up to 3), each LFO's speed (octaves, up to 14), each
+    oscillator's level, each oscillator's pitch (cents, up to 4,800 either
+    way) and each oscillator's width (percent, up to 90). Read once as each
     note starts: each oscillator's kind (steps round sine, triangle,
-    square, saw and noise, up to 4), the copies (up to 6) and the six
-    envelope times (octaves of time, up to 14). Moves on one
+    square, saw and noise, up to 4), the copies (up to 6), the six
+    envelope times and the glide time (octaves of time, up to 14). Moves on one
     target add up, and the sum is kept within the setting's range. A
     connection moving the cutoff brings an open filter in.
   - Every 32 samples, counted from the engine's first, each sounding voice
@@ -482,7 +492,8 @@ and being built.
   own (0 jumps). Each player has its own: live play, the song (always up
   until step 5) and each loop layer, so it only moves that player's notes.
   The looper records its presses as notes on pitch 128, one past the
-  highest, and plays them back on the layer's own key. Letting go of every
+  highest, and plays them back on the layer's own key. The glide key is
+  built the same way, on pitch 129 (see [Glide](#glide)). Letting go of every
   note, as when the window loses focus, or removing a layer lets go of its
   key too.
 - **Sound profile** ([ADR 0030](adr/0030-a-sound-profile-per-song.md)):
@@ -490,7 +501,8 @@ and being built.
   one value for every song. Its sound profile
   (`src-tauri/src/sound_profile.rs`) holds the oscillators, the loudness
   envelope, the filter and filter envelope, key tracking, unison, tuning,
-  the LFOs, the routing list and the vibrato key's times, and the song in
+  the LFOs, the routing list, the vibrato key's times and the glide time,
+  and the song in
   Compose
   (`compose.rs`) holds the profile.
   - Every change, from the sound panel or the backslash key, goes to the
@@ -499,12 +511,12 @@ and being built.
     engine wrapper keeps no sound of its own, and the screen reads the
     sound from the profile.
   - As the app starts, the song sends its tempo and its whole profile,
-    before the first note: 83 messages, which arrive in order.
+    before the first note: 84 messages, which arrive in order.
   - A new song starts where a new engine does: one triangle oscillator at
-    full level with the other two silent, a 5 ms attack
-    held at the full peak with a 300 ms release, the filter open, no
-    filter envelope, full key tracking, 1 copy, A4 at 440 Hz and 120 beats
-    per minute. It also has vibrato ready: its first connection moves the
+    full level with the other two silent, every width at 50%, a 5 ms attack
+    held at the full peak with a 300 ms release, an open low-pass, no
+    filter envelope, full key tracking, 1 copy, a 100 ms glide, A4 at
+    440 Hz and 120 beats per minute. It also has vibrato ready: its first connection moves the
     pitch 25 cents either way with LFO 1, scaled by the vibrato key, which
     rises and falls over 250 ms. With the key up, it sounds exactly like a
     new engine. It is only a starting point.
@@ -664,12 +676,117 @@ and being built.
   Rust's ranges matching the engine's edge for edge, and a new engine
   starting where Rust says. The sound profile tests add a new song's
   vibrato, measured cycle by cycle, and the commands tests left Shift,
-  left Control, the names the screen reads and the lane leaving out the
-  key's presses.
+  left Control, left Option, the names the screen reads and the lane
+  leaving out both keys' presses.
   The key map tests check the melody keys finger by finger and each chord,
-  that other keys do nothing, and that letting go always stops the notes a
+  that other keys do nothing, that left Option holds the glide key until
+  it is let go, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
   key still plays. Tests never open speakers.
+  For the pulse width, the filter types and glide, see their own parts
+  below.
+
+### Pulse width
+
+The square has a width: how much of each cycle it spends up, from 5% to
+95% of the cycle. At 50% it is the square it always was, sample for sample;
+narrower or wider it is a pulse, thinner and more nasal. It is each
+oscillator's own, the song's, and starts at 50%.
+
+- Only the square hears it. Sine, triangle, saw and noise ignore it, so the
+  screen dims it for them.
+- The square rises at the cycle's start and falls at the width. Both jumps
+  are rounded off with PolyBLEP, so a thin pulse stays as clean on high
+  notes as the square.
+- The wave is moved down by `2 * width - 1`, so it is balanced on the
+  middle line at every width and never pushes the speakers one way.
+- It keeps the square's trim, so narrower pulses are naturally quieter:
+  their RMS is `2 * sqrt(width * (1 - width))` of the square's. A 25% pulse
+  is about 1.2 dB quieter and a 5% pulse about 7 dB quieter. The trim is a
+  starting value, to be tuned by ear.
+- A change reaches notes started after it, like the rest of an oscillator.
+  A connection to "osc N width" moves it live, in percent, while a note
+  sounds, so an LFO gives pulse width modulation (a slow, chorus-like
+  sweep). The move is kept within 5% and 95%.
+- The C API ignores a width outside 5% to 95%; Rust brings it within them.
+- Tests check each width's harmonics against the pulse's math (a 25% pulse
+  has no 4th, 8th or 12th harmonic), that a 5% pulse stays balanced, that
+  narrower pulses are quieter by the formula, that thin pulses on A7 keep
+  stray tones quiet (so the fall is rounded off at the width), that only
+  the square hears it, that a change reaches only new notes, and that the
+  routing list moves it live, matching the width set directly.
+
+### Filter types
+
+The filter has four types, each 12 dB per octave, taken from the state
+variable filter's own parts, so one filter runs whatever the type:
+
+- **Low-pass** ("takes the top off"): the low part. Open at 20,000 Hz.
+- **High-pass** ("takes the bottom off"): the high part. Open at 20 Hz.
+- **Band-pass** ("keeps one band"): the band part as it is, so it peaks at
+  Q at the cutoff: resonance makes the band narrower and louder. Never open.
+- **Notch** ("cuts one band out"): the low and high parts added, so it
+  takes out the cutoff and keeps the rest; resonance makes the notch
+  narrower. Never open.
+
+How the types behave:
+
+- The type is the song's own, and a new song starts on low-pass, so it
+  sounds as before. Picking a type never moves the cutoff or resonance.
+- It is live: changing it reaches notes already sounding, fading from the
+  old type to the new one over 20 ms, so it never clicks. Opening and
+  closing fade over the same 20 ms.
+- A connection to "filter type" moves it in whole steps round the four
+  types (up to 3), with the same fade.
+- Key tracking, the filter envelope and the cutoff's connections work the
+  same for every type. A connection moving the cutoff brings an open
+  filter in, at either end.
+- The C API ignores a type that is not one of the four; Rust names them
+  "low-pass", "high-pass", "band-pass" and "notch", and refuses any other
+  name.
+- Tests check each type's curve against the analog filter's math, the
+  boost or notch at the cutoff for each resonance, each type open only at
+  its own end, the 20 ms fade on notes already sounding, no click going
+  through every type, and the routing list stepping the type round both
+  ways.
+
+### Glide
+
+[ADR 0036](adr/0036-glide.md): hold left Option (left Alt on Windows) and
+each melody note slides to its pitch from the last one, instead of
+jumping.
+
+- **Melody notes.** A note started on its own is a melody note. Notes that
+  start together are a chord, and a chord never glides. So the engine can
+  tell, a note started while its player holds the glide key waits until
+  every note of its moment has come in, then starts on the same sample it
+  would have anyway.
+- **Bend or slide in.** If the last melody key is still held, its voice
+  bends to the new note: one note, no new attack. If it was let go, the new
+  note starts with its own attack and slides in from the last note's
+  pitch, from wherever that one was along its own slide.
+- **Coming back.** Held keys come back: let go of the newest key and the
+  voice bends back to the newest one still held, gliding while the glide
+  key is held and jumping once it is let go. A note let go meanwhile no
+  longer comes back.
+- **Time.** Each glide moves in a straight line through the cents and takes
+  the song's glide time whatever the distance: 0 to 10,000 ms, 100 ms in a
+  new song (0 jumps). A connection to "glide time" moves it in octaves of
+  time, read as each glide starts. The filter's key tracking follows the
+  gliding pitch.
+- **Players.** Each player glides on its own: live play, the song and each
+  loop layer, each with its own key and melody. The looper records the key
+  as notes on pitch 129, like the vibrato key's 128, and the lane leaves
+  them out. Letting go of every note, or removing a layer, lets go of its
+  key and forgets its melody.
+- **Keys.** Option/Alt is no longer a shortcut key in Jello: it no longer
+  blocks keys or lets go of every note. Right Option still plays nothing.
+- Tests check the bend with the key held, the slide in after letting go,
+  bending back (gliding with the key held, jumping without), the same time
+  whatever the distance, 0 ms jumping on one voice, the cutoff following
+  the glide, chords never gliding, notes jumping as before without the key,
+  the routing list moving the time, letting go of everything, odd times,
+  and a loop playing its own glide key back.
 
 ## Input
 
@@ -710,15 +827,16 @@ Then each key press gets the next note. Details:
 - Ignore auto-repeat (`event.repeat`).
 - Release every note when the window loses focus, and forget which keys were
   held.
-- Block Option/Alt, Cmd/Win, Fn and Caps Lock. Space, Tab and left
-  Control play chords like any other key, and left Shift holds the
-  vibrato key. While Cmd or Option/Alt is held, no key plays, so shortcuts
-  like Cmd+Q still work. Pressing Cmd or Option/Alt also releases every
-  note, because a Mac may never report a key let go while Cmd is held.
-  Control is no shortcut key in Jello
-  ([ADR 0032](adr/0032-the-vibrato-key.md)). Mac brightness and volume
-  keys never reach the app.
-- Keys pressed without Cmd or Option/Alt belong to Jello. The webview's
+- Block right Option/Alt, Cmd/Win, Fn and Caps Lock. Space, Tab and left
+  Control play chords like any other key, left Shift holds the vibrato
+  key and left Option (left Alt on Windows) holds the glide key. While Cmd
+  is held, no key plays, so shortcuts like Cmd+Q still work. Pressing Cmd
+  also releases every note, because a Mac may never report a key let go
+  while Cmd is held. Control and Option/Alt are no shortcut keys in Jello
+  ([ADR 0032](adr/0032-the-vibrato-key.md),
+  [ADR 0036](adr/0036-glide.md)). Mac brightness and volume keys never
+  reach the app.
+- Keys pressed without Cmd belong to Jello. The webview's
   own reactions to them are turned off, so the Mac never beeps, Space and
   Enter never press a button, and Tab never moves the focus.
 - Mappings are saved as named presets. A default preset ships, with the
@@ -756,9 +874,11 @@ Then each key press gets the next note. Details:
     every key playing it is let go. The backslash key (`\`) steps the song's
     first oscillator to its next kind, and left Shift, held, brings in
     whatever the song connects to the vibrato key: vibrato in a new song.
+    Left Option, held, makes melody notes glide (see [Glide](#glide)).
     Right Shift runs the [looper](#looper) and Esc removes a layer from it.
-    `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option
-    play nothing, saved for layer keys that will switch whole mappings.
+    `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and right
+    Option play nothing, saved for layer keys that will switch whole
+    mappings.
   - Before ADR 0012, the default was the accordion grid: three keys per
     finger on both hands, C3 to B4, laid out like a chromatic button
     accordion's note buttons.
@@ -1411,10 +1531,14 @@ panel. The mockups were approved one decision and one page at a time
   steps it). A drawing of what it plays around a faint middle line, as
   tall as its level, showing 2 cycles on the note and twice as many each
   octave up (from 0.5 to 16), so the tuning shows too; noise draws a fixed
-  scribble. Its square, at the right end, drags the level. Under it, 5
-  kind tiles. Then level, octaves, half steps and cents, the last three
-  with dots growing either way from a middle zero, dimmed while the level
-  is 0 or the kind is noise; a silent oscillator's drawing is dimmed too.
+  scribble. Its square, at the right end, drags the level; a square's
+  drawing has a second one on its fall, which drags the width sideways.
+  Under it, 5 kind tiles. Then level and width, the width dimmed unless
+  the kind is a square. On the row below, octaves, half steps and cents
+  with dots growing either way from a middle zero, written as bare
+  numbers since their names say the unit (with units, "-12 half steps"
+  and "-100 cents" would not fit side by side), dimmed while the level is
+  0 or the kind is noise; a silent oscillator's drawing is dimmed too.
   Note: "Changes start with the next key you press".
 - **Notes.** Loudness ("how each
   note rises and fades"): the envelope drawn, KEY UP where the key comes
@@ -1424,13 +1548,19 @@ panel. The mockups were approved one decision and one page at a time
   attack, decay, sustain and release. Unison ("copies of each note"): a
   picture of the copies, not draggable, spread left to right and detuned
   up and down; copies (7 dots, one per count), detune and spread. Tuning:
-  A4 in big digits, 415 to 466 Hz. Vibrato key ("hold left Shift"): rise
-  and fall. Note: "Changes start with the next key you press".
-- **Filter.** Filter ("takes the top off the sound"): the low-pass's real
-  curve from 20 Hz to 20 kHz with the resonance's bump, and a faint curve,
-  ENVELOPE PEAK, where the envelope takes the cutoff. Its one square drags
-  the cutoff sideways and the resonance up and down; at the far right the
-  cutoff reads "open". Filter envelope ("opens it as each note starts"):
+  A4 in big digits, 415 to 466 Hz. Under it, vibrato rise and vibrato
+  fall, then glide time, with no headings or hints of their own, since
+  the drawn keyboard marks left Shift VIBRATO and left Option GLIDE (the
+  column had no room for both keys' headings). Note: "Changes start with
+  the next key you press".
+- **Filter.** Filter, its hint saying what the type does ("takes the top
+  off", "takes the bottom off", "keeps one band" or "cuts one band out"):
+  the type's real curve from 20 Hz to 20 kHz with the resonance's bump or
+  notch, and a faint curve, ENVELOPE PEAK, where the envelope takes the
+  cutoff. Its one square drags the cutoff sideways and the resonance up
+  and down (a notch's only sideways); at a low-pass's far right or a
+  high-pass's far left the cutoff reads "open". Under it, four type tiles,
+  each with its curve. Picking one keeps the cutoff and resonance. Filter envelope ("opens it as each note starts"):
   drawn like loudness, with its peak and sustain in octaves; amount (0 to 8
   octaves), attack, decay, sustain and release. Key tracking ("follows the
   note"): 0% and 100% as faint lines, the song's line lit through middle C
@@ -1470,7 +1600,8 @@ panel. The mockups were approved one decision and one page at a time
   move notes already sounding".
 - **Sending.** Each change sends its whole group, through `set_oscillator`,
   `set_loudness_envelope`, `set_unison`, `set_tuning`,
-  `set_vibrato_key_times`, `set_filter`, `set_filter_envelope`,
+  `set_vibrato_key_times`, `set_glide_time`, `set_filter`,
+  `set_filter_envelope`,
   `set_key_tracking`, `set_lfo` or `set_connection`, and the panel shows
   Rust's answer. Steps start from the value Rust answered last.
 - **Code.** `ui/SoundPanel.svelte` holds the frame and the page tabs; a

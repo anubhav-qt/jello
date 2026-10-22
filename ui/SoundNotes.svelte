@@ -1,6 +1,7 @@
 <!-- The sound panel's Notes page (docs/design.md#sound-panel): the loudness
-     envelope, unison, the tuning and the vibrato key's times. All of them
-     start with the next key pressed. -->
+     envelope, unison, the tuning, the vibrato key's times and the glide
+     key's time (docs/adr/0036-glide.md). All of them start with the next
+     key pressed. -->
 <script lang="ts">
   import {
     evenScale,
@@ -116,17 +117,24 @@
   };
   const rise: Setting = {
     id: "vibrato rise",
-    name: "Rise",
+    name: "Vibrato rise",
     scale: TIME,
     now: () => sound.vibrato_key.rise_ms,
     set: (riseMs) => send.setVibratoKeyTimes(riseMs, sound.vibrato_key.fall_ms),
   };
   const fall: Setting = {
     id: "vibrato fall",
-    name: "Fall",
+    name: "Vibrato fall",
     scale: TIME,
     now: () => sound.vibrato_key.fall_ms,
     set: (fallMs) => send.setVibratoKeyTimes(sound.vibrato_key.rise_ms, fallMs),
+  };
+  const glide: Setting = {
+    id: "glide time",
+    name: "Glide time",
+    scale: TIME,
+    now: () => sound.glide_ms,
+    set: (glideMs) => send.setGlideTime(glideMs),
   };
 
   // The loudness drawing, 303 by 140: the note starts at the bottom left,
@@ -290,13 +298,12 @@
     </div>
     <SoundValue setting={tuning} dots={23} {picked} {onPick} big />
 
-    <div class="sound-module-top is-second">
-      <span class="sound-label">Vibrato key</span>
-      <span class="sound-hint">hold left Shift</span>
-    </div>
-    <div class="sound-fields is-under-top" style:grid-template-columns="1fr 1fr">
+    <!-- The vibrato key and the glide key are marked on the drawn keyboard,
+         so their times need no headings of their own. -->
+    <div class="sound-fields is-keys" style:grid-template-columns="1fr 1fr">
       <SoundValue setting={rise} dots={11} {picked} {onPick} />
       <SoundValue setting={fall} dots={11} {picked} {onPick} />
+      <SoundValue setting={glide} dots={11} {picked} {onPick} />
     </div>
   </div>
 </div>

@@ -78,6 +78,11 @@ public:
     // Holds or lets go of the live vibrato key (Synth::set_vibrato_key). The
     // looper records it like a note.
     void set_vibrato_key(bool held);
+    // Holds or lets go of the live glide key (Synth::set_glide_key), which
+    // the looper records like a note too, and how long a glide takes
+    // (Synth::set_glide_time).
+    void set_glide_key(bool held);
+    void set_glide_time(int glide_ms);
 
     // What the looper is doing. Only the thread that sends the messages may
     // ask.

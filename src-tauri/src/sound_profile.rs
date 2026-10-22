@@ -8,8 +8,8 @@
 
 use crate::engine::{
     Engine, Filter, FilterEnvelope, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, START_FILTER,
-    START_FILTER_ENVELOPE, START_KEY_TRACKING, START_LOUDNESS_ENVELOPE, START_OSCILLATORS, START_TUNING_HZ,
-    START_UNISON, Unison,
+    START_FILTER_ENVELOPE, START_GLIDE_MS, START_KEY_TRACKING, START_LOUDNESS_ENVELOPE, START_OSCILLATORS,
+    START_TUNING_HZ, START_UNISON, Unison,
 };
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, Lfo, NO_CONNECTION, START_LFO, Source, Target, VibratoKeyTimes,
@@ -56,14 +56,18 @@ pub struct SoundProfile {
     lfos: [Lfo; LFO_COUNT],
     connections: [Connection; CONNECTION_COUNT],
     vibrato_key_times: VibratoKeyTimes,
+    // How long each melody note played with the glide key held takes to
+    // slide in, in ms (docs/adr/0036-glide.md).
+    glide_ms: u32,
 }
 
 impl SoundProfile {
     // A new song's sound profile: one triangle oscillator at full level and
     // two silent ones, a 5 ms attack held at the
     // full peak with a 300 ms release, the filter open, no filter envelope,
-    // full key tracking, 1 copy and A4 at 440 Hz, the same place a new
-    // engine starts, plus vibrato ready on the vibrato key. It is only where
+    // full key tracking, 1 copy, A4 at 440 Hz and 100 ms glides, the same
+    // place a new engine starts, plus vibrato ready on the vibrato key. It
+    // is only where
     // a new song starts, and the song changes it from there.
     pub fn new() -> SoundProfile {
         let mut connections = [NO_CONNECTION; CONNECTION_COUNT];
@@ -79,6 +83,7 @@ impl SoundProfile {
             lfos: [START_LFO; LFO_COUNT],
             connections,
             vibrato_key_times: START_SONG_KEY_TIMES,
+            glide_ms: START_GLIDE_MS,
         }
     }
 
@@ -101,6 +106,7 @@ impl SoundProfile {
             engine.set_connection(index, *connection);
         }
         engine.set_vibrato_key_times(self.vibrato_key_times);
+        engine.set_glide_time(self.glide_ms);
     }
 
     // Moves new notes' first oscillator on to the next kind (sine,
@@ -184,6 +190,12 @@ impl SoundProfile {
         self.vibrato_key_times = engine.set_vibrato_key_times(times);
     }
 
+    // Sets how long a glide takes, in ms, on `engine` too, kept as the
+    // engine sent it.
+    pub fn set_glide_time(&mut self, engine: &mut Engine, glide_ms: u32) {
+        self.glide_ms = engine.set_glide_time(glide_ms);
+    }
+
     pub fn oscillators(&self) -> &[Oscillator; OSCILLATOR_COUNT] {
         &self.oscillators
     }
@@ -224,6 +236,10 @@ impl SoundProfile {
     pub fn vibrato_key_times(&self) -> VibratoKeyTimes {
         self.vibrato_key_times
     }
+
+    pub fn glide_time(&self) -> u32 {
+        self.glide_ms
+    }
 }
 
 // These tests check that a profile keeps what it was given, as the engine
@@ -234,21 +250,23 @@ mod tests {
     use super::*;
 
     use crate::engine::{
-        FILTER_LONGEST_MS, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT, Kind, LOUDNESS_LONGEST_MS,
-        LOUDNESS_SHORTEST_MS, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS, OSCILLATOR_MOST_OCTAVES,
-        TUNING_HIGHEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS,
+        FILTER_LONGEST_MS, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT, FilterType, GLIDE_LONGEST_MS, Kind,
+        LOUDNESS_LONGEST_MS, LOUDNESS_SHORTEST_MS, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS,
+        OSCILLATOR_MOST_OCTAVES, PULSE_WIDEST_PERCENT, SQUARE_WIDTH_PERCENT, TUNING_HIGHEST_HZ, UNISON_MOST_COPIES,
+        UNISON_MOST_DETUNE_CENTS,
     };
     use crate::modulation::{LFO_FASTEST_HZ, LfoShape, VIBRATO_KEY_LONGEST_MS};
 
+    const G4: u8 = 67;
     const A4: u8 = 69;
     const VELOCITY: u8 = 100;
 
-    // A profile unlike a new song's in every way: a saw, with a square an
-    // octave and a fifth down at 40%, a slow attack that
-    // falls to half the peak, a closed filter with resonance, a filter
+    // A profile unlike a new song's in every way: a saw, with a narrow
+    // square an octave and a fifth down at 40%, a slow attack that falls to
+    // half the peak, a closed band-pass filter with resonance, a filter
     // envelope, half key tracking, 5 spread copies, A4 at 432 Hz, LFO 1 a
-    // triangle at 7 Hz, LFO 2 moving the cutoff, and a vibrato key that
-    // rises over 100 ms.
+    // triangle at 7 Hz, LFO 2 moving the cutoff, a vibrato key that rises
+    // over 100 ms, and 200 ms glides.
     fn odd_profile(engine: &mut Engine) -> SoundProfile {
         // The app sends a new song's profile as it starts, then changes it.
         let mut profile = SoundProfile::new();
@@ -261,6 +279,7 @@ mod tests {
             octaves: -1,
             half_steps: -5,
             cents: 3,
+            width: 20,
         };
         profile.set_oscillator(engine, 1, square_below);
         profile.set_loudness_envelope(
@@ -275,6 +294,7 @@ mod tests {
         profile.set_filter(
             engine,
             Filter {
+                filter_type: FilterType::BandPass,
                 cutoff_hz: 800.0,
                 resonance: 50,
             },
@@ -319,6 +339,7 @@ mod tests {
             fall_ms: 50,
         };
         profile.set_vibrato_key_times(engine, times);
+        profile.set_glide_time(engine, 200);
         profile
     }
 
@@ -329,14 +350,21 @@ mod tests {
         engine.render(frames as usize)
     }
 
-    // The same with the vibrato key held, so whatever it moves is heard.
-    fn play_a4_with_the_key(engine: &mut Engine) -> Vec<f32> {
+    // The same with the vibrato key held, so whatever it moves is heard,
+    // and the glide key held too, with G4 played for 50 ms first, so A4
+    // glides up from it.
+    fn play_a4_with_the_keys(engine: &mut Engine) -> Vec<f32> {
         engine.set_vibrato_key(true);
-        play_a4(engine)
+        engine.set_glide_key(true);
+        engine.note_on(G4, VELOCITY);
+        let frames = engine.sample_rate() * 50 / 1000;
+        let mut samples = engine.render(frames as usize);
+        samples.extend(play_a4(engine));
+        samples
     }
 
     // Every part of a profile, as play_a4_without names them.
-    const PARTS: [&str; 10] = [
+    const PARTS: [&str; 11] = [
         "oscillators",
         "loudness envelope",
         "filter",
@@ -347,6 +375,7 @@ mod tests {
         "lfos",
         "connections",
         "vibrato key times",
+        "glide time",
     ];
 
     // Sends `profile` to a new engine part by part, leaving out `left_out`:
@@ -389,7 +418,10 @@ mod tests {
         if left_out != "vibrato key times" {
             engine.set_vibrato_key_times(profile.vibrato_key_times());
         }
-        play_a4_with_the_key(&mut engine)
+        if left_out != "glide time" {
+            engine.set_glide_time(profile.glide_time());
+        }
+        play_a4_with_the_keys(&mut engine)
     }
 
     #[test]
@@ -403,6 +435,7 @@ mod tests {
         assert_eq!(profile.unison(), START_UNISON);
         assert_eq!(profile.tuning_hz(), START_TUNING_HZ);
         assert_eq!(profile.lfos(), &[START_LFO; LFO_COUNT]);
+        assert_eq!(profile.glide_time(), START_GLIDE_MS);
     }
 
     #[test]
@@ -540,6 +573,7 @@ mod tests {
             octaves: 0,
             half_steps: 7,
             cents: -4,
+            width: SQUARE_WIDTH_PERCENT,
         };
         profile.set_oscillator(&mut engine, 2, fifth_up);
         assert_eq!(profile.oscillators()[2], fifth_up);
@@ -568,6 +602,7 @@ mod tests {
         profile.set_filter(
             &mut engine,
             Filter {
+                filter_type: FilterType::Notch,
                 cutoff_hz: 50000.0,
                 resonance: 150,
             },
@@ -598,6 +633,7 @@ mod tests {
             octaves: 5,
             half_steps: -20,
             cents: 300,
+            width: 99,
         };
         profile.set_oscillator(&mut engine, 1, too_far_off);
         let too_fast = Lfo {
@@ -620,6 +656,7 @@ mod tests {
             fall_ms: 20000,
         };
         profile.set_vibrato_key_times(&mut engine, too_long);
+        profile.set_glide_time(&mut engine, 20000);
 
         let loudness_envelope = LoudnessEnvelope {
             attack_ms: LOUDNESS_SHORTEST_MS,
@@ -628,6 +665,7 @@ mod tests {
             release_ms: LOUDNESS_SHORTEST_MS,
         };
         let filter = Filter {
+            filter_type: FilterType::Notch,
             cutoff_hz: FILTER_OPEN_HZ,
             resonance: FULL_PERCENT,
         };
@@ -655,6 +693,7 @@ mod tests {
             octaves: OSCILLATOR_MOST_OCTAVES,
             half_steps: -OSCILLATOR_MOST_HALF_STEPS,
             cents: OSCILLATOR_MOST_CENTS,
+            width: PULSE_WIDEST_PERCENT,
         };
         assert_eq!(profile.oscillators()[1], at_the_edges);
         let at_the_top = Lfo {
@@ -674,6 +713,7 @@ mod tests {
             fall_ms: VIBRATO_KEY_LONGEST_MS,
         };
         assert_eq!(profile.vibrato_key_times(), longest);
+        assert_eq!(profile.glide_time(), GLIDE_LONGEST_MS);
 
         // An oscillator, LFO or connection past the last changes nothing.
         let before = profile;
@@ -692,8 +732,8 @@ mod tests {
         let mut sent = Engine::new().unwrap();
         profile.send_all(&mut sent);
 
-        let changed_sound = play_a4_with_the_key(&mut changed);
-        let sent_sound = play_a4_with_the_key(&mut sent);
+        let changed_sound = play_a4_with_the_keys(&mut changed);
+        let sent_sound = play_a4_with_the_keys(&mut sent);
         assert!(changed_sound == sent_sound, "a change did not reach the engine");
     }
 
@@ -705,7 +745,7 @@ mod tests {
         let odd = odd_profile(&mut scratch);
         let mut sent = Engine::new().unwrap();
         odd.send_all(&mut sent);
-        let sent_sound = play_a4_with_the_key(&mut sent);
+        let sent_sound = play_a4_with_the_keys(&mut sent);
 
         let whole = play_a4_without(&odd, "nothing");
         assert!(sent_sound == whole, "sending the profile did not play it");

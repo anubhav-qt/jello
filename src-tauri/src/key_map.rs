@@ -117,6 +117,11 @@ const WAVE_KEY: &str = "Backslash";
 // the left pinky.
 const VIBRATO_KEY: &str = "ShiftLeft";
 
+// The key held to glide: while it is held, each melody note slides in from
+// the last one (docs/adr/0036-glide.md). Left Option on a Mac, left Alt on
+// Windows, under the left thumb.
+const GLIDE_KEY: &str = "AltLeft";
+
 // The keys that run the beat and the looper
 // (docs/adr/0021-a-looper-on-a-beat.md). Right Shift counts in, records and
 // closes the loop, then starts and stops layers, and Esc removes a layer
@@ -158,6 +163,8 @@ enum KeyRole {
     Chord(Chord),
     // Holds the vibrato key.
     Vibrato,
+    // Holds the glide key.
+    Glide,
     // Moves new notes on to the next wave.
     Wave,
     // Runs the looper.
@@ -179,6 +186,8 @@ pub enum KeyAction {
     PlayChord(Chord),
     // Holds the vibrato key until the key is let go.
     HoldVibratoKey,
+    // Holds the glide key until the key is let go.
+    HoldGlideKey,
     // Moves new notes on to the next wave.
     SwitchWave,
     // Counts in, records or closes the loop, or starts or stops a layer,
@@ -220,6 +229,8 @@ pub struct LayoutForUi {
     wave_keys: Vec<String>,
     // The keys that hold the vibrato key.
     vibrato_keys: Vec<String>,
+    // The keys that hold the glide key.
+    glide_keys: Vec<String>,
     // The keys that run the beat and the looper, each with what it does:
     // "looper", "clear", "slower" or "faster".
     beat_keys: HashMap<String, &'static str>,
@@ -237,6 +248,7 @@ impl KeyMap {
         }
         layout.insert(String::from(WAVE_KEY), KeyRole::Wave);
         layout.insert(String::from(VIBRATO_KEY), KeyRole::Vibrato);
+        layout.insert(String::from(GLIDE_KEY), KeyRole::Glide);
         layout.insert(String::from(LOOPER_KEY), KeyRole::Looper);
         layout.insert(String::from(CLEAR_KEY), KeyRole::RemoveLayer);
         layout.insert(String::from(SLOWER_KEY), KeyRole::Slower);
@@ -279,6 +291,11 @@ impl KeyMap {
                 self.held.insert(String::from(key), Vec::new());
                 Some(KeyAction::HoldVibratoKey)
             }
+            // The same for the glide key.
+            KeyRole::Glide => {
+                self.held.insert(String::from(key), Vec::new());
+                Some(KeyAction::HoldGlideKey)
+            }
             KeyRole::Wave => Some(KeyAction::SwitchWave),
             KeyRole::Looper => Some(KeyAction::PressLooper),
             KeyRole::RemoveLayer => Some(KeyAction::RemoveLayer),
@@ -313,6 +330,15 @@ impl KeyMap {
             return false;
         }
         self.layout.get(key) == Some(&KeyRole::Vibrato)
+    }
+
+    // Whether `key` is held down holding the glide key, so letting go of it
+    // lets go of the glide key. Ask before `release`.
+    pub fn holds_glide_key(&self, key: &str) -> bool {
+        if !self.held.contains_key(key) {
+            return false;
+        }
+        self.layout.get(key) == Some(&KeyRole::Glide)
     }
 
     // Whether any held key is playing `note`.
@@ -358,6 +384,7 @@ impl KeyMap {
         let mut chords = HashMap::new();
         let mut wave_keys = Vec::new();
         let mut vibrato_keys = Vec::new();
+        let mut glide_keys = Vec::new();
         let mut beat_keys = HashMap::new();
         for (key, role) in &self.layout {
             match role {
@@ -369,6 +396,9 @@ impl KeyMap {
                 }
                 KeyRole::Vibrato => {
                     vibrato_keys.push(key.clone());
+                }
+                KeyRole::Glide => {
+                    glide_keys.push(key.clone());
                 }
                 KeyRole::Wave => {
                     wave_keys.push(key.clone());
@@ -392,12 +422,14 @@ impl KeyMap {
         // same answer every time.
         wave_keys.sort();
         vibrato_keys.sort();
+        glide_keys.sort();
 
         LayoutForUi {
             notes,
             chords,
             wave_keys,
             vibrato_keys,
+            glide_keys,
             beat_keys,
         }
     }
@@ -564,6 +596,26 @@ mod tests {
     }
 
     #[test]
+    fn left_option_holds_the_glide_key_until_it_is_let_go() {
+        let mut key_map = KeyMap::new();
+        assert!(!key_map.holds_glide_key("AltLeft"));
+        assert_eq!(key_map.press("AltLeft"), Some(KeyAction::HoldGlideKey));
+        assert!(key_map.holds_glide_key("AltLeft"));
+
+        // Held, it is not held again, and it starts no notes to stop.
+        assert_eq!(key_map.press("AltLeft"), None);
+        assert_eq!(key_map.release("AltLeft"), Vec::<u8>::new());
+        assert!(!key_map.holds_glide_key("AltLeft"));
+
+        // No other key holds it, held or not: not right Option, and not the
+        // vibrato key.
+        key_map.press("ShiftLeft");
+        assert!(!key_map.holds_glide_key("ShiftLeft"));
+        assert!(!key_map.holds_vibrato_key("AltLeft"));
+        assert!(!key_map.holds_glide_key("AltRight"));
+    }
+
+    #[test]
     fn backslash_switches_the_wave() {
         let mut key_map = KeyMap::new();
         assert_eq!(key_map.press("Backslash"), Some(KeyAction::SwitchWave));
@@ -596,7 +648,7 @@ mod tests {
             "Enter",
             "Backspace",
             "ControlRight",
-            "AltLeft",
+            "AltRight",
             "MetaLeft",
         ];
         for key in keys {
@@ -604,8 +656,9 @@ mod tests {
         }
 
         // The layout holds the 24 chords, the 20 notes, the vibrato key, the
-        // wave key and the 4 beat and looper keys, and nothing else.
-        assert_eq!(key_map.layout.len(), 50);
+        // glide key, the wave key and the 4 beat and looper keys, and
+        // nothing else.
+        assert_eq!(key_map.layout.len(), 51);
     }
 
     #[test]
@@ -818,6 +871,7 @@ mod tests {
         assert_eq!(json["chords"]["KeyX"]["name"], "Cm");
         assert_eq!(json["wave_keys"][0], "Backslash");
         assert_eq!(json["vibrato_keys"][0], "ShiftLeft");
+        assert_eq!(json["glide_keys"][0], "AltLeft");
         assert_eq!(json["beat_keys"]["ShiftRight"], "looper");
     }
 }

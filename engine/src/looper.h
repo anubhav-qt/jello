@@ -30,7 +30,7 @@ struct LoopChange {
     int layer = 0;
     // Which note of the layer. For `kept`, how many notes the layer keeps.
     int index = 0;
-    int note = 0;  // its pitch, 0 to 127, or 128 for the vibrato key; only for `started`
+    int note = 0;  // its pitch, 0 to 127, 128 for the vibrato key or 129 for the glide key; only for `started`
     std::uint64_t sample = 0;
 };
 
@@ -138,7 +138,7 @@ public:
     std::uint64_t position(std::uint64_t now) const;
 
 private:
-    // How many pitches a loop holds, the vibrato key's included.
+    // How many pitches a loop holds, the vibrato and glide keys' included.
     static constexpr int pitch_count = loop_pitch_count;
 
     // One layer of the loop. Its notes sit together in notes_, and the

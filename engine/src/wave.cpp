@@ -88,20 +88,28 @@ double triangle(double phase, double phase_step) {
     return height;
 }
 
-// 1 for the first half of each cycle and -1 for the second half. It jumps up
-// at the start of each cycle and down halfway, and both jumps are rounded
-// off.
-double square(double phase, double phase_step) {
+// 1 for the first `width` of each cycle and -1 for the rest: at a width of
+// a half, the square. It jumps up at the start of each cycle and down once
+// `width` of it has passed, and both jumps are rounded off.
+double square(double phase, double phase_step, double width) {
     double height = 0.0;
-    if (phase < 0.5) {
+    if (phase < width) {
         height = 1.0;
     } else {
         height = -1.0;
     }
 
-    double halfway = distance_past(phase, 0.5);
-    height += jump_bend(phase, phase_step);    // the jump up at the start
-    height -= jump_bend(halfway, phase_step);  // the jump down halfway
+    double fall = distance_past(phase, width);
+    height += jump_bend(phase, phase_step);  // the jump up at the start
+    height -= jump_bend(fall, phase_step);   // the jump down
+
+    // A pulse up for less than half of each cycle spends most of it below
+    // the middle line, and one up for more, above it. The lean makes no
+    // sound of its own, but the loudness envelope would turn it into a
+    // thump as each note starts and ends. So the wave is moved by its
+    // average, 2 * width - 1, to balance on the middle line. At a half it
+    // stays where it is.
+    height -= 2.0 * width - 1.0;
     return height;
 }
 
@@ -122,13 +130,13 @@ double saw(double phase, double phase_step) {
 
 }  // namespace
 
-double wave_height(Wave wave, double phase, double phase_step) {
+double wave_height(Wave wave, double phase, double phase_step, double width) {
     if (wave == Wave::sine) {
         return sine(phase);
     } else if (wave == Wave::triangle) {
         return triangle(phase, phase_step);
     } else if (wave == Wave::square) {
-        return square(phase, phase_step);
+        return square(phase, phase_step, width);
     } else {
         return saw(phase, phase_step);
     }
@@ -141,7 +149,10 @@ double wave_height(Wave wave, double phase, double phase_step) {
 // square to 1, since it sits at full height all the time. Each trim brings
 // its wave to the triangle's 0.577. Ears still heard square and saw as louder,
 // since their bright upper harmonics stand out, so by ear in slice 5 they were
-// turned down a further 2 dB (times 0.794).
+// turned down a further 2 dB (times 0.794). A narrower pulse, balanced on the
+// middle line, comes to less than the square: 2 * sqrt(width * (1 - width)),
+// so 0.6 at a width of 10%. It is left quieter, as on analog synths, and its
+// brighter harmonics make up much of that to the ear.
 float wave_trim(Wave wave) {
     if (wave == Wave::sine) {
         return 0.8165f;  // 0.577 / 0.707

@@ -24,9 +24,14 @@ constexpr float most_cutoff_octaves = 10.0f;
 // 10,000 ms.
 constexpr float most_octaves_of_speed = 14.0f;
 
-// The most steps a connection can move an oscillator's kind either way:
-// through all of them.
+// The most steps a connection can move an oscillator's kind or the filter's
+// type either way: through all of them.
 constexpr float most_kind_steps = static_cast<float>(kind_count - 1);
+constexpr float most_filter_type_steps = static_cast<float>(filter_type_count - 1);
+
+// The most a connection can move a square's width either way: from the
+// narrowest, 5%, to the widest, 95%.
+constexpr float most_width_share = 0.9f;
 
 // How long a shared LFO's jump glides, the same as a moved filter control.
 constexpr int glide_ms = 20;
@@ -61,12 +66,16 @@ float most_amount(RoutingTarget target) {
         return unison_most_detune_cents;
     } else if (target == RoutingTarget::filter_amount) {
         return filter_most_octaves;
+    } else if (target == RoutingTarget::filter_type) {
+        return most_filter_type_steps;
+    } else if (is_oscillator_target(target, RoutingTarget::oscillator_1_width)) {
+        return most_width_share;
     } else if (is_oscillator_target(target, RoutingTarget::oscillator_1_kind)) {
         return most_kind_steps;
     } else if (target == RoutingTarget::copies) {
         return static_cast<float>(unison_most_copies - 1);
     } else if (is_read_at_start(target)) {
-        // The envelopes' times.
+        // The envelopes' times and the glide time.
         return most_octaves_of_speed;
     } else {
         // Loudness, pan, resonance, key tracking, spread, the sustains and
@@ -103,6 +112,10 @@ RoutingTarget oscillator_level(int index) {
 
 RoutingTarget oscillator_pitch(int index) {
     return static_cast<RoutingTarget>(static_cast<int>(RoutingTarget::oscillator_1_pitch) + index);
+}
+
+RoutingTarget oscillator_width(int index) {
+    return static_cast<RoutingTarget>(static_cast<int>(RoutingTarget::oscillator_1_width) + index);
 }
 
 RoutingTarget oscillator_kind(int index) {

@@ -353,10 +353,11 @@
   color: var(--text-3);
 }
 
-/* Keys that do something other than play: the wave key, the vibrato key,
-   the beat keys and the open tab's action keys. */
+/* Keys that do something other than play: the wave key, the vibrato and
+   glide keys, the beat keys and the open tab's action keys. */
 .stage .key[data-kind="wave"] .key-note,
 .stage .key[data-kind="vibrato"] .key-note,
+.stage .key[data-kind="glide"] .key-note,
 .stage .key[data-kind="beat"] .key-note,
 .stage .key[data-kind="action"] .key-note {
   font-size: calc(var(--u) * 0.15);

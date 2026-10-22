@@ -214,6 +214,7 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
         kinds_[o] = oscillator.kind;
         offset_cents_[o] = offset_cents(oscillator);
         levels_[o] = oscillator.level;
+        widths_[o] = oscillator.width;
     }
     hz_ = note_to_frequency(note, moved.a4_hz);
     copy_count_ = moved.unison.copies;
@@ -223,12 +224,19 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     key_tracking_ = moved.key_tracking;
     loudness_sustain_ = moved.loudness_envelope.sustain;
     filter_sustain_ = moved.filter_envelope.sustain;
+    tracking_note_ = note;
+
+    // A note starts right on its own pitch. Only slide_in and bend_to make
+    // it slide.
+    glide_from_cents_ = 0.0;
+    glide_samples_ = 0;
 
     // The note's own loudness envelope, kept until it ends.
     const LoudnessEnvelopeSettings& loudness = moved.loudness_envelope;
     envelope_.set_stages(loudness.attack_ms, loudness.decay_ms, loudness.sustain, loudness.release_ms);
     envelope_.start(velocity_to_peak(velocity));
-    filter_.start(note, !was_sounding, filter, moved.filter_envelope, moved.key_tracking);
+    filter_.start(note, !was_sounding, filter, moved.filter_envelope, moved.key_tracking,
+                  moves.of(RoutingTarget::filter_type));
 
     // Every copy's noise starts a new run of heights for the note.
     for (int c = 0; c < unison_most_copies; c++) {
@@ -240,7 +248,7 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
 
     // The live settings start right where the routing list puts them, which
     // tunes and places the copies.
-    head_for(moves, 0);
+    head_for(moves, 0, start_sample_);
 
     // The new kinds can be at a different height here. The gap makes up the
     // difference, so the sound carries on from where it was, then shrinks
@@ -262,6 +270,61 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     }
 }
 
+void Voice::slide_in(double from_hz, int glide_ms, const Routing& routing) {
+    Readings readings = read_sources(routing, 0.0);
+    Moves moves = add_moves(routing, readings, true);
+    start_glide(from_hz, start_sample_, moved_glide_ms(glide_ms, routing, 0.0));
+
+    // Nothing has played yet, so the live settings start again right where
+    // the slide starts, as if the note had started there.
+    head_for(moves, 0, start_sample_);
+}
+
+void Voice::bend_to(int note, std::uint64_t press_number, std::uint64_t now, double a4_hz, int glide_ms,
+                    const Routing& routing) {
+    // From wherever the pitch is now, even partway along a slide.
+    double from_hz = pitch_at(now);
+
+    note_ = note;
+    press_number_ = press_number;
+    hz_ = note_to_frequency(note, a4_hz);
+    note_height_ = std::clamp((note - middle_c) / note_height_half_steps, -1.0, 1.0);
+
+    double age_ms = static_cast<double>(now - start_sample_) * 1000.0 / sample_rate_;
+    start_glide(from_hz, now, moved_glide_ms(glide_ms, routing, age_ms));
+}
+
+int Voice::moved_glide_ms(int glide_ms, const Routing& routing, double age_ms) const {
+    Readings readings = read_sources(routing, age_ms);
+    Moves moves = add_moves(routing, readings, true);
+    return moved_ms(glide_ms, moves.of(RoutingTarget::glide_time), 0, glide_longest_ms);
+}
+
+void Voice::start_glide(double from_hz, std::uint64_t sample, int glide_ms) {
+    glide_samples_ = sample_rate_ * glide_ms / 1000;
+    if (glide_samples_ == 0) {
+        glide_from_cents_ = 0.0;
+        return;
+    }
+    glide_from_cents_ = cents_per_octave * std::log2(from_hz / hz_);
+    glide_start_ = sample;
+}
+
+double Voice::glide_cents_at(std::uint64_t sample) const {
+    if (glide_samples_ == 0) {
+        return 0.0;
+    }
+    std::uint64_t done = sample - glide_start_;
+    if (done >= static_cast<std::uint64_t>(glide_samples_)) {
+        return 0.0;
+    }
+
+    // In a straight line through the cents, so it passes every half step at
+    // the same pace.
+    double left = 1.0 - static_cast<double>(done) / glide_samples_;
+    return glide_from_cents_ * left;
+}
+
 void Voice::tick(const Routing& routing, std::uint64_t block_end) {
     // Its own LFOs move on to the end of the block, each at its speed as
     // last moved.
@@ -275,7 +338,7 @@ void Voice::tick(const Routing& routing, std::uint64_t block_end) {
     double age_ms = static_cast<double>(block_end - start_sample_) * 1000.0 / sample_rate_;
     Readings readings = read_sources(routing, age_ms);
     Moves moves = add_moves(routing, readings, false);
-    head_for(moves, control_samples);
+    head_for(moves, control_samples, block_end);
 }
 
 void Voice::release() {
@@ -297,6 +360,15 @@ double Voice::level() const {
 
 int Voice::note() const {
     return note_;
+}
+
+double Voice::note_hz() const {
+    return hz_;
+}
+
+double Voice::pitch_at(std::uint64_t now) const {
+    double cents = glide_cents_at(now);
+    return hz_ * std::exp2(cents / cents_per_octave);
 }
 
 std::uint64_t Voice::press_number() const {
@@ -338,6 +410,7 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
         moves.cutoff = cutoff_move_.value;
         moves.resonance = resonance_move_.value;
         moves.amount = amount_move_.value;
+        moves.type = type_move_.value;
         Stereo filtered = filter_.next(exact_height, filter, moves);
         float loudness = envelope_.next();
         float gain = static_cast<float>(gain_.value);
@@ -375,11 +448,13 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
         }
         for (int o = 0; o < oscillator_count; o++) {
             oscillator_levels_[o].next();
+            oscillator_widths_[o].next();
         }
         gain_.next();
         cutoff_move_.next();
         resonance_move_.next();
         amount_move_.next();
+        type_move_.next();
 
         out[2 * i] += left;
         out[2 * i + 1] += right;
@@ -495,8 +570,11 @@ NoteSound Voice::moved_sound(const NoteSound& sound, const Moves& moves) const {
     return moved;
 }
 
-void Voice::head_for(const Moves& moves, int samples) {
+void Voice::head_for(const Moves& moves, int samples, std::uint64_t sample) {
     double cents = std::clamp(moves.of(RoutingTarget::pitch), -most_pitch_cents, most_pitch_cents);
+    // A slide moves the pitch on top, however far, since it ends on the
+    // note.
+    double glide = glide_cents_at(sample);
     double most_detune = unison_most_detune_cents;
     double detune = std::clamp(detune_cents_ + moves.of(RoutingTarget::detune), 0.0, most_detune);
     double spread = std::clamp(spread_ + moves.of(RoutingTarget::spread), 0.0, 1.0);
@@ -518,7 +596,7 @@ void Voice::head_for(const Moves& moves, int samples) {
         // The lowest copy is tuned the detune below the note and the highest
         // as far above, and every copy is moved by the pitch's move. Then
         // each of its oscillators is tuned from there.
-        double copy_cents = place * detune + cents;
+        double copy_cents = place * detune + cents + glide;
         for (int o = 0; o < oscillator_count; o++) {
             double cents_here = copy_cents + oscillator_cents[o];
             double hz = hz_ * std::exp2(cents_here / cents_per_octave);
@@ -535,10 +613,15 @@ void Voice::head_for(const Moves& moves, int samples) {
         copy.right.head_to(std::sqrt(1.0 + copy_pan), samples);
     }
 
-    // An oscillator's level goes from silent to full.
+    // An oscillator's level goes from silent to full, and a square's width
+    // from its narrowest to its widest.
     for (int o = 0; o < oscillator_count; o++) {
         double level = std::clamp(levels_[o] + moves.of(oscillator_level(o)), 0.0, 1.0);
         oscillator_levels_[o].head_to(level, samples);
+        double narrowest = oscillator_narrowest_width;
+        double widest = oscillator_widest_width;
+        double width = std::clamp(widths_[o] + moves.of(oscillator_width(o)), narrowest, widest);
+        oscillator_widths_[o].head_to(width, samples);
     }
 
     // Loudness only ever goes down, to silence at most.
@@ -548,11 +631,19 @@ void Voice::head_for(const Moves& moves, int samples) {
     // Moving the key tracking moves the cutoff by how much further, or less
     // far, it follows middle C's.
     double tracking = std::clamp(key_tracking_ + moves.of(RoutingTarget::key_tracking), 0.0, 1.0);
-    double octaves_above_middle_c = (note_ - middle_c) / 12.0;
+    double octaves_above_middle_c = (tracking_note_ - middle_c) / 12.0;
     double tracking_move = (tracking - key_tracking_) * octaves_above_middle_c;
+
+    // A note bent away from the one it started with, or partway along a
+    // slide, has its cutoff follow its pitch, as far as its key tracking
+    // says.
+    double bent_octaves = (note_ - tracking_note_) / 12.0 + glide / cents_per_octave;
+    tracking_move += tracking * bent_octaves;
+
     cutoff_move_.head_to(moves.of(RoutingTarget::cutoff) + tracking_move, samples);
     resonance_move_.head_to(moves.of(RoutingTarget::resonance), samples);
     amount_move_.head_to(moves.of(RoutingTarget::filter_amount), samples);
+    type_move_.head_to(moves.of(RoutingTarget::filter_type), samples);
 
     double loudness_sustain = std::clamp(loudness_sustain_ + moves.of(RoutingTarget::loudness_sustain), 0.0, 1.0);
     envelope_.set_sustain(loudness_sustain, samples);
@@ -571,7 +662,8 @@ double Voice::oscillator_height(const Copy& copy, int index) const {
         return copy.noises[index].height() * noise_trim;
     }
     Wave wave = wave_of(kind);
-    return wave_height(wave, copy.phases[index], copy.phase_steps[index].value) * wave_trim(wave);
+    double width = oscillator_widths_[index].value;
+    return wave_height(wave, copy.phases[index], copy.phase_steps[index].value, width) * wave_trim(wave);
 }
 
 Stereo Voice::height_now() const {
