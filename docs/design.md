@@ -41,8 +41,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    Started with a low-pass filter on every voice, with its own envelope
    ([ADR 0028](adr/0028-a-low-pass-filter.md)), then unison: up to 7
    detuned copies of each note's wave, which makes the saw a supersaw
-   ([ADR 0029](adr/0029-unison.md)). A dev panel in Compose sets them
-   until their screen is designed.
+   ([ADR 0029](adr/0029-unison.md)). Both belong to each song, in its own
+   sound profile ([ADR 0030](adr/0030-a-sound-profile-per-song.md)), and a
+   dev panel in Compose sets them until their screen is designed.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -354,17 +355,35 @@ and being built.
     0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
     exactly as before the filter. Values outside their ranges are ignored
     by the C API and brought within them by Rust.
+- **Sound profile** ([ADR 0030](adr/0030-a-sound-profile-per-song.md)):
+  how a song's notes sound belongs to the song, so no setting is tuned to
+  one value for every song. Its sound profile
+  (`src-tauri/src/sound_profile.rs`) holds the wave, the filter and filter
+  envelope, and unison, and the song in Compose (`compose.rs`) holds the
+  profile.
+  - Every change, from the dev panel or the backslash key, goes to the
+    profile, which sends it on to the engine and keeps it as the engine
+    sent it, with values outside their ranges brought within them. Rust's
+    engine wrapper keeps no sound of its own, and the screen reads the
+    sound from the profile.
+  - As the app starts, the song sends its whole profile, before the first
+    note: four messages, which arrive in order.
+  - A new song starts where a new engine does: a triangle, the filter
+    open, no filter envelope and 1 copy. It is only a starting point.
+  - Play plays the open song's profile. Song files keep it from step 5,
+    and so do copying a profile from another song and a profile per track.
 - **The sound's dev panel:** until their screen is designed, a dev panel
-  sets unison and the filter (`ui/SoundDevPanel.svelte`), and their values
-  are picked there by ear. In Compose, a "Dev: sound" button at the right
-  end of the tabs opens it over the tape. It has two rows, so it clears
+  sets the song's unison and filter (`ui/SoundDevPanel.svelte`). In
+  Compose, a "Dev: sound" button at the right end of the tabs opens it
+  over the tape. It has two rows, so it clears
   the keyboard even in an 800 by 600 window: unison's copies, detune and
   spread, then the filter's cutoff and resonance, and below them the filter
   envelope. Cutoff moves in octaves along its slider, and the stages on a
   curve that gives short times most of it (halfway is 1250 ms). Each slider
   sends every value as it moves, through `set_unison`, `set_filter` or
-  `set_filter_envelope`, and its readout shows Rust's answer. Nothing is
-  saved: each launch starts at 1 copy, with the filter open.
+  `set_filter_envelope`, to the song's sound profile, and its readout shows
+  Rust's answer. Nothing is saved until song files: each launch starts a
+  new song, at 1 copy, with the filter open.
 - **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
   loudness were, so the sound never jumps. If the new note plays another
@@ -393,7 +412,7 @@ and being built.
   (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
   `commands.rs` holds the commands, `key_map.rs` turns laptop keys into
-  notes, `wav.rs` writes files.
+  notes, `sound_profile.rs` holds a song's sound, `wav.rs` writes files.
 - **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
   pitch, the envelope's timing and levels, the velocity curve, that a chord
   is its notes added up, exact silence after letting go, which voice a new
@@ -448,6 +467,12 @@ and being built.
   note's filter on either side, that a layer's volume turns down both
   speakers, that a held note keeps its copies while the next note gets the
   new ones, the same samples in any chunk size, and odd values.
+  For the sound profile, they check that a new song starts where a new
+  engine does and sounds just like one, that switching steps through the
+  waves in order and the engine plays the one it lands on, that the profile
+  keeps values as the engine sent them, that every change reaches the
+  engine, that sending a profile sends every part (leaving any one out
+  changes the sound), and that the backslash key switches the song's wave.
   The key map tests check the melody keys finger by finger and each chord,
   that other keys do nothing, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
@@ -531,8 +556,8 @@ Then each key press gets the next note. Details:
     octave is always the same row, three fingers over (M to /). The keys
     past the pinky play nothing yet.
   - A note that a chord and a melody key both play keeps sounding until
-    every key playing it is let go. The backslash key (`\`) steps to the
-    next wave. Right Shift runs the [looper](#looper) and Esc removes a
+    every key playing it is let go. The backslash key (`\`) steps the
+    song's wave to the next. Right Shift runs the [looper](#looper) and Esc removes a
     layer from it.
     `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option play nothing, saved for layer keys that will
     switch whole mappings.
@@ -920,6 +945,17 @@ Falling notes on screen, colored by hand, with the keys lighting up.
   on the user's subscriptions (as in the user's other projects), or the
   user's API key in the OS keychain. A local model on the GPU is a later
   option. Whether a model can hear renders needs a test first.
+- **Todo: the harness gives each song its starting sound.** Every sound
+  setting is the song's own ([ADR 0030](adr/0030-a-sound-profile-per-song.md)),
+  so the harness can help set them as a song begins:
+  - **Starting a song by talking.** The user explains the song they have
+    in mind, and the harness sets its first sound profile (wave, filter,
+    unison and whatever comes next) from that. It is only a starting point:
+    the user changes it from there.
+  - **Voice mode in Compose.** The user sings or hums the idea of a tune.
+    The harness plays it back a few different ways, each its own reading
+    of what was meant, so the user can pick the closest and say what to
+    change, by voice, until it is what they were trying to make.
 
 ## Performance and system check
 

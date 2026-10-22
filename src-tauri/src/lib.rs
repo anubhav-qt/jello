@@ -6,6 +6,7 @@ mod compose;
 mod engine;
 mod harmony;
 mod key_map;
+mod sound_profile;
 mod wav;
 
 use std::sync::Mutex;
@@ -18,15 +19,19 @@ use key_map::KeyMap;
 pub fn run() {
     // The live engine, shared by every command. Its speakers open the first
     // time something plays.
-    let engine = Engine::new().expect("could not create the sound engine");
+    let mut engine = Engine::new().expect("could not create the sound engine");
+
+    // Compose's key, the chords added to the song so far, where the song
+    // played last starts, and the song's sound profile. The profile goes to
+    // the engine before anything plays, so the first note already plays it.
+    let composer = Composer::new();
+    composer.sound_profile().send_all(&mut engine);
 
     tauri::Builder::default()
         .manage(Mutex::new(engine))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
-        // Compose's key, the chords added to the song so far, and where the
-        // song played last starts.
-        .manage(Mutex::new(Composer::new()))
+        .manage(Mutex::new(composer))
         .invoke_handler(tauri::generate_handler![
             commands::play_note,
             commands::release_note,

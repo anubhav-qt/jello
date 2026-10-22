@@ -22,8 +22,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   colors (0014). Keep this layout. Every chord has its own key (0020).
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
-- Looper (0021) done: snap, layers (0026), look (0024), full-width lane
-  (0025). Step 4 began: filter (0028), unison (0029), "Dev: sound" panel.
+- Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
+  Step 4: filter (0028), unison (0029), each in a song's sound profile (0030).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout
@@ -46,8 +46,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   words and get a yes before writing it, then explain what was written.
 - Never write C++ engine code before the user has approved its design.
 - Explain new music terms briefly; the user is learning music theory.
-- Sound choices are the user's. Ask before rendering any sound demo, change
-  one thing at a time, and let the user pick by ear.
+- Sound choices are the user's and each song's own (0030): never tune a
+  value for every song. Ask before any sound demo; one change at a time.
 
 ### UI
 

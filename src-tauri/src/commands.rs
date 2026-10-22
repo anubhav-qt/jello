@@ -14,6 +14,7 @@ use crate::engine::{
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
+use crate::sound_profile::SoundProfile;
 use crate::wav::write_wav;
 
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
@@ -26,7 +27,8 @@ const TAIL_MS: u32 = 400;
 
 // What the screen shows about the sound: the wave new notes play, the beat's
 // tempo in beats per minute, whether loops snap to the beat, what the looper
-// is doing, where the filter is and unison's copies.
+// is doing, where the filter is and unison's copies. The wave, the filter and
+// unison come from the song's sound profile.
 #[derive(Serialize)]
 pub struct SoundView {
     wave: &'static str,
@@ -48,8 +50,8 @@ pub struct UnisonView {
     spread: u32,
 }
 
-fn unison_view_of(engine: &Engine) -> UnisonView {
-    let unison = engine.unison();
+fn unison_view_of(sound_profile: &SoundProfile) -> UnisonView {
+    let unison = sound_profile.unison();
     UnisonView {
         copies: unison.copies,
         detune_cents: unison.detune_cents,
@@ -74,9 +76,9 @@ pub struct FilterView {
     release_ms: u32,
 }
 
-fn filter_view_of(engine: &Engine) -> FilterView {
-    let filter = engine.filter();
-    let envelope = engine.filter_envelope();
+fn filter_view_of(sound_profile: &SoundProfile) -> FilterView {
+    let filter = sound_profile.filter();
+    let envelope = sound_profile.filter_envelope();
     FilterView {
         cutoff_hz: filter.cutoff_hz,
         resonance: filter.resonance,
@@ -141,12 +143,12 @@ pub struct LoopNoteView {
     end: Option<f64>,
 }
 
-// What the screen shows about the sound at `now`. Esc's half second may be
-// up, so that comes first.
-fn sound_view_of(engine: &mut Engine, now: Instant) -> SoundView {
+// What the screen shows about the sound at `now`, with the song's
+// `sound_profile`. Esc's half second may be up, so that comes first.
+fn sound_view_of(engine: &mut Engine, sound_profile: &SoundProfile, now: Instant) -> SoundView {
     engine.finish_esc_wait(now);
 
-    let wave = engine.wave();
+    let wave = sound_profile.wave();
     let tempo = engine.tempo();
     let sample_rate = engine.sample_rate();
     let status = engine.looper_status();
@@ -170,8 +172,8 @@ fn sound_view_of(engine: &mut Engine, now: Instant) -> SoundView {
         tempo,
         snap: engine.snap(),
         looper,
-        filter: filter_view_of(engine),
-        unison: unison_view_of(engine),
+        filter: filter_view_of(sound_profile),
+        unison: unison_view_of(sound_profile),
     }
 }
 
@@ -304,30 +306,42 @@ pub fn release_all_notes(
     }
 }
 
-// Moves notes played from now on to the next wave (sine, triangle, square,
-// saw, then sine again), and returns what the screen shows about the sound.
-// Notes already playing keep their wave. Like `play_note`, it opens the
-// speakers first: before they open, nothing empties the engine's mailbox, so
-// switches would pile up there.
+// Moves the song's notes played from now on to the next wave (sine,
+// triangle, square, saw, then sine again), and returns what the screen shows
+// about the sound. Notes already playing keep their wave. Like `play_note`,
+// it opens the speakers first: before they open, nothing empties the
+// engine's mailbox, so switches would pile up there.
+//
+// The commands that answer with the sound lock Compose before the engine,
+// since the song holds its sound profile.
 #[tauri::command]
-pub fn switch_wave(engine: State<'_, Mutex<Engine>>) -> Result<SoundView, String> {
+pub fn switch_wave(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> Result<SoundView, String> {
     let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    engine.switch_wave();
-    Ok(sound_view_of(&mut engine, now))
+    let sound_profile = composer.sound_profile_mut();
+    sound_profile.switch_wave(&mut engine);
+    Ok(sound_view_of(&mut engine, sound_profile, now))
 }
 
 // Turns "snap to beat" off if it is on, and on if it is off, and returns
 // what the screen shows about the sound. A loop already playing changes
 // right away. Like `switch_wave`, it opens the speakers first.
 #[tauri::command]
-pub fn switch_snap(engine: State<'_, Mutex<Engine>>) -> Result<SoundView, String> {
+pub fn switch_snap(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> Result<SoundView, String> {
     let now = Instant::now();
+    let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.switch_snap();
-    Ok(sound_view_of(&mut engine, now))
+    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
 }
 
 // Sets layer `layer`'s volume, counted from 1, to `volume` percent, from 0
@@ -335,37 +349,51 @@ pub fn switch_snap(engine: State<'_, Mutex<Engine>>) -> Result<SoundView, String
 // the sound. The layer's notes already sounding change too. A layer's volume
 // knob does this. Like `switch_wave`, it opens the speakers first.
 #[tauri::command]
-pub fn set_layer_volume(engine: State<'_, Mutex<Engine>>, layer: u32, volume: u32) -> Result<SoundView, String> {
+pub fn set_layer_volume(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    layer: u32,
+    volume: u32,
+) -> Result<SoundView, String> {
     let now = Instant::now();
+    let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.set_layer_volume(layer, volume)?;
-    Ok(sound_view_of(&mut engine, now))
+    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
 }
 
-// Moves the filter: middle C's cutoff to `cutoff_hz`, where 20000 is open,
-// and the resonance to `resonance` percent (docs/adr/0028-a-low-pass-filter.md).
-// Values outside their ranges are brought within them. Every note hears it,
-// even those already sounding. Returns what the screen shows about the
-// sound. The sound's dev panel in Compose sends it, naming the arguments
-// in camelCase, like `cutoffHz`. Like `switch_wave`, it opens the speakers
-// first.
+// Moves the song's filter: middle C's cutoff to `cutoff_hz`, where 20000 is
+// open, and the resonance to `resonance` percent
+// (docs/adr/0028-a-low-pass-filter.md). Values outside their ranges are
+// brought within them. Every note hears it, even those already sounding.
+// Returns what the screen shows about the sound. The sound's dev panel in
+// Compose sends it, naming the arguments in camelCase, like `cutoffHz`. Like
+// `switch_wave`, it opens the speakers first.
 #[tauri::command]
-pub fn set_filter(engine: State<'_, Mutex<Engine>>, cutoff_hz: f32, resonance: u32) -> Result<SoundView, String> {
+pub fn set_filter(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    cutoff_hz: f32,
+    resonance: u32,
+) -> Result<SoundView, String> {
     let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    engine.set_filter(Filter { cutoff_hz, resonance });
-    Ok(sound_view_of(&mut engine, now))
+    let sound_profile = composer.sound_profile_mut();
+    sound_profile.set_filter(&mut engine, Filter { cutoff_hz, resonance });
+    Ok(sound_view_of(&mut engine, sound_profile, now))
 }
 
-// Sets the filter envelope for notes started from now on: how far it opens
-// the cutoff, in octaves, its stages in ms, and its sustain in percent of
-// the amount. Values outside their ranges are brought within them. Returns
-// what the screen shows about the sound. Like `set_filter`, it opens the
-// speakers first.
+// Sets the song's filter envelope for notes started from now on: how far it
+// opens the cutoff, in octaves, its stages in ms, and its sustain in percent
+// of the amount. Values outside their ranges are brought within them.
+// Returns what the screen shows about the sound. Like `set_filter`, it opens
+// the speakers first.
 #[tauri::command]
 pub fn set_filter_envelope(
+    composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
     amount: f32,
     attack_ms: u32,
@@ -374,6 +402,7 @@ pub fn set_filter_envelope(
     release_ms: u32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     let envelope = FilterEnvelope {
@@ -383,24 +412,27 @@ pub fn set_filter_envelope(
         sustain,
         release_ms,
     };
-    engine.set_filter_envelope(envelope);
-    Ok(sound_view_of(&mut engine, now))
+    let sound_profile = composer.sound_profile_mut();
+    sound_profile.set_filter_envelope(&mut engine, envelope);
+    Ok(sound_view_of(&mut engine, sound_profile, now))
 }
 
-// Sets unison for notes started from now on (docs/adr/0029-unison.md): how
-// many copies play each note, how far apart they are tuned in cents, and how
-// far apart they sit between the speakers in percent. Values outside their
-// ranges are brought within them. Returns what the screen shows about the
-// sound. The sound's dev panel in Compose sends it, as `detuneCents`. Like
-// `set_filter`, it opens the speakers first.
+// Sets the song's unison for notes started from now on
+// (docs/adr/0029-unison.md): how many copies play each note, how far apart
+// they are tuned in cents, and how far apart they sit between the speakers
+// in percent. Values outside their ranges are brought within them. Returns
+// what the screen shows about the sound. The sound's dev panel in Compose
+// sends it, as `detuneCents`. Like `set_filter`, it opens the speakers first.
 #[tauri::command]
 pub fn set_unison(
+    composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
     copies: u32,
     detune_cents: u32,
     spread: u32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     let unison = Unison {
@@ -408,8 +440,9 @@ pub fn set_unison(
         detune_cents,
         spread,
     };
-    engine.set_unison(unison);
-    Ok(sound_view_of(&mut engine, now))
+    let sound_profile = composer.sound_profile_mut();
+    sound_profile.set_unison(&mut engine, unison);
+    Ok(sound_view_of(&mut engine, sound_profile, now))
 }
 
 // Does what a laptop key does when pressed: plays its note or chord,
@@ -436,17 +469,17 @@ pub fn press_key(
     // A key that picks a layer for Esc plays nothing. Esc only waits once a
     // loop has layers, so the speakers are already open.
     if picks_layer(&mut engine, &key, now) {
-        return Ok(sound_view_of(&mut engine, now));
+        return Ok(sound_view_of(&mut engine, composer.sound_profile(), now));
     }
 
     // Like `switch_wave`, every key that does something opens the speakers
     // first: before they open, nothing empties the engine's mailbox.
     if let Some(action) = key_down(&mut key_map, &mut composer, &key, now) {
         engine.start_audio()?;
-        take_key_action(&mut engine, action, now);
+        take_key_action(&mut engine, composer.sound_profile_mut(), action, now);
     }
 
-    Ok(sound_view_of(&mut engine, now))
+    Ok(sound_view_of(&mut engine, composer.sound_profile(), now))
 }
 
 // While Esc waits, 1 to 8 pick a layer for it to remove instead of playing
@@ -462,9 +495,11 @@ fn picks_layer(engine: &mut Engine, key: &str, now: Instant) -> bool {
     engine.pick_layer(number, now)
 }
 
-// What a key pressed at `now` does to the engine. Kept apart from opening
-// the speakers, so the tests can check every key on an engine without them.
-fn take_key_action(engine: &mut Engine, action: KeyAction, now: Instant) {
+// What a key pressed at `now` does to the engine. The wave key changes the
+// song's `sound_profile`, which passes the change on to the engine. Kept
+// apart from opening the speakers, so the tests can check every key on an
+// engine without them.
+fn take_key_action(engine: &mut Engine, sound_profile: &mut SoundProfile, action: KeyAction, now: Instant) {
     match action {
         KeyAction::PlayNote(note) => {
             engine.note_on(note, LAPTOP_VELOCITY);
@@ -475,7 +510,7 @@ fn take_key_action(engine: &mut Engine, action: KeyAction, now: Instant) {
             }
         }
         KeyAction::SwitchWave => {
-            engine.switch_wave();
+            sound_profile.switch_wave(engine);
         }
         KeyAction::PressLooper => {
             engine.press_looper();
@@ -556,10 +591,11 @@ pub(crate) fn all_keys_up(key_map: &mut KeyMap, composer: &mut Composer, now: In
 // What the screen shows about the sound, so the UI can show it when it
 // opens.
 #[tauri::command]
-pub fn sound_view(engine: State<'_, Mutex<Engine>>) -> SoundView {
+pub fn sound_view(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> SoundView {
     let now = Instant::now();
+    let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
-    sound_view_of(&mut engine, now)
+    sound_view_of(&mut engine, composer.sound_profile(), now)
 }
 
 // What every laptop key does, so the UI can draw each key's note or chord on
@@ -741,15 +777,24 @@ mod tests {
 
     use std::time::Duration;
 
+    use crate::engine::Wave;
+
     // What key `key` does in the default layout.
     fn action_of(key: &str) -> KeyAction {
         let mut key_map = KeyMap::new();
         key_map.press(key).unwrap()
     }
 
-    // Takes key `key`'s action now.
-    fn press(engine: &mut Engine, key: &str) {
-        take_key_action(engine, action_of(key), Instant::now());
+    // Takes key `key`'s action now, on `engine` and the song's
+    // `sound_profile`.
+    fn press(engine: &mut Engine, sound_profile: &mut SoundProfile, key: &str) {
+        take_key_action(engine, sound_profile, action_of(key), Instant::now());
+    }
+
+    // What the screen shows about the sound at `now`, with a new song's
+    // sound profile, for the tests that look only at the looper.
+    fn view_of(engine: &mut Engine, now: Instant) -> SoundView {
+        sound_view_of(engine, &SoundProfile::new(), now)
     }
 
     // Renders `frames` frames and returns the loudest sample.
@@ -768,10 +813,11 @@ mod tests {
     fn note_and_chord_keys_play() {
         // M plays middle C, and C plays the C chord, whose three notes
         // together are louder than one.
+        let mut profile = SoundProfile::new();
         let mut note = Engine::new().unwrap();
-        press(&mut note, "KeyM");
+        press(&mut note, &mut profile, "KeyM");
         let mut chord = Engine::new().unwrap();
-        press(&mut chord, "KeyC");
+        press(&mut chord, &mut profile, "KeyC");
 
         let note_loudness = loudest(&mut note, 4800);
         assert!(note_loudness > 0.0);
@@ -779,10 +825,22 @@ mod tests {
     }
 
     #[test]
-    fn backslash_switches_the_wave() {
+    fn backslash_switches_the_song_s_wave() {
+        // A new song starts on the triangle, so the switch lands on the
+        // square, and the engine plays it.
         let mut engine = Engine::new().unwrap();
-        press(&mut engine, "Backslash");
-        assert_eq!(engine.wave().name(), "square");
+        let mut profile = SoundProfile::new();
+        press(&mut engine, &mut profile, "Backslash");
+        assert_eq!(profile.wave(), Wave::Square);
+
+        let mut square = Engine::new().unwrap();
+        square.set_wave(Wave::Square);
+        let mut square_profile = SoundProfile::new();
+        press(&mut engine, &mut profile, "KeyM");
+        press(&mut square, &mut square_profile, "KeyM");
+        let switched = engine.render(4800);
+        let expected = square.render(4800);
+        assert!(switched == expected, "the engine does not play the song's new wave");
     }
 
     #[test]
@@ -790,11 +848,12 @@ mod tests {
         // During the count-in there is only the one layer, so Esc has
         // nothing to wait for.
         let mut engine = Engine::new().unwrap();
-        press(&mut engine, "ShiftRight");
+        let mut profile = SoundProfile::new();
+        press(&mut engine, &mut profile, "ShiftRight");
         engine.render(10);
         assert_eq!(engine.looper_status().state, LooperState::CountingIn);
 
-        press(&mut engine, "Escape");
+        press(&mut engine, &mut profile, "Escape");
         engine.render(10);
         assert_eq!(engine.looper_status().state, LooperState::Idle);
     }
@@ -802,14 +861,15 @@ mod tests {
     #[test]
     fn minus_and_equal_change_the_tempo_until_the_looper_starts() {
         let mut engine = Engine::new().unwrap();
-        press(&mut engine, "Equal");
+        let mut profile = SoundProfile::new();
+        press(&mut engine, &mut profile, "Equal");
         assert_eq!(engine.tempo(), 125);
-        press(&mut engine, "Minus");
-        press(&mut engine, "Minus");
+        press(&mut engine, &mut profile, "Minus");
+        press(&mut engine, &mut profile, "Minus");
         assert_eq!(engine.tempo(), 115);
 
-        press(&mut engine, "ShiftRight");
-        press(&mut engine, "Equal");
+        press(&mut engine, &mut profile, "ShiftRight");
+        press(&mut engine, &mut profile, "Equal");
         assert_eq!(engine.tempo(), 115);
     }
 
@@ -818,11 +878,12 @@ mod tests {
         // ui/sound.ts reads these names, so renaming them here would leave
         // the wave, beat and looper keys blank.
         let mut engine = Engine::new().unwrap();
+        let mut profile = SoundProfile::new();
         engine.speed_up();
         engine.press_looper();
         engine.render(10);
 
-        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
         assert_eq!(json["wave"], "triangle");
         assert_eq!(json["tempo"], 125);
         assert_eq!(json["snap"], true);
@@ -834,20 +895,26 @@ mod tests {
         assert_eq!(json["looper"]["removing"], serde_json::Value::Null);
         assert_eq!(json["looper"]["message"], serde_json::Value::Null);
 
-        // And the filter, by the names the UI will read. Every value is
-        // different, so two names mixed up would show.
-        engine.set_filter(Filter {
-            cutoff_hz: 1000.0,
-            resonance: 40,
-        });
-        engine.set_filter_envelope(FilterEnvelope {
-            amount: 2.5,
-            attack_ms: 10,
-            decay_ms: 200,
-            sustain: 60,
-            release_ms: 400,
-        });
-        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        // And the song's filter, by the names the UI will read. Every value
+        // is different, so two names mixed up would show.
+        profile.set_filter(
+            &mut engine,
+            Filter {
+                cutoff_hz: 1000.0,
+                resonance: 40,
+            },
+        );
+        profile.set_filter_envelope(
+            &mut engine,
+            FilterEnvelope {
+                amount: 2.5,
+                attack_ms: 10,
+                decay_ms: 200,
+                sustain: 60,
+                release_ms: 400,
+            },
+        );
+        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
         assert_eq!(json["filter"]["cutoff_hz"], 1000.0);
         assert_eq!(json["filter"]["resonance"], 40);
         assert_eq!(json["filter"]["amount"], 2.5);
@@ -856,13 +923,18 @@ mod tests {
         assert_eq!(json["filter"]["sustain"], 60);
         assert_eq!(json["filter"]["release_ms"], 400);
 
-        // And unison, the same way.
-        engine.set_unison(Unison {
-            copies: 5,
-            detune_cents: 30,
-            spread: 70,
-        });
-        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        // And the song's unison and wave, the same way.
+        profile.set_unison(
+            &mut engine,
+            Unison {
+                copies: 5,
+                detune_cents: 30,
+                spread: 70,
+            },
+        );
+        profile.switch_wave(&mut engine);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &profile, Instant::now())).unwrap();
+        assert_eq!(json["wave"], "square");
         assert_eq!(json["unison"]["copies"], 5);
         assert_eq!(json["unison"]["detune_cents"], 30);
         assert_eq!(json["unison"]["spread"], 70);
@@ -1024,7 +1096,7 @@ mod tests {
         engine.note_on(C5, 100);
         engine.render(6_000);
 
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "recording");
         assert_eq!(view.looper.beats_in, 1.25);
         let expected = vec![
@@ -1063,7 +1135,7 @@ mod tests {
         }];
 
         // While recording it shows as played, even with snap on.
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert!(view.snap);
         assert_eq!(view.looper.state, "recording");
         assert_eq!(view.looper.layers[0].notes, as_played);
@@ -1073,7 +1145,7 @@ mod tests {
         // beats.
         engine.press_looper();
         engine.render(30_000);
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "looping");
         let snapped = vec![LoopNoteView {
             note: A4,
@@ -1084,7 +1156,7 @@ mod tests {
 
         // With snap off, as played again.
         engine.switch_snap();
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert!(!view.snap);
         assert_eq!(view.looper.layers[0].notes, as_played);
     }
@@ -1143,26 +1215,27 @@ mod tests {
         let mut engine = engine_with_layers(3);
         engine.set_layer_volume(1, 30).unwrap();
         let esc = Instant::now();
-        take_key_action(&mut engine, KeyAction::RemoveLayer, esc);
+        let mut profile = SoundProfile::new();
+        take_key_action(&mut engine, &mut profile, KeyAction::RemoveLayer, esc);
 
         // Waiting: the screen shows which layer will go, and nothing has.
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(100));
+        let view = view_of(&mut engine, esc + Duration::from_millis(100));
         assert_eq!(view.looper.removing, Some(3));
         assert_eq!(layers_after_a_chunk(&mut engine), 3);
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(499));
+        let view = view_of(&mut engine, esc + Duration::from_millis(499));
         assert_eq!(view.looper.removing, Some(3));
         assert_eq!(layers_after_a_chunk(&mut engine), 3);
 
         // Half a second later the newest goes, the next time the screen
         // asks.
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(500));
+        let view = view_of(&mut engine, esc + Duration::from_millis(500));
         assert_eq!(view.looper.removing, None);
         assert_eq!(layers_after_a_chunk(&mut engine), 2);
         assert_eq!(volumes(&mut engine), vec![30, 100]);
         assert_eq!(engine.looper_status().state, LooperState::Looping);
 
         // A layer removed leaves no message.
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(600));
+        let view = view_of(&mut engine, esc + Duration::from_millis(600));
         assert_eq!(view.looper.message, None);
     }
 
@@ -1177,7 +1250,7 @@ mod tests {
         assert_eq!(engine.loop_layers()[1].notes.len(), 1);
 
         // And nothing more goes once the half second is up.
-        sound_view_of(&mut engine, esc + Duration::from_millis(900));
+        view_of(&mut engine, esc + Duration::from_millis(900));
         assert_eq!(layers_after_a_chunk(&mut engine), 2);
     }
 
@@ -1196,7 +1269,7 @@ mod tests {
         assert_eq!(volumes(&mut engine), vec![100, 100]);
 
         // Once picked, the half second is over, and numbers play again.
-        sound_view_of(&mut engine, esc + Duration::from_millis(900));
+        view_of(&mut engine, esc + Duration::from_millis(900));
         assert_eq!(layers_after_a_chunk(&mut engine), 2);
         assert!(!picks_layer(&mut engine, "Digit1", esc + Duration::from_millis(950)));
 
@@ -1227,10 +1300,10 @@ mod tests {
         assert_eq!(layers_after_a_chunk(&mut engine), 2);
 
         // The message comes once.
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(150));
+        let view = view_of(&mut engine, esc + Duration::from_millis(150));
         assert_eq!(view.looper.message, Some(String::from("There is no layer 7")));
         assert_eq!(view.looper.removing, None);
-        let view = sound_view_of(&mut engine, esc + Duration::from_millis(200));
+        let view = view_of(&mut engine, esc + Duration::from_millis(200));
         assert_eq!(view.looper.message, None);
     }
 
@@ -1258,7 +1331,7 @@ mod tests {
         engine.press_looper();
         engine.render(10);
         assert_eq!(engine.looper_status().state, LooperState::Looping);
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(
             view.looper.message,
             Some(String::from("8 layers is the most, Esc removes one"))
@@ -1271,14 +1344,14 @@ mod tests {
         let mut engine = engine_with_layers(2);
         engine.press_looper();
         engine.render(10);
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "layering");
         assert_eq!(view.looper.layers.len(), 3);
         assert!(view.looper.layers[2].recording);
 
         engine.press_looper();
         engine.render(10);
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "looping");
         assert_eq!(view.looper.layers.len(), 2);
         assert_eq!(view.looper.message, Some(String::from("Nothing played, no layer added")));
@@ -1288,14 +1361,14 @@ mod tests {
     fn a_layer_s_volume_shows_and_odd_volumes_fail() {
         let mut engine = engine_with_layers(2);
         engine.set_layer_volume(2, 55).unwrap();
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.layers[0].volume, 100);
         assert_eq!(view.looper.layers[1].volume, 55);
 
         assert!(engine.set_layer_volume(2, 101).is_err());
         assert!(engine.set_layer_volume(3, 50).is_err());
         assert!(engine.set_layer_volume(0, 50).is_err());
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.layers[1].volume, 55);
     }
 
@@ -1312,7 +1385,7 @@ mod tests {
         engine.note_off(C5);
         engine.render(10);
 
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "layering");
         let a4 = LoopNoteView {
             note: A4,
@@ -1330,7 +1403,7 @@ mod tests {
         // Stopped, it shows where it plays: C5 snaps to 0.5 to 1.0.
         engine.press_looper();
         engine.render(10);
-        let view = sound_view_of(&mut engine, Instant::now());
+        let view = view_of(&mut engine, Instant::now());
         let snapped = LoopNoteView {
             note: C5,
             start: 0.5,

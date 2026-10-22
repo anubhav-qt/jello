@@ -1,6 +1,6 @@
 # 0029: Unison
 
-- Status: Accepted
+- Status: Accepted; values by ear superseded by 0030
 - Date: 2026-10-22
 
 Every note can be played in unison: by up to 7 copies of its wave at once,

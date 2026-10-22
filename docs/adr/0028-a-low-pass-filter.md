@@ -1,6 +1,6 @@
 # 0028: A low-pass filter
 
-- Status: Accepted
+- Status: Accepted; values by ear superseded by 0030
 - Date: 2026-10-21
 
 Step 4 starts with a low-pass filter on every voice, before the loudness

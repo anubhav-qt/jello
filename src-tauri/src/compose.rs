@@ -1,7 +1,7 @@
 // Guided composing (docs/design.md, "Chord guidance" and "Compose screen"):
 // the song's key, the chords added to the song so far with how long each was
-// held, how well each chord and melody key fits the key, and playing the song
-// back.
+// held, how well each chord and melody key fits the key, playing the song
+// back, and the song's sound profile.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::engine::{Engine, SONG_MAX_CHORDS, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
+use crate::sound_profile::SoundProfile;
 
 pub struct Composer {
     // The song's key, picked before starting. None until then.
@@ -23,6 +24,10 @@ pub struct Composer {
     // Where in the song the chords played last start, so the playhead can
     // tell which chord is playing.
     playing_from: usize,
+    // How the song's notes sound: its wave, filter and unison
+    // (docs/adr/0030-a-sound-profile-per-song.md). Every note played while
+    // the song is open plays it, in Play too.
+    sound_profile: SoundProfile,
 }
 
 // A chord as it was played: by which key, when, and for how long. The player
@@ -135,14 +140,24 @@ pub struct ComposeView {
 }
 
 impl Composer {
-    // No key yet, and no chords.
+    // No key yet, no chords, and a new song's sound profile.
     pub fn new() -> Composer {
         Composer {
             key: None,
             tried: None,
             progression: Vec::new(),
             playing_from: 0,
+            sound_profile: SoundProfile::new(),
         }
+    }
+
+    pub fn sound_profile(&self) -> &SoundProfile {
+        &self.sound_profile
+    }
+
+    // For changing the song's sound. Each change goes on to the engine.
+    pub fn sound_profile_mut(&mut self) -> &mut SoundProfile {
+        &mut self.sound_profile
     }
 
     // Sets the song's key. Chords added already stay, named for the new key.

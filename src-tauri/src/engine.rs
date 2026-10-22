@@ -171,8 +171,8 @@ pub struct Filter {
     pub resonance: u32,
 }
 
-// A new engine's filter: open, with no resonance. The C++ engine starts
-// there too.
+// Where the C++ engine's filter starts: open, with no resonance. A new
+// song's sound profile starts there too (src/sound_profile.rs).
 pub const START_FILTER: Filter = Filter {
     cutoff_hz: FILTER_OPEN_HZ,
     resonance: 0,
@@ -191,7 +191,8 @@ pub struct FilterEnvelope {
     pub release_ms: u32,
 }
 
-// A new engine's filter envelope. The C++ engine starts there too.
+// Where the C++ engine's filter envelope starts: at 0 octaves, so it changes
+// nothing. A new song's sound profile starts there too.
 pub const START_FILTER_ENVELOPE: FilterEnvelope = FilterEnvelope {
     amount: 0.0,
     attack_ms: 5,
@@ -221,7 +222,8 @@ pub struct Unison {
     pub spread: u32,
 }
 
-// A new engine's unison: 1 copy, off. The C++ engine starts there too.
+// Where the C++ engine's unison starts: 1 copy, off. A new song's sound
+// profile starts there too.
 pub const START_UNISON: Unison = Unison {
     copies: 1,
     detune_cents: 20,
@@ -244,7 +246,7 @@ fn stage_ms(ms: u32) -> c_int {
 }
 
 // The shapes a note can play (docs/adr/0009-how-notes-become-sound.md).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wave {
     Sine,
     Triangle,
@@ -284,6 +286,10 @@ impl Wave {
         }
     }
 }
+
+// Where the C++ engine's wave starts. A new song's sound profile starts
+// there too.
+pub const START_WAVE: Wave = Wave::Triangle;
 
 // What the looper is doing (docs/adr/0021-a-looper-on-a-beat.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -382,20 +388,16 @@ pub struct SongPlace {
     pub ms_in: u64,
 }
 
+// The engine keeps no sound of its own: the song's sound profile says which
+// wave, filter and unison the notes play, and sends them here
+// (docs/adr/0030-a-sound-profile-per-song.md).
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
-    // The wave new notes play. The C++ engine starts on triangle too.
-    wave: Wave,
     // The beat's tempo in beats per minute. The C++ engine starts there too.
     tempo: u32,
     // Whether loops snap to the beat. The C++ engine starts with it on too.
     snap: bool,
-    // Where the filter and its envelope are.
-    filter: Filter,
-    filter_envelope: FilterEnvelope,
-    // The copies new notes are played by.
-    unison: Unison,
     // How many samples each chord of the song sent last plays, so the
     // engine's position in the song can be turned into a chord.
     song_lengths: Vec<u64>,
@@ -424,12 +426,8 @@ impl Engine {
         let engine = Engine {
             raw,
             audio_running: false,
-            wave: Wave::Triangle,
             tempo: START_TEMPO,
             snap: true,
-            filter: START_FILTER,
-            filter_envelope: START_FILTER_ENVELOPE,
-            unison: START_UNISON,
             song_lengths: Vec::new(),
             layers: Vec::new(),
             looper_message: None,
@@ -482,20 +480,6 @@ impl Engine {
     pub fn set_wave(&mut self, wave: Wave) {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_wave(self.raw, wave.number()) };
-        self.wave = wave;
-    }
-
-    // Moves new notes on to the next wave (sine, triangle, square, saw, then
-    // sine again) and returns it.
-    pub fn switch_wave(&mut self) -> Wave {
-        let next = self.wave.next();
-        self.set_wave(next);
-        next
-    }
-
-    // The wave new notes play.
-    pub fn wave(&self) -> Wave {
-        self.wave
     }
 
     // The click on its own, without the looper. Only the tests use it for
@@ -991,24 +975,20 @@ impl Engine {
 
     // Moves the filter (`jello_engine_set_filter`). Values outside its
     // ranges are brought within them. Every note hears it, even those
-    // already sounding.
-    pub fn set_filter(&mut self, filter: Filter) {
+    // already sounding. Returns the filter as sent.
+    pub fn set_filter(&mut self, filter: Filter) -> Filter {
         let cutoff_hz = within(filter.cutoff_hz, FILTER_LOWEST_HZ, FILTER_OPEN_HZ);
         let resonance = filter.resonance.min(FULL_PERCENT);
         let share = resonance as f32 / FULL_PERCENT as f32;
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_filter(self.raw, cutoff_hz, share) };
-        self.filter = Filter { cutoff_hz, resonance };
-    }
-
-    pub fn filter(&self) -> Filter {
-        self.filter
+        Filter { cutoff_hz, resonance }
     }
 
     // Sets the filter envelope (`jello_engine_set_filter_envelope`) for the
     // notes started after this. Values outside its ranges are brought
-    // within them.
-    pub fn set_filter_envelope(&mut self, envelope: FilterEnvelope) {
+    // within them. Returns the envelope as sent.
+    pub fn set_filter_envelope(&mut self, envelope: FilterEnvelope) -> FilterEnvelope {
         let amount = within(envelope.amount, 0.0, FILTER_MOST_OCTAVES);
         let sustain = envelope.sustain.min(FULL_PERCENT);
         let share = sustain as f32 / FULL_PERCENT as f32;
@@ -1017,37 +997,30 @@ impl Engine {
         let release = stage_ms(envelope.release_ms);
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_filter_envelope(self.raw, amount, attack, decay, share, release) };
-        self.filter_envelope = FilterEnvelope {
+        FilterEnvelope {
             amount,
             attack_ms: attack as u32,
             decay_ms: decay as u32,
             sustain,
             release_ms: release as u32,
-        };
-    }
-
-    pub fn filter_envelope(&self) -> FilterEnvelope {
-        self.filter_envelope
+        }
     }
 
     // Sets unison (`jello_engine_set_unison`) for the notes started after
-    // this. Values outside its ranges are brought within them.
-    pub fn set_unison(&mut self, unison: Unison) {
+    // this. Values outside its ranges are brought within them. Returns
+    // unison as sent.
+    pub fn set_unison(&mut self, unison: Unison) -> Unison {
         let copies = unison.copies.clamp(1, UNISON_MOST_COPIES);
         let detune_cents = unison.detune_cents.min(UNISON_MOST_DETUNE_CENTS);
         let spread = unison.spread.min(FULL_PERCENT);
         let share = spread as f32 / FULL_PERCENT as f32;
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_unison(self.raw, copies as c_int, detune_cents as f32, share) };
-        self.unison = Unison {
+        Unison {
             copies,
             detune_cents,
             spread,
-        };
-    }
-
-    pub fn unison(&self) -> Unison {
-        self.unison
+        }
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -1835,6 +1808,9 @@ mod tests {
 
     #[test]
     fn a_new_engine_plays_a_triangle_wave() {
+        // As START_WAVE says, so a new song's sound profile, sent as the app
+        // starts, changes nothing.
+        assert_eq!(START_WAVE, Wave::Triangle);
         let mut engine = Engine::new().unwrap();
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
@@ -2036,35 +2012,6 @@ mod tests {
 
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SINE_HARMONICS);
-    }
-
-    #[test]
-    fn switching_steps_through_the_waves_in_order() {
-        // A new engine starts on the triangle, so the first switch lands on
-        // the square. After the saw, it wraps around to the sine.
-        let mut engine = Engine::new().unwrap();
-        let mut names = Vec::new();
-        for _ in 0..5 {
-            let next = engine.switch_wave();
-            names.push(next.name());
-        }
-        assert_eq!(names, ["square", "saw", "sine", "triangle", "square"]);
-
-        // And the engine really plays the wave it landed on.
-        let wave = hold(&mut engine, A4, VELOCITY);
-        assert_harmonics(&engine, &wave, SQUARE_HARMONICS);
-    }
-
-    #[test]
-    fn the_engine_says_which_wave_new_notes_play() {
-        let mut engine = Engine::new().unwrap();
-        assert_eq!(engine.wave().name(), "triangle");
-
-        engine.switch_wave();
-        assert_eq!(engine.wave().name(), "square");
-
-        engine.set_wave(Wave::Sine);
-        assert_eq!(engine.wave().name(), "sine");
     }
 
     // Plays A4 on `wave` for `held_ms`, then lets go of it and renders
@@ -5481,8 +5428,8 @@ mod tests {
         // A cutoff below the lowest is sent as the lowest, so it sounds the
         // same as the lowest. Everything else out of range stops at its edge.
         let mut below = saw_engine();
-        below.set_filter(filter(5.0, 150));
-        assert_eq!(below.filter(), filter(FILTER_LOWEST_HZ, FULL_PERCENT));
+        let sent = below.set_filter(filter(5.0, 150));
+        assert_eq!(sent, filter(FILTER_LOWEST_HZ, FULL_PERCENT));
         let mut lowest = saw_engine();
         lowest.set_filter(filter(FILTER_LOWEST_HZ, FULL_PERCENT));
         below.note_on(A4, VELOCITY);
@@ -5492,24 +5439,35 @@ mod tests {
         assert!(below_wave == lowest_wave, "the cutoff below the lowest was not sent as the lowest");
 
         let mut engine = Engine::new().unwrap();
-        engine.set_filter(filter(50000.0, 0));
-        assert_eq!(engine.filter(), START_FILTER);
-        engine.set_filter(filter(f32::NAN, 0));
-        assert_eq!(engine.filter(), filter(FILTER_LOWEST_HZ, 0));
+        let sent = engine.set_filter(filter(50000.0, 0));
+        assert_eq!(sent, filter(FILTER_OPEN_HZ, 0));
+        let sent = engine.set_filter(filter(f32::NAN, 0));
+        assert_eq!(sent, filter(FILTER_LOWEST_HZ, 0));
 
-        engine.set_filter_envelope(filter_envelope(9.5, 20000, 20000, 150, 20000));
+        let sent = engine.set_filter_envelope(filter_envelope(9.5, 20000, 20000, 150, 20000));
         let longest = FILTER_LONGEST_MS;
         let edges = filter_envelope(FILTER_MOST_OCTAVES, longest, longest, FULL_PERCENT, longest);
-        assert_eq!(engine.filter_envelope(), edges);
-        engine.set_filter_envelope(filter_envelope(-1.0, 0, 0, 0, 0));
-        assert_eq!(engine.filter_envelope(), filter_envelope(0.0, 0, 0, 0, 0));
+        assert_eq!(sent, edges);
+        let sent = engine.set_filter_envelope(filter_envelope(-1.0, 0, 0, 0, 0));
+        assert_eq!(sent, filter_envelope(0.0, 0, 0, 0, 0));
     }
 
     #[test]
     fn a_new_engine_starts_with_the_filter_open_and_no_envelope() {
-        let engine = Engine::new().unwrap();
-        assert_eq!(engine.filter(), filter(FILTER_OPEN_HZ, 0));
-        assert_eq!(engine.filter_envelope(), filter_envelope(0.0, 5, 300, 0, 300));
+        // As START_FILTER and START_FILTER_ENVELOPE say, so a new song's
+        // sound profile, sent as the app starts, changes nothing.
+        assert_eq!(START_FILTER, filter(FILTER_OPEN_HZ, 0));
+        assert_eq!(START_FILTER_ENVELOPE, filter_envelope(0.0, 5, 300, 0, 300));
+
+        let mut started = saw_engine();
+        let mut sent = saw_engine();
+        sent.set_filter(START_FILTER);
+        sent.set_filter_envelope(START_FILTER_ENVELOPE);
+        started.note_on(A4, VELOCITY);
+        sent.note_on(A4, VELOCITY);
+        let started_wave = render_left(&mut started, 300);
+        let sent_wave = render_left(&mut sent, 300);
+        assert!(started_wave == sent_wave, "a new engine's filter is not where the start values say");
     }
 
     // Unison (docs/adr/0029-unison.md). Every test above plays 1 copy, as a
@@ -5956,9 +5914,9 @@ mod tests {
         // the most of each, so they sound the same as the most. The engine
         // takes those edges: they don't sound like a lone copy.
         let mut over = saw_engine();
-        over.set_unison(unison(12, 80, 150));
+        let sent = over.set_unison(unison(12, 80, 150));
         let most = unison(UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS, FULL_PERCENT);
-        assert_eq!(over.unison(), most);
+        assert_eq!(sent, most);
         let mut edges = saw_engine();
         edges.set_unison(most);
         let mut lone = saw_engine();
@@ -5974,8 +5932,8 @@ mod tests {
         // No copies at all is sent as 1. The lowest detune and spread are
         // taken too: 7 copies at 0 cents and 0% don't sound like a lone copy.
         let mut engine = saw_engine();
-        engine.set_unison(unison(0, 0, 0));
-        assert_eq!(engine.unison(), unison(1, 0, 0));
+        let sent = engine.set_unison(unison(0, 0, 0));
+        assert_eq!(sent, unison(1, 0, 0));
         engine.set_unison(unison(UNISON_MOST_COPIES, 0, 0));
         let mut lone = saw_engine();
         engine.note_on(A4, VELOCITY);
@@ -5987,7 +5945,17 @@ mod tests {
 
     #[test]
     fn a_new_engine_starts_with_one_copy() {
-        let engine = Engine::new().unwrap();
-        assert_eq!(engine.unison(), unison(1, 20, 100));
+        // As START_UNISON says, so a new song's sound profile, sent as the
+        // app starts, changes nothing.
+        assert_eq!(START_UNISON, unison(1, 20, 100));
+
+        let mut started = saw_engine();
+        let mut sent = saw_engine();
+        sent.set_unison(START_UNISON);
+        started.note_on(A4, VELOCITY);
+        sent.note_on(A4, VELOCITY);
+        let started_sound = render_stereo(&mut started, 300);
+        let sent_sound = render_stereo(&mut sent, 300);
+        assert!(started_sound == sent_sound, "a new engine's unison is not where START_UNISON says");
     }
 }
