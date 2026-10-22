@@ -1,5 +1,7 @@
 #include "envelope.h"
 
+#include <algorithm>
+
 namespace {
 
 // At least one sample, so even a 0 ms stage still ends.
@@ -26,6 +28,23 @@ void Envelope::set_stages(int attack_ms, int decay_ms, double sustain, int relea
     release_samples_ = ms_to_samples(release_ms, sample_rate_);
 }
 
+void Envelope::set_sustain(double sustain, int samples) {
+    if (sustain == sustain_) {
+        return;
+    }
+    sustain_ = sustain;
+
+    if (stage_ == Stage::decay) {
+        // Head for the new level in the time the decay has left.
+        target_ = peak_ * sustain_;
+        step_ = (target_ - level_) / samples_left_;
+    } else if (stage_ == Stage::sustain) {
+        // At least one sample, so the glide always ends.
+        int glide_samples = std::max(samples, 1);
+        glide(Stage::sustain, peak_ * sustain_, glide_samples);
+    }
+}
+
 void Envelope::start(float peak) {
     peak_ = peak;
     glide(Stage::attack, peak, attack_samples_);
@@ -39,9 +58,15 @@ void Envelope::release() {
 }
 
 float Envelope::next() {
-    // Silence and sustain hold still.
-    if (stage_ == Stage::silent || stage_ == Stage::sustain) {
+    // Silence holds still, and so does the sustain once it has glided to a
+    // moved level.
+    if (stage_ == Stage::silent) {
         return static_cast<float>(level_);
+    }
+    if (stage_ == Stage::sustain) {
+        if (samples_left_ == 0) {
+            return static_cast<float>(level_);
+        }
     }
 
     level_ += step_;
@@ -56,9 +81,10 @@ float Envelope::next() {
             glide(Stage::decay, peak_ * sustain_, decay_samples_);
         } else if (stage_ == Stage::decay) {
             stage_ = Stage::sustain;
-        } else {
+        } else if (stage_ == Stage::release) {
             stage_ = Stage::silent;  // the release has ended
         }
+        // A sustain that glided to a moved level holds there.
     }
 
     return static_cast<float>(level_);
@@ -74,6 +100,13 @@ bool Envelope::is_releasing() const {
 
 double Envelope::level() const {
     return level_;
+}
+
+double Envelope::share() const {
+    if (peak_ <= 0.0) {
+        return 0.0;
+    }
+    return level_ / peak_;
 }
 
 void Envelope::glide(Stage stage, double target, int samples) {

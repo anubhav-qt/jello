@@ -1,5 +1,6 @@
 #include "filter.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -144,12 +145,22 @@ void VoiceFilter::release() {
     envelope_.release();
 }
 
-Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets) {
+void VoiceFilter::set_sustain(double sustain, int samples) {
+    envelope_.set_sustain(sustain, samples);
+}
+
+double VoiceFilter::envelope_level() const {
+    return envelope_.level();
+}
+
+Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets, const FilterMoves& moves) {
+    double amount = std::clamp(amount_ + moves.amount, 0.0, static_cast<double>(filter_most_octaves));
+
     // The note's cutoff follows middle C's, plus however far its filter
-    // envelope has opened it right now.
-    double opening = envelope_.next() * amount_;
-    double cutoff = cutoff_.next(targets.cutoff + tracking_) + opening;
-    double resonance = resonance_.next(targets.resonance);
+    // envelope has opened it right now, plus the routing list's move.
+    double opening = envelope_.next() * amount;
+    double cutoff = cutoff_.next(targets.cutoff + tracking_) + opening + moves.cutoff;
+    double resonance = std::clamp(resonance_.next(targets.resonance) + moves.resonance, 0.0, 1.0);
     double share = share_.next(targets.share);
 
     // tan and exp2 are slow next to the rest, so the low-pass's math is only
@@ -158,6 +169,9 @@ Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets) {
         double hz = std::exp2(cutoff);
         if (hz > highest_hz_) {
             hz = highest_hz_;
+        }
+        if (hz < filter_lowest_hz) {
+            hz = filter_lowest_hz;
         }
         low_pass_.set(hz, resonance, sample_rate_);
         set_cutoff_ = cutoff;

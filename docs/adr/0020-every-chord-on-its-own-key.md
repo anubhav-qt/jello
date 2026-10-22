@@ -1,6 +1,6 @@
 # 0020: Every chord on its own key
 
-- Status: Accepted
+- Status: Accepted; F#m on left Shift superseded by 0032
 - Date: 2026-10-20
 
 Holding Space or right Shift while playing chords was hard to combine, so

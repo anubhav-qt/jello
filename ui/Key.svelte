@@ -166,6 +166,9 @@
   {#if kind === "wave"}
     <span class="key-note">{waveLabel}</span>
   {/if}
+  {#if kind === "vibrato"}
+    <span class="key-note">vibrato</span>
+  {/if}
   {#if isLooper}
     <LooperFace {sound} beats={looperBeats} />
   {:else if kind === "beat"}

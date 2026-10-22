@@ -97,6 +97,25 @@ bool is_within(float value, float lowest, float highest) {
     return value <= highest;
 }
 
+// The same for doubles.
+bool is_within_double(double value, double lowest, double highest) {
+    if (std::isnan(value)) {
+        return false;
+    }
+    if (value < lowest) {
+        return false;
+    }
+    return value <= highest;
+}
+
+// True if `value` is a whole number from `lowest` to `highest`.
+bool is_within_int(int value, int lowest, int highest) {
+    if (value < lowest) {
+        return false;
+    }
+    return value <= highest;
+}
+
 // How long a filter envelope's stage takes, in ms.
 bool is_valid_stage_ms(int ms) {
     if (ms < 0) {
@@ -111,6 +130,148 @@ bool is_valid_loudness_ms(int ms) {
         return false;
     }
     return ms <= JELLO_LOUDNESS_LONGEST_MS;
+}
+
+// The C API and the LFOs agree on how many there are and on their ranges.
+static_assert(JELLO_LFO_COUNT == lfo_count, "the C API and the routing list have the same LFOs");
+static_assert(JELLO_LFO_MOST_STEPS == lfo_most_steps, "the C API and the LFOs have the same most steps");
+static_assert(JELLO_LFO_MOST_PRESSES == lfo_most_presses, "the C API and the LFOs have the same most presses");
+static_assert(JELLO_LFO_LONGEST_MS == lfo_longest_ms, "the C API and the LFOs have the same longest delay");
+static_assert(JELLO_LFO_LONGEST_DELAY_BEATS == static_cast<int>(lfo_longest_delay_beats),
+              "the C API and the LFOs have the same longest delay in beats");
+static_assert(JELLO_CONNECTION_COUNT == connection_count, "the C API and the routing list have the same connections");
+static_assert(JELLO_VIBRATO_KEY_LONGEST_MS == vibrato_key_longest_ms,
+              "the C API and the routing list have the same longest vibrato key times");
+static_assert(JELLO_VIBRATO_KEY_NOTE == Synth::vibrato_key_note, "the C API and the synth record the vibrato key alike");
+
+// The C API's numbers line up with the routing list's sources and targets.
+static_assert(JELLO_SOURCE_LFO_1 == static_cast<int>(RoutingSource::lfo_1), "LFO 1 is the same source");
+static_assert(JELLO_SOURCE_VIBRATO_KEY == static_cast<int>(RoutingSource::vibrato_key), "the vibrato key is the same source");
+static_assert(JELLO_SOURCE_FILTER_ENVELOPE == static_cast<int>(RoutingSource::filter_envelope),
+              "the filter envelope is the same source");
+static_assert(JELLO_SOURCE_FILTER_ENVELOPE + 1 == source_count, "every source has a number");
+static_assert(JELLO_TARGET_LFO_1_SPEED == static_cast<int>(RoutingTarget::lfo_1_speed), "LFO 1's speed is the same target");
+static_assert(JELLO_TARGET_WAVE == static_cast<int>(RoutingTarget::wave), "the wave is the same target");
+static_assert(JELLO_TARGET_FILTER_RELEASE == static_cast<int>(RoutingTarget::filter_release),
+              "the filter release is the same target");
+static_assert(JELLO_TARGET_FILTER_RELEASE + 1 == target_count, "every target has a number");
+
+// An LFO's settings from the C API, checked: false if any is out of range.
+bool lfo_of_api(const JelloLfo& api, LfoSettings& lfo) {
+    if (api.shape < JELLO_LFO_SINE) {
+        return false;
+    }
+    if (api.shape > JELLO_LFO_STEPS) {
+        return false;
+    }
+    if (api.step_count < 1) {
+        return false;
+    }
+    if (api.step_count > JELLO_LFO_MOST_STEPS) {
+        return false;
+    }
+    for (int i = 0; i < api.step_count; i++) {
+        if (!is_within(api.steps[i], -1.0f, 1.0f)) {
+            return false;
+        }
+    }
+    if (api.speed < JELLO_LFO_HZ) {
+        return false;
+    }
+    if (api.speed > JELLO_LFO_PRESSES) {
+        return false;
+    }
+    if (!is_within_double(api.hz, lfo_slowest_hz, lfo_fastest_hz)) {
+        return false;
+    }
+    if (!is_within_double(api.beats, lfo_shortest_beats, lfo_longest_beats)) {
+        return false;
+    }
+    if (api.presses < 1) {
+        return false;
+    }
+    if (api.presses > JELLO_LFO_MOST_PRESSES) {
+        return false;
+    }
+    if (!is_within_double(api.start, 0.0, 1.0)) {
+        return false;
+    }
+    if (!is_within_double(api.spread, 0.0, 1.0)) {
+        return false;
+    }
+    if (!is_within_int(api.delay_ms, 0, JELLO_LFO_LONGEST_MS)) {
+        return false;
+    }
+    if (!is_within_int(api.fade_ms, 0, JELLO_LFO_LONGEST_MS)) {
+        return false;
+    }
+    if (!is_within_double(api.delay_beats, 0.0, lfo_longest_delay_beats)) {
+        return false;
+    }
+    if (!is_within_double(api.fade_beats, 0.0, lfo_longest_delay_beats)) {
+        return false;
+    }
+    if (!is_within_double(api.smooth, 0.0, 1.0)) {
+        return false;
+    }
+
+    lfo.shape = static_cast<LfoShape>(api.shape);
+    lfo.step_count = api.step_count;
+    lfo.steps.fill(0.0f);
+    for (int i = 0; i < api.step_count; i++) {
+        lfo.steps[i] = api.steps[i];
+    }
+    lfo.per_note = api.per_note;
+    lfo.speed = static_cast<LfoSpeed>(api.speed);
+    lfo.hz = api.hz;
+    lfo.beats = api.beats;
+    lfo.presses = api.presses;
+    lfo.start = api.start;
+    lfo.spread = api.spread;
+    lfo.delay_ms = api.delay_ms;
+    lfo.fade_ms = api.fade_ms;
+    lfo.delay_beats = api.delay_beats;
+    lfo.fade_beats = api.fade_beats;
+    lfo.smooth = api.smooth;
+    lfo.once = api.once;
+    return true;
+}
+
+bool is_valid_source(int source) {
+    if (source < JELLO_SOURCE_NONE) {
+        return false;
+    }
+    return source <= JELLO_SOURCE_FILTER_ENVELOPE;
+}
+
+// A connection from the C API, checked: false if any part is out of range.
+bool connection_of_api(const JelloConnection& api, Connection& connection) {
+    if (!is_valid_source(api.source)) {
+        return false;
+    }
+    if (!is_valid_source(api.scaled_by)) {
+        return false;
+    }
+    if (api.target < JELLO_TARGET_PITCH) {
+        return false;
+    }
+    if (api.target > JELLO_TARGET_FILTER_RELEASE) {
+        return false;
+    }
+
+    RoutingTarget target = static_cast<RoutingTarget>(api.target);
+    float most = most_amount(target);
+    if (!is_within(api.amount, -most, most)) {
+        return false;
+    }
+
+    connection.source = static_cast<RoutingSource>(api.source);
+    connection.target = target;
+    connection.amount = api.amount;
+    connection.one_way = api.one_way;
+    connection.snap = api.snap;
+    connection.scaled_by = static_cast<RoutingSource>(api.scaled_by);
+    return true;
 }
 
 // The C API and the song player agree on how big a song and a chord can be.
@@ -462,6 +623,42 @@ void jello_engine_set_tuning(JelloEngine* engine, float a4_hz) {
         return;
     }
     engine->conductor.set_tuning(a4_hz);
+}
+
+void jello_engine_set_lfo(JelloEngine* engine, int index, const JelloLfo* lfo) {
+    if (!is_within_int(index, 0, JELLO_LFO_COUNT - 1)) {
+        return;
+    }
+    LfoSettings settings;
+    if (!lfo_of_api(*lfo, settings)) {
+        return;
+    }
+    engine->conductor.set_lfo(index, settings);
+}
+
+void jello_engine_set_connection(JelloEngine* engine, int index, const JelloConnection* connection) {
+    if (!is_within_int(index, 0, JELLO_CONNECTION_COUNT - 1)) {
+        return;
+    }
+    Connection checked;
+    if (!connection_of_api(*connection, checked)) {
+        return;
+    }
+    engine->conductor.set_connection(index, checked);
+}
+
+void jello_engine_set_vibrato_key_times(JelloEngine* engine, int rise_ms, int fall_ms) {
+    if (!is_within_int(rise_ms, 0, JELLO_VIBRATO_KEY_LONGEST_MS)) {
+        return;
+    }
+    if (!is_within_int(fall_ms, 0, JELLO_VIBRATO_KEY_LONGEST_MS)) {
+        return;
+    }
+    engine->conductor.set_vibrato_key_times(rise_ms, fall_ms);
+}
+
+void jello_engine_set_vibrato_key(JelloEngine* engine, bool held) {
+    engine->conductor.set_vibrato_key(held);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {

@@ -1,12 +1,37 @@
 // A song's sound profile (docs/adr/0030-a-sound-profile-per-song.md):
 // everything about how its notes sound, which is its wave, its loudness
 // envelope, its low-pass filter with its filter envelope and key tracking,
-// its unison and its tuning. The song holds it. Every change to the sound
-// goes through it to the engine, so the engine plays only what the song says.
+// its unison, its tuning, and its LFOs, routing list and vibrato key times
+// (docs/adr/0031-lfos-and-a-routing-list.md). The song holds it. Every change
+// to the sound goes through it to the engine, so the engine plays only what
+// the song says.
 
 use crate::engine::{
     Engine, Filter, FilterEnvelope, LoudnessEnvelope, START_FILTER, START_FILTER_ENVELOPE, START_KEY_TRACKING,
     START_LOUDNESS_ENVELOPE, START_TUNING_HZ, START_UNISON, START_WAVE, Unison, Wave,
+};
+use crate::modulation::{
+    CONNECTION_COUNT, Connection, LFO_COUNT, Lfo, NO_CONNECTION, START_LFO, Source, Target, VibratoKeyTimes,
+};
+
+// A new song comes with vibrato ready on the vibrato key
+// (docs/adr/0032-the-vibrato-key.md): its first connection swings the pitch
+// 25 cents either way with LFO 1, a per-note sine at 5.5 Hz, as far as the
+// key is held. Up, it moves nothing, so the song sounds just as it would
+// without it. Only a starting point; each song changes it as it likes.
+const START_VIBRATO: Connection = Connection {
+    source: Source::Lfo(0),
+    target: Target::Pitch,
+    amount: 25.0,
+    one_way: false,
+    snap: false,
+    scaled_by: Source::VibratoKey,
+};
+
+// The vibrato key rises and falls over a quarter of a second in a new song.
+const START_SONG_KEY_TIMES: VibratoKeyTimes = VibratoKeyTimes {
+    rise_ms: 250,
+    fall_ms: 250,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,15 +50,22 @@ pub struct SoundProfile {
     unison: Unison,
     // A4's pitch in Hz, which new notes are tuned from.
     tuning_hz: f32,
+    // The LFOs, the routing list's connections and how long the vibrato key
+    // takes to rise and fall.
+    lfos: [Lfo; LFO_COUNT],
+    connections: [Connection; CONNECTION_COUNT],
+    vibrato_key_times: VibratoKeyTimes,
 }
 
 impl SoundProfile {
     // A new song's sound profile: a triangle wave, a 5 ms attack held at the
     // full peak with a 300 ms release, the filter open, no filter envelope,
-    // full key tracking, 1 copy and A4 at 440 Hz. It is only where a new
-    // song starts, the same place a new engine starts, and the song changes
-    // it from there.
+    // full key tracking, 1 copy and A4 at 440 Hz, the same place a new
+    // engine starts, plus vibrato ready on the vibrato key. It is only where
+    // a new song starts, and the song changes it from there.
     pub fn new() -> SoundProfile {
+        let mut connections = [NO_CONNECTION; CONNECTION_COUNT];
+        connections[0] = START_VIBRATO;
         SoundProfile {
             wave: START_WAVE,
             loudness_envelope: START_LOUDNESS_ENVELOPE,
@@ -42,6 +74,9 @@ impl SoundProfile {
             key_tracking: START_KEY_TRACKING,
             unison: START_UNISON,
             tuning_hz: START_TUNING_HZ,
+            lfos: [START_LFO; LFO_COUNT],
+            connections,
+            vibrato_key_times: START_SONG_KEY_TIMES,
         }
     }
 
@@ -55,6 +90,13 @@ impl SoundProfile {
         engine.set_key_tracking(self.key_tracking);
         engine.set_unison(self.unison);
         engine.set_tuning(self.tuning_hz);
+        for (index, lfo) in self.lfos.iter().enumerate() {
+            engine.set_lfo(index, *lfo);
+        }
+        for (index, connection) in self.connections.iter().enumerate() {
+            engine.set_connection(index, *connection);
+        }
+        engine.set_vibrato_key_times(self.vibrato_key_times);
     }
 
     // Moves new notes on to the next wave (sine, triangle, square, saw, then
@@ -101,6 +143,31 @@ impl SoundProfile {
         self.tuning_hz = engine.set_tuning(a4_hz);
     }
 
+    // Sets LFO `index`, from 0, on `engine` too, kept as the engine sent
+    // it. An index past the LFOs changes nothing.
+    pub fn set_lfo(&mut self, engine: &mut Engine, index: usize, lfo: Lfo) {
+        if index >= LFO_COUNT {
+            return;
+        }
+        self.lfos[index] = engine.set_lfo(index, lfo);
+    }
+
+    // Sets connection `index` of the routing list, from 0, on `engine` too,
+    // kept as the engine sent it. An index past the connections changes
+    // nothing.
+    pub fn set_connection(&mut self, engine: &mut Engine, index: usize, connection: Connection) {
+        if index >= CONNECTION_COUNT {
+            return;
+        }
+        self.connections[index] = engine.set_connection(index, connection);
+    }
+
+    // Sets how long the vibrato key takes to rise and fall, on `engine` too,
+    // kept as the engine sent it.
+    pub fn set_vibrato_key_times(&mut self, engine: &mut Engine, times: VibratoKeyTimes) {
+        self.vibrato_key_times = engine.set_vibrato_key_times(times);
+    }
+
     pub fn wave(&self) -> Wave {
         self.wave
     }
@@ -129,6 +196,18 @@ impl SoundProfile {
     pub fn tuning_hz(&self) -> f32 {
         self.tuning_hz
     }
+
+    pub fn lfos(&self) -> &[Lfo; LFO_COUNT] {
+        &self.lfos
+    }
+
+    pub fn connections(&self) -> &[Connection; CONNECTION_COUNT] {
+        &self.connections
+    }
+
+    pub fn vibrato_key_times(&self) -> VibratoKeyTimes {
+        self.vibrato_key_times
+    }
 }
 
 // These tests check that a profile keeps what it was given, as the engine
@@ -142,15 +221,20 @@ mod tests {
         FILTER_LONGEST_MS, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT, LOUDNESS_LONGEST_MS,
         LOUDNESS_SHORTEST_MS, TUNING_HIGHEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS,
     };
+    use crate::modulation::{LFO_FASTEST_HZ, LfoShape, VIBRATO_KEY_LONGEST_MS};
 
     const A4: u8 = 69;
     const VELOCITY: u8 = 100;
 
     // A profile unlike a new song's in every way: a saw, a slow attack that
     // falls to half the peak, a closed filter with resonance, a filter
-    // envelope, half key tracking, 5 spread copies and A4 at 432 Hz.
+    // envelope, half key tracking, 5 spread copies, A4 at 432 Hz, LFO 1 a
+    // triangle at 7 Hz, LFO 2 moving the cutoff, and a vibrato key that
+    // rises over 100 ms.
     fn odd_profile(engine: &mut Engine) -> SoundProfile {
+        // The app sends a new song's profile as it starts, then changes it.
         let mut profile = SoundProfile::new();
+        profile.send_all(engine);
         profile.switch_wave(engine);
         profile.switch_wave(engine);
         profile.set_loudness_envelope(
@@ -189,6 +273,26 @@ mod tests {
             },
         );
         profile.set_tuning(engine, 432.0);
+        let triangle = Lfo {
+            shape: LfoShape::Triangle,
+            hz: 7.0,
+            ..START_LFO
+        };
+        profile.set_lfo(engine, 0, triangle);
+        let cutoff_moving = Connection {
+            source: Source::Lfo(1),
+            target: Target::Cutoff,
+            amount: 1.0,
+            one_way: false,
+            snap: false,
+            scaled_by: Source::None,
+        };
+        profile.set_connection(engine, 1, cutoff_moving);
+        let times = VibratoKeyTimes {
+            rise_ms: 100,
+            fall_ms: 50,
+        };
+        profile.set_vibrato_key_times(engine, times);
         profile
     }
 
@@ -199,8 +303,14 @@ mod tests {
         engine.render(frames as usize)
     }
 
+    // The same with the vibrato key held, so whatever it moves is heard.
+    fn play_a4_with_the_key(engine: &mut Engine) -> Vec<f32> {
+        engine.set_vibrato_key(true);
+        play_a4(engine)
+    }
+
     // Every part of a profile, as play_a4_without names them.
-    const PARTS: [&str; 7] = [
+    const PARTS: [&str; 10] = [
         "wave",
         "loudness envelope",
         "filter",
@@ -208,6 +318,9 @@ mod tests {
         "key tracking",
         "unison",
         "tuning",
+        "lfos",
+        "connections",
+        "vibrato key times",
     ];
 
     // Sends `profile` to a new engine part by part, leaving out `left_out`:
@@ -235,7 +348,20 @@ mod tests {
         if left_out != "tuning" {
             engine.set_tuning(profile.tuning_hz());
         }
-        play_a4(&mut engine)
+        if left_out != "lfos" {
+            for (index, lfo) in profile.lfos().iter().enumerate() {
+                engine.set_lfo(index, *lfo);
+            }
+        }
+        if left_out != "connections" {
+            for (index, connection) in profile.connections().iter().enumerate() {
+                engine.set_connection(index, *connection);
+            }
+        }
+        if left_out != "vibrato key times" {
+            engine.set_vibrato_key_times(profile.vibrato_key_times());
+        }
+        play_a4_with_the_key(&mut engine)
     }
 
     #[test]
@@ -248,6 +374,108 @@ mod tests {
         assert_eq!(profile.key_tracking(), START_KEY_TRACKING);
         assert_eq!(profile.unison(), START_UNISON);
         assert_eq!(profile.tuning_hz(), START_TUNING_HZ);
+        assert_eq!(profile.lfos(), &[START_LFO; LFO_COUNT]);
+    }
+
+    #[test]
+    fn a_new_song_has_vibrato_ready_on_the_vibrato_key() {
+        // Its first connection swings the pitch 25 cents either way with LFO
+        // 1, scaled by the key, which rises and falls over 250 ms. No other
+        // connection is used.
+        let profile = SoundProfile::new();
+        let vibrato = Connection {
+            source: Source::Lfo(0),
+            target: Target::Pitch,
+            amount: 25.0,
+            one_way: false,
+            snap: false,
+            scaled_by: Source::VibratoKey,
+        };
+        assert_eq!(profile.connections()[0], vibrato);
+        for connection in &profile.connections()[1..] {
+            assert_eq!(*connection, NO_CONNECTION);
+        }
+        let times = VibratoKeyTimes {
+            rise_ms: 250,
+            fall_ms: 250,
+        };
+        assert_eq!(profile.vibrato_key_times(), times);
+
+        // Held from the start, A4 swings 25 cents either way of 440 Hz, about
+        // 6.4 Hz, five and a half times a second, once the key has risen.
+        let mut engine = Engine::new().unwrap();
+        profile.send_all(&mut engine);
+        engine.set_vibrato_key(true);
+        engine.note_on(A4, VELOCITY);
+        let rate = engine.sample_rate();
+        let wave = left_side(&engine.render(rate as usize * 2));
+        let risen = cycle_pitches(&wave[rate as usize / 2..], rate);
+        let swing = 440.0 * 2.0_f64.powf(25.0 / 1200.0) - 440.0;
+        assert!((highest(&risen) - 440.0 - swing).abs() < 0.5, "it swung up to {}", highest(&risen));
+        assert!((440.0 - lowest(&risen) - swing).abs() < 0.5, "it swung down to {}", lowest(&risen));
+        let swings = rises_through(&risen, 440.0);
+        assert!(swings == 8 || swings == 9, "it swung {swings} times in 1.5 seconds");
+
+        // In its first 40 ms, the key has risen less than a sixth of the way.
+        let rising = cycle_pitches(&wave[..rate as usize / 25], rate);
+        assert!(highest(&rising) - 440.0 < swing / 6.0, "it rose to {} at once", highest(&rising));
+        assert!(440.0 - lowest(&rising) < swing / 6.0, "it fell to {} at once", lowest(&rising));
+    }
+
+    // The left side of `samples`, left and right.
+    fn left_side(samples: &[f32]) -> Vec<f32> {
+        let mut left = Vec::new();
+        for frame in samples.chunks(2) {
+            left.push(frame[0]);
+        }
+        left
+    }
+
+    // The pitch of each cycle of `wave`, in Hz, from one crossing of zero on
+    // the way up to the next. Each crossing falls between two samples, found
+    // by a straight line between them.
+    fn cycle_pitches(wave: &[f32], rate: u32) -> Vec<f64> {
+        let mut crossings = Vec::new();
+        for i in 1..wave.len() {
+            let before = wave[i - 1] as f64;
+            let after = wave[i] as f64;
+            if before < 0.0 && after >= 0.0 {
+                let fraction = before / (before - after);
+                crossings.push((i - 1) as f64 + fraction);
+            }
+        }
+        let mut pitches = Vec::new();
+        for pair in crossings.windows(2) {
+            pitches.push(rate as f64 / (pair[1] - pair[0]));
+        }
+        pitches
+    }
+
+    fn highest(values: &[f64]) -> f64 {
+        let mut highest = values[0];
+        for value in values {
+            highest = f64::max(highest, *value);
+        }
+        highest
+    }
+
+    fn lowest(values: &[f64]) -> f64 {
+        let mut lowest = values[0];
+        for value in values {
+            lowest = f64::min(lowest, *value);
+        }
+        lowest
+    }
+
+    // How many times `values` go from below `level` to above it.
+    fn rises_through(values: &[f64], level: f64) -> usize {
+        let mut rises = 0;
+        for pair in values.windows(2) {
+            if pair[0] < level && pair[1] >= level {
+                rises += 1;
+            }
+        }
+        rises
     }
 
     #[test]
@@ -312,6 +540,26 @@ mod tests {
             },
         );
         profile.set_tuning(&mut engine, 500.0);
+        let too_fast = Lfo {
+            hz: 200.0,
+            start: 150,
+            ..START_LFO
+        };
+        profile.set_lfo(&mut engine, 3, too_fast);
+        let too_far = Connection {
+            source: Source::Lfo(9),
+            target: Target::Pitch,
+            amount: 6000.0,
+            one_way: false,
+            snap: true,
+            scaled_by: Source::None,
+        };
+        profile.set_connection(&mut engine, 5, too_far);
+        let too_long = VibratoKeyTimes {
+            rise_ms: 20000,
+            fall_ms: 20000,
+        };
+        profile.set_vibrato_key_times(&mut engine, too_long);
 
         let loudness_envelope = LoudnessEnvelope {
             attack_ms: LOUDNESS_SHORTEST_MS,
@@ -341,6 +589,29 @@ mod tests {
         assert_eq!(profile.key_tracking(), FULL_PERCENT);
         assert_eq!(profile.unison(), unison);
         assert_eq!(profile.tuning_hz(), TUNING_HIGHEST_HZ);
+        let at_the_top = Lfo {
+            hz: LFO_FASTEST_HZ,
+            start: FULL_PERCENT,
+            ..START_LFO
+        };
+        assert_eq!(profile.lfos()[3], at_the_top);
+        let as_far_as_it_goes = Connection {
+            source: Source::Lfo(LFO_COUNT - 1),
+            amount: 4800.0,
+            ..too_far
+        };
+        assert_eq!(profile.connections()[5], as_far_as_it_goes);
+        let longest = VibratoKeyTimes {
+            rise_ms: VIBRATO_KEY_LONGEST_MS,
+            fall_ms: VIBRATO_KEY_LONGEST_MS,
+        };
+        assert_eq!(profile.vibrato_key_times(), longest);
+
+        // An LFO or connection past the last changes nothing.
+        let before = profile;
+        profile.set_lfo(&mut engine, LFO_COUNT, too_fast);
+        profile.set_connection(&mut engine, CONNECTION_COUNT, too_far);
+        assert_eq!(profile, before);
     }
 
     #[test]
@@ -352,8 +623,8 @@ mod tests {
         let mut sent = Engine::new().unwrap();
         profile.send_all(&mut sent);
 
-        let changed_sound = play_a4(&mut changed);
-        let sent_sound = play_a4(&mut sent);
+        let changed_sound = play_a4_with_the_key(&mut changed);
+        let sent_sound = play_a4_with_the_key(&mut sent);
         assert!(changed_sound == sent_sound, "a change did not reach the engine");
     }
 
@@ -365,7 +636,7 @@ mod tests {
         let odd = odd_profile(&mut scratch);
         let mut sent = Engine::new().unwrap();
         odd.send_all(&mut sent);
-        let sent_sound = play_a4(&mut sent);
+        let sent_sound = play_a4_with_the_key(&mut sent);
 
         let whole = play_a4_without(&odd, "nothing");
         assert!(sent_sound == whole, "sending the profile did not play it");
@@ -377,7 +648,8 @@ mod tests {
 
     #[test]
     fn a_new_song_s_profile_sounds_like_a_new_engine() {
-        // So sending it as the app starts changes nothing.
+        // So sending it as the app starts changes nothing, with the vibrato
+        // key up.
         let mut sent = Engine::new().unwrap();
         SoundProfile::new().send_all(&mut sent);
         let mut plain = Engine::new().unwrap();

@@ -17,7 +17,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0006](0006-macos-and-windows.md) | macOS and Windows from day one | Accepted |
 | [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
-| [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted; fixed envelope superseded by 0030 |
+| [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted; fixed envelope superseded by 0030, Ctrl as a shortcut key by 0032 |
 | [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted; colors superseded by 0014 |
 | [0011](0011-svelte-5-for-the-ui.md) | Svelte 5 for the UI | Accepted |
 | [0012](0012-chords-left-melody-right.md) | Chords on the left, melody on the right | Accepted |
@@ -28,7 +28,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0017](0017-guided-compose.md) | Guided Compose | Accepted |
 | [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Accepted |
 | [0019](0019-instruments-built-from-scratch-no-guitar.md) | Instruments built from scratch, no guitar | Accepted |
-| [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted |
+| [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted; F#m on left Shift superseded by 0032 |
 | [0021](0021-a-looper-on-a-beat.md) | A looper on a beat | Accepted; Esc superseded by 0026 |
 | [0022](0022-compose-as-a-tape.md) | Compose as a tape | Accepted |
 | [0023](0023-guidance-on-the-melody-keys.md) | Guidance on the melody keys | Accepted |
@@ -39,6 +39,8 @@ To change a decision, write a new ADR and mark the old one as
 | [0028](0028-a-low-pass-filter.md) | A low-pass filter | Accepted; values by ear and fixed key tracking superseded by 0030 |
 | [0029](0029-unison.md) | Unison | Accepted; values by ear superseded by 0030 |
 | [0030](0030-a-sound-profile-per-song.md) | A sound profile per song | Accepted; also holds the loudness envelope, key tracking and tuning |
+| [0031](0031-lfos-and-a-routing-list.md) | LFOs and a routing list | Accepted |
+| [0032](0032-the-vibrato-key.md) | The vibrato key | Accepted |
 
 ## Template
 

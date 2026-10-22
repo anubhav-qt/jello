@@ -5,16 +5,20 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
     BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, LoudnessEnvelope,
-    Unison,
+    Unison, VIBRATO_KEY_NOTE,
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
+use crate::modulation::{
+    CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
+    VibratoKeyTimes,
+};
 use crate::sound_profile::SoundProfile;
 use crate::wav::write_wav;
 
@@ -28,9 +32,10 @@ const TAIL_MS: u32 = 400;
 
 // What the screen shows about the sound: the wave new notes play, the song's
 // tempo in beats per minute, whether loops snap to the beat, what the looper
-// is doing, the loudness envelope, where the filter is, unison's copies and
-// the tuning. Everything but the looper and snap comes from the song: its
-// tempo and its sound profile.
+// is doing, the loudness envelope, where the filter is, unison's copies, the
+// tuning, the LFOs, the routing list and the vibrato key's times. Everything
+// but the looper and snap comes from the song: its tempo and its sound
+// profile.
 #[derive(Serialize)]
 pub struct SoundView {
     wave: &'static str,
@@ -42,6 +47,157 @@ pub struct SoundView {
     unison: UnisonView,
     // A4's pitch in Hz, which every other note is tuned from.
     tuning_hz: f32,
+    // All 8 LFOs and all 64 connections, in order, and the vibrato key's
+    // times (docs/adr/0031-lfos-and-a-routing-list.md).
+    lfos: Vec<LfoView>,
+    connections: Vec<ConnectionView>,
+    vibrato_key: VibratoKeyView,
+}
+
+// One LFO, as the screen shows it and sends it back to `set_lfo`. Its shape
+// and speed are named: "sine", "saw up", "hz", "presses" and so on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LfoView {
+    shape: String,
+    // For the steps shape: how many steps play, and every step's height in
+    // percent, from -100 to 100. It always lists LFO_MOST_STEPS of them.
+    step_count: u32,
+    steps: Vec<f32>,
+    per_note: bool,
+    speed: String,
+    hz: f64,
+    beats: f64,
+    presses: u32,
+    // In percent.
+    start: u32,
+    spread: u32,
+    delay_ms: u32,
+    fade_ms: u32,
+    delay_beats: f64,
+    fade_beats: f64,
+    // In percent.
+    smooth: u32,
+    once: bool,
+}
+
+fn lfo_view_of(lfo: &Lfo) -> LfoView {
+    LfoView {
+        shape: String::from(lfo.shape.name()),
+        step_count: lfo.step_count,
+        steps: lfo.steps.to_vec(),
+        per_note: lfo.per_note,
+        speed: String::from(lfo.speed.name()),
+        hz: lfo.hz,
+        beats: lfo.beats,
+        presses: lfo.presses,
+        start: lfo.start,
+        spread: lfo.spread,
+        delay_ms: lfo.delay_ms,
+        fade_ms: lfo.fade_ms,
+        delay_beats: lfo.delay_beats,
+        fade_beats: lfo.fade_beats,
+        smooth: lfo.smooth,
+        once: lfo.once,
+    }
+}
+
+// The LFO `view` describes. Steps past LFO_MOST_STEPS are left out, and
+// missing ones are 0. Fails on a shape or speed with no such name.
+fn lfo_of_view(view: &LfoView) -> Result<Lfo, String> {
+    let shape = match LfoShape::from_name(&view.shape) {
+        Some(shape) => shape,
+        None => return Err(format!("there is no LFO shape called {}", view.shape)),
+    };
+    let speed = match LfoSpeed::from_name(&view.speed) {
+        Some(speed) => speed,
+        None => return Err(format!("there is no LFO speed called {}", view.speed)),
+    };
+    let mut steps = [0.0; LFO_MOST_STEPS];
+    for (step, height) in steps.iter_mut().zip(&view.steps) {
+        *step = *height;
+    }
+    let lfo = Lfo {
+        shape,
+        step_count: view.step_count,
+        steps,
+        per_note: view.per_note,
+        speed,
+        hz: view.hz,
+        beats: view.beats,
+        presses: view.presses,
+        start: view.start,
+        spread: view.spread,
+        delay_ms: view.delay_ms,
+        fade_ms: view.fade_ms,
+        delay_beats: view.delay_beats,
+        fade_beats: view.fade_beats,
+        smooth: view.smooth,
+        once: view.once,
+    };
+    Ok(lfo)
+}
+
+// One connection of the routing list, as the screen shows it and sends it
+// back to `set_connection`. Its sources and target are named, like "lfo 1",
+// "vibrato key" or "cutoff", and an unused one's source is "none". Its
+// amount is in the target's own unit, named in `unit`, which the screen need
+// not send back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionView {
+    source: String,
+    target: String,
+    amount: f32,
+    one_way: bool,
+    snap: bool,
+    scaled_by: String,
+    #[serde(default)]
+    unit: String,
+}
+
+fn connection_view_of(connection: &Connection) -> ConnectionView {
+    ConnectionView {
+        source: connection.source.name(),
+        target: connection.target.name(),
+        amount: connection.amount,
+        one_way: connection.one_way,
+        snap: connection.snap,
+        scaled_by: connection.scaled_by.name(),
+        unit: String::from(connection.target.unit().name()),
+    }
+}
+
+// The connection `view` describes. Fails on a source or target with no such
+// name.
+fn connection_of_view(view: &ConnectionView) -> Result<Connection, String> {
+    let source = source_named(&view.source)?;
+    let scaled_by = source_named(&view.scaled_by)?;
+    let target = match Target::from_name(&view.target) {
+        Some(target) => target,
+        None => return Err(format!("there is no target called {}", view.target)),
+    };
+    let connection = Connection {
+        source,
+        target,
+        amount: view.amount,
+        one_way: view.one_way,
+        snap: view.snap,
+        scaled_by,
+    };
+    Ok(connection)
+}
+
+fn source_named(name: &str) -> Result<Source, String> {
+    match Source::from_name(name) {
+        Some(source) => Ok(source),
+        None => Err(format!("there is no source called {name}")),
+    }
+}
+
+// How long the vibrato key takes to rise when held and fall when let go.
+#[derive(Serialize)]
+pub struct VibratoKeyView {
+    rise_ms: u32,
+    fall_ms: u32,
 }
 
 // The loudness envelope new notes start with.
@@ -186,6 +342,11 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     let busy = engine.is_looper_busy();
     let position = engine.looper_position();
     let mut layers = engine.loop_layers().to_vec();
+    // The vibrato key's presses are kept with a layer's notes, but the lane
+    // leaves them out until its design says how to draw them.
+    for layer in &mut layers {
+        layer.notes.retain(|note| note.note != VIBRATO_KEY_NOTE);
+    }
     // Once a layer plays, the lane shows each note where the loop plays it.
     if is_loop_playing(status.state) {
         for layer in &mut layers {
@@ -198,6 +359,17 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     let mut looper = looper_view_of(status, busy, position, &layers, tempo, sample_rate);
     looper.removing = engine.esc_removes(now);
     looper.message = engine.take_looper_message();
+
+    let mut lfos = Vec::new();
+    for lfo in sound_profile.lfos() {
+        lfos.push(lfo_view_of(lfo));
+    }
+    let mut connections = Vec::new();
+    for connection in sound_profile.connections() {
+        connections.push(connection_view_of(connection));
+    }
+    let key_times = sound_profile.vibrato_key_times();
+
     SoundView {
         wave: wave.name(),
         tempo: composer.tempo(),
@@ -207,6 +379,12 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
         filter: filter_view_of(sound_profile),
         unison: unison_view_of(sound_profile),
         tuning_hz: sound_profile.tuning_hz(),
+        lfos,
+        connections,
+        vibrato_key: VibratoKeyView {
+            rise_ms: key_times.rise_ms,
+            fall_ms: key_times.fall_ms,
+        },
     }
 }
 
@@ -541,10 +719,82 @@ pub fn set_tuning(
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
-// Does what a laptop key does when pressed: plays its note or chord,
-// switches the wave, runs the looper or changes the tempo. `key` is the
-// key's place on the keyboard, like "KeyQ". Returns what the screen shows
-// about the sound, so the UI can show it.
+// Sets the song's LFO `index`, from 0 to 7
+// (docs/adr/0031-lfos-and-a-routing-list.md), as `lfo` describes it. Values
+// outside their ranges are brought within them. Every note hears it from the
+// next 32 samples on. Returns what the screen shows about the sound. Fails
+// on an index past the LFOs, or a shape or speed with no such name. Like
+// `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_lfo(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    index: usize,
+    lfo: LfoView,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    if index >= LFO_COUNT {
+        return Err(format!("there is no LFO {}", index + 1));
+    }
+    let lfo = lfo_of_view(&lfo)?;
+
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_lfo(&mut engine, index, lfo);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets connection `index` of the song's routing list, from 0 to 63, as
+// `connection` describes it. Its amount is brought within its target's
+// range. Returns what the screen shows about the sound. Fails on an index
+// past the connections, or a source or target with no such name. Like
+// `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_connection(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    index: usize,
+    connection: ConnectionView,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    if index >= CONNECTION_COUNT {
+        return Err(format!("there is no connection {}", index + 1));
+    }
+    let connection = connection_of_view(&connection)?;
+
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_connection(&mut engine, index, connection);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets how long the song's vibrato key takes to rise when held and fall
+// when let go, in ms, each brought within 0 to 10000
+// (docs/adr/0032-the-vibrato-key.md). Returns what the screen shows about
+// the sound. The UI sends them as `riseMs` and `fallMs`. Like `set_filter`,
+// it opens the speakers first.
+#[tauri::command]
+pub fn set_vibrato_key_times(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    rise_ms: u32,
+    fall_ms: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let times = VibratoKeyTimes { rise_ms, fall_ms };
+    composer.sound_profile_mut().set_vibrato_key_times(&mut engine, times);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Does what a laptop key does when pressed: plays its note or chord, holds
+// the vibrato key, switches the wave, runs the looper or changes the tempo.
+// `key` is the key's place on the keyboard, like "KeyQ". Returns what the
+// screen shows about the sound, so the UI can show it.
 //
 // Commands read the clock before anything else, so waiting for a lock never
 // counts toward how long a chord was held. Then they lock what they need in
@@ -605,6 +855,9 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
                 engine.note_on(note, LAPTOP_VELOCITY);
             }
         }
+        KeyAction::HoldVibratoKey => {
+            engine.set_vibrato_key(true);
+        }
         KeyAction::SwitchWave => {
             composer.sound_profile_mut().switch_wave(engine);
         }
@@ -624,7 +877,7 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
 }
 
 // Lets go of the notes a laptop key started, except any that another held
-// key is still playing.
+// key is still playing, or of the vibrato key.
 #[tauri::command]
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
@@ -638,11 +891,15 @@ pub fn release_key(
     let mut engine = engine.lock().unwrap();
 
     // Forget the key first, whether or not the speakers are open.
+    let lets_go_of_vibrato_key = key_map.holds_vibrato_key(&key);
     let notes = key_up(&mut key_map, &mut composer, &key, now);
 
     // Same reason as in `release_note`.
     if !engine.is_audio_running() {
         return;
+    }
+    if lets_go_of_vibrato_key {
+        engine.set_vibrato_key(false);
     }
     for note in notes {
         engine.note_off(note);
@@ -874,6 +1131,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::engine::Wave;
+    use crate::modulation::{NO_CONNECTION, START_LFO};
 
     // What key `key` does in the default layout.
     fn action_of(key: &str) -> KeyAction {
@@ -1075,6 +1333,242 @@ mod tests {
         assert_eq!(json["layers"], expected);
         assert_eq!(json["removing"], 1);
         assert_eq!(json["message"], "There is no layer 7");
+    }
+
+    #[test]
+    fn left_shift_holds_the_vibrato_key_and_left_control_plays_f_sharp_minor() {
+        // With a new song's vibrato, middle C played with left Shift held
+        // swings, so it sounds unlike middle C alone.
+        let mut composer = Composer::new();
+        let mut held = Engine::new().unwrap();
+        let mut up = Engine::new().unwrap();
+        for engine in [&mut held, &mut up] {
+            composer.send_all(engine);
+        }
+        press(&mut held, &mut composer, "ShiftLeft");
+        press(&mut held, &mut composer, "KeyM");
+        press(&mut up, &mut composer, "KeyM");
+        let held_sound = held.render(48_000);
+        let up_sound = up.render(48_000);
+        assert!(held_sound != up_sound, "left Shift moved nothing");
+
+        // Left Control plays F#m: F#3, A3 and C#4.
+        let mut control = Engine::new().unwrap();
+        press(&mut control, &mut composer, "ControlLeft");
+        let mut by_hand = Engine::new().unwrap();
+        for note in [54, 57, 61] {
+            by_hand.note_on(note, LAPTOP_VELOCITY);
+        }
+        assert!(control.render(4800) == by_hand.render(4800), "left Control did not play F#m");
+    }
+
+    #[test]
+    fn the_ui_reads_the_lfos_routing_list_and_key_times_by_these_names() {
+        // Every value different, so two names mixed up would show.
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        let mut steps = [0.0; LFO_MOST_STEPS];
+        steps[0] = -40.0;
+        steps[1] = 70.0;
+        let lfo = Lfo {
+            shape: LfoShape::SawDown,
+            step_count: 2,
+            steps,
+            per_note: false,
+            speed: LfoSpeed::Presses,
+            hz: 2.5,
+            beats: 4.0,
+            presses: 6,
+            start: 20,
+            spread: 30,
+            delay_ms: 150,
+            fade_ms: 250,
+            delay_beats: 0.5,
+            fade_beats: 1.5,
+            smooth: 40,
+            once: true,
+        };
+        let connection = Connection {
+            source: Source::Lfo(2),
+            target: Target::Cutoff,
+            amount: -1.5,
+            one_way: true,
+            snap: true,
+            scaled_by: Source::NoteHeight,
+        };
+        let profile = composer.sound_profile_mut();
+        profile.set_lfo(&mut engine, 7, lfo);
+        profile.set_connection(&mut engine, 63, connection);
+        let times = VibratoKeyTimes {
+            rise_ms: 120,
+            fall_ms: 340,
+        };
+        profile.set_vibrato_key_times(&mut engine, times);
+
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        let lfos = json["lfos"].as_array().unwrap();
+        assert_eq!(lfos.len(), LFO_COUNT);
+        let expected_lfo = serde_json::json!({
+            "shape": "saw down",
+            "step_count": 2,
+            "steps": steps.to_vec(),
+            "per_note": false,
+            "speed": "presses",
+            "hz": 2.5,
+            "beats": 4.0,
+            "presses": 6,
+            "start": 20,
+            "spread": 30,
+            "delay_ms": 150,
+            "fade_ms": 250,
+            "delay_beats": 0.5,
+            "fade_beats": 1.5,
+            "smooth": 40,
+            "once": true,
+        });
+        assert_eq!(lfos[7], expected_lfo);
+        assert_eq!(lfos[0]["shape"], "sine");
+
+        let connections = json["connections"].as_array().unwrap();
+        assert_eq!(connections.len(), CONNECTION_COUNT);
+        let expected_connection = serde_json::json!({
+            "source": "lfo 3",
+            "target": "cutoff",
+            "amount": -1.5,
+            "one_way": true,
+            "snap": true,
+            "scaled_by": "note height",
+            "unit": "octaves",
+        });
+        assert_eq!(connections[63], expected_connection);
+        // A new song's vibrato, and an unused connection.
+        assert_eq!(connections[0]["source"], "lfo 1");
+        assert_eq!(connections[0]["target"], "pitch");
+        assert_eq!(connections[0]["scaled_by"], "vibrato key");
+        assert_eq!(connections[0]["unit"], "cents");
+        assert_eq!(connections[1]["source"], "none");
+
+        assert_eq!(json["vibrato_key"]["rise_ms"], 120);
+        assert_eq!(json["vibrato_key"]["fall_ms"], 340);
+    }
+
+    #[test]
+    fn an_lfo_and_a_connection_come_back_from_the_screen_as_they_went() {
+        // Every shape and speed, and every source and target, by name.
+        for shape in LfoShape::ALL {
+            for speed in LfoSpeed::ALL {
+                let lfo = Lfo {
+                    shape,
+                    speed,
+                    ..START_LFO
+                };
+                assert_eq!(lfo_of_view(&lfo_view_of(&lfo)), Ok(lfo));
+            }
+        }
+        let mut sources = vec![Source::None, Source::VibratoKey, Source::NoteHeight, Source::Random];
+        sources.push(Source::LoudnessEnvelope);
+        sources.push(Source::FilterEnvelope);
+        let mut targets = Target::OTHERS.to_vec();
+        for index in 0..LFO_COUNT {
+            sources.push(Source::Lfo(index));
+            targets.push(Target::LfoSpeed(index));
+        }
+        for source in &sources {
+            for target in &targets {
+                let connection = Connection {
+                    source: *source,
+                    target: *target,
+                    amount: 0.5,
+                    one_way: true,
+                    snap: false,
+                    scaled_by: *source,
+                };
+                assert_eq!(connection_of_view(&connection_view_of(&connection)), Ok(connection));
+            }
+        }
+
+        // The screen may send more steps than an LFO has, or fewer.
+        let mut view = lfo_view_of(&START_LFO);
+        view.steps = vec![50.0; LFO_MOST_STEPS + 8];
+        assert_eq!(lfo_of_view(&view).unwrap().steps, [50.0; LFO_MOST_STEPS]);
+        view.steps = vec![50.0, -50.0];
+        let mut expected = [0.0; LFO_MOST_STEPS];
+        expected[0] = 50.0;
+        expected[1] = -50.0;
+        assert_eq!(lfo_of_view(&view).unwrap().steps, expected);
+
+        // And need not send a connection's unit back.
+        let sent = serde_json::json!({
+            "source": "vibrato key",
+            "target": "pan",
+            "amount": 50.0,
+            "one_way": false,
+            "snap": false,
+            "scaled_by": "none",
+        });
+        let view: ConnectionView = serde_json::from_value(sent).unwrap();
+        let expected = Connection {
+            source: Source::VibratoKey,
+            target: Target::Pan,
+            amount: 50.0,
+            one_way: false,
+            snap: false,
+            scaled_by: Source::None,
+        };
+        assert_eq!(connection_of_view(&view), Ok(expected));
+    }
+
+    #[test]
+    fn an_lfo_or_connection_with_an_odd_name_fails() {
+        let mut view = lfo_view_of(&START_LFO);
+        view.shape = String::from("wobble");
+        assert_eq!(lfo_of_view(&view), Err(String::from("there is no LFO shape called wobble")));
+        let mut view = lfo_view_of(&START_LFO);
+        view.speed = String::from("bars");
+        assert_eq!(lfo_of_view(&view), Err(String::from("there is no LFO speed called bars")));
+
+        let view = connection_view_of(&NO_CONNECTION);
+        let odd_source = ConnectionView {
+            source: String::from("lfo 9"),
+            ..view.clone()
+        };
+        assert_eq!(connection_of_view(&odd_source), Err(String::from("there is no source called lfo 9")));
+        let odd_scale = ConnectionView {
+            scaled_by: String::from("mood"),
+            ..view.clone()
+        };
+        assert_eq!(connection_of_view(&odd_scale), Err(String::from("there is no source called mood")));
+        let odd_target = ConnectionView {
+            target: String::from("volume"),
+            ..view
+        };
+        assert_eq!(connection_of_view(&odd_target), Err(String::from("there is no target called volume")));
+    }
+
+    #[test]
+    fn the_lane_leaves_out_the_vibrato_key_s_presses() {
+        // A4 recorded with the key held under it: the layer keeps both, and
+        // the lane shows A4 alone.
+        let mut engine = Engine::new().unwrap();
+        engine.press_looper();
+        engine.render(96_000);
+        engine.note_on(A4, 100);
+        engine.set_vibrato_key(true);
+        engine.render(12_000);
+        engine.set_vibrato_key(false);
+        engine.note_off(A4);
+        engine.render(12_000);
+
+        let notes = engine.loop_layers()[0].notes.clone();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[1].note, VIBRATO_KEY_NOTE);
+        let view = view_of(&mut engine, Instant::now());
+        let a4 = LoopNoteView {
+            note: A4,
+            start: 0.0,
+            end: Some(0.5),
+        };
+        assert_eq!(view.looper.layers[0].notes, vec![a4]);
     }
 
     const SAMPLE_RATE: u32 = 48_000;

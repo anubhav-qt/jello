@@ -64,6 +64,17 @@ BeatLength Clock::beat_length() const {
     return length;
 }
 
+BeatLength Clock::asked_beat_length() const {
+    BeatLength length;
+    length.samples_per_minute = samples_per_minute_;
+    length.tempo = static_cast<std::uint64_t>(next_tempo_);
+    return length;
+}
+
+std::uint64_t Clock::beat_number() const {
+    return beats_started_;
+}
+
 void Clock::step() {
     if (beat_starts_now()) {
         beats_started_ += 1;

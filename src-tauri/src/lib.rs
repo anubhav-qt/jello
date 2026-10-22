@@ -6,6 +6,7 @@ mod compose;
 mod engine;
 mod harmony;
 mod key_map;
+mod modulation;
 mod sound_profile;
 mod wav;
 
@@ -46,6 +47,9 @@ pub fn run() {
             commands::set_loudness_envelope,
             commands::set_key_tracking,
             commands::set_tuning,
+            commands::set_lfo,
+            commands::set_connection,
+            commands::set_vibrato_key_times,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

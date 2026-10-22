@@ -50,12 +50,14 @@ const CHORDS: [(&str, Chord); 24] = [
     ("Digit4", major(56)), // Ab
     ("Digit5", major(58)), // Bb
     // Their minor chords go around the left edge, low to high: from ` in the
-    // top left corner down to Space, under the thumb.
-    ("Backquote", minor(49)), // C#m
-    ("Tab", minor(51)),       // Ebm
-    ("ShiftLeft", minor(54)), // F#m
-    ("KeyZ", minor(56)),      // G#m
-    ("Space", minor(58)),     // Bbm
+    // top left corner down to Space, under the thumb. F#m sits on left
+    // Control, since left Shift holds the vibrato key
+    // (docs/adr/0032-the-vibrato-key.md).
+    ("Backquote", minor(49)),   // C#m
+    ("Tab", minor(51)),         // Ebm
+    ("ControlLeft", minor(54)), // F#m
+    ("KeyZ", minor(56)),        // G#m
+    ("Space", minor(58)),       // Bbm
 ];
 
 const fn major(root: u8) -> Chord {
@@ -110,6 +112,11 @@ const MELODY_NOTES: [(&str, u8); 20] = [
 // the end of the top letter row, past the melody keys.
 const WAVE_KEY: &str = "Backslash";
 
+// The key held for vibrato, or whatever the song's routing list connects
+// the vibrato key to (docs/adr/0032-the-vibrato-key.md): left Shift, under
+// the left pinky.
+const VIBRATO_KEY: &str = "ShiftLeft";
+
 // The keys that run the beat and the looper
 // (docs/adr/0021-a-looper-on-a-beat.md). Right Shift counts in, records and
 // closes the loop, then starts and stops layers, and Esc removes a layer
@@ -149,6 +156,8 @@ enum KeyRole {
     Note(u8),
     // Plays this chord.
     Chord(Chord),
+    // Holds the vibrato key.
+    Vibrato,
     // Moves new notes on to the next wave.
     Wave,
     // Runs the looper.
@@ -168,6 +177,8 @@ pub enum KeyAction {
     PlayNote(u8),
     // Plays this chord's notes together until the key is let go.
     PlayChord(Chord),
+    // Holds the vibrato key until the key is let go.
+    HoldVibratoKey,
     // Moves new notes on to the next wave.
     SwitchWave,
     // Counts in, records or closes the loop, or starts or stops a layer,
@@ -207,6 +218,8 @@ pub struct LayoutForUi {
     chords: HashMap<String, ChordForUi>,
     // The keys that move new notes on to the next wave.
     wave_keys: Vec<String>,
+    // The keys that hold the vibrato key.
+    vibrato_keys: Vec<String>,
     // The keys that run the beat and the looper, each with what it does:
     // "looper", "clear", "slower" or "faster".
     beat_keys: HashMap<String, &'static str>,
@@ -223,6 +236,7 @@ impl KeyMap {
             layout.insert(String::from(key), KeyRole::Note(note));
         }
         layout.insert(String::from(WAVE_KEY), KeyRole::Wave);
+        layout.insert(String::from(VIBRATO_KEY), KeyRole::Vibrato);
         layout.insert(String::from(LOOPER_KEY), KeyRole::Looper);
         layout.insert(String::from(CLEAR_KEY), KeyRole::RemoveLayer);
         layout.insert(String::from(SLOWER_KEY), KeyRole::Slower);
@@ -260,6 +274,11 @@ impl KeyMap {
                 self.held.insert(String::from(key), chord.notes().to_vec());
                 Some(KeyAction::PlayChord(chord))
             }
+            // Held with no notes, so letting go of it is known.
+            KeyRole::Vibrato => {
+                self.held.insert(String::from(key), Vec::new());
+                Some(KeyAction::HoldVibratoKey)
+            }
             KeyRole::Wave => Some(KeyAction::SwitchWave),
             KeyRole::Looper => Some(KeyAction::PressLooper),
             KeyRole::RemoveLayer => Some(KeyAction::RemoveLayer),
@@ -285,6 +304,15 @@ impl KeyMap {
             }
         }
         to_stop
+    }
+
+    // Whether `key` is held down holding the vibrato key, so letting go of
+    // it lets go of the vibrato key. Ask before `release`.
+    pub fn holds_vibrato_key(&self, key: &str) -> bool {
+        if !self.held.contains_key(key) {
+            return false;
+        }
+        self.layout.get(key) == Some(&KeyRole::Vibrato)
     }
 
     // Whether any held key is playing `note`.
@@ -329,6 +357,7 @@ impl KeyMap {
         let mut notes = HashMap::new();
         let mut chords = HashMap::new();
         let mut wave_keys = Vec::new();
+        let mut vibrato_keys = Vec::new();
         let mut beat_keys = HashMap::new();
         for (key, role) in &self.layout {
             match role {
@@ -337,6 +366,9 @@ impl KeyMap {
                 }
                 KeyRole::Chord(chord) => {
                     chords.insert(key.clone(), chord_for_ui(*chord));
+                }
+                KeyRole::Vibrato => {
+                    vibrato_keys.push(key.clone());
                 }
                 KeyRole::Wave => {
                     wave_keys.push(key.clone());
@@ -359,11 +391,13 @@ impl KeyMap {
         // The layout keeps its keys in no order, so sort them to give the
         // same answer every time.
         wave_keys.sort();
+        vibrato_keys.sort();
 
         LayoutForUi {
             notes,
             chords,
             wave_keys,
+            vibrato_keys,
             beat_keys,
         }
     }
@@ -470,10 +504,10 @@ mod tests {
     fn the_left_edge_plays_the_black_key_minors_low_to_high() {
         assert_chords(&[
             ("Backquote", [49, 52, 56]), // C#m: C#3 E3 G#3
-            ("Tab", [51, 54, 58]),       // Ebm: Eb3 Gb3 Bb3
-            ("ShiftLeft", [54, 57, 61]), // F#m: F#3 A3 C#4
-            ("KeyZ", [56, 59, 63]),      // G#m: G#3 B3 D#4
-            ("Space", [58, 61, 65]),     // Bbm: Bb3 Db4 F4
+            ("Tab", [51, 54, 58]),         // Ebm: Eb3 Gb3 Bb3
+            ("ControlLeft", [54, 57, 61]), // F#m: F#3 A3 C#4
+            ("KeyZ", [56, 59, 63]),        // G#m: G#3 B3 D#4
+            ("Space", [58, 61, 65]),       // Bbm: Bb3 Db4 F4
         ]);
     }
 
@@ -500,13 +534,33 @@ mod tests {
 
     #[test]
     fn holding_a_chord_key_changes_no_other_key() {
-        // Space and left Shift play chords of their own now, so holding
-        // them leaves C a C chord and M middle C.
+        // Space and left Control play chords of their own now, and left
+        // Shift holds the vibrato key, so holding them leaves C a C chord
+        // and M middle C.
         let mut key_map = KeyMap::new();
         key_map.press("Space");
+        key_map.press("ControlLeft");
         key_map.press("ShiftLeft");
         assert_eq!(chord_notes(key_map.press("KeyC")), Some([48, 52, 55]));
         assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
+    }
+
+    #[test]
+    fn left_shift_holds_the_vibrato_key_until_it_is_let_go() {
+        let mut key_map = KeyMap::new();
+        assert!(!key_map.holds_vibrato_key("ShiftLeft"));
+        assert_eq!(key_map.press("ShiftLeft"), Some(KeyAction::HoldVibratoKey));
+        assert!(key_map.holds_vibrato_key("ShiftLeft"));
+
+        // Held, it is not held again, and it starts no notes to stop.
+        assert_eq!(key_map.press("ShiftLeft"), None);
+        assert_eq!(key_map.release("ShiftLeft"), Vec::<u8>::new());
+        assert!(!key_map.holds_vibrato_key("ShiftLeft"));
+
+        // No other key holds it, held or not.
+        key_map.press("KeyC");
+        assert!(!key_map.holds_vibrato_key("KeyC"));
+        assert!(!key_map.holds_vibrato_key("ShiftRight"));
     }
 
     #[test]
@@ -541,7 +595,7 @@ mod tests {
             "Quote",
             "Enter",
             "Backspace",
-            "ControlLeft",
+            "ControlRight",
             "AltLeft",
             "MetaLeft",
         ];
@@ -549,9 +603,9 @@ mod tests {
             assert_eq!(key_map.press(key), None, "key {key}");
         }
 
-        // The layout holds the 24 chords, the 20 notes, the wave key and the
-        // 4 beat and looper keys, and nothing else.
-        assert_eq!(key_map.layout.len(), 49);
+        // The layout holds the 24 chords, the 20 notes, the vibrato key, the
+        // wave key and the 4 beat and looper keys, and nothing else.
+        assert_eq!(key_map.layout.len(), 50);
     }
 
     #[test]
@@ -732,7 +786,7 @@ mod tests {
             ("Digit5", "Bb"),
             ("Backquote", "C#m"),
             ("Tab", "Ebm"),
-            ("ShiftLeft", "F#m"),
+            ("ControlLeft", "F#m"),
             ("KeyZ", "G#m"),
             ("Space", "Bbm"),
         ];
@@ -763,6 +817,7 @@ mod tests {
         assert_eq!(json["chords"]["KeyC"]["notes"][2], 55);
         assert_eq!(json["chords"]["KeyX"]["name"], "Cm");
         assert_eq!(json["wave_keys"][0], "Backslash");
+        assert_eq!(json["vibrato_keys"][0], "ShiftLeft");
         assert_eq!(json["beat_keys"]["ShiftRight"], "looper");
     }
 }

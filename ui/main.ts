@@ -342,11 +342,12 @@ function askForComposeAfterLetGo() {
 }
 
 window.addEventListener("keydown", (event) => {
-  // While Cmd, Ctrl or Option/Alt is held, the key is a shortcut like Cmd+Q:
-  // it plays nothing and is left alone. Every note is let go too, because on
-  // a Mac a key let go while Cmd is held may never say so, and its note would
-  // stay stuck on.
-  if (event.metaKey || event.ctrlKey || event.altKey) {
+  // While Cmd or Option/Alt is held, the key is a shortcut like Cmd+Q: it
+  // plays nothing and is left alone. Every note is let go too, because on a
+  // Mac a key let go while Cmd is held may never say so, and its note would
+  // stay stuck on. Left Control plays F#m, so Ctrl is no shortcut key
+  // (docs/adr/0032-the-vibrato-key.md).
+  if (event.metaKey || event.altKey) {
     letGoOfEverything();
     return;
   }

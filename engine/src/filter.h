@@ -59,6 +59,15 @@ struct FilterTargets {
 
 FilterTargets filter_targets_of(const FilterSettings& settings);
 
+// How far the routing list moves one note's filter right now
+// (docs/adr/0031-lfos-and-a-routing-list.md). Each is added on top, and the
+// sum kept within the filter's ranges.
+struct FilterMoves {
+    double cutoff = 0.0;     // octaves
+    double resonance = 0.0;  // a share
+    double amount = 0.0;     // octaves of the filter envelope's amount
+};
+
 // A value that moves to a new target in a straight line over a set number of
 // samples, so a control moved in one jump is heard as a quick, smooth move
 // instead of a click.
@@ -138,9 +147,16 @@ public:
     // Starts the filter envelope's release.
     void release();
 
+    // Moves the filter envelope's sustain while the note plays
+    // (Envelope::set_sustain).
+    void set_sustain(double sustain, int samples);
+
+    // Where the filter envelope is right now, from 0 to 1.
+    double envelope_level() const;
+
     // Filters one moment of the wave, both sides, gliding a step toward
-    // `targets`.
-    Stereo next(Stereo wave, const FilterTargets& targets);
+    // `targets`, moved by `moves`.
+    Stereo next(Stereo wave, const FilterTargets& targets, const FilterMoves& moves);
 
 private:
     int sample_rate_;

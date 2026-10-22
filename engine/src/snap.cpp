@@ -6,9 +6,6 @@
 
 namespace {
 
-// How many notes MIDI has, 0 to 127.
-constexpr int pitch_count = 128;
-
 // Which half beat `position` is nearest to, counting the loop's first sample
 // as half beat 0.
 std::uint64_t nearest_half_beat(std::uint64_t position, BeatLength beat) {
@@ -77,7 +74,7 @@ bool starts_sooner(const LoopNote& a, const LoopNote& b) {
 void end_before_the_same_key_again(LoopNote* planned, int count) {
     // Going from the last note back: where the next note of each key starts.
     constexpr std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
-    std::array<std::uint64_t, pitch_count> next_start{};
+    std::array<std::uint64_t, loop_pitch_count> next_start{};
     next_start.fill(none);
 
     for (int i = count - 1; i >= 0; i--) {

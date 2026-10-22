@@ -68,6 +68,15 @@ public:
     void set_loudness_envelope(const LoudnessEnvelopeSettings& envelope);
     void set_key_tracking(float key_tracking);
     void set_tuning(float a4_hz);
+    // The routing list's LFOs and connections, and how long the vibrato key
+    // takes to rise and fall (Synth::set_lfo, set_connection and
+    // set_vibrato_key_times).
+    void set_lfo(int index, const LfoSettings& settings);
+    void set_connection(int index, const Connection& connection);
+    void set_vibrato_key_times(int rise_ms, int fall_ms);
+    // Holds or lets go of the live vibrato key (Synth::set_vibrato_key). The
+    // looper records it like a note.
+    void set_vibrato_key(bool held);
 
     // What the looper is doing. Only the thread that sends the messages may
     // ask.

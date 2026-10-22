@@ -19,6 +19,8 @@ export interface KeyLayout {
   chords: Record<string, LayoutChord>;
   // The keys that move new notes on to the next wave.
   wave_keys: string[];
+  // The keys held for vibrato: left Shift.
+  vibrato_keys: string[];
   // The keys that run the beat, each with what it does: right Shift runs
   // the looper, Esc clears it, - slows the beat down and = speeds it up.
   beat_keys: Record<string, BeatKey>;
@@ -53,10 +55,10 @@ export interface KeyRow {
   short?: boolean;
 }
 
-// What a key is for, which decides how it is drawn. A "beat" key runs the
-// beat, and an "action" key does something on the open tab, like Compose's
-// Return.
-export type KeyKind = "note" | "chord" | "wave" | "beat" | "action" | "plain" | "blank";
+// What a key is for, which decides how it is drawn. A "vibrato" key is held
+// for vibrato, a "beat" key runs the beat, and an "action" key does
+// something on the open tab, like Compose's Return.
+export type KeyKind = "note" | "chord" | "wave" | "vibrato" | "beat" | "action" | "plain" | "blank";
 
 // The keyboard to draw: a Mac's, or a PC's on Windows.
 export function detectPlatform(): Platform {
@@ -256,6 +258,9 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   }
   if (layout.wave_keys.includes(code)) {
     return "wave";
+  }
+  if (layout.vibrato_keys.includes(code)) {
+    return "vibrato";
   }
   if (layout.beat_keys[code] !== undefined) {
     return "beat";

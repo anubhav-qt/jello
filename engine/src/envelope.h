@@ -42,6 +42,12 @@ public:
     // this uses them; the one under way finishes as it began.
     void set_stages(int attack_ms, int decay_ms, double sustain, int release_ms);
 
+    // Moves the sustain level while the note plays, as a share of the peak,
+    // from 0 to 1 (docs/adr/0031-lfos-and-a-routing-list.md). A decay under
+    // way heads for it instead, and a held sustain glides there over
+    // `samples`. The same level as now changes nothing.
+    void set_sustain(double sustain, int samples);
+
     // Starts the attack, gliding from the current level to `peak`.
     void start(float peak);
 
@@ -60,6 +66,9 @@ public:
 
     // The level right now, from 0 up to the peak.
     double level() const;
+
+    // The level right now as a share of the peak, from 0 to 1.
+    double share() const;
 
 private:
     enum class Stage {

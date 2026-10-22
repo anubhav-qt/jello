@@ -6,6 +6,8 @@
 
 #include "envelope.h"
 #include "filter.h"
+#include "lfo.h"
+#include "routing.h"
 #include "song_player.h"
 #include "unison.h"
 #include "wave.h"
@@ -33,6 +35,10 @@ enum class EventType {
     set_loudness_envelope,
     set_key_tracking,
     set_tuning,
+    set_lfo,
+    set_connection,
+    set_vibrato_key,
+    set_vibrato_key_times,
 };
 
 // One message for the audio thread.
@@ -78,6 +84,17 @@ struct Event {
     LoudnessEnvelopeSettings loudness_envelope{};
     float key_tracking = 1.0f;
     float a4_hz = 440.0f;
+
+    // Which LFO or connection, from 0, and its settings; only for set_lfo
+    // and set_connection. Whether the vibrato key is held; only for
+    // set_vibrato_key. And how long it takes to rise and fall; only for
+    // set_vibrato_key_times. The other messages can leave them out too.
+    int index = 0;
+    LfoSettings lfo{};
+    Connection connection{};
+    bool held = false;
+    int rise_ms = 0;
+    int fall_ms = 0;
 };
 
 // Carries messages from one thread to another without locks

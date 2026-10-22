@@ -4,6 +4,12 @@
 use std::ffi::c_int;
 use std::time::{Duration, Instant};
 
+use crate::modulation::{
+    CONNECTION_COUNT, Connection, LFO_COUNT, LFO_FASTEST_HZ, LFO_LONGEST_BEATS, LFO_LONGEST_DELAY_BEATS,
+    LFO_LONGEST_MS, LFO_MOST_PRESSES, LFO_MOST_STEPS, LFO_SHORTEST_BEATS, LFO_SLOWEST_HZ, Lfo, Unit,
+    VIBRATO_KEY_LONGEST_MS, VibratoKeyTimes,
+};
+
 // The engine itself lives in C++. Rust only ever holds a pointer to it.
 #[repr(C)]
 struct JelloEngine {
@@ -62,6 +68,38 @@ struct RawSongChord {
     length: u64,
 }
 
+// `JelloLfo` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawLfo {
+    shape: c_int,
+    step_count: c_int,
+    steps: [f32; LFO_MOST_STEPS],
+    per_note: bool,
+    speed: c_int,
+    hz: f64,
+    beats: f64,
+    presses: c_int,
+    start: f64,
+    spread: f64,
+    delay_ms: c_int,
+    fade_ms: c_int,
+    delay_beats: f64,
+    fade_beats: f64,
+    smooth: f64,
+    once: bool,
+}
+
+// `JelloConnection` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawConnection {
+    source: c_int,
+    target: c_int,
+    amount: f32,
+    one_way: bool,
+    snap: bool,
+    scaled_by: c_int,
+}
+
 unsafe extern "C" {
     fn jello_engine_create() -> *mut JelloEngine;
     fn jello_engine_destroy(engine: *mut JelloEngine);
@@ -115,6 +153,10 @@ unsafe extern "C" {
     );
     fn jello_engine_set_key_tracking(engine: *mut JelloEngine, key_tracking: f32);
     fn jello_engine_set_tuning(engine: *mut JelloEngine, a4_hz: f32);
+    fn jello_engine_set_lfo(engine: *mut JelloEngine, index: c_int, lfo: *const RawLfo);
+    fn jello_engine_set_connection(engine: *mut JelloEngine, index: c_int, connection: *const RawConnection);
+    fn jello_engine_set_vibrato_key_times(engine: *mut JelloEngine, rise_ms: c_int, fall_ms: c_int);
+    fn jello_engine_set_vibrato_key(engine: *mut JelloEngine, held: bool);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
@@ -276,6 +318,11 @@ pub const TUNING_HIGHEST_HZ: f32 = 466.0;
 // profile starts there too.
 pub const START_TUNING_HZ: f32 = 440.0;
 
+// The pitch the loop's notes have for presses of the vibrato key
+// (`JELLO_VIBRATO_KEY_NOTE` in engine/include/jello_engine.h): one past the
+// highest note.
+pub const VIBRATO_KEY_NOTE: u8 = 128;
+
 // `value` brought within `lowest` to `highest`. NaN, not a number at all,
 // counts as `lowest`; no slider sends it.
 fn within(value: f32, lowest: f32, highest: f32) -> f32 {
@@ -283,6 +330,105 @@ fn within(value: f32, lowest: f32, highest: f32) -> f32 {
         return lowest;
     }
     value.clamp(lowest, highest)
+}
+
+// The same for f64.
+fn within_f64(value: f64, lowest: f64, highest: f64) -> f64 {
+    if value.is_nan() {
+        return lowest;
+    }
+    value.clamp(lowest, highest)
+}
+
+// `percent` as a share from 0 to 1, with anything above 100 counting as 100.
+fn share_of(percent: u32) -> f64 {
+    let percent = percent.min(FULL_PERCENT);
+    f64::from(percent) / f64::from(FULL_PERCENT)
+}
+
+// `lfo` with every value brought within its range.
+fn lfo_within_ranges(lfo: Lfo) -> Lfo {
+    let step_count = lfo.step_count.clamp(1, LFO_MOST_STEPS as u32);
+    let mut steps = lfo.steps;
+    for step in &mut steps {
+        *step = within(*step, -(FULL_PERCENT as f32), FULL_PERCENT as f32);
+    }
+    Lfo {
+        shape: lfo.shape,
+        step_count,
+        steps,
+        per_note: lfo.per_note,
+        speed: lfo.speed,
+        hz: within_f64(lfo.hz, LFO_SLOWEST_HZ, LFO_FASTEST_HZ),
+        beats: within_f64(lfo.beats, LFO_SHORTEST_BEATS, LFO_LONGEST_BEATS),
+        presses: lfo.presses.clamp(1, LFO_MOST_PRESSES),
+        start: lfo.start.min(FULL_PERCENT),
+        spread: lfo.spread.min(FULL_PERCENT),
+        delay_ms: lfo.delay_ms.min(LFO_LONGEST_MS),
+        fade_ms: lfo.fade_ms.min(LFO_LONGEST_MS),
+        delay_beats: within_f64(lfo.delay_beats, 0.0, LFO_LONGEST_DELAY_BEATS),
+        fade_beats: within_f64(lfo.fade_beats, 0.0, LFO_LONGEST_DELAY_BEATS),
+        smooth: lfo.smooth.min(FULL_PERCENT),
+        once: lfo.once,
+    }
+}
+
+// `lfo`, already within its ranges, as the C API takes it: steps and
+// percents as shares.
+fn raw_lfo(lfo: &Lfo) -> RawLfo {
+    let mut steps = [0.0; LFO_MOST_STEPS];
+    for (raw, step) in steps.iter_mut().zip(lfo.steps) {
+        *raw = step / FULL_PERCENT as f32;
+    }
+    RawLfo {
+        shape: lfo.shape.number(),
+        step_count: lfo.step_count as c_int,
+        steps,
+        per_note: lfo.per_note,
+        speed: lfo.speed.number(),
+        hz: lfo.hz,
+        beats: lfo.beats,
+        presses: lfo.presses as c_int,
+        start: share_of(lfo.start),
+        spread: share_of(lfo.spread),
+        delay_ms: lfo.delay_ms as c_int,
+        fade_ms: lfo.fade_ms as c_int,
+        delay_beats: lfo.delay_beats,
+        fade_beats: lfo.fade_beats,
+        smooth: share_of(lfo.smooth),
+        once: lfo.once,
+    }
+}
+
+// `connection` with every value brought within its range.
+fn connection_within_ranges(connection: Connection) -> Connection {
+    let target = connection.target.within_range();
+    let most = target.most_amount();
+    Connection {
+        source: connection.source.within_range(),
+        target,
+        amount: within(connection.amount, -most, most),
+        one_way: connection.one_way,
+        snap: connection.snap,
+        scaled_by: connection.scaled_by.within_range(),
+    }
+}
+
+// `connection`, already within its ranges, as the C API takes it: an amount
+// in percent as a share.
+fn raw_connection(connection: &Connection) -> RawConnection {
+    let mut amount = connection.amount;
+    if connection.target.unit() == Unit::Percent {
+        amount = amount / FULL_PERCENT as f32;
+    }
+    RawConnection {
+        source: connection.source.number(),
+        target: connection.target.number(),
+        amount,
+        one_way: connection.one_way,
+        snap: connection.snap,
+        scaled_by: connection.scaled_by.number(),
+    }
 }
 
 // A filter envelope stage's length brought within its range, as a C int.
@@ -1099,6 +1245,56 @@ impl Engine {
         a4_hz
     }
 
+    // Sets LFO `index`, from 0 (`jello_engine_set_lfo`). Values outside
+    // their ranges are brought within them, and an index past LFO_COUNT is
+    // ignored. Every note hears it from the next 32 samples on. Returns the
+    // LFO as sent.
+    pub fn set_lfo(&mut self, index: usize, lfo: Lfo) -> Lfo {
+        let lfo = lfo_within_ranges(lfo);
+        if index >= LFO_COUNT {
+            return lfo;
+        }
+        let raw = raw_lfo(&lfo);
+        // SAFETY: `raw` points to a live engine until Drop, and the LFO's
+        // settings live until the call returns.
+        unsafe { jello_engine_set_lfo(self.raw, index as c_int, &raw) };
+        lfo
+    }
+
+    // Sets connection `index` of the routing list, from 0
+    // (`jello_engine_set_connection`). Values outside their ranges are
+    // brought within them, and an index past CONNECTION_COUNT is ignored.
+    // Returns the connection as sent.
+    pub fn set_connection(&mut self, index: usize, connection: Connection) -> Connection {
+        let connection = connection_within_ranges(connection);
+        if index >= CONNECTION_COUNT {
+            return connection;
+        }
+        let raw = raw_connection(&connection);
+        // SAFETY: `raw` points to a live engine until Drop, and the
+        // connection lives until the call returns.
+        unsafe { jello_engine_set_connection(self.raw, index as c_int, &raw) };
+        connection
+    }
+
+    // Sets how long the vibrato key takes to rise and fall
+    // (`jello_engine_set_vibrato_key_times`), each brought within
+    // VIBRATO_KEY_LONGEST_MS. Returns them as sent.
+    pub fn set_vibrato_key_times(&mut self, times: VibratoKeyTimes) -> VibratoKeyTimes {
+        let rise_ms = times.rise_ms.min(VIBRATO_KEY_LONGEST_MS);
+        let fall_ms = times.fall_ms.min(VIBRATO_KEY_LONGEST_MS);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_vibrato_key_times(self.raw, rise_ms as c_int, fall_ms as c_int) };
+        VibratoKeyTimes { rise_ms, fall_ms }
+    }
+
+    // Holds or lets go of the live vibrato key
+    // (`jello_engine_set_vibrato_key`, docs/adr/0032-the-vibrato-key.md).
+    pub fn set_vibrato_key(&mut self, held: bool) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_vibrato_key(self.raw, held) };
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -1140,6 +1336,10 @@ mod tests {
     use super::*;
 
     use std::f64::consts::PI;
+
+    use crate::modulation::{
+        LfoShape, LfoSpeed, NO_CONNECTION, START_LFO, START_VIBRATO_KEY_TIMES, Source, Target,
+    };
 
     // The sound the C++ engine makes. When it is changed there on purpose,
     // change it here too.
@@ -2566,6 +2766,8 @@ mod tests {
         PlaySong(&'static [TestChord]),
         StopSong,
         Snap(bool),
+        HoldVibratoKey,
+        LetGoOfVibratoKey,
     }
 
     use Step::*;
@@ -2586,6 +2788,8 @@ mod tests {
             PlaySong(song) => engine.play_song(&song_chords(song)).unwrap(),
             StopSong => engine.stop_song(),
             Snap(on) => engine.set_snap(on),
+            HoldVibratoKey => engine.set_vibrato_key(true),
+            LetGoOfVibratoKey => engine.set_vibrato_key(false),
         }
     }
 
@@ -6297,5 +6501,2083 @@ mod tests {
         let started_wave = render_left(&mut started, 300);
         let sent_wave = render_left(&mut sent, 300);
         assert!(started_wave == sent_wave, "a new engine does not start where the START_ values say");
+    }
+
+    // LFOs and the routing list (docs/adr/0031-lfos-and-a-routing-list.md),
+    // and the vibrato key (docs/adr/0032-the-vibrato-key.md). Every test
+    // above plays a new engine's 8 LFOs and 64 connections, none of them
+    // used, so nothing moves.
+    //
+    // The routing list is worked out every 32 samples, counted from the
+    // engine's first, and each move goes in a straight line from one to the
+    // next. The surest way to watch a move is the loudness: a note turned
+    // down by the routing list is exactly the same note without it, times
+    // its gain, on every sample.
+
+    const CONTROL_SAMPLES: usize = 32; // `control_samples` in engine/src/routing.h
+    const SHARED_GLIDE_SAMPLES: usize = 960; // `glide_ms` in engine/src/routing.cpp: 20 ms
+    const STEP_NUDGE: f64 = 0.000000001; // `step_nudge` in engine/src/lfo.cpp
+    const ONCE_END_NUDGE: f64 = 0.000000001; // `once_end_nudge` in engine/src/voice.cpp
+    const SAMPLES_PER_SECOND: f64 = 48_000.0;
+    const B4_HZ: f64 = 493.8833;
+
+    // Every shape that is drawn, not random.
+    const DRAWN_SHAPES: [LfoShape; 6] = [
+        LfoShape::Sine,
+        LfoShape::Triangle,
+        LfoShape::Square,
+        LfoShape::SawUp,
+        LfoShape::SawDown,
+        LfoShape::Steps,
+    ];
+
+    // Five steps for the steps shape, in percent.
+    const STEP_HEIGHTS: [f32; 5] = [-100.0, -35.0, 60.0, 100.0, 15.0];
+
+    // An LFO like a new engine's, but with `shape` at `hz`, each note's copy
+    // starting right at its start point, and no smoothing.
+    fn lfo_at(shape: LfoShape, hz: f64) -> Lfo {
+        Lfo {
+            shape,
+            hz,
+            spread: 0,
+            smooth: 0,
+            ..START_LFO
+        }
+    }
+
+    // `lfo` with `heights`, in percent, as its steps.
+    fn with_steps(lfo: Lfo, heights: &[f32]) -> Lfo {
+        let mut steps = [0.0; LFO_MOST_STEPS];
+        steps[..heights.len()].copy_from_slice(heights);
+        Lfo {
+            step_count: heights.len() as u32,
+            steps,
+            ..lfo
+        }
+    }
+
+    // `source` moving `target` by `amount`, in the target's own units, both
+    // ways.
+    fn connection(source: Source, target: Target, amount: f32) -> Connection {
+        Connection {
+            source,
+            target,
+            amount,
+            ..NO_CONNECTION
+        }
+    }
+
+    // The same, read one way.
+    fn one_way_connection(source: Source, target: Target, amount: f32) -> Connection {
+        Connection {
+            one_way: true,
+            ..connection(source, target, amount)
+        }
+    }
+
+    // `source`, read one way, turning the loudness down: all the way to
+    // silence at its top, and not at all at its bottom.
+    fn dip_by(source: Source) -> Connection {
+        one_way_connection(source, Target::Loudness, -100.0)
+    }
+
+    // The gain dip_by gives at a source's `height`, from -1 to 1.
+    fn gain_at_height(height: f64) -> f64 {
+        1.0 - (height + 1.0) / 2.0
+    }
+
+    // Every target, the LFOs' speeds included.
+    fn every_target() -> Vec<Target> {
+        let mut targets = Target::OTHERS.to_vec();
+        for index in 0..LFO_COUNT {
+            targets.push(Target::LfoSpeed(index));
+        }
+        targets
+    }
+
+    // A new engine with `lfos`, each at its index, and `connections` in the
+    // routing list's first slots.
+    fn routed_engine(lfos: &[(usize, Lfo)], connections: &[Connection]) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        for (index, lfo) in lfos {
+            engine.set_lfo(*index, *lfo);
+        }
+        for (index, connection) in connections.iter().enumerate() {
+            engine.set_connection(index, *connection);
+        }
+        engine
+    }
+
+    // A4 played for `ms` from the first sample on a routed engine and on a
+    // new one: the left sides, moved and plain.
+    fn a4_routed(lfos: &[(usize, Lfo)], connections: &[Connection], ms: u32) -> (Vec<f32>, Vec<f32>) {
+        let mut routed = routed_engine(lfos, connections);
+        let mut plain = Engine::new().unwrap();
+        routed.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let moved = render_left(&mut routed, ms);
+        let plain_wave = render_left(&mut plain, ms);
+        (moved, plain_wave)
+    }
+
+    // Where a move is on sample `i`, given where it is on the samples the
+    // routing list is worked out on: `at(t)` for t = 0, 32, 64 and so on.
+    // In between it goes in a straight line.
+    fn on_the_line(at: &impl Fn(usize) -> f64, i: usize) -> f64 {
+        let block = i - i % CONTROL_SAMPLES;
+        let into = (i - block) as f64 / CONTROL_SAMPLES as f64;
+        let from = at(block);
+        let to = at(block + CONTROL_SAMPLES);
+        from + (to - from) * into
+    }
+
+    // Checks that `moved` is `plain` times the gain `gain_at(t)` says on the
+    // samples t the routing list is worked out on, and in straight lines in
+    // between, on every sample. `what` names the case in a failure.
+    fn assert_gain(what: &str, moved: &[f32], plain: &[f32], gain_at: impl Fn(usize) -> f64) {
+        assert_eq!(moved.len(), plain.len());
+        for i in 0..moved.len() {
+            let gain = on_the_line(&gain_at, i);
+            let expected = plain[i] as f64 * gain;
+            let difference = (moved[i] as f64 - expected).abs();
+            assert!(
+                difference < 0.000001,
+                "{what}: sample {i} is {}, expected {expected}, a gain of {gain}",
+                moved[i]
+            );
+        }
+    }
+
+    // The gain `moved` has against `plain` from sample `from` to `to`, where
+    // it holds still: read at the loudest sample there, the most exact.
+    fn gain_between(moved: &[f32], plain: &[f32], from: usize, to: usize) -> f64 {
+        let mut loudest = from;
+        for i in from..to {
+            if plain[i].abs() > plain[loudest].abs() {
+                loudest = i;
+            }
+        }
+        moved[loudest] as f64 / plain[loudest] as f64
+    }
+
+    // `percent` as a share from 0 to 1, as Rust sends it.
+    fn share(percent: u32) -> f64 {
+        percent as f64 / FULL_PERCENT as f64
+    }
+
+    // Step `index` of `lfo`, from -1 to 1, as Rust sends it.
+    fn step_height(lfo: &Lfo, index: usize) -> f64 {
+        let height = lfo.steps[index] / FULL_PERCENT as f32;
+        height as f64
+    }
+
+    // How many cycles an LFO at `hz` goes in `samples` samples.
+    fn cycles_after(hz: f64, samples: usize) -> f64 {
+        hz * samples as f64 / SAMPLES_PER_SECOND
+    }
+
+    // How a shape jumps, smoothed: from `before` to `height`, sliding over
+    // the first `smooth` of the stretch, `into` of the way through it
+    // (`hold` in engine/src/lfo.cpp).
+    fn slid(before: f64, height: f64, into: f64, smooth: f64) -> f64 {
+        if into < smooth {
+            return before + (height - before) * (into / smooth);
+        }
+        height
+    }
+
+    // How high `lfo` is `cycles` cycles into its run, from -1 to 1, drawn as
+    // engine/src/lfo.h says. Only for the shapes that are not random.
+    fn drawn_height(lfo: &Lfo, cycles: f64) -> f64 {
+        let phase = cycles - cycles.floor();
+        let smooth = share(lfo.smooth);
+        match lfo.shape {
+            LfoShape::Sine => (2.0 * PI * phase).sin(),
+            LfoShape::Triangle => {
+                if phase < 0.25 {
+                    4.0 * phase
+                } else if phase < 0.75 {
+                    2.0 - 4.0 * phase
+                } else {
+                    4.0 * phase - 4.0
+                }
+            }
+            LfoShape::Square => {
+                if phase < 0.5 {
+                    slid(-1.0, 1.0, phase / 0.5, smooth)
+                } else {
+                    slid(1.0, -1.0, (phase - 0.5) / 0.5, smooth)
+                }
+            }
+            LfoShape::SawUp => {
+                if phase < smooth {
+                    slid(1.0, -1.0, phase, smooth)
+                } else {
+                    -1.0 + 2.0 * (phase - smooth) / (1.0 - smooth)
+                }
+            }
+            LfoShape::SawDown => {
+                if phase < smooth {
+                    slid(-1.0, 1.0, phase, smooth)
+                } else {
+                    1.0 - 2.0 * (phase - smooth) / (1.0 - smooth)
+                }
+            }
+            LfoShape::Steps => {
+                let count = lfo.step_count as usize;
+                let place = phase * count as f64;
+                let mut step = (place + STEP_NUDGE).floor() as usize;
+                if step > count - 1 {
+                    step = count - 1;
+                }
+                let mut into = place - step as f64;
+                if into < 0.0 {
+                    into = 0.0;
+                }
+                // The step before the first is the last.
+                let before = (step + count - 1) % count;
+                slid(step_height(lfo, before), step_height(lfo, step), into, smooth)
+            }
+            _ => panic!("a random shape has no drawing"),
+        }
+    }
+
+    #[test]
+    fn each_of_the_8_lfos_moves_by_its_own_settings() {
+        for index in 0..LFO_COUNT {
+            let lfo = lfo_at(LfoShape::Sine, 1.31 + index as f64);
+            let (moved, plain) = a4_routed(&[(index, lfo)], &[dip_by(Source::Lfo(index))], 500);
+            assert_gain(&format!("lfo {}", index + 1), &moved, &plain, |t| {
+                gain_at_height(drawn_height(&lfo, cycles_after(lfo.hz, t)))
+            });
+        }
+    }
+
+    #[test]
+    fn every_lfo_shape_moves_a_note_as_drawn() {
+        // Per note, at 3.31 Hz and starting 27% into its cycle, each shape
+        // turns A4 down as far as it is high, on every sample. The odd
+        // numbers keep every jump off the samples the routing list is worked
+        // out on, where a hair either way would land on either side of it.
+        for shape in DRAWN_SHAPES {
+            let lfo = with_steps(
+                Lfo {
+                    start: 27,
+                    ..lfo_at(shape, 3.31)
+                },
+                &STEP_HEIGHTS,
+            );
+            let (moved, plain) = a4_routed(&[(0, lfo)], &[dip_by(Source::Lfo(0))], 1000);
+            assert_gain(shape.name(), &moved, &plain, |t| {
+                let cycles = share(lfo.start) + cycles_after(lfo.hz, t);
+                gain_at_height(drawn_height(&lfo, cycles))
+            });
+        }
+    }
+
+    #[test]
+    fn smoothing_slides_each_jump_over_its_share() {
+        // Smoothed 40%, the square and the steps slide to each new height
+        // over the first 40% of its stretch, and the saws jump back over the
+        // first 40% of each cycle. The sine and the triangle never jump, so
+        // smoothing leaves them alone.
+        for shape in DRAWN_SHAPES {
+            let lfo = with_steps(
+                Lfo {
+                    start: 27,
+                    smooth: 40,
+                    ..lfo_at(shape, 3.31)
+                },
+                &STEP_HEIGHTS,
+            );
+            let (moved, plain) = a4_routed(&[(0, lfo)], &[dip_by(Source::Lfo(0))], 1000);
+            assert_gain(shape.name(), &moved, &plain, |t| {
+                let cycles = share(lfo.start) + cycles_after(lfo.hz, t);
+                gain_at_height(drawn_height(&lfo, cycles))
+            });
+        }
+
+        // Fully smoothed, a saw up is all jump back: a saw down.
+        let up = Lfo {
+            smooth: 100,
+            ..lfo_at(LfoShape::SawUp, 3.31)
+        };
+        let down = lfo_at(LfoShape::SawDown, 3.31);
+        let (up_wave, _) = a4_routed(&[(0, up)], &[dip_by(Source::Lfo(0))], 1000);
+        let (down_wave, _) = a4_routed(&[(0, down)], &[dip_by(Source::Lfo(0))], 1000);
+        assert_nearly_same_sound(&up_wave, &down_wave, 0.000001);
+    }
+
+    // The height a random steps LFO at `hz` holds in each of its cycles,
+    // read off A4 dipped by it from the first sample: in each cycle, away
+    // from its ends, where the gain holds still. The last may be cut short.
+    fn held_heights(moved: &[f32], plain: &[f32], hz: f64) -> Vec<f64> {
+        let cycle_samples = SAMPLES_PER_SECOND / hz;
+        let mut heights = Vec::new();
+        let mut cycle = 0;
+        loop {
+            // The gain holds still from the 32 samples after the cycle
+            // starts until the 32 samples the next one starts in.
+            let start = (cycle as f64 * cycle_samples) as usize;
+            let from = start - start % CONTROL_SAMPLES + 2 * CONTROL_SAMPLES;
+            let end = ((cycle + 1) as f64 * cycle_samples) as usize;
+            let to = usize::min(end - end % CONTROL_SAMPLES, moved.len());
+            if from + CONTROL_SAMPLES > to {
+                return heights;
+            }
+            let gain = gain_between(moved, plain, from, to);
+            heights.push(1.0 - 2.0 * gain);
+            cycle += 1;
+        }
+    }
+
+    #[test]
+    fn random_steps_hold_a_new_height_each_cycle_and_smooth_random_glides_through_them() {
+        // Random steps hold one height through each whole cycle.
+        let hz = 10.3;
+        let lfo = lfo_at(LfoShape::RandomSteps, hz);
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[dip_by(Source::Lfo(0))], 2000);
+        let heights = held_heights(&moved, &plain, hz);
+        assert_eq!(heights.len(), 21);
+        assert_gain("random steps", &moved, &plain, |t| {
+            let cycle = cycles_after(hz, t).floor() as usize;
+            gain_at_height(heights[cycle])
+        });
+
+        // A new one each cycle, from anywhere between -1 and 1.
+        for pair in heights.windows(2) {
+            assert!(pair[0] != pair[1], "two cycles in a row held {}", pair[0]);
+        }
+        let mut lowest = 1.0;
+        let mut highest = -1.0;
+        for height in &heights {
+            assert!(height.abs() <= 1.0, "a height of {height}");
+            lowest = f64::min(lowest, *height);
+            highest = f64::max(highest, *height);
+        }
+        assert!(lowest < -0.5, "the lowest height was {lowest}");
+        assert!(highest > 0.5, "the highest height was {highest}");
+
+        // Smooth random, at the same speed on the same note, starts each
+        // cycle at the height random steps hold through it, then glides to
+        // the next in half a cosine, leaving and landing gently.
+        let lfo = lfo_at(LfoShape::SmoothRandom, hz);
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[dip_by(Source::Lfo(0))], 1900);
+        assert_gain("smooth random", &moved, &plain, |t| {
+            let cycles = cycles_after(hz, t);
+            let cycle = cycles.floor();
+            let done = (1.0 - (PI * (cycles - cycle)).cos()) / 2.0;
+            let from = heights[cycle as usize];
+            let to = heights[cycle as usize + 1];
+            gain_at_height(from + (to - from) * done)
+        });
+    }
+
+    // Checks that no height in `heights` is the one in `others` at its
+    // place.
+    fn assert_all_differ(heights: &[f64], others: &[f64]) {
+        assert!(!heights.is_empty());
+        for (height, other) in heights.iter().zip(others) {
+            assert!(height != other, "both held {height}");
+        }
+    }
+
+    #[test]
+    fn a_random_lfo_moves_each_note_and_each_lfo_its_own_way_and_the_same_way_every_time() {
+        let lfo = lfo_at(LfoShape::RandomSteps, 10.3);
+        let dip = dip_by(Source::Lfo(0));
+
+        // Two engines playing the same notes sound exactly the same.
+        let (first, plain) = a4_routed(&[(0, lfo)], &[dip], 500);
+        let (again, _) = a4_routed(&[(0, lfo)], &[dip], 500);
+        assert_same_samples(&again, &first);
+        let first_heights = held_heights(&first, &plain, lfo.hz);
+
+        // LFO 2, set the same way, has heights of its own.
+        let (lfo_2, _) = a4_routed(&[(1, lfo)], &[dip_by(Source::Lfo(1))], 500);
+        assert_all_differ(&held_heights(&lfo_2, &plain, lfo.hz), &first_heights);
+
+        // So does the next note pressed.
+        let mut routed = routed_engine(&[(0, lfo)], &[dip]);
+        let mut plain_engine = Engine::new().unwrap();
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut plain_engine] {
+            engine.note_on(A4, VELOCITY);
+            render_left(engine, 500);
+            engine.note_off(A4);
+            render_left(engine, 500);
+            engine.note_on(A4, VELOCITY);
+            waves.push(render_left(engine, 500));
+        }
+        assert_all_differ(&held_heights(&waves[0], &waves[1], lfo.hz), &first_heights);
+    }
+
+    #[test]
+    fn a_per_note_lfo_starts_with_each_note_and_a_shared_one_runs_for_every_note() {
+        let lfo = lfo_at(LfoShape::Sine, 3.31);
+        let dip = dip_by(Source::Lfo(0));
+
+        // Per note, A4 pressed 100 ms in moves exactly like A4 pressed at
+        // once.
+        let (at_once, _) = a4_routed(&[(0, lfo)], &[dip], 500);
+        let mut later = routed_engine(&[(0, lfo)], &[dip]);
+        render_left(&mut later, 100);
+        later.note_on(A4, VELOCITY);
+        let later_wave = render_left(&mut later, 500);
+        assert_same_samples(&later_wave, &at_once);
+
+        // Shared, one LFO runs from the engine's start for every note, so A4
+        // pressed 100 ms in starts 100 ms into its cycle.
+        let shared = Lfo { per_note: false, ..lfo };
+        let mut routed = routed_engine(&[(0, shared)], &[dip]);
+        let mut plain = Engine::new().unwrap();
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut plain] {
+            render_left(engine, 100);
+            engine.note_on(A4, VELOCITY);
+            waves.push(render_left(engine, 500));
+        }
+        let lead = frames_in_ms(&plain, 100);
+        assert_gain("shared", &waves[0], &waves[1], |t| {
+            gain_at_height(drawn_height(&shared, cycles_after(shared.hz, lead + t)))
+        });
+    }
+
+    #[test]
+    fn spread_moves_each_note_s_start_on_at_random() {
+        // A saw up 100 seconds a cycle barely moves in a note's first 10 ms,
+        // so A4's gain there shows where in the cycle it started: p of the
+        // way in is a height of 2p - 1, and so a gain of 1 - p. Twenty
+        // presses of A4, 50 ms apart, each start somewhere from the start
+        // point to the spread past it.
+        for (start, spread) in [(0, 0), (0, 50), (25, 50), (0, 100)] {
+            let lfo = Lfo {
+                start,
+                spread,
+                ..lfo_at(LfoShape::SawUp, 0.01)
+            };
+            let mut routed = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]);
+            let mut plain = Engine::new().unwrap();
+            let first_10_ms = frames_in_ms(&plain, 10);
+            let mut places = Vec::new();
+            for _ in 0..20 {
+                let mut waves = Vec::new();
+                for engine in [&mut routed, &mut plain] {
+                    engine.note_on(A4, VELOCITY);
+                    waves.push(render_left(engine, 50));
+                }
+                let gain = gain_between(&waves[0], &waves[1], 0, first_10_ms);
+                places.push(1.0 - gain);
+            }
+
+            let mut lowest = 1.0;
+            let mut highest = 0.0;
+            for place in &places {
+                lowest = f64::min(lowest, *place);
+                highest = f64::max(highest, *place);
+            }
+            let case = format!("start {start}%, spread {spread}%");
+            assert!(lowest > share(start) - 0.0002, "{case}: one started at {lowest}");
+            assert!(highest < share(start) + share(spread) + 0.0002, "{case}: one started at {highest}");
+            // And they are spread over that, or all on the start point.
+            if spread > 0 {
+                assert!(highest - lowest > 0.6 * share(spread), "{case}: all started near {lowest}");
+            } else {
+                assert!(highest - lowest < 0.0002, "{case}: they started apart");
+            }
+        }
+    }
+
+    // How far an LFO has faded in at `age`, after waiting `delay` and then
+    // growing over `fade`, all three in ms or all in beats (Routing::fade).
+    fn faded_in(age: f64, delay: f64, fade: f64) -> f64 {
+        if age < delay {
+            return 0.0;
+        }
+        if fade <= 0.0 {
+            return 1.0;
+        }
+        let grown = (age - delay) / fade;
+        grown.min(1.0)
+    }
+
+    #[test]
+    fn an_lfo_waits_out_its_delay_then_fades_in() {
+        // In ms: nothing for 100 ms, then it grows to its full size in a
+        // straight line over 200 ms.
+        let lfo = Lfo {
+            delay_ms: 100,
+            fade_ms: 200,
+            ..lfo_at(LfoShape::Sine, 3.31)
+        };
+        let dip = dip_by(Source::Lfo(0));
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[dip], 500);
+        assert_gain("in ms", &moved, &plain, |t| {
+            let age_ms = t as f64 * 1000.0 / SAMPLES_PER_SECOND;
+            let grown = faded_in(age_ms, 100.0, 200.0);
+            let height = drawn_height(&lfo, cycles_after(lfo.hz, t));
+            1.0 - grown * (height + 1.0) / 2.0
+        });
+        // So for its first 100 ms, A4 is exactly as it was.
+        let delay = frames_in_ms(&Engine::new().unwrap(), 100);
+        assert_same_samples(&moved[..delay], &plain[..delay]);
+
+        // Moving the pitch, which can go up as well as down, it leaves A4
+        // alone for the whole delay too.
+        let vibrato = connection(Source::Lfo(0), Target::Pitch, 100.0);
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[vibrato], 100);
+        assert_same_samples(&moved, &plain);
+
+        // In beats, it counts beats and leaves its ms out: at 120, half a
+        // beat of delay is 250 ms, and a beat of fade-in 500 ms.
+        let lfo = Lfo {
+            speed: LfoSpeed::Beats,
+            beats: 0.5,
+            delay_beats: 0.5,
+            fade_beats: 1.0,
+            ..lfo
+        };
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[dip], 1000);
+        assert_gain("in beats", &moved, &plain, |t| {
+            let beats = t as f64 / BEAT_AT_120 as f64;
+            let grown = faded_in(beats, 0.5, 1.0);
+            let height = drawn_height(&lfo, beats / lfo.beats);
+            1.0 - grown * (height + 1.0) / 2.0
+        });
+    }
+
+    #[test]
+    fn once_runs_one_cycle_then_holds_where_it_ended() {
+        // A saw up at 4 Hz, starting 27% in, rises, jumps back and rises
+        // again to just short of where it started, then holds there.
+        let lfo = Lfo {
+            start: 27,
+            once: true,
+            ..lfo_at(LfoShape::SawUp, 4.0)
+        };
+        let dip = dip_by(Source::Lfo(0));
+        let (moved, plain) = a4_routed(&[(0, lfo)], &[dip], 600);
+        let end = share(lfo.start) + 1.0 - ONCE_END_NUDGE;
+        assert_gain("per note", &moved, &plain, |t| {
+            let cycles = share(lfo.start) + cycles_after(lfo.hz, t);
+            gain_at_height(drawn_height(&lfo, f64::min(cycles, end)))
+        });
+
+        // A shared LFO has no note to start with, so it runs on.
+        let shared = Lfo { per_note: false, ..lfo };
+        let (moved, plain) = a4_routed(&[(0, shared)], &[dip], 600);
+        assert_gain("shared", &moved, &plain, |t| {
+            let cycles = share(shared.start) + cycles_after(shared.hz, t);
+            gain_at_height(drawn_height(&shared, cycles))
+        });
+    }
+
+    #[test]
+    fn an_lfo_in_beats_runs_at_the_song_s_tempo() {
+        // Two beats a cycle: a second at 120, and a second and a third at
+        // 90. The beat need not be running.
+        let lfo = Lfo {
+            speed: LfoSpeed::Beats,
+            beats: 2.0,
+            ..lfo_at(LfoShape::Sine, 1.0)
+        };
+        for tempo in [120, 90] {
+            let mut routed = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]);
+            routed.set_tempo(tempo);
+            let mut plain = Engine::new().unwrap();
+            let mut waves = Vec::new();
+            for engine in [&mut routed, &mut plain] {
+                engine.note_on(A4, VELOCITY);
+                waves.push(render_left(engine, 1000));
+            }
+            let beats_per_sample = tempo as f64 / (60.0 * SAMPLES_PER_SECOND);
+            assert_gain(&format!("at {tempo}"), &waves[0], &waves[1], |t| {
+                let beats = t as f64 * beats_per_sample;
+                gain_at_height(drawn_height(&lfo, beats / lfo.beats))
+            });
+        }
+    }
+
+    // Plays A4 from the first sample, if `a4`, starts the click on sample
+    // `beat_1`, and drops the tempo to 60 halfway through that beat. Returns
+    // `frames` frames, left side.
+    fn click_then_60(engine: &mut Engine, a4: bool, beat_1: usize, frames: usize) -> Vec<f32> {
+        if a4 {
+            engine.note_on(A4, VELOCITY);
+        }
+        let mut wave = render_frames_left(engine, beat_1, usize::MAX);
+        engine.start_click();
+        wave.extend(render_frames_left(engine, BEAT_AT_120 / 2, usize::MAX));
+        engine.set_tempo(60);
+        let rest = frames - wave.len();
+        wave.extend(render_frames_left(engine, rest, usize::MAX));
+        wave
+    }
+
+    // `wave` with `other` taken away, sample by sample.
+    fn without(wave: &[f32], other: &[f32]) -> Vec<f32> {
+        let mut left = Vec::new();
+        for i in 0..wave.len() {
+            left.push(wave[i] - other[i]);
+        }
+        left
+    }
+
+    #[test]
+    fn a_shared_lfo_in_beats_starts_on_beat_1_and_lines_up_with_every_beat() {
+        // Shared, a beat a cycle, it runs from the engine's start at the
+        // tempo. When the click starts beat 1, 300 ms in, it starts its cycle
+        // again, gliding there over 20 ms, so it never clicks. Halfway
+        // through that beat the tempo drops to 60, and from the next beat on
+        // each cycle lasts as long as that beat: 2 seconds.
+        let lfo = Lfo {
+            per_note: false,
+            speed: LfoSpeed::Beats,
+            beats: 1.0,
+            ..lfo_at(LfoShape::Sine, 1.0)
+        };
+        let beat_1 = 14_400;
+        let beat_2 = beat_1 + BEAT_AT_120;
+        let beat_at_60 = 2 * BEAT_AT_120;
+        let frames = beat_2 + beat_at_60;
+        let routed = click_then_60(&mut routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]), true, beat_1, frames);
+        let plain = click_then_60(&mut Engine::new().unwrap(), true, beat_1, frames);
+        let click = click_then_60(&mut Engine::new().unwrap(), false, beat_1, frames);
+
+        // What the routing list moved is A4, so the click is left out.
+        let where_it_was = drawn_height(&lfo, beat_1 as f64 / BEAT_AT_120 as f64);
+        let gap = where_it_was - drawn_height(&lfo, 0.0);
+        assert_gain("shared in beats", &without(&routed, &click), &without(&plain, &click), |t| {
+            if t <= beat_1 {
+                return gain_at_height(drawn_height(&lfo, t as f64 / BEAT_AT_120 as f64));
+            }
+            if t <= beat_2 {
+                let since = t - beat_1;
+                let mut glide = 0.0;
+                if since < SHARED_GLIDE_SAMPLES {
+                    glide = gap * (SHARED_GLIDE_SAMPLES - since) as f64 / SHARED_GLIDE_SAMPLES as f64;
+                }
+                let height = drawn_height(&lfo, since as f64 / BEAT_AT_120 as f64);
+                return gain_at_height(height + glide);
+            }
+            let since = t - beat_2;
+            gain_at_height(drawn_height(&lfo, 1.0 + since as f64 / beat_at_60 as f64))
+        });
+
+        // A beat that lands partway through a block of 32 samples counts
+        // from where it really was: 10 samples later, once the glide is
+        // over, the LFO is where that beat puts it, until beat 2.
+        let beat_1 = 14_410;
+        let beat_2 = beat_1 + BEAT_AT_120;
+        let routed = click_then_60(&mut routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]), true, beat_1, frames);
+        let plain = click_then_60(&mut Engine::new().unwrap(), true, beat_1, frames);
+        let click = click_then_60(&mut Engine::new().unwrap(), false, beat_1, frames);
+        let glide_over = beat_1 + SHARED_GLIDE_SAMPLES;
+        let from = glide_over - glide_over % CONTROL_SAMPLES + CONTROL_SAMPLES;
+        let to = beat_2 - beat_2 % CONTROL_SAMPLES;
+        let moved = without(&routed, &click);
+        let plain = without(&plain, &click);
+        assert_gain("beat partway through a block", &moved[from..to], &plain[from..to], |t| {
+            let since = from + t - beat_1;
+            gain_at_height(drawn_height(&lfo, since as f64 / BEAT_AT_120 as f64))
+        });
+    }
+
+    #[test]
+    fn an_lfo_in_presses_moves_on_a_step_each_key_press_and_a_chord_is_one_press() {
+        // Per note, four steps and four presses a cycle, so each press holds
+        // the next step for as long as its notes sound: A4, the C chord, A4
+        // and A4 again, then round to the first step.
+        let lfo = with_steps(
+            Lfo {
+                speed: LfoSpeed::Presses,
+                presses: 4,
+                ..lfo_at(LfoShape::Steps, 1.0)
+            },
+            &[-100.0, -50.0, 50.0, 100.0],
+        );
+        let mut routed = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]);
+        let mut plain = Engine::new().unwrap();
+        let presses: [&[u8]; 5] = [&[A4], C_CHORD, &[A4], &[A4], &[A4]];
+        let heights = [-1.0, -0.5, 0.5, 1.0, -1.0];
+        for (notes, height) in presses.iter().zip(heights) {
+            let mut waves = Vec::new();
+            for engine in [&mut routed, &mut plain] {
+                for note in *notes {
+                    engine.note_on(*note, VELOCITY);
+                }
+                let mut wave = render_left(engine, 100);
+                for note in *notes {
+                    engine.note_off(*note);
+                }
+                wave.extend(render_left(engine, RELEASE_MS + 100));
+                waves.push(wave);
+            }
+            assert_gain(&format!("at {height}"), &waves[0], &waves[1], |_| gain_at_height(height));
+        }
+    }
+
+    #[test]
+    fn a_shared_lfo_in_presses_slides_every_held_note_to_each_press_s_step() {
+        // Shared, a press moves every note its player holds to the press's
+        // step, sliding there over the smoothing's share of a beat: at 50%
+        // and 120, 250 ms. A4 is held throughout, C5 pressed 500 ms in, and
+        // the C chord, one press, at a second. Softly, so five notes stay
+        // below the soft clip.
+        let lfo = with_steps(
+            Lfo {
+                per_note: false,
+                speed: LfoSpeed::Presses,
+                presses: 4,
+                smooth: 50,
+                ..lfo_at(LfoShape::Steps, 1.0)
+            },
+            &[-100.0, -50.0, 50.0, 100.0],
+        );
+        let mut routed = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]);
+        let mut plain = Engine::new().unwrap();
+        let presses: [&[u8]; 3] = [&[A4], &[C5], C_CHORD];
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut plain] {
+            let mut wave = Vec::new();
+            for notes in presses {
+                for note in notes {
+                    engine.note_on(*note, SOFT);
+                }
+                wave.extend(render_left(engine, 500));
+            }
+            waves.push(wave);
+        }
+        let slide = (BEAT_AT_120 / 2) as f64;
+        assert_gain("shared presses", &waves[0], &waves[1], |t| {
+            let mut height = -1.0;
+            if t >= 24_000 {
+                height = slid(-1.0, -0.5, (t - 24_000) as f64 / slide, 1.0);
+            }
+            if t >= 48_000 {
+                height = slid(-0.5, 0.5, (t - 48_000) as f64 / slide, 1.0);
+            }
+            gain_at_height(height)
+        });
+    }
+
+    #[test]
+    fn the_song_counts_its_own_presses_from_its_start_each_time_it_plays() {
+        // Per note, eight steps and eight presses a cycle, so each of the
+        // song's four chords holds a step of its own. Notes fade out in 1
+        // ms, so soon after each chord starts it sounds alone.
+        let lfo = with_steps(
+            Lfo {
+                speed: LfoSpeed::Presses,
+                presses: 8,
+                ..lfo_at(LfoShape::Steps, 1.0)
+            },
+            &[-100.0, -75.0, -50.0, -25.0, 25.0, 50.0, 75.0, 100.0],
+        );
+        let quick = loudness(ATTACK_MS, DECAY_MS, 100, LOUDNESS_SHORTEST_MS);
+        let mut routed = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0))]);
+        let mut plain = Engine::new().unwrap();
+        let length = song_samples(SONG);
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut plain] {
+            // The song, a live A4 after it, then the song again.
+            engine.set_loudness_envelope(quick);
+            engine.play_song(&song_chords(SONG)).unwrap();
+            let mut wave = render_frames_left(engine, length + 4800, usize::MAX);
+            engine.note_on(A4, VELOCITY);
+            wave.extend(render_left(engine, 100));
+            engine.note_off(A4);
+            wave.extend(render_left(engine, 100));
+            engine.play_song(&song_chords(SONG)).unwrap();
+            wave.extend(render_frames_left(engine, length, usize::MAX));
+            waves.push(wave);
+        }
+
+        // Both times, chord n holds step n: the live A4 counts apart, and
+        // the song counts from its start again.
+        let second = length + 4800 + 9600;
+        for play_start in [0, second] {
+            let mut chord_start = play_start;
+            for (index, test_chord) in SONG.iter().enumerate() {
+                let chord_end = chord_start + test_chord.ms as usize * SAMPLES_PER_MS;
+                let from = chord_start + 4 * CONTROL_SAMPLES;
+                let height = step_height(&lfo, index);
+                let moved = &waves[0][from..chord_end];
+                let plain_wave = &waves[1][from..chord_end];
+                assert_gain(&format!("chord {index} from {play_start}"), moved, plain_wave, |_| {
+                    gain_at_height(height)
+                });
+                chord_start = chord_end;
+            }
+        }
+    }
+
+    // A4 for `ms` on an engine set up by `set_up`, pressed 1 ms in, then let
+    // go for 400 ms more: the left side and the right.
+    fn a4_after(set_up: impl Fn(&mut Engine), ms: u32) -> (Vec<f32>, Vec<f32>) {
+        let mut engine = Engine::new().unwrap();
+        set_up(&mut engine);
+        render_stereo(&mut engine, 1);
+        engine.note_on(A4, VELOCITY);
+        let (mut left, mut right) = render_sides(&mut engine, ms);
+        engine.note_off(A4);
+        let (left_after, right_after) = render_sides(&mut engine, 400);
+        left.extend(left_after);
+        right.extend(right_after);
+        (left, right)
+    }
+
+    // Connects the live vibrato key to `target` by `amount`, read one way,
+    // in the routing list's last slot, and holds it. With no rise, from the
+    // first 32 samples on it moves the target by the whole amount.
+    fn hold_key_moving(engine: &mut Engine, target: Target, amount: f32) {
+        let key = one_way_connection(Source::VibratoKey, target, amount);
+        engine.set_connection(CONNECTION_COUNT - 1, key);
+        engine.set_vibrato_key(true);
+    }
+
+    // The left sides of A4 played after 300 ms, for listening to its pitch.
+    fn a4_pitch_after(set_up: impl Fn(&mut Engine)) -> Vec<f32> {
+        let (left, _) = a4_after(set_up, 1300);
+        let from = 300 * SAMPLES_PER_MS;
+        left[from..from + 1000 * SAMPLES_PER_MS].to_vec()
+    }
+
+    #[test]
+    fn the_pitch_moves_by_cents_and_the_loudness_and_pan_by_shares() {
+        // 1200 cents is an octave up, and -1200 one down.
+        let engine = Engine::new().unwrap();
+        for (cents, hz) in [(1200.0, 880.0), (-1200.0, 220.0), (200.0, B4_HZ)] {
+            let wave = a4_pitch_after(|engine| hold_key_moving(engine, Target::Pitch, cents));
+            assert_pitch(&engine, &wave, hz);
+        }
+
+        // -50% of the loudness is half as loud.
+        let (plain_left, plain_right) = a4_after(|_| {}, 300);
+        let (left, right) = a4_after(|engine| hold_key_moving(engine, Target::Loudness, -50.0), 300);
+        assert_gain("left", &left, &plain_left, |_| 0.5);
+        assert_gain("right", &right, &plain_right, |_| 0.5);
+
+        // Turning it up is as loud as it gets already.
+        let (left, _) = a4_after(|engine| hold_key_moving(engine, Target::Loudness, 50.0), 300);
+        assert_same_samples(&left, &plain_left);
+
+        // 50% of the pan is halfway to the right. Each side gets the square
+        // root of its share, so A4 is as loud wherever it sits.
+        let (left, right) = a4_after(|engine| hold_key_moving(engine, Target::Pan, 50.0), 300);
+        assert_gain("left", &left, &plain_left, |_| 0.5_f64.sqrt());
+        assert_gain("right", &right, &plain_right, |_| 1.5_f64.sqrt());
+
+        // And -100% is all the way left.
+        let (left, right) = a4_after(|engine| hold_key_moving(engine, Target::Pan, -100.0), 300);
+        assert_gain("left", &left, &plain_left, |_| 2.0_f64.sqrt());
+        assert_eq!(peak(&right), 0.0);
+    }
+
+    // A saw through the filter at 1000 Hz with a little resonance, a filter
+    // envelope, a loudness envelope that falls to 80%, and 3 copies.
+    fn set_up_everything(engine: &mut Engine) {
+        engine.set_wave(Wave::Saw);
+        engine.set_filter(filter(1000.0, 20));
+        engine.set_filter_envelope(filter_envelope(2.0, 20, 100, 50, 200));
+        engine.set_loudness_envelope(loudness(10, 100, 80, 200));
+        engine.set_unison(unison(3, 10, 30));
+    }
+
+    #[test]
+    fn moving_a_live_setting_sounds_like_setting_it_there() {
+        // Each target moved by the key sounds just like an engine with that
+        // setting moved there, within rounding.
+        let cases: [(Target, f32, fn(&mut Engine)); 9] = [
+            (Target::Cutoff, 1.0, |engine| {
+                engine.set_filter(filter(2000.0, 20));
+            }),
+            (Target::Resonance, 50.0, |engine| {
+                engine.set_filter(filter(1000.0, 70));
+            }),
+            (Target::KeyTracking, -50.0, |engine| {
+                engine.set_key_tracking(50);
+            }),
+            (Target::FilterAmount, 1.5, |engine| {
+                engine.set_filter_envelope(filter_envelope(3.5, 20, 100, 50, 200));
+            }),
+            (Target::FilterSustain, -30.0, |engine| {
+                engine.set_filter_envelope(filter_envelope(2.0, 20, 100, 20, 200));
+            }),
+            (Target::LoudnessSustain, -40.0, |engine| {
+                engine.set_loudness_envelope(loudness(10, 100, 40, 200));
+            }),
+            (Target::Detune, 20.0, |engine| {
+                engine.set_unison(unison(3, 30, 30));
+            }),
+            (Target::Spread, 50.0, |engine| {
+                engine.set_unison(unison(3, 10, 80));
+            }),
+            // Past its edge, a setting stops there.
+            (Target::Spread, 100.0, |engine| {
+                engine.set_unison(unison(3, 10, 100));
+            }),
+        ];
+        for (target, amount, set_there) in cases {
+            let (left, right) = a4_after(
+                |engine| {
+                    set_up_everything(engine);
+                    hold_key_moving(engine, target, amount);
+                },
+                500,
+            );
+            let (expected_left, expected_right) = a4_after(
+                |engine| {
+                    set_up_everything(engine);
+                    set_there(engine);
+                },
+                500,
+            );
+            let difference = f32::max(
+                biggest_difference(&left, &expected_left),
+                biggest_difference(&right, &expected_right),
+            );
+            assert!(
+                difference < 0.00001,
+                "{} moved by {amount} differs by {difference}",
+                target.name()
+            );
+        }
+
+        // Moving the cutoff brings the filter in even while it is open, so
+        // 6 octaves down from 20,000 Hz is a filter at 312.5 Hz.
+        let (left, _) = a4_after(
+            |engine| {
+                engine.set_wave(Wave::Saw);
+                hold_key_moving(engine, Target::Cutoff, -6.0);
+            },
+            500,
+        );
+        let (expected, _) = a4_after(
+            |engine| {
+                engine.set_wave(Wave::Saw);
+                engine.set_filter(filter(312.5, 0));
+            },
+            500,
+        );
+        assert_nearly_same_sound(&left, &expected, 0.00001);
+    }
+
+    #[test]
+    fn moving_a_setting_read_as_a_note_starts_sounds_exactly_like_setting_it_there() {
+        let cases: [(Target, f32, fn(&mut Engine)); 12] = [
+            // From the saw, a step on goes round to the sine, and two back
+            // to the triangle.
+            (Target::Wave, 1.0, |engine| {
+                engine.set_wave(Wave::Sine);
+            }),
+            (Target::Wave, -2.0, |engine| {
+                engine.set_wave(Wave::Triangle);
+            }),
+            (Target::Copies, 2.0, |engine| {
+                engine.set_unison(unison(5, 10, 30));
+            }),
+            // Copies stop at 7.
+            (Target::Copies, 6.0, |engine| {
+                engine.set_unison(unison(7, 10, 30));
+            }),
+            // Each octave of time doubles it, and halves it below 0.
+            (Target::LoudnessAttack, 1.0, |engine| {
+                engine.set_loudness_envelope(loudness(20, 100, 80, 200));
+            }),
+            (Target::LoudnessDecay, -1.0, |engine| {
+                engine.set_loudness_envelope(loudness(10, 50, 80, 200));
+            }),
+            (Target::LoudnessRelease, 1.0, |engine| {
+                engine.set_loudness_envelope(loudness(10, 100, 80, 400));
+            }),
+            // A time stops at its shortest.
+            (Target::LoudnessAttack, -14.0, |engine| {
+                engine.set_loudness_envelope(loudness(LOUDNESS_SHORTEST_MS, 100, 80, 200));
+            }),
+            (Target::FilterAttack, 2.0, |engine| {
+                engine.set_filter_envelope(filter_envelope(2.0, 80, 100, 50, 200));
+            }),
+            (Target::FilterDecay, 1.0, |engine| {
+                engine.set_filter_envelope(filter_envelope(2.0, 20, 200, 50, 200));
+            }),
+            (Target::FilterRelease, -1.0, |engine| {
+                engine.set_filter_envelope(filter_envelope(2.0, 20, 100, 50, 100));
+            }),
+            (Target::FilterAttack, -14.0, |engine| {
+                engine.set_filter_envelope(filter_envelope(2.0, 0, 100, 50, 200));
+            }),
+        ];
+        for (target, amount, set_there) in cases {
+            let (left, right) = a4_after(
+                |engine| {
+                    set_up_everything(engine);
+                    hold_key_moving(engine, target, amount);
+                },
+                300,
+            );
+            let (expected_left, expected_right) = a4_after(
+                |engine| {
+                    set_up_everything(engine);
+                    set_there(engine);
+                },
+                300,
+            );
+            let case = format!("{} moved by {amount}", target.name());
+            assert!(left == expected_left, "{case} sounds different on the left");
+            assert!(right == expected_right, "{case} sounds different on the right");
+        }
+
+        // A note already sounding keeps them: held after A4 starts, the key
+        // leaves its wave alone.
+        let mut moved = Engine::new().unwrap();
+        let mut plain = Engine::new().unwrap();
+        let mut waves = Vec::new();
+        for engine in [&mut moved, &mut plain] {
+            engine.note_on(A4, VELOCITY);
+            render_left(engine, 100);
+        }
+        hold_key_moving(&mut moved, Target::Wave, 1.0);
+        for engine in [&mut moved, &mut plain] {
+            waves.push(render_left(engine, 300));
+        }
+        assert_same_samples(&waves[0], &waves[1]);
+    }
+
+    #[test]
+    fn a_setting_read_as_a_note_starts_takes_the_whole_move_with_no_fade_in() {
+        // LFO 1 holds at its top but fades in over a second. The copies are
+        // read as a note starts, so they take its whole move all the same:
+        // 2 more copies sound just like 5 set there.
+        let lfo = Lfo {
+            fade_ms: 1000,
+            ..with_steps(lfo_at(LfoShape::Steps, 1.0), &[100.0])
+        };
+        let (left, right) = a4_after(
+            |engine| {
+                set_up_everything(engine);
+                engine.set_lfo(0, lfo);
+                engine.set_connection(0, connection(Source::Lfo(0), Target::Copies, 2.0));
+            },
+            300,
+        );
+        let (expected_left, expected_right) = a4_after(
+            |engine| {
+                set_up_everything(engine);
+                engine.set_unison(unison(5, 10, 30));
+            },
+            300,
+        );
+        assert!(left == expected_left, "the copies sound different on the left");
+        assert!(right == expected_right, "the copies sound different on the right");
+    }
+
+    #[test]
+    fn moving_an_lfo_s_speed_an_octave_up_doubles_it() {
+        // Per note, at 2 Hz, LFO 2 moved up an octave runs at 4, in Hz or
+        // in beats.
+        let dip = dip_by(Source::Lfo(1));
+        let in_beats = Lfo {
+            speed: LfoSpeed::Beats,
+            beats: 1.0,
+            ..lfo_at(LfoShape::Sine, 1.0)
+        };
+        let cases = [
+            (lfo_at(LfoShape::Sine, 2.0), lfo_at(LfoShape::Sine, 4.0)),
+            (in_beats, Lfo { beats: 0.5, ..in_beats }),
+        ];
+        for (lfo, twice_as_fast) in cases {
+            let (moved, _) = a4_after(
+                |engine| {
+                    engine.set_lfo(1, lfo);
+                    engine.set_connection(0, dip);
+                    hold_key_moving(engine, Target::LfoSpeed(1), 1.0);
+                },
+                1000,
+            );
+            let (expected, _) = a4_after(
+                |engine| {
+                    engine.set_lfo(1, twice_as_fast);
+                    engine.set_connection(0, dip);
+                },
+                1000,
+            );
+            assert_same_samples(&moved, &expected);
+        }
+
+        // A shared LFO's speed is moved only by shared LFOs, since every
+        // note shares it, and with no fade-in. LFO 3, a square so slow it
+        // stays at its top, moves LFO 2 an octave up from its first 32
+        // samples on.
+        let shared = Lfo {
+            per_note: false,
+            ..lfo_at(LfoShape::Sine, 2.0)
+        };
+        let at_the_top = Lfo {
+            per_note: false,
+            ..lfo_at(LfoShape::Square, 0.01)
+        };
+        let speeding = connection(Source::Lfo(2), Target::LfoSpeed(1), 1.0);
+        let (moved, plain) = a4_routed(&[(1, shared), (2, at_the_top)], &[dip, speeding], 1000);
+        assert_gain("shared", &moved, &plain, |t| {
+            let mut cycles = cycles_after(2.0, t);
+            if t > CONTROL_SAMPLES {
+                cycles = cycles_after(2.0, CONTROL_SAMPLES) + cycles_after(4.0, t - CONTROL_SAMPLES);
+            }
+            gain_at_height(drawn_height(&shared, cycles))
+        });
+
+        // The vibrato key belongs to each player, so it moves no shared
+        // LFO's speed.
+        let key_speeding = one_way_connection(Source::VibratoKey, Target::LfoSpeed(1), 1.0);
+        let mut routed = routed_engine(&[(1, shared)], &[dip, key_speeding]);
+        routed.set_vibrato_key(true);
+        let mut plain = Engine::new().unwrap();
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut plain] {
+            engine.note_on(A4, VELOCITY);
+            waves.push(render_left(engine, 1000));
+        }
+        assert_gain("shared, by the key", &waves[0], &waves[1], |t| {
+            gain_at_height(drawn_height(&shared, cycles_after(2.0, t)))
+        });
+    }
+
+    // How far a note's envelope is after `samples` samples, as a share of
+    // its peak, while it is held: it rises over `attack` samples, then
+    // falls over `decay` to `sustain`.
+    fn envelope_after(samples: usize, attack: usize, decay: usize, sustain: f64) -> f64 {
+        if samples < attack {
+            return samples as f64 / attack as f64;
+        }
+        let into_decay = samples - attack;
+        if into_decay < decay {
+            return 1.0 - (1.0 - sustain) * into_decay as f64 / decay as f64;
+        }
+        sustain
+    }
+
+    #[test]
+    fn every_other_source_reads_from_minus_1_to_1() {
+        // The note's height: 0 at middle C, -1 five octaves below and 1 five
+        // above, and no further.
+        let notes = [(MIDDLE_C, 0.0), (A4, 0.15), (C3, -0.2), (0, -1.0), (120, 1.0), (127, 1.0)];
+        for (note, height) in notes {
+            let mut routed = routed_engine(&[], &[dip_by(Source::NoteHeight)]);
+            let mut plain = Engine::new().unwrap();
+            let mut waves = Vec::new();
+            for engine in [&mut routed, &mut plain] {
+                engine.note_on(note, VELOCITY);
+                waves.push(render_left(engine, 200));
+            }
+            assert_gain(&format!("note {note}"), &waves[0], &waves[1], |_| gain_at_height(height));
+        }
+
+        // A random number each note starts with: the same on every engine,
+        // and another for the next note.
+        let mut routed = routed_engine(&[], &[dip_by(Source::Random)]);
+        let mut again = routed_engine(&[], &[dip_by(Source::Random)]);
+        let mut plain = Engine::new().unwrap();
+        let mut waves = Vec::new();
+        for engine in [&mut routed, &mut again, &mut plain] {
+            let mut wave = Vec::new();
+            for _ in 0..2 {
+                engine.note_on(A4, VELOCITY);
+                wave.extend(render_left(engine, 200));
+                engine.note_off(A4);
+                wave.extend(render_left(engine, RELEASE_MS + 100));
+            }
+            waves.push(wave);
+        }
+        assert_same_samples(&waves[1], &waves[0]);
+        let note_samples = (200 + RELEASE_MS as usize + 100) * SAMPLES_PER_MS;
+        let first = gain_between(&waves[0], &waves[2], 0, note_samples);
+        let second = gain_between(&waves[0], &waves[2], note_samples, 2 * note_samples);
+        assert_gain("first note", &waves[0][..note_samples], &waves[2][..note_samples], |_| first);
+        assert_gain("second note", &waves[0][note_samples..], &waves[2][note_samples..], |_| second);
+        assert!(first != second, "both notes got {first}");
+        for gain in [first, second] {
+            assert!(gain >= 0.0, "a random number of {}", 1.0 - 2.0 * gain);
+            assert!(gain <= 1.0, "a random number of {}", 1.0 - 2.0 * gain);
+        }
+
+        // Where the note's loudness envelope is, as a share of its peak, and
+        // where its filter envelope is. Each is read before the 32 samples
+        // its move heads into, so the move comes 32 samples after it.
+        let attack = 100 * SAMPLES_PER_MS;
+        let decay = 100 * SAMPLES_PER_MS;
+        for source in [Source::LoudnessEnvelope, Source::FilterEnvelope] {
+            let mut routed = routed_engine(&[], &[dip_by(source)]);
+            let mut plain = Engine::new().unwrap();
+            let mut waves = Vec::new();
+            for engine in [&mut routed, &mut plain] {
+                engine.set_loudness_envelope(loudness(100, 100, 50, 200));
+                engine.set_filter_envelope(filter_envelope(0.0, 100, 100, 50, 200));
+                engine.note_on(A4, VELOCITY);
+                waves.push(render_left(engine, 400));
+            }
+            assert_gain(&source.name(), &waves[0], &waves[1], |t| {
+                if t < CONTROL_SAMPLES {
+                    return 1.0;
+                }
+                let share = envelope_after(t - CONTROL_SAMPLES, attack, decay, 0.5);
+                gain_at_height(2.0 * share - 1.0)
+            });
+        }
+    }
+
+    // Where the vibrato key is on sample `t`, from 0 (up) to 1 (held): held
+    // on sample `held` and let go on `let_go`, rising over `rise` samples
+    // and falling over `fall` from wherever it got to. It moves on every 32
+    // samples, so these tests press it on one of those.
+    fn key_at(t: usize, held: usize, let_go: usize, rise: usize, fall: usize) -> f64 {
+        if t <= held {
+            return 0.0;
+        }
+        let held_for = usize::min(t, let_go) - held;
+        let risen = f64::min(held_for as f64 / rise as f64, 1.0);
+        if t <= let_go {
+            return risen;
+        }
+        let fallen = (t - let_go) as f64 / fall as f64;
+        f64::max(risen - fallen, 0.0)
+    }
+
+    // A4 played from the first sample with `steps` on a routed engine, and
+    // A4 alone on a new one: the left sides, moved and plain.
+    fn a4_with_steps(routed: &mut Engine, steps: &[(usize, Step)], frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut all_steps = vec![(0, NoteOn(A4))];
+        all_steps.extend_from_slice(steps);
+        let moved = play(routed, &all_steps, frames);
+        let plain = play(&mut Engine::new().unwrap(), &[(0, NoteOn(A4))], frames);
+        (moved, plain)
+    }
+
+    #[test]
+    fn the_vibrato_key_rises_and_falls_in_straight_lines() {
+        // Rising over 100 ms and falling over 200, the key turns A4 down all
+        // the way while held. Held 96 ms in and let go 496 ms in, it is all
+        // the way down by 196 ms and back up by 696. Let go halfway up, it
+        // falls from there.
+        let rise = 100 * SAMPLES_PER_MS;
+        let fall = 200 * SAMPLES_PER_MS;
+        let times = VibratoKeyTimes {
+            rise_ms: 100,
+            fall_ms: 200,
+        };
+        for (held, let_go) in [(4_608, 23_808), (4_608, 4_608 + rise / 2)] {
+            let mut routed = routed_engine(&[], &[dip_by(Source::VibratoKey)]);
+            routed.set_vibrato_key_times(times);
+            let steps = [(held, HoldVibratoKey), (let_go, LetGoOfVibratoKey)];
+            let (moved, plain) = a4_with_steps(&mut routed, &steps, 40_000);
+            assert_gain(&format!("held at {held}, let go at {let_go}"), &moved, &plain, |t| {
+                1.0 - key_at(t, held, let_go, rise, fall)
+            });
+        }
+    }
+
+    #[test]
+    fn a_connection_scaled_by_another_source_moves_by_that_share_of_its_amount() {
+        // LFO 1 turns A4 down, scaled by the vibrato key: not at all until
+        // the key is held, 96 ms in, then more and more as it rises over 100
+        // ms, and fully from then on. This is how the vibrato key brings in
+        // a vibrato.
+        let lfo = lfo_at(LfoShape::Sine, 3.31);
+        let by_the_key = Connection {
+            scaled_by: Source::VibratoKey,
+            ..dip_by(Source::Lfo(0))
+        };
+        let held = 4_608;
+        let rise = 100 * SAMPLES_PER_MS;
+        let mut routed = routed_engine(&[(0, lfo)], &[by_the_key]);
+        routed.set_vibrato_key_times(VibratoKeyTimes {
+            rise_ms: 100,
+            fall_ms: 0,
+        });
+        let (moved, plain) = a4_with_steps(&mut routed, &[(held, HoldVibratoKey)], 24_000);
+        assert_gain("by the key", &moved, &plain, |t| {
+            let key = key_at(t, held, usize::MAX, rise, 1);
+            let height = drawn_height(&lfo, cycles_after(lfo.hz, t));
+            1.0 - key * (height + 1.0) / 2.0
+        });
+
+        // Scaled by LFO 2, a square so slow it stays at its top, which waits
+        // 100 ms and then fades in over 200: the dip fades in with it.
+        let at_the_top = Lfo {
+            delay_ms: 100,
+            fade_ms: 200,
+            ..lfo_at(LfoShape::Square, 0.01)
+        };
+        let by_lfo_2 = Connection {
+            scaled_by: Source::Lfo(1),
+            ..dip_by(Source::Lfo(0))
+        };
+        let (moved, plain) = a4_routed(&[(0, lfo), (1, at_the_top)], &[by_lfo_2], 500);
+        assert_gain("by lfo 2", &moved, &plain, |t| {
+            let age_ms = t as f64 * 1000.0 / SAMPLES_PER_SECOND;
+            let grown = faded_in(age_ms, 100.0, 200.0);
+            let height = drawn_height(&lfo, cycles_after(lfo.hz, t));
+            1.0 - grown * (height + 1.0) / 2.0
+        });
+    }
+
+    #[test]
+    fn moves_on_one_target_add_up_and_the_pitch_stops_4_octaves_away() {
+        // Two connections turning A4 down 30% each, in the routing list's
+        // first slot and its last, turn it down 60%.
+        let (plain, _) = a4_after(|_| {}, 300);
+        let (moved, _) = a4_after(
+            |engine| {
+                engine.set_connection(0, one_way_connection(Source::VibratoKey, Target::Loudness, -30.0));
+                hold_key_moving(engine, Target::Loudness, -30.0);
+            },
+            300,
+        );
+        assert_gain("two dips", &moved, &plain, |_| 0.4);
+
+        // Two connections each moving a sine 3000 cents up add up to 6000,
+        // which stops at 4800: 4 octaves above A4. And the same down.
+        let engine = Engine::new().unwrap();
+        for (cents, hz) in [(3000.0, 7040.0), (-3000.0, 27.5)] {
+            let wave = a4_pitch_after(|engine| {
+                engine.set_wave(Wave::Sine);
+                engine.set_connection(0, one_way_connection(Source::VibratoKey, Target::Pitch, cents));
+                hold_key_moving(engine, Target::Pitch, cents);
+            });
+            assert_pitch(&engine, &wave, hz);
+        }
+    }
+
+    // The pitch `half_steps` half steps from A4, in Hz.
+    fn half_steps_from_a4(half_steps: f64) -> f64 {
+        440.0 * 2.0_f64.powf(half_steps / 12.0)
+    }
+
+    #[test]
+    fn snap_rounds_a_pitch_move_to_whole_half_steps() {
+        // 140 cents snaps to 100, a half step up from A4, 160 to 200, two
+        // half steps, and -140 to a half step down.
+        let engine = Engine::new().unwrap();
+        for (cents, half_steps) in [(140.0, 1.0), (160.0, 2.0), (-140.0, -1.0)] {
+            let wave = a4_pitch_after(|engine| {
+                let snapped = Connection {
+                    snap: true,
+                    ..one_way_connection(Source::VibratoKey, Target::Pitch, cents)
+                };
+                engine.set_connection(0, snapped);
+                engine.set_vibrato_key(true);
+            });
+            assert_pitch(&engine, &wave, half_steps_from_a4(half_steps));
+        }
+
+        // Only the pitch snaps: half the loudness stays half, though -0.5
+        // rounded to whole half steps would be 0.
+        let (plain, _) = a4_after(|_| {}, 300);
+        let (moved, _) = a4_after(
+            |engine| {
+                let snapped = Connection {
+                    snap: true,
+                    ..one_way_connection(Source::VibratoKey, Target::Loudness, -50.0)
+                };
+                engine.set_connection(0, snapped);
+                engine.set_vibrato_key(true);
+            },
+            300,
+        );
+        assert_gain("snapped loudness", &moved, &plain, |_| 0.5);
+    }
+
+    // The vibrato key turning notes down by half, read one way.
+    fn key_halving() -> Connection {
+        one_way_connection(Source::VibratoKey, Target::Loudness, -50.0)
+    }
+
+    #[test]
+    fn the_live_vibrato_key_never_moves_the_song_s_notes() {
+        let frames = song_samples(SONG) + RELEASE_MS as usize * SAMPLES_PER_MS;
+        let mut held = routed_engine(&[], &[key_halving()]);
+        held.set_vibrato_key(true);
+        let mut up = routed_engine(&[], &[key_halving()]);
+        let held_wave = play(&mut held, &[(0, PlaySong(SONG))], frames);
+        let up_wave = play(&mut up, &[(0, PlaySong(SONG))], frames);
+        assert_same_samples(&held_wave, &up_wave);
+    }
+
+    #[test]
+    fn letting_go_of_everything_lets_go_of_the_vibrato_key() {
+        // When the window loses focus, the key goes up with A4, just as if
+        // both had been let go, so C5, played after, is not turned down.
+        let held = [(0, HoldVibratoKey), (0, NoteOn(A4)), (19_200, NoteOn(C5))];
+        let mut lost_focus = held.to_vec();
+        lost_focus.push((9_600, AllNotesOff));
+        let mut let_go = held.to_vec();
+        let_go.push((9_600, NoteOff(A4)));
+        let_go.push((9_600, LetGoOfVibratoKey));
+        let frames = 40_000;
+        let lost_focus_wave = play(&mut routed_engine(&[], &[key_halving()]), &lost_focus, frames);
+        let let_go_wave = play(&mut routed_engine(&[], &[key_halving()]), &let_go, frames);
+        assert_same_samples(&lost_focus_wave, &let_go_wave);
+
+        // Kept held, C5 would have been turned down.
+        let mut kept = held.to_vec();
+        kept.push((9_600, NoteOff(A4)));
+        let kept_wave = play(&mut routed_engine(&[], &[key_halving()]), &kept, frames);
+        assert!(kept_wave != let_go_wave, "the key never moved C5");
+
+        // While recording, the loop's press of the key ends there too.
+        let start = RECORDING_STARTS;
+        let steps = [
+            (0, PressLooper),
+            (start + 10_000, HoldVibratoKey),
+            (start + 20_000, AllNotesOff),
+        ];
+        let mut engine = Engine::new().unwrap();
+        play(&mut engine, &steps, start + 30_000);
+        let key_press = LoopNote {
+            note: VIBRATO_KEY_NOTE,
+            start: 10_000,
+            end: Some(20_000),
+        };
+        assert_eq!(first_layer_notes(&mut engine), vec![key_press]);
+    }
+
+    #[test]
+    fn a_loop_plays_its_vibrato_key_back_on_its_own_notes() {
+        // Recorded with A4, the key plays back each time around exactly as
+        // it was played, rising over 50 ms and falling over 100 as it did:
+        // every sample matches A4 and the key played live each time.
+        let times = VibratoKeyTimes {
+            rise_ms: 50,
+            fall_ms: 100,
+        };
+        let bar = [
+            (10_000, NoteOn(A4)),
+            (20_000, HoldVibratoKey),
+            (50_000, LetGoOfVibratoKey),
+            (70_000, NoteOff(A4)),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = routed_engine(&[], &[key_halving()]);
+        looper_engine.set_snap(false);
+        looper_engine.set_vibrato_key_times(times);
+        let mut live_engine = routed_engine(&[], &[key_halving()]);
+        live_engine.set_vibrato_key_times(times);
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+
+        // Rust's copy keeps the key's press as a note on a pitch of its own.
+        let a4 = LoopNote {
+            note: A4,
+            start: 10_000,
+            end: Some(70_000),
+        };
+        let key_press = LoopNote {
+            note: VIBRATO_KEY_NOTE,
+            start: 20_000,
+            end: Some(50_000),
+        };
+        assert_eq!(first_layer_notes(&mut looper_engine), vec![a4, key_press]);
+
+        // The live key, held while the loop plays, moves none of its notes.
+        let first_time = start + BAR_AT_120;
+        let mut with_live_key = looped.clone();
+        with_live_key.push((first_time + 5_000, HoldVibratoKey));
+        with_live_key.push((first_time + 75_000, LetGoOfVibratoKey));
+        let mut engine = routed_engine(&[], &[key_halving()]);
+        engine.set_snap(false);
+        engine.set_vibrato_key_times(times);
+        let with_live_key_wave = play(&mut engine, &with_live_key, frames);
+        assert_same_samples(&with_live_key_wave, &looped_wave);
+    }
+
+    // A4 from the first sample on `routed` and on a new engine, with
+    // `change` made to `routed` `at` samples in: the left sides, moved and
+    // plain, `frames` long.
+    fn a4_changed_at(
+        routed: &mut Engine,
+        change: impl Fn(&mut Engine),
+        at: usize,
+        frames: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut plain = Engine::new().unwrap();
+        routed.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let mut moved = render_frames_left(routed, at, usize::MAX);
+        change(routed);
+        moved.extend(render_frames_left(routed, frames - at, usize::MAX));
+        let plain_wave = render_frames_left(&mut plain, frames, usize::MAX);
+        (moved, plain_wave)
+    }
+
+    #[test]
+    fn a_changed_lfo_moves_notes_already_sounding_and_a_shared_one_glides_there() {
+        // Per note: 200 ms into A4, its sine at 3.31 Hz becomes a triangle
+        // at 5 Hz, which goes on from the same place in its cycle.
+        let lfo = lfo_at(LfoShape::Sine, 3.31);
+        let changed = lfo_at(LfoShape::Triangle, 5.0);
+        let change_at = 9_600;
+        let dip = dip_by(Source::Lfo(0));
+        let mut routed = routed_engine(&[(0, lfo)], &[dip]);
+        let change = |engine: &mut Engine| {
+            engine.set_lfo(0, changed);
+        };
+        let (moved, plain) = a4_changed_at(&mut routed, change, change_at, 24_000);
+        assert_gain("per note", &moved, &plain, |t| {
+            if t <= change_at {
+                return gain_at_height(drawn_height(&lfo, cycles_after(lfo.hz, t)));
+            }
+            let cycles = cycles_after(lfo.hz, change_at) + cycles_after(changed.hz, t - change_at);
+            gain_at_height(drawn_height(&changed, cycles))
+        });
+
+        // Shared: started half a cycle further on, it glides there from
+        // where it was over 20 ms, so it never clicks.
+        let shared = Lfo { per_note: false, ..lfo };
+        let moved_on = Lfo { start: 50, ..shared };
+        let mut routed = routed_engine(&[(0, shared)], &[dip]);
+        let change = |engine: &mut Engine| {
+            engine.set_lfo(0, moved_on);
+        };
+        let (moved, plain) = a4_changed_at(&mut routed, change, change_at, 24_000);
+        let before = drawn_height(&shared, cycles_after(shared.hz, change_at));
+        let after = drawn_height(&moved_on, share(moved_on.start) + cycles_after(shared.hz, change_at));
+        let gap = before - after;
+        assert_gain("shared", &moved, &plain, |t| {
+            let cycles = cycles_after(shared.hz, t);
+            if t <= change_at {
+                return gain_at_height(drawn_height(&shared, cycles));
+            }
+            let since = t - change_at;
+            let mut glide = 0.0;
+            if since < SHARED_GLIDE_SAMPLES {
+                glide = gap * (SHARED_GLIDE_SAMPLES - since) as f64 / SHARED_GLIDE_SAMPLES as f64;
+            }
+            gain_at_height(drawn_height(&moved_on, share(moved_on.start) + cycles) + glide)
+        });
+    }
+
+    #[test]
+    fn a_move_of_nothing_changes_not_a_single_sample() {
+        // Every target, moved by 0 on a held key, or by its most from the
+        // key while it is up, read one way. The filter is in already, since
+        // moving the cutoff brings it in.
+        let plain = a4_after(set_up_everything, 300);
+        for target in every_target() {
+            let most = target.most_amount();
+            for (amount, held) in [(0.0, true), (most, false), (-most, false)] {
+                let moved = a4_after(
+                    |engine| {
+                        set_up_everything(engine);
+                        engine.set_connection(0, one_way_connection(Source::VibratoKey, target, amount));
+                        engine.set_vibrato_key(held);
+                    },
+                    300,
+                );
+                assert!(
+                    moved == plain,
+                    "{} by {amount}, the key held {held}, changed the sound",
+                    target.name()
+                );
+            }
+        }
+    }
+
+    // Every source but none.
+    fn every_source() -> Vec<Source> {
+        let mut sources = Vec::new();
+        for index in 0..LFO_COUNT {
+            sources.push(Source::Lfo(index));
+        }
+        sources.push(Source::VibratoKey);
+        sources.push(Source::NoteHeight);
+        sources.push(Source::Random);
+        sources.push(Source::LoudnessEnvelope);
+        sources.push(Source::FilterEnvelope);
+        sources
+    }
+
+    #[test]
+    fn the_busiest_routing_list_never_blows_up() {
+        // Every LFO shape, at its fastest, half of them shared, in Hz, beats
+        // and presses. All 64 connections in use, from every source to every
+        // target by its most either way, some scaled by another source,
+        // some one way, some snapped. The key held and the beat running,
+        // and 32 saws at the hardest press, the lowest and highest notes
+        // among them, through full resonance.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(200.0, 100));
+        for index in 0..LFO_COUNT {
+            let lfo = Lfo {
+                shape: LfoShape::ALL[index],
+                per_note: index % 2 == 0,
+                speed: LfoSpeed::ALL[index % 3],
+                hz: LFO_FASTEST_HZ,
+                beats: LFO_SHORTEST_BEATS,
+                presses: 1,
+                smooth: 0,
+                ..START_LFO
+            };
+            engine.set_lfo(index, with_steps(lfo, &STEP_HEIGHTS));
+        }
+        let sources = every_source();
+        let targets = every_target();
+        for index in 0..CONNECTION_COUNT {
+            let target = targets[index % targets.len()];
+            let mut amount = target.most_amount();
+            if index % 2 == 1 {
+                amount = -amount;
+            }
+            let mut scaled_by = Source::None;
+            if index % 5 == 0 {
+                scaled_by = sources[(index / 5) % sources.len()];
+            }
+            let busy = Connection {
+                source: sources[index % sources.len()],
+                target,
+                amount,
+                one_way: index % 3 == 0,
+                snap: index % 4 == 0,
+                scaled_by,
+            };
+            engine.set_connection(index, busy);
+        }
+        engine.set_vibrato_key(true);
+        engine.start_click();
+        engine.note_on(0, 127);
+        engine.note_on(127, 127);
+        for note in C3..C3 + VOICE_COUNT - 2 {
+            engine.note_on(note, 127);
+        }
+
+        let samples = engine.render(frames_in_ms(&engine, 1000));
+        assert_all_finite(&samples);
+        assert!(peak(&samples) < 1.0);
+    }
+
+    #[test]
+    fn the_routing_list_moves_the_same_samples_however_the_sound_is_asked_for() {
+        // Per-note and shared LFOs in Hz, beats and presses, smoothed, the
+        // key rising and falling, and notes, key presses and the beat all
+        // starting between the samples the routing list is worked out on.
+        // In chunks of 7 ms, or of 5 samples, every sample matches a render
+        // made in one go.
+        let lfos = [
+            (0, Lfo { smooth: 30, ..START_LFO }),
+            (
+                1,
+                Lfo {
+                    per_note: false,
+                    speed: LfoSpeed::Beats,
+                    beats: 0.5,
+                    ..lfo_at(LfoShape::Triangle, 1.0)
+                },
+            ),
+            (2, Lfo { smooth: 30, ..lfo_at(LfoShape::RandomSteps, 10.3) }),
+            (
+                3,
+                with_steps(
+                    Lfo {
+                        per_note: false,
+                        speed: LfoSpeed::Presses,
+                        presses: 5,
+                        smooth: 50,
+                        ..lfo_at(LfoShape::Steps, 1.0)
+                    },
+                    &STEP_HEIGHTS,
+                ),
+            ),
+        ];
+        let connections = [
+            connection(Source::Lfo(0), Target::Pitch, 50.0),
+            one_way_connection(Source::Lfo(1), Target::Loudness, -50.0),
+            connection(Source::Lfo(2), Target::Cutoff, 2.0),
+            connection(Source::Lfo(3), Target::Pan, 50.0),
+            one_way_connection(Source::VibratoKey, Target::LfoSpeed(0), 1.0),
+            Connection {
+                scaled_by: Source::Lfo(2),
+                ..one_way_connection(Source::VibratoKey, Target::Pitch, 25.0)
+            },
+        ];
+        let new_engine = || {
+            let mut engine = routed_engine(&lfos, &connections);
+            engine.set_filter(filter(2000.0, 30));
+            engine.set_vibrato_key_times(VibratoKeyTimes {
+                rise_ms: 50,
+                fall_ms: 80,
+            });
+            engine
+        };
+        let steps = [
+            (1_001, NoteOn(A4)),
+            (3_003, StartClick),
+            (7_007, HoldVibratoKey),
+            (11_011, NoteOn(C5)),
+            (20_000, NoteOn(E4)),
+            (25_013, LetGoOfVibratoKey),
+            (30_017, NoteOff(A4)),
+            (40_009, NoteOn(G4)),
+        ];
+        let frames = 60_000;
+        let whole_wave = play(&mut new_engine(), &steps, frames);
+        for chunk in [7 * SAMPLES_PER_MS, 5] {
+            let chunked_wave = play_in_chunks(&mut new_engine(), &steps, frames, chunk);
+            assert_same_samples(&chunked_wave, &whole_wave);
+        }
+    }
+
+    // A4 dipped by LFO 1, a sine at 3.31 Hz, with its pitch moved 100 cents
+    // by the vibrato key, which rises and falls over 100 ms and is let go
+    // halfway, after `send` asks the engine for something directly.
+    fn routed_a4_after(send: impl Fn(&Engine)) -> Vec<f32> {
+        let lfo = lfo_at(LfoShape::Sine, 3.31);
+        let key = one_way_connection(Source::VibratoKey, Target::Pitch, 100.0);
+        let mut engine = routed_engine(&[(0, lfo)], &[dip_by(Source::Lfo(0)), key]);
+        engine.set_vibrato_key_times(VibratoKeyTimes {
+            rise_ms: 100,
+            fall_ms: 100,
+        });
+        send(&engine);
+
+        engine.set_vibrato_key(true);
+        engine.note_on(A4, VELOCITY);
+        let mut wave = render_left(&mut engine, 150);
+        engine.set_vibrato_key(false);
+        wave.extend(render_left(&mut engine, 150));
+        wave
+    }
+
+    // A triangle at 5 Hz as the C API takes it, with `change` made to it.
+    fn raw_triangle(change: fn(&mut RawLfo)) -> RawLfo {
+        let mut raw = raw_lfo(&lfo_at(LfoShape::Triangle, 5.0));
+        change(&mut raw);
+        raw
+    }
+
+    #[test]
+    fn odd_lfo_connection_and_vibrato_key_values_change_nothing() {
+        // Asked directly, the engine ignores values outside their ranges,
+        // and NaN, each on an engine of its own. Each odd LFO is otherwise a
+        // triangle at 5 Hz, so one that got through would be heard.
+        let plain = routed_a4_after(|_| {});
+
+        let odd_lfos: [(&str, fn(&mut RawLfo)); 36] = [
+            ("shape -1", |raw| raw.shape = -1),
+            ("shape 8", |raw| raw.shape = 8),
+            ("0 steps", |raw| raw.step_count = 0),
+            ("33 steps", |raw| raw.step_count = 33),
+            ("a step at 1.1", |raw| raw.steps[0] = 1.1),
+            ("a step at -1.1", |raw| raw.steps[7] = -1.1),
+            ("a step at NaN", |raw| raw.steps[3] = f32::NAN),
+            ("speed -1", |raw| raw.speed = -1),
+            ("speed 3", |raw| raw.speed = 3),
+            ("0.009 Hz", |raw| raw.hz = 0.009),
+            ("100.1 Hz", |raw| raw.hz = 100.1),
+            ("NaN Hz", |raw| raw.hz = f64::NAN),
+            ("1/17 beat", |raw| raw.beats = 1.0 / 17.0),
+            ("128.1 beats", |raw| raw.beats = 128.1),
+            ("NaN beats", |raw| raw.beats = f64::NAN),
+            ("0 presses", |raw| raw.presses = 0),
+            ("33 presses", |raw| raw.presses = 33),
+            ("start -0.1", |raw| raw.start = -0.1),
+            ("start 1.1", |raw| raw.start = 1.1),
+            ("start NaN", |raw| raw.start = f64::NAN),
+            ("spread -0.1", |raw| raw.spread = -0.1),
+            ("spread 1.1", |raw| raw.spread = 1.1),
+            ("spread NaN", |raw| raw.spread = f64::NAN),
+            ("delay -1 ms", |raw| raw.delay_ms = -1),
+            ("delay 10001 ms", |raw| raw.delay_ms = 10_001),
+            ("fade -1 ms", |raw| raw.fade_ms = -1),
+            ("fade 10001 ms", |raw| raw.fade_ms = 10_001),
+            ("delay -0.1 beats", |raw| raw.delay_beats = -0.1),
+            ("delay 128.1 beats", |raw| raw.delay_beats = 128.1),
+            ("delay NaN beats", |raw| raw.delay_beats = f64::NAN),
+            ("fade -0.1 beats", |raw| raw.fade_beats = -0.1),
+            ("fade 128.1 beats", |raw| raw.fade_beats = 128.1),
+            ("fade NaN beats", |raw| raw.fade_beats = f64::NAN),
+            ("smooth -0.1", |raw| raw.smooth = -0.1),
+            ("smooth 1.1", |raw| raw.smooth = 1.1),
+            ("smooth NaN", |raw| raw.smooth = f64::NAN),
+        ];
+        for (what, change) in odd_lfos {
+            let odd = routed_a4_after(|engine| {
+                let raw = raw_triangle(change);
+                // SAFETY: `raw` points to a live engine until Drop, and the
+                // LFO lives until the call returns.
+                unsafe { jello_engine_set_lfo(engine.raw, 0, &raw) };
+            });
+            assert!(odd == plain, "an LFO with {what} changed the sound");
+        }
+        for index in [-1, LFO_COUNT as c_int] {
+            let odd = routed_a4_after(|engine| {
+                let raw = raw_triangle(|_| {});
+                // SAFETY: as above.
+                unsafe { jello_engine_set_lfo(engine.raw, index, &raw) };
+            });
+            assert!(odd == plain, "LFO {index} changed the sound");
+        }
+
+        // Each odd connection is otherwise LFO 1 dipping A4 by half, or
+        // nothing at all in the first slot, so one that got through would
+        // be heard.
+        let half_dip = raw_connection(&one_way_connection(Source::Lfo(0), Target::Loudness, -50.0));
+        let odd_connections = [
+            ("source -1", RawConnection { source: -1, ..half_dip }),
+            ("source 14", RawConnection { source: 14, ..half_dip }),
+            ("scaled by -1", RawConnection { scaled_by: -1, ..half_dip }),
+            ("scaled by 14", RawConnection { scaled_by: 14, ..half_dip }),
+            ("target -1", RawConnection { target: -1, ..half_dip }),
+            ("target 27", RawConnection { target: 27, ..half_dip }),
+            ("amount NaN", RawConnection { amount: f32::NAN, ..half_dip }),
+        ];
+        for (what, raw) in odd_connections {
+            let odd = routed_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop, and the
+                // connection lives until the call returns.
+                unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+            });
+            assert!(odd == plain, "a connection with {what} changed the sound");
+        }
+        for target in every_target() {
+            for most in [target.most_amount(), -target.most_amount()] {
+                let unused = Connection {
+                    amount: most,
+                    ..connection(Source::None, target, 0.0)
+                };
+                let mut raw = raw_connection(&unused);
+                raw.amount = raw.amount * 1.001;
+                let odd = routed_a4_after(|engine| {
+                    // SAFETY: as above.
+                    unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+                });
+                assert!(odd == plain, "{} past {most} changed the sound", target.name());
+            }
+        }
+        for index in [-1, CONNECTION_COUNT as c_int] {
+            let odd = routed_a4_after(|engine| {
+                let raw = raw_connection(&dip_by(Source::Lfo(0)));
+                // SAFETY: as above.
+                unsafe { jello_engine_set_connection(engine.raw, index, &raw) };
+            });
+            assert!(odd == plain, "connection {index} changed the sound");
+        }
+
+        for (rise_ms, fall_ms) in [(-1, 0), (10_001, 0), (0, -1), (0, 10_001)] {
+            let odd = routed_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_vibrato_key_times(engine.raw, rise_ms, fall_ms) };
+            });
+            assert!(odd == plain, "key times of {rise_ms} and {fall_ms} ms changed the sound");
+        }
+    }
+
+    #[test]
+    fn rust_brings_lfos_connections_and_vibrato_key_times_within_their_ranges() {
+        // Every value out of range comes back at its edge, and NaN at its
+        // lowest.
+        let mut engine = Engine::new().unwrap();
+        let mut steps = [0.0; LFO_MOST_STEPS];
+        steps[0] = 150.0;
+        steps[1] = -150.0;
+        steps[2] = f32::NAN;
+        let mut steps_within = [0.0; LFO_MOST_STEPS];
+        steps_within[0] = 100.0;
+        steps_within[1] = -100.0;
+        steps_within[2] = -100.0;
+        let too_much = Lfo {
+            step_count: 40,
+            steps,
+            hz: 200.0,
+            beats: 1000.0,
+            presses: 100,
+            start: 150,
+            spread: 150,
+            delay_ms: 20_000,
+            fade_ms: 20_000,
+            delay_beats: 200.0,
+            fade_beats: 200.0,
+            smooth: 150,
+            ..START_LFO
+        };
+        let at_the_top = Lfo {
+            step_count: LFO_MOST_STEPS as u32,
+            steps: steps_within,
+            hz: LFO_FASTEST_HZ,
+            beats: LFO_LONGEST_BEATS,
+            presses: LFO_MOST_PRESSES,
+            start: FULL_PERCENT,
+            spread: FULL_PERCENT,
+            delay_ms: LFO_LONGEST_MS,
+            fade_ms: LFO_LONGEST_MS,
+            delay_beats: LFO_LONGEST_DELAY_BEATS,
+            fade_beats: LFO_LONGEST_DELAY_BEATS,
+            smooth: FULL_PERCENT,
+            ..START_LFO
+        };
+        assert_eq!(engine.set_lfo(0, too_much), at_the_top);
+        let too_little = Lfo {
+            step_count: 0,
+            hz: 0.0,
+            beats: 0.0,
+            presses: 0,
+            delay_beats: -1.0,
+            fade_beats: f64::NAN,
+            ..START_LFO
+        };
+        let at_the_bottom = Lfo {
+            step_count: 1,
+            hz: LFO_SLOWEST_HZ,
+            beats: LFO_SHORTEST_BEATS,
+            presses: 1,
+            delay_beats: 0.0,
+            fade_beats: 0.0,
+            ..START_LFO
+        };
+        assert_eq!(engine.set_lfo(0, too_little), at_the_bottom);
+        assert_eq!(engine.set_lfo(0, Lfo { hz: f64::NAN, ..START_LFO }).hz, LFO_SLOWEST_HZ);
+
+        // An LFO, source or target past the 8th is the 8th.
+        let past_the_8th = Connection {
+            source: Source::Lfo(9),
+            target: Target::LfoSpeed(12),
+            amount: 1.0,
+            one_way: true,
+            snap: true,
+            scaled_by: Source::Lfo(20),
+        };
+        let the_8th = Connection {
+            source: Source::Lfo(7),
+            target: Target::LfoSpeed(7),
+            scaled_by: Source::Lfo(7),
+            ..past_the_8th
+        };
+        assert_eq!(engine.set_connection(0, past_the_8th), the_8th);
+        for target in every_target() {
+            let most = target.most_amount();
+            let sent = engine.set_connection(0, connection(Source::VibratoKey, target, 2.0 * most));
+            assert_eq!(sent.amount, most, "{}", target.name());
+            let sent = engine.set_connection(0, connection(Source::VibratoKey, target, -2.0 * most));
+            assert_eq!(sent.amount, -most, "{}", target.name());
+            let sent = engine.set_connection(0, connection(Source::VibratoKey, target, f32::NAN));
+            assert_eq!(sent.amount, -most, "{}", target.name());
+        }
+
+        let too_long = VibratoKeyTimes {
+            rise_ms: 20_000,
+            fall_ms: VIBRATO_KEY_LONGEST_MS + 1,
+        };
+        let longest = VibratoKeyTimes {
+            rise_ms: VIBRATO_KEY_LONGEST_MS,
+            fall_ms: VIBRATO_KEY_LONGEST_MS,
+        };
+        assert_eq!(engine.set_vibrato_key_times(too_long), longest);
+
+        // An LFO or connection past the last is sent nowhere.
+        assert_eq!(engine.set_lfo(LFO_COUNT, START_LFO), START_LFO);
+        assert_eq!(engine.set_connection(CONNECTION_COUNT, NO_CONNECTION), NO_CONNECTION);
+    }
+
+    #[test]
+    fn the_engine_takes_every_edge_rust_sends() {
+        // Each LFO at an edge of one of its ranges, otherwise a triangle at
+        // 5 Hz, replaces routed_a4_after's sine, so the sound changes. The
+        // odd values test shows a hair further is ignored, so Rust and the
+        // engine agree on every range.
+        let plain = routed_a4_after(|_| {});
+        let triangle = lfo_at(LfoShape::Triangle, 5.0);
+        let edges = [
+            Lfo { step_count: 1, ..triangle },
+            with_steps(triangle, &[100.0; LFO_MOST_STEPS]),
+            with_steps(triangle, &[-100.0; LFO_MOST_STEPS]),
+            Lfo { hz: LFO_SLOWEST_HZ, ..triangle },
+            Lfo { hz: LFO_FASTEST_HZ, ..triangle },
+            Lfo { beats: LFO_SHORTEST_BEATS, ..triangle },
+            Lfo { beats: LFO_LONGEST_BEATS, ..triangle },
+            Lfo { presses: 1, ..triangle },
+            Lfo { presses: LFO_MOST_PRESSES, ..triangle },
+            Lfo { start: FULL_PERCENT, ..triangle },
+            Lfo { spread: FULL_PERCENT, ..triangle },
+            Lfo { smooth: FULL_PERCENT, ..triangle },
+            Lfo { delay_ms: LFO_LONGEST_MS, ..triangle },
+            Lfo { fade_ms: LFO_LONGEST_MS, ..triangle },
+            Lfo { delay_beats: LFO_LONGEST_DELAY_BEATS, ..triangle },
+            Lfo { fade_beats: LFO_LONGEST_DELAY_BEATS, ..triangle },
+        ];
+        for edge in edges {
+            let moved = routed_a4_after(|engine| {
+                let raw = raw_lfo(&edge);
+                // SAFETY: `raw` points to a live engine until Drop, and the
+                // LFO lives until the call returns.
+                unsafe { jello_engine_set_lfo(engine.raw, 0, &raw) };
+            });
+            assert!(moved != plain, "the engine refused {edge:?}");
+        }
+
+        // Each target moved by its most either way, by an unused connection
+        // in LFO 1's slot: taken, it leaves A4 undipped.
+        for target in every_target() {
+            for most in [target.most_amount(), -target.most_amount()] {
+                let unused = Connection {
+                    amount: most,
+                    ..connection(Source::None, target, 0.0)
+                };
+                let moved = routed_a4_after(|engine| {
+                    let raw = raw_connection(&unused);
+                    // SAFETY: `raw` points to a live engine until Drop, and
+                    // the connection lives until the call returns.
+                    unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+                });
+                assert!(moved != plain, "the engine refused {} by {most}", target.name());
+            }
+        }
+
+        // And the longest key times.
+        let moved = routed_a4_after(|engine| {
+            let longest = VIBRATO_KEY_LONGEST_MS as c_int;
+            // SAFETY: `raw` points to a live engine until Drop.
+            unsafe { jello_engine_set_vibrato_key_times(engine.raw, longest, longest) };
+        });
+        assert!(moved != plain, "the engine refused the longest key times");
+    }
+
+    #[test]
+    fn a_new_engine_s_lfos_connections_and_vibrato_key_start_where_rust_says() {
+        // As START_LFO, NO_CONNECTION and START_VIBRATO_KEY_TIMES say, so
+        // sending them changes nothing. Each LFO turns A4 down a little, and
+        // the key moves its pitch, held and then let go.
+        let mut started = Engine::new().unwrap();
+        let mut sent = Engine::new().unwrap();
+        for engine in [&mut started, &mut sent] {
+            for index in 0..LFO_COUNT {
+                engine.set_connection(index, one_way_connection(Source::Lfo(index), Target::Loudness, -10.0));
+            }
+            hold_key_moving(engine, Target::Pitch, 100.0);
+        }
+        for index in 0..LFO_COUNT {
+            sent.set_lfo(index, START_LFO);
+        }
+        for index in LFO_COUNT..CONNECTION_COUNT - 1 {
+            sent.set_connection(index, NO_CONNECTION);
+        }
+        sent.set_vibrato_key_times(START_VIBRATO_KEY_TIMES);
+
+        let mut waves = Vec::new();
+        for engine in [&mut started, &mut sent] {
+            engine.note_on(A4, VELOCITY);
+            let mut wave = render_left(engine, 150);
+            engine.set_vibrato_key(false);
+            wave.extend(render_left(engine, 150));
+            waves.push(wave);
+        }
+        assert!(waves[0] == waves[1], "a new engine does not start where the START_ values say");
     }
 }

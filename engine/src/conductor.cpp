@@ -38,10 +38,21 @@ float soft_clip(float sample) {
     }
 }
 
+// How many beats pass each sample at the tempo `beat` says.
+double beats_per_sample(BeatLength beat) {
+    return static_cast<double>(beat.tempo) / static_cast<double>(beat.samples_per_minute);
+}
+
+// How hard the vibrato key is pressed when the looper records it. Only that
+// it is held matters, so any velocity would do.
+constexpr int vibrato_key_velocity = 127;
+
 }  // namespace
 
 Conductor::Conductor(int sample_rate)
-    : synth_(sample_rate), clock_(sample_rate), click_(sample_rate), looper_(loop_changes_) {}
+    : synth_(sample_rate), clock_(sample_rate), click_(sample_rate), looper_(loop_changes_) {
+    synth_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+}
 
 void Conductor::note_on(int note, int velocity) {
     mailbox_.send(Event{EventType::note_on, note, velocity});
@@ -145,6 +156,33 @@ void Conductor::set_tuning(float a4_hz) {
     mailbox_.send(event);
 }
 
+void Conductor::set_lfo(int index, const LfoSettings& settings) {
+    Event event{EventType::set_lfo, 0, 0};
+    event.index = index;
+    event.lfo = settings;
+    mailbox_.send(event);
+}
+
+void Conductor::set_connection(int index, const Connection& connection) {
+    Event event{EventType::set_connection, 0, 0};
+    event.index = index;
+    event.connection = connection;
+    mailbox_.send(event);
+}
+
+void Conductor::set_vibrato_key_times(int rise_ms, int fall_ms) {
+    Event event{EventType::set_vibrato_key_times, 0, 0};
+    event.rise_ms = rise_ms;
+    event.fall_ms = fall_ms;
+    mailbox_.send(event);
+}
+
+void Conductor::set_vibrato_key(bool held) {
+    Event event{EventType::set_vibrato_key, 0, 0};
+    event.held = held;
+    mailbox_.send(event);
+}
+
 bool Conductor::play_song(const SongChord* chords, int count) {
     // A stop, every chord, then the play.
     std::uint64_t needed = static_cast<std::uint64_t>(count) + 2;
@@ -232,12 +270,22 @@ void Conductor::render(float* out, int frames) {
 
         // Everything sent since the last chunk is heard from its first
         // sample. The looper has already acted on that sample, so a note
-        // played on the sample recording starts is recorded.
+        // played on the sample recording starts is recorded. While the beat
+        // is stopped, the LFOs in beats count at the tempo asked for.
         if (i == 0) {
             take_messages();
+            if (!clock_.is_beat_running()) {
+                synth_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+            }
         }
 
+        // The LFOs in beats hear each beat on its own sample, at the tempo
+        // it plays at.
         if (clock_.beat_starts_now()) {
+            synth_.render(out + 2 * rendered, i - rendered);
+            rendered = i;
+            synth_.on_beat(clock_.beat_number(), beats_per_sample(clock_.asked_beat_length()));
+
             if (wants_click()) {
                 click_.start(clock_.bar_starts_now());
             }
@@ -325,6 +373,20 @@ void Conductor::handle(const Event& event) {
         synth_.set_key_tracking(event.key_tracking);
     } else if (event.type == EventType::set_tuning) {
         synth_.set_tuning(event.a4_hz);
+    } else if (event.type == EventType::set_lfo) {
+        synth_.set_lfo(event.index, event.lfo);
+    } else if (event.type == EventType::set_connection) {
+        synth_.set_connection(event.index, event.connection);
+    } else if (event.type == EventType::set_vibrato_key_times) {
+        synth_.set_vibrato_key_times(event.rise_ms, event.fall_ms);
+    } else if (event.type == EventType::set_vibrato_key) {
+        // Like a live note: the synth plays it, and the looper records it.
+        synth_.set_vibrato_key(event.held);
+        if (event.held) {
+            looper_.note_on(Synth::vibrato_key_note, vibrato_key_velocity, now);
+        } else {
+            looper_.note_off(Synth::vibrato_key_note, now);
+        }
     } else if (event.type == EventType::stop_song) {
         song_player_.stop(synth_);
         song_messages_handled_ += 1;
@@ -333,6 +395,8 @@ void Conductor::handle(const Event& event) {
         song_messages_handled_ += 1;
     } else if (event.type == EventType::play_song) {
         // play_song always sends a stop first, so nothing is playing here.
+        // Its presses count from 0 again, so it moves the same each time.
+        synth_.restart_song_presses();
         song_player_.play(now, synth_);
         song_messages_handled_ += 1;
     }

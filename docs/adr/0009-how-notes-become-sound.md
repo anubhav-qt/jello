@@ -1,6 +1,6 @@
 # 0009: How notes become sound
 
-- Status: Accepted; fixed envelope superseded by 0030
+- Status: Accepted; fixed envelope superseded by 0030, Ctrl as a shortcut key by 0032
 - Date: 2026-10-19
 
 ## Context

@@ -44,8 +44,13 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    ([ADR 0029](adr/0029-unison.md)). Both belong to each song, in its own
    sound profile ([ADR 0030](adr/0030-a-sound-profile-per-song.md)), along
    with its loudness envelope, key tracking and tuning, and the song keeps
-   its own tempo. A dev panel in Compose sets them until their screen is
-   designed.
+   its own tempo. Then 8 LFOs and a routing list of 64 connections that
+   can move every sound setting
+   ([ADR 0031](adr/0031-lfos-and-a-routing-list.md)), with left Shift as
+   the vibrato key ([ADR 0032](adr/0032-the-vibrato-key.md)); see
+   [Engine](#engine). A dev panel in Compose sets the profile until its
+   screens are designed, mockups first; they replace it, and every other
+   placeholder screen goes the same way.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -196,13 +201,15 @@ and being built.
   set wave, start click, stop click, set tempo, press looper, clear loop,
   set snap, looper status (with its place), next loop change, plan loop,
   play song, stop song, song position, set filter, set filter envelope,
-  set unison, sample rate, render.
+  set unison, set loudness envelope, set key tracking, set tuning, set LFO,
+  set connection, set vibrato key times, set vibrato key, sample rate,
+  render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
   - `mailbox.h`: carries messages from one thread to another without
-    locks. One carries note, wave, click, tempo, looper, snap, song, filter
-    and unison messages to the audio thread; another carries the loop's
-    changes back to Rust.
+    locks. One carries note, wave, click, tempo, looper, snap, song, sound,
+    LFO, connection and vibrato key messages to the audio thread; another
+    carries the loop's changes back to Rust.
     Sending says whether the message got in, and the sender can ask how
     much room is left.
   - `conductor.*`: runs everything the audio thread does, like an
@@ -218,7 +225,8 @@ and being built.
     speakers.
   - `synth.*`: the instrument. It adds up its voices, picks the voice for
     each new note, and remembers the wave, filter envelope and unison new
-    notes play. It adds into the
+    notes play. It holds the routing list and works it out every 32
+    samples (see LFOs and the routing list below). It adds into the
     chunk instead of overwriting it, so the conductor can render it in
     pieces.
   - `looper.*`: records live notes and plays the loop back on the beat
@@ -259,6 +267,9 @@ and being built.
     the held level (decay, sustain) and a fade out after letting go
     (release). Each song sets its own stages (see Sound profile below). The
     filter envelope is one too, with stages of its own.
+  - `lfo.*`: the LFOs' settings and shapes, and the random heights.
+  - `routing.*`: the routing list, and everything notes share: the shared
+    LFOs, each player's vibrato key and key presses.
   - `miniaudio.cpp` and `miniaudio_settings.h`: the audio library
     ([ADR 0008](adr/0008-miniaudio-for-audio-devices.md)).
 - **Build:** `src-tauri/build.rs` compiles the engine as C++17 with the `cc`
@@ -365,23 +376,97 @@ and being built.
     0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
     exactly as before the filter. Values outside their ranges are ignored
     by the C API and brought within them by Rust.
+- **LFOs and the routing list**
+  ([ADR 0031](adr/0031-lfos-and-a-routing-list.md)): every song has 8 LFOs
+  (low frequency oscillators: slow waves) and a routing list of 64
+  connections, which say what moves what.
+  - Shapes, each from -1 to 1 (-100% to 100% on the screen): sine,
+    triangle, square, saw up, saw down, random steps (a new random height
+    each cycle, held), smooth random (gliding from one to the next in half
+    a cosine) and steps (up to 32 heights you set, one after another).
+  - Per note, every note starts its own copy as it starts, at the LFO's
+    start point plus a random share of its spread. Shared, one runs for
+    every note: in Hz from the engine's start; in beats from beat 1 when
+    the click or the looper starts the beat, gliding there over 20 ms,
+    and lined up again on every beat after. "Once" runs a per-note LFO one
+    cycle, then holds it where it ended, like an extra envelope.
+  - Speed in Hz (0.01 to 100), in beats a cycle (1/16 to 128, at the song's
+    tempo, the beat running or not), or in key presses a cycle (1 to 32):
+    each press moves on a step, and notes starting on the same sample are
+    one press, so a chord is one. Each player counts its own presses: live
+    play, the song (from 0 each time it plays) and each loop layer. Shared
+    in presses, every note of that player slides to the press's step over
+    the smoothing's share of a beat.
+  - Delay and fade-in, 0 to 10,000 ms (0 to 128 beats in beats): the LFO
+    waits, then grows to its full size in a straight line. Smoothing, 0 to
+    100%, is the share of the time between jumps spent sliding instead; it
+    only touches the square, both saws, random steps and steps.
+  - Random heights come from SplitMix64 on the note's press number, the
+    LFO's number and the cycle, so each note and each LFO moves its own way,
+    and the same notes always give the same samples.
+  - A connection has a source, a target, a signed amount in the target's
+    own unit, both ways (from minus the amount to the amount) or one way
+    (from 0 to the amount), snap (pitch only: whole half steps, sliding
+    between them) and an optional second source it is scaled by, read one
+    way. Sources: the 8 LFOs, the vibrato key, the note's height (-1 five
+    octaves below middle C, 1 five above), a random number per note, and
+    where the loudness and filter envelopes are. The envelopes are read as
+    each 32 samples start, so their moves come 32 samples late.
+  - Targets, live while a note sounds: pitch (cents, up to 4,800 either
+    way), loudness (only down; -100% is silence), pan, cutoff (octaves, up
+    to 10), resonance, key tracking, detune (cents, up to 50), spread, both
+    sustains, the filter envelope's amount (octaves, up to 8) and each LFO's
+    speed (octaves, up to 14). Read once as each note starts: the wave
+    (steps round sine, triangle, square and saw), the copies (up to 6) and
+    the six envelope times (octaves of time, up to 14). Moves on one
+    target add up, and the sum is kept within the setting's range. A
+    connection moving the cutoff brings an open filter in.
+  - Every 32 samples, counted from the engine's first, each sounding voice
+    works out its moves and heads to them in straight lines, so a render
+    is the same in any chunk size. A note starts right where its moves put
+    it. A shared LFO's speed is moved only by shared LFOs, with no fade-in,
+    since every note shares it.
+  - A changed LFO or connection reaches notes already sounding from the
+    next 32 samples on. A shared LFO glides from where it was over 20 ms,
+    so it never clicks; one that only now becomes shared starts where the
+    change puts it.
+  - A new engine's LFOs (each a per-note sine at 5.5 Hz, spread 100%,
+    smoothed 10%) and connections (none) move nothing. Values outside
+    their ranges are ignored by the C API and brought within them by Rust,
+    in `modulation.rs`, which also names every shape, speed, source and
+    target for the screen and later song files.
+  - No screen yet: the `set_lfo`, `set_connection` and
+    `set_vibrato_key_times` commands wait for the designed sound screens.
+- **Vibrato key** ([ADR 0032](adr/0032-the-vibrato-key.md)): left Shift.
+  Held, it rises from 0 to 1 in a straight line over its rise time; let
+  go, it falls back over its fall time, each 0 to 10,000 ms, the song's
+  own (0 jumps). Each player has its own: live play, the song (always up
+  until step 5) and each loop layer, so it only moves that player's notes.
+  The looper records its presses as notes on pitch 128, one past the
+  highest, and plays them back on the layer's own key. Letting go of every
+  note, as when the window loses focus, or removing a layer lets go of its
+  key too.
 - **Sound profile** ([ADR 0030](adr/0030-a-sound-profile-per-song.md)):
   how a song's notes sound belongs to the song, so no setting is tuned to
   one value for every song. Its sound profile
   (`src-tauri/src/sound_profile.rs`) holds the wave, the loudness envelope,
-  the filter and filter envelope, key tracking, unison and tuning, and the
-  song in Compose (`compose.rs`) holds the profile.
+  the filter and filter envelope, key tracking, unison, tuning, the LFOs,
+  the routing list and the vibrato key's times, and the song in Compose
+  (`compose.rs`) holds the profile.
   - Every change, from the dev panel or the backslash key, goes to the
     profile, which sends it on to the engine and keeps it as the engine
     sent it, with values outside their ranges brought within them. Rust's
     engine wrapper keeps no sound of its own, and the screen reads the
     sound from the profile.
   - As the app starts, the song sends its tempo and its whole profile,
-    before the first note: eight messages, which arrive in order.
+    before the first note: 81 messages, which arrive in order.
   - A new song starts where a new engine does: a triangle, a 5 ms attack
     held at the full peak with a 300 ms release, the filter open, no
     filter envelope, full key tracking, 1 copy, A4 at 440 Hz and 120 beats
-    per minute. It is only a starting point.
+    per minute. It also has vibrato ready: its first connection moves the
+    pitch 25 cents either way with LFO 1, scaled by the vibrato key, which
+    rises and falls over 250 ms. With the key up, it sounds exactly like a
+    new engine. It is only a starting point.
   - The loudness envelope's attack, decay and release each take 1 to
     10,000 ms; at 0 ms a stage would jump the loudness in one sample, which
     clicks. Its sustain goes from 0 to 100% of the peak. Tuning sets A4's
@@ -415,7 +500,9 @@ and being built.
   `set_tuning`, `set_filter`, `set_key_tracking` or `set_filter_envelope`,
   to the song's sound profile, and its readout shows Rust's answer. Nothing
   is saved until song files: each launch starts a new song, at 1 copy, A4
-  at 440 Hz, with the filter open.
+  at 440 Hz, with the filter open. The LFOs and routing list are not on
+  it. The sound's screens will be designed, mockups first, and replace
+  this panel and its "Dev: sound" button.
 - **No clicks:** a new song's notes fade in over 5 ms and out over 300 ms,
   and no stage is shorter than 1 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
@@ -446,7 +533,8 @@ and being built.
   (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
   `commands.rs` holds the commands, `key_map.rs` turns laptop keys into
-  notes, `sound_profile.rs` holds a song's sound, `wav.rs` writes files.
+  notes, `sound_profile.rs` holds a song's sound, `modulation.rs` the LFOs
+  and connections, `wav.rs` writes files.
 - **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
   pitch, the envelope's timing and levels, the velocity curve, that a chord
   is its notes added up, exact silence after letting go, which voice a new
@@ -516,6 +604,29 @@ and being built.
   the song's tempo, they check that `-` and `=` step by 5 and stop at 40
   and 240, that the song keeps the tempo the engine plays while the looper
   locks it, and that sending the song sends its tempo and sound profile.
+  For LFOs and the routing list, most tests compare A4 moved by a
+  connection with A4 alone: a note turned down is exactly the note times
+  its gain, so every sample is checked against the gain the LFO's drawing
+  says, in straight lines between each 32 samples. They cover each of the
+  8 LFOs, every shape as drawn, smoothing, random steps and smooth random,
+  random heights the same every render but different per note and per LFO,
+  per note against shared, spread, delay and fade-in, once, speeds in
+  beats and at another tempo, a shared LFO lining up with beat 1 and every
+  beat after a tempo change, even partway through a block, presses (a
+  chord is one, shared ones sliding, the song counting from its start),
+  pitch in cents, loudness and pan, every live target against the same
+  setting set directly, every target read at a note's start sample for
+  sample and with no fade-in, LFO speeds, every other source, the vibrato
+  key's rise and fall, scaled by, moves adding up, the pitch's limit,
+  snap, the song and the loop each on its own key, the loop playing the
+  key back sample for sample, losing focus, a changed LFO reaching
+  sounding notes and a shared one gliding, moves of nothing changing no
+  sample, the busiest list never blowing up, any chunk size, odd values,
+  Rust's ranges matching the engine's edge for edge, and a new engine
+  starting where Rust says. The sound profile tests add a new song's
+  vibrato, measured cycle by cycle, and the commands tests left Shift,
+  left Control, the names the screen reads and the lane leaving out the
+  key's presses.
   The key map tests check the melody keys finger by finger and each chord,
   that other keys do nothing, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
@@ -560,13 +671,15 @@ Then each key press gets the next note. Details:
 - Ignore auto-repeat (`event.repeat`).
 - Release every note when the window loses focus, and forget which keys were
   held.
-- Block Ctrl, Option/Alt, Cmd/Win, Fn and Caps Lock. Space, Tab and left
-  Shift play chords like any other key. While Cmd, Ctrl or
-  Option/Alt is held, no key plays, so shortcuts like Cmd+Q still work.
-  Pressing Cmd, Ctrl or Option/Alt also releases every note, because a Mac
-  may never report a key let go while Cmd is held. Mac brightness and volume
+- Block Option/Alt, Cmd/Win, Fn and Caps Lock. Space, Tab and left
+  Control play chords like any other key, and left Shift holds the
+  vibrato key. While Cmd or Option/Alt is held, no key plays, so shortcuts
+  like Cmd+Q still work. Pressing Cmd or Option/Alt also releases every
+  note, because a Mac may never report a key let go while Cmd is held.
+  Control is no shortcut key in Jello
+  ([ADR 0032](adr/0032-the-vibrato-key.md)). Mac brightness and volume
   keys never reach the app.
-- Keys pressed without Cmd, Ctrl or Option/Alt belong to Jello. The webview's
+- Keys pressed without Cmd or Option/Alt belong to Jello. The webview's
   own reactions to them are turned off, so the Mac never beeps, Space and
   Enter never press a button, and Tab never moves the focus.
 - Mappings are saved as named presets. A default preset ships, with the
@@ -585,7 +698,9 @@ Then each key press gets the next note. Details:
       the number row, the way the black keys sit above the white keys: 1
       to 5 play C#, Eb, F#, Ab and Bb.
     - Their minor chords go around the left edge, low to high: `` ` `` (top
-      left) C#m, Tab Ebm, left Shift F#m, Z G#m and Space (thumb) Bbm.
+      left) C#m, Tab Ebm, left Control (bottom left) F#m, Z G#m and Space
+      (thumb) Bbm. F#m was on left Shift until it became the vibrato key
+      ([ADR 0032](adr/0032-the-vibrato-key.md)).
     - With no song key, chords take the names chord charts use most: C#,
       Eb, F#, Ab and Bb, and C#m, Ebm, F#m, G#m and Bbm. Compose spells them
       for the song's key.
@@ -600,7 +715,8 @@ Then each key press gets the next note. Details:
     past the pinky play nothing yet.
   - A note that a chord and a melody key both play keeps sounding until
     every key playing it is let go. The backslash key (`\`) steps the
-    song's wave to the next. Right Shift runs the [looper](#looper) and Esc removes a
+    song's wave to the next, and left Shift, held, brings in whatever the
+    song connects to the vibrato key: vibrato in a new song. Right Shift runs the [looper](#looper) and Esc removes a
     layer from it.
     `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option play nothing, saved for layer keys that will
     switch whole mappings.
@@ -749,7 +865,10 @@ chords and play a melody over them
     it started and ended on, counted from the loop's start. Beats follow
     from the tempo, so the AI harness
     ([ADR 0018](adr/0018-ai-harness-on-a-fork-of-pi.md)) can read loops as
-    music later.
+    music later. The vibrato key's presses are notes too, on pitch 128, so
+    they are recorded, snapped and played back like any note
+    ([ADR 0032](adr/0032-the-vibrato-key.md)); the lane leaves them out
+    until its design says how to draw them.
   - A clock counts samples on the audio thread. The memory for a loop is
     set aside when the engine is created, so recording never asks for more
     mid-sound.

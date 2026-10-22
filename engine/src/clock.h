@@ -51,6 +51,16 @@ public:
     // How long a beat lasts at the current tempo.
     BeatLength beat_length() const;
 
+    // How long a beat lasts at the tempo asked for last. The beat starting
+    // on the current sample plays at it, and so does the beat whenever it
+    // starts again.
+    BeatLength asked_beat_length() const;
+
+    // How many beats have started since the beat started, before the
+    // current sample. On a beat's own sample, that beat's number: 0 for the
+    // first.
+    std::uint64_t beat_number() const;
+
     // Moves on to the next sample.
     void step();
 

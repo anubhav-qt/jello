@@ -23,7 +23,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
 - Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
-  Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030).
+  Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030),
+  8 LFOs and a routing list (0031), vibrato key on left Shift (0032).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout
@@ -51,11 +52,10 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 
 ### UI
 
-- The user is particular about UI. Expect many rounds before acceptance.
-- Never build a UI design the user has not approved. Show mockups first,
-  iterate one screen or component at a time, then build.
-- Until a screen's design is approved, it is a plain "dev panel" placeholder,
-  clearly labeled as such.
+- The user is particular about UI: expect many rounds. Never build a design
+  they have not approved: mock up one screen or component at a time first.
+- No placeholder dev panels: replace each with a designed screen, the sound
+  panel first, then Compose's guidance outlines. Ask before designing Produce.
 
 ### Code
 
