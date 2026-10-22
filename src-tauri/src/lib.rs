@@ -36,6 +36,7 @@ pub fn run() {
             commands::set_layer_volume,
             commands::set_filter,
             commands::set_filter_envelope,
+            commands::set_unison,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

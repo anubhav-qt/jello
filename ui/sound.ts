@@ -12,6 +12,8 @@ export interface SoundView {
   looper: LooperView;
   // Where the low-pass filter and its envelope are.
   filter: FilterView;
+  // The copies new notes are played by.
+  unison: UnisonView;
 }
 
 // Where the low-pass filter and its envelope are (`FilterView` in
@@ -47,6 +49,31 @@ export const FILTER_LOWEST_HZ = 20;
 export const FILTER_OPEN_HZ = 20000;
 export const FILTER_MOST_OCTAVES = 8;
 export const FILTER_LONGEST_MS = 10000;
+
+// The copies new notes are played by (`UnisonView` in
+// src-tauri/src/commands.rs, docs/adr/0029-unison.md).
+export interface UnisonView {
+  // From 1, which is off, to UNISON_MOST_COPIES.
+  copies: number;
+  // How far the highest copy is tuned above the note, and the lowest below
+  // it, in cents: hundredths of a half step.
+  detune_cents: number;
+  // How far apart they sit between the speakers, in percent.
+  spread: number;
+}
+
+// Unison as the sound's dev panel sends it (`set_unison` in
+// src-tauri/src/commands.rs).
+export interface Unison {
+  copies: number;
+  detuneCents: number;
+  spread: number;
+}
+
+// Unison's ranges (`UNISON_` in src-tauri/src/engine.rs): the most copies a
+// note can have, and the most cents the highest is tuned above the note.
+export const UNISON_MOST_COPIES = 7;
+export const UNISON_MOST_DETUNE_CENTS = 50;
 
 // The dev panel's cutoff and stage sliders go from 0 to this.
 export const SLIDER_STEPS = 1000;

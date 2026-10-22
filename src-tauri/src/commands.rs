@@ -9,7 +9,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
-use crate::engine::{BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus};
+use crate::engine::{
+    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, Unison,
+};
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
 use crate::wav::write_wav;
@@ -24,7 +26,7 @@ const TAIL_MS: u32 = 400;
 
 // What the screen shows about the sound: the wave new notes play, the beat's
 // tempo in beats per minute, whether loops snap to the beat, what the looper
-// is doing and where the filter is.
+// is doing, where the filter is and unison's copies.
 #[derive(Serialize)]
 pub struct SoundView {
     wave: &'static str,
@@ -32,6 +34,27 @@ pub struct SoundView {
     snap: bool,
     looper: LooperView,
     filter: FilterView,
+    unison: UnisonView,
+}
+
+// The copies new notes are played by (docs/adr/0029-unison.md).
+#[derive(Serialize)]
+pub struct UnisonView {
+    // From 1, which is off, to 7.
+    copies: u32,
+    // How far the highest copy is tuned above the note, in cents.
+    detune_cents: u32,
+    // How far apart they sit between the speakers, in percent.
+    spread: u32,
+}
+
+fn unison_view_of(engine: &Engine) -> UnisonView {
+    let unison = engine.unison();
+    UnisonView {
+        copies: unison.copies,
+        detune_cents: unison.detune_cents,
+        spread: unison.spread,
+    }
 }
 
 // Where the low-pass filter and its envelope are
@@ -148,6 +171,7 @@ fn sound_view_of(engine: &mut Engine, now: Instant) -> SoundView {
         snap: engine.snap(),
         looper,
         filter: filter_view_of(engine),
+        unison: unison_view_of(engine),
     }
 }
 
@@ -323,7 +347,7 @@ pub fn set_layer_volume(engine: State<'_, Mutex<Engine>>, layer: u32, volume: u3
 // and the resonance to `resonance` percent (docs/adr/0028-a-low-pass-filter.md).
 // Values outside their ranges are brought within them. Every note hears it,
 // even those already sounding. Returns what the screen shows about the
-// sound. The filter's dev panel in Compose sends it, naming the arguments
+// sound. The sound's dev panel in Compose sends it, naming the arguments
 // in camelCase, like `cutoffHz`. Like `switch_wave`, it opens the speakers
 // first.
 #[tauri::command]
@@ -360,6 +384,31 @@ pub fn set_filter_envelope(
         release_ms,
     };
     engine.set_filter_envelope(envelope);
+    Ok(sound_view_of(&mut engine, now))
+}
+
+// Sets unison for notes started from now on (docs/adr/0029-unison.md): how
+// many copies play each note, how far apart they are tuned in cents, and how
+// far apart they sit between the speakers in percent. Values outside their
+// ranges are brought within them. Returns what the screen shows about the
+// sound. The sound's dev panel in Compose sends it, as `detuneCents`. Like
+// `set_filter`, it opens the speakers first.
+#[tauri::command]
+pub fn set_unison(
+    engine: State<'_, Mutex<Engine>>,
+    copies: u32,
+    detune_cents: u32,
+    spread: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let unison = Unison {
+        copies,
+        detune_cents,
+        spread,
+    };
+    engine.set_unison(unison);
     Ok(sound_view_of(&mut engine, now))
 }
 
@@ -806,6 +855,17 @@ mod tests {
         assert_eq!(json["filter"]["decay_ms"], 200);
         assert_eq!(json["filter"]["sustain"], 60);
         assert_eq!(json["filter"]["release_ms"], 400);
+
+        // And unison, the same way.
+        engine.set_unison(Unison {
+            copies: 5,
+            detune_cents: 30,
+            spread: 70,
+        });
+        let json = serde_json::to_value(sound_view_of(&mut engine, Instant::now())).unwrap();
+        assert_eq!(json["unison"]["copies"], 5);
+        assert_eq!(json["unison"]["detune_cents"], 30);
+        assert_eq!(json["unison"]["spread"], 70);
 
         // And the loop's layers, by the names ui/sound.ts reads.
         let layers = [layer_of(&[LoopNote {

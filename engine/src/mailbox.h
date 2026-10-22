@@ -6,6 +6,7 @@
 
 #include "filter.h"
 #include "song_player.h"
+#include "unison.h"
 #include "wave.h"
 
 // What another thread can ask the audio thread to do.
@@ -27,6 +28,7 @@ enum class EventType {
     play_song,
     set_filter,
     set_filter_envelope,
+    set_unison,
 };
 
 // One message for the audio thread.
@@ -61,6 +63,10 @@ struct Event {
     // only for set_filter_envelope. The other messages can leave them out.
     FilterSettings filter{};
     FilterEnvelopeSettings filter_envelope{};
+
+    // Unison's controls; only for set_unison. The other messages can leave
+    // them out too.
+    UnisonSettings unison{};
 };
 
 // Carries messages from one thread to another without locks

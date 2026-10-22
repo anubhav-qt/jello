@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "filter.h"
+#include "unison.h"
 #include "voice.h"
 #include "wave.h"
 
@@ -58,6 +59,11 @@ public:
     // it changes nothing.
     void set_filter_envelope(const FilterEnvelopeSettings& envelope);
 
+    // Notes started after this are played by `unison`'s copies
+    // (docs/adr/0029-unison.md). Notes started before keep theirs. It starts
+    // at 1 copy, which is off.
+    void set_unison(const UnisonSettings& unison);
+
     // Adds every voice to `frames` frames of stereo (left, right, left,
     // ...). It adds instead of overwriting, so the conductor can render a
     // chunk in pieces and put the click in the same buffer. Many voices can
@@ -100,6 +106,9 @@ private:
     // start with.
     FilterTargets filter_targets_ = filter_targets_of(FilterSettings{});
     FilterEnvelopeSettings filter_envelope_{};
+
+    // The copies new notes are played by.
+    UnisonSettings unison_{};
 
     // Each layer's volume, by its slot.
     std::array<float, layer_count> layer_volumes_{};

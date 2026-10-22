@@ -121,6 +121,12 @@ void Conductor::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
     mailbox_.send(event);
 }
 
+void Conductor::set_unison(const UnisonSettings& unison) {
+    Event event{EventType::set_unison, 0, 0};
+    event.unison = unison;
+    mailbox_.send(event);
+}
+
 bool Conductor::play_song(const SongChord* chords, int count) {
     // A stop, every chord, then the play.
     std::uint64_t needed = static_cast<std::uint64_t>(count) + 2;
@@ -293,6 +299,8 @@ void Conductor::handle(const Event& event) {
         synth_.set_filter(event.filter);
     } else if (event.type == EventType::set_filter_envelope) {
         synth_.set_filter_envelope(event.filter_envelope);
+    } else if (event.type == EventType::set_unison) {
+        synth_.set_unison(event.unison);
     } else if (event.type == EventType::stop_song) {
         song_player_.stop(synth_);
         song_messages_handled_ += 1;

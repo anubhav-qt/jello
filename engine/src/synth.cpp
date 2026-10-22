@@ -83,7 +83,8 @@ void Synth::start_note(int note, int velocity, Source source, int layer) {
     if (source == Source::loop) {
         volume = layer_volumes_[layer];
     }
-    voice->start(note, velocity, press_count_, wave_, source, layer, volume, filter_targets_, filter_envelope_);
+    voice->start(note, velocity, press_count_, wave_, source, layer, volume, filter_targets_, filter_envelope_,
+                 unison_);
 }
 
 void Synth::set_wave(Wave wave) {
@@ -98,6 +99,12 @@ void Synth::set_filter(const FilterSettings& settings) {
 
 void Synth::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
     filter_envelope_ = envelope;
+}
+
+void Synth::set_unison(const UnisonSettings& unison) {
+    // Like the wave, only notes started from here on hear it. Each voice
+    // keeps the copies its note started with.
+    unison_ = unison;
 }
 
 void Synth::render(float* out, int frames) {

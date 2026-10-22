@@ -1,6 +1,7 @@
 #pragma once
 
 #include "envelope.h"
+#include "stereo.h"
 
 // The low-pass filter (docs/adr/0028-a-low-pass-filter.md). Every voice puts
 // its wave through one of its own, before the loudness envelope, so each
@@ -85,32 +86,42 @@ private:
 // cutoff, a harmonic comes out about 4 times quieter. It is built the
 // zero-delay-feedback way, from Andrew Simper's published math (Cytomic), so
 // it stays smooth and steady even when its cutoff moves on every sample.
+// It filters the left and right sides through the same cutoff and
+// resonance, each with a memory of its own (docs/adr/0029-unison.md).
 class LowPass {
 public:
     // Sets the cutoff, in Hz, and the resonance, from 0 to 1. The filter
     // remembers what it was doing, so the sound carries on smoothly.
     void set(double cutoff_hz, double resonance, int sample_rate);
 
-    // Filters one sample.
-    double next(double input);
+    // Filters one moment of sound, each side on its own.
+    Stereo next(Stereo input);
 
     // Forgets everything it heard, as if new.
     void clear();
 
 private:
+    // What one side remembers between samples: the charge left in the
+    // filter's two stages, like the two capacitors of an analog filter.
+    struct Memory {
+        double first = 0.0;
+        double second = 0.0;
+    };
+
+    // Filters one sample of one side, with that side's memory.
+    double next_side(double input, Memory& memory) const;
+
     // Worked out from the cutoff and resonance by set.
     double a1_ = 0.0;
     double a2_ = 0.0;
     double a3_ = 0.0;
 
-    // What the filter remembers between samples: the charge left in its two
-    // stages, like the two capacitors of an analog filter.
-    double memory1_ = 0.0;
-    double memory2_ = 0.0;
+    Memory left_;
+    Memory right_;
 };
 
-// One voice's filter: its low-pass, its filter envelope, and the glides that
-// keep a moved control from clicking.
+// One voice's filter: its low-pass for each side, its filter envelope, and
+// the glides that keep a moved control from clicking.
 class VoiceFilter {
 public:
     explicit VoiceFilter(int sample_rate);
@@ -124,8 +135,9 @@ public:
     // Starts the filter envelope's release.
     void release();
 
-    // Filters one sample of the wave, gliding a step toward `targets`.
-    double next(double wave, const FilterTargets& targets);
+    // Filters one moment of the wave, both sides, gliding a step toward
+    // `targets`.
+    Stereo next(Stereo wave, const FilterTargets& targets);
 
 private:
     int sample_rate_;

@@ -6,7 +6,7 @@ import { mount } from "svelte";
 import type { ComposeView } from "./compose";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
-import type { FilterEnvelope, SoundView } from "./sound";
+import type { FilterEnvelope, SoundView, Unison } from "./sound";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -177,7 +177,7 @@ async function setLayerVolume(layer: number, volume: number) {
   }
 }
 
-// The filter's dev panel moves the filter. `cutoffHz` is middle C's cutoff,
+// The sound's dev panel moves the filter. `cutoffHz` is middle C's cutoff,
 // and `resonance` is in percent, from 0 to 100.
 async function setFilter(cutoffHz: number, resonance: number) {
   try {
@@ -201,6 +201,21 @@ async function setFilterEnvelope(envelope: FilterEnvelope) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the filter envelope: ${error}`);
+  }
+}
+
+// And it sets unison for the next notes: how many copies, how far apart
+// they are tuned in cents, and how far apart they spread in percent.
+async function setUnison(unison: Unison) {
+  try {
+    const view = await invoke<SoundView>("set_unison", {
+      copies: unison.copies,
+      detuneCents: unison.detuneCents,
+      spread: unison.spread,
+    });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set unison: ${error}`);
   }
 }
 
@@ -383,6 +398,7 @@ async function start() {
       onPlayClick: () => sendInOrder(playSong),
       onFilterChange: (cutoffHz: number, resonance: number) => sendInOrder(() => setFilter(cutoffHz, resonance)),
       onFilterEnvelopeChange: (envelope: FilterEnvelope) => sendInOrder(() => setFilterEnvelope(envelope)),
+      onUnisonChange: (unison: Unison) => sendInOrder(() => setUnison(unison)),
     },
   });
   sendInOrder(askForSound);

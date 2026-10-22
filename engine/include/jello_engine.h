@@ -27,10 +27,10 @@ bool jello_engine_start_audio(JelloEngine* engine);
 // Closes the speakers. Does nothing if the audio is not running.
 void jello_engine_stop_audio(JelloEngine* engine);
 
-// The functions from here to jello_engine_set_filter_envelope are for
-// playing notes, picking their wave, running the click and the looper,
-// playing Compose's song and moving the filter. They are safe to call while the audio is running, from one
-// thread at a time. Each one only leaves a message for the audio thread,
+// The functions from here to jello_engine_set_unison are for playing notes,
+// picking their wave, running the click and the looper, playing Compose's
+// song, moving the filter and setting unison. They are safe to call while
+// the audio is running, from one thread at a time. Each one only leaves a message for the audio thread,
 // which acts on it at the start of its next chunk of sound (about every
 // 10 ms). If 1024 messages are already waiting, new ones are dropped
 // (docs/adr/0009-how-notes-become-sound.md).
@@ -190,6 +190,26 @@ void jello_engine_set_filter(JelloEngine* engine, float cutoff_hz, float resonan
 // release of 300 ms.
 void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int attack_ms, int decay_ms, float sustain,
                                       int release_ms);
+
+// Unison's ranges (docs/adr/0029-unison.md): the most copies a note can
+// have, and the most cents the highest is tuned above the note.
+enum {
+    JELLO_UNISON_MOST_COPIES = 7,
+    JELLO_UNISON_MOST_DETUNE_CENTS = 50,
+};
+
+// Unison: every note is played by `copies` copies of its wave at once, from
+// 1 to JELLO_UNISON_MOST_COPIES. The highest copy is tuned `detune_cents`
+// above the note (a cent is a hundredth of a half step) and the lowest as
+// far below, from 0 to JELLO_UNISON_MOST_DETUNE_CENTS, with the others
+// evenly between. `spread`, from 0 to 1, places them between the speakers:
+// at 0 all in the middle, at 1 the lowest fully left and the highest fully
+// right. Their sum is turned down by the square root of `copies`, so a note
+// stays about as loud. Notes started after this use it, and notes started
+// before keep theirs. Values outside those ranges are ignored. A new engine
+// starts at 1 copy, which is off: notes sound exactly as without unison.
+// Its detune starts at 20 cents and its spread at 1.
+void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents, float spread);
 
 // What the looper can be doing.
 enum {

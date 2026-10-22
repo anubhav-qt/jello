@@ -37,6 +37,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0026](0026-layers.md) | Layers | Accepted |
 | [0027](0027-computer-keyboards-only.md) | Computer keyboards only | Accepted |
 | [0028](0028-a-low-pass-filter.md) | A low-pass filter | Accepted |
+| [0029](0029-unison.md) | Unison | Accepted |
 
 ## Template
 

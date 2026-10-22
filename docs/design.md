@@ -39,8 +39,10 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    code, with no guitar
    ([ADR 0019](adr/0019-instruments-built-from-scratch-no-guitar.md)).
    Started with a low-pass filter on every voice, with its own envelope
-   ([ADR 0028](adr/0028-a-low-pass-filter.md)). A dev panel in Compose
-   sets it until its screen is designed.
+   ([ADR 0028](adr/0028-a-low-pass-filter.md)), then unison: up to 7
+   detuned copies of each note's wave, which makes the saw a supersaw
+   ([ADR 0029](adr/0029-unison.md)). A dev panel in Compose sets them
+   until their screen is designed.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -191,13 +193,13 @@ and being built.
   set wave, start click, stop click, set tempo, press looper, clear loop,
   set snap, looper status (with its place), next loop change, plan loop,
   play song, stop song, song position, set filter, set filter envelope,
-  sample rate, render.
+  set unison, sample rate, render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
   - `mailbox.h`: carries messages from one thread to another without
-    locks. One carries note, wave, click, tempo, looper, snap, song and
-    filter messages to the audio thread; another carries the loop's changes back
-    to Rust.
+    locks. One carries note, wave, click, tempo, looper, snap, song, filter
+    and unison messages to the audio thread; another carries the loop's
+    changes back to Rust.
     Sending says whether the message got in, and the sender can ask how
     much room is left.
   - `conductor.*`: runs everything the audio thread does, like an
@@ -212,7 +214,8 @@ and being built.
     and puts the sum through the soft clip, the last step before the
     speakers.
   - `synth.*`: the instrument. It adds up its voices, picks the voice for
-    each new note, and remembers the wave new notes play. It adds into the
+    each new note, and remembers the wave, filter envelope and unison new
+    notes play. It adds into the
     chunk instead of overwriting it, so the conductor can render it in
     pieces.
   - `looper.*`: records live notes and plays the loop back on the beat
@@ -233,15 +236,19 @@ and being built.
     sample the engine makes, and knows which sample each beat starts on.
   - `click.*`: the click, a short tick on every beat while it is on, or
     while the looper counts in or records.
-  - `voice.*`: plays one note on one of the four waves. The wave trim, the
+  - `voice.*`: plays one note on one of the four waves, by up to 7 copies
+    of it, in stereo (see Unison below). The wave trim, the
     velocity curve and the voice level set how loud it is. It knows who
     started its note: the player (live), the looper or the song player,
     and for the looper, which layer. A loop note also plays at its layer's
     volume (see [Looper](#looper)).
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
     off, and the trims that make them equally loud.
-  - `filter.*`: each voice's low-pass filter, its filter envelope, and the
-    glides that keep a moved control from clicking (see Filter below).
+  - `unison.h`: unison's controls and their ranges.
+  - `stereo.h`: one moment of sound for both speakers.
+  - `filter.*`: each voice's low-pass filter, one per speaker, its filter
+    envelope, and the glides that keep a moved control from clicking (see
+    Filter below).
   - `envelope.*`: a note's loudness over time: a quick rise (attack), a dip
     to the held level (decay, sustain) and a fade out after letting go
     (release). The filter envelope is one too, with stages of its own.
@@ -279,6 +286,42 @@ and being built.
   - Trims make every wave as loud as the triangle, measured by RMS (the
     square root of the average squared height): sine 0.8165, triangle 1,
     square 0.5774, saw 1. Starting values, to be tuned by ear.
+- **Unison** ([ADR 0029](adr/0029-unison.md)): every note is played by 1 to
+  7 copies of its wave at once, each tuned a little apart and placed
+  between the speakers. They drift in and out of step, which makes the
+  sound thick and shimmering. A saw in unison is the supersaw.
+  - The copies sit evenly from -1 to 1: copy i of n at 2i / (n - 1) - 1,
+    and a lone copy at 0, right on the note and in the middle.
+  - Detune, from 0 to 50 cents (hundredths of a half step), tunes each
+    copy its place times the detune away from the note: the lowest copy
+    the detune below, the highest as far above.
+  - Spread, from 0 to 100%, pans each copy its place times the spread
+    toward a speaker: the lowest left, the highest right. Its left side
+    gets √(1 - pan) and its right √(1 + pan), so the two squared always
+    add up to 2: a copy is as loud wherever it sits, and in the middle
+    each side gets exactly 1, as a voice did before unison.
+  - Their sum is turned down by 1 / √copies. Copies that drift apart add
+    up like unrelated sounds, so a note stays about as loud: 7 copies at
+    20 or 50 cents are within 1% of one. At 0 detune they never drift,
+    and partly cancel where they started: 7 copies are then about 6 dB
+    quieter than one.
+  - 7 copies can peak at about 2.6 times one copy's height (√7), so loud
+    chords in unison reach the soft clip sooner.
+  - When the engine starts, each voice's copies start a step of 0.618 of
+    a cycle (the golden ratio's share) apart, wrapped back into one cycle,
+    so they never start lined up as one loud wave. Copy 0 starts at 0, so
+    a lone copy starts where a voice always did. Each copy then runs on
+    from wherever it is, so every note starts a little differently.
+  - Each voice is stereo now. Each side goes through a filter of its own,
+    moved together, and the gap that keeps a takeover from clicking is
+    worked out for each side.
+  - A change reaches the notes started after it, like the wave: a held
+    note keeps its copies. A note that takes over a sounding voice gets the
+    new copies and glides across with the gap.
+  - A new engine starts at 1 copy, which is off, with detune 20 and spread
+    100% waiting: notes sound exactly as before, sample for sample. Values
+    outside their ranges are ignored by the C API and brought within them
+    by Rust.
 - **Filter** ([ADR 0028](adr/0028-a-low-pass-filter.md)): every voice puts
   its wave through a low-pass filter of its own, before the loudness
   envelope, so a quiet note is filtered just like a loud one. It is a
@@ -311,14 +354,17 @@ and being built.
     0 (attack 5 ms, decay 300 ms, sustain 0, release 300 ms), so it sounds
     exactly as before the filter. Values outside their ranges are ignored
     by the C API and brought within them by Rust.
-  - Until its screen is designed, a dev panel sets it
-    (`ui/FilterDevPanel.svelte`), and its values are picked there by ear.
-    In Compose, a "Dev: filter" button at the right end of the tabs opens
-    it over the tape. Cutoff moves in octaves along its slider, and the
-    stages on a curve that gives short times most of it (halfway is
-    1250 ms). Each slider sends every value as it moves, through
-    `set_filter` or `set_filter_envelope`, and its readout shows Rust's
-    answer. Nothing is saved: each launch starts open.
+- **The sound's dev panel:** until their screen is designed, a dev panel
+  sets unison and the filter (`ui/SoundDevPanel.svelte`), and their values
+  are picked there by ear. In Compose, a "Dev: sound" button at the right
+  end of the tabs opens it over the tape. It has two rows, so it clears
+  the keyboard even in an 800 by 600 window: unison's copies, detune and
+  spread, then the filter's cutoff and resonance, and below them the filter
+  envelope. Cutoff moves in octaves along its slider, and the stages on a
+  curve that gives short times most of it (halfway is 1250 ms). Each slider
+  sends every value as it moves, through `set_unison`, `set_filter` or
+  `set_filter_envelope`, and its readout shows Rust's answer. Nothing is
+  saved: each launch starts at 1 copy, with the filter open.
 - **No clicks:** a note fades in over 5 ms and out over 300 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
   loudness were, so the sound never jumps. If the new note plays another
@@ -391,6 +437,17 @@ and being built.
   on a silent voice starting right at its cutoff, a takeover with no click,
   the same samples in any chunk size, the filter envelope's attack, decay,
   sustain and release, that a held note keeps its envelope, and odd values.
+  For unison, they check that 1 copy ignores detune and spread, that 2
+  copies fully apart play the detune below on the left and above on the
+  right, that 7 copies sit evenly apart in pitch and between the speakers,
+  that with no spread both speakers play the same, that each side of 2
+  copies fully apart is a lone copy through its own filter, that copies
+  never start lined up, that 7 copies are as loud as 1 within 1 dB, a
+  takeover with no click, that the filter closes on both sides and opening
+  leaves both as they were, that a silent voice keeps nothing of its last
+  note's filter on either side, that a layer's volume turns down both
+  speakers, that a held note keeps its copies while the next note gets the
+  new ones, the same samples in any chunk size, and odd values.
   The key map tests check the melody keys finger by finger and each chord,
   that other keys do nothing, and that letting go always stops the notes a
   key started, even after the layout changes, except a note another held
@@ -914,8 +971,9 @@ themes and saved theme selection are removed. Development and packaged
 builds use the same colors, with no palette name shown in the app.
 
 Still to design: the Produce screen (a dev panel for now,
-[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the filter's
-controls (a dev panel in Compose for now), the look of the
+[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the sound's
+controls for unison and the filter (a dev panel in Compose for now), the
+look of the
 guidance outlines on the chord keys, and the tab icons (a pencil for
 Compose, faders for Produce). Compose's tape (below) is built.
 

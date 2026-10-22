@@ -1,9 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "envelope.h"
 #include "filter.h"
+#include "stereo.h"
+#include "unison.h"
 #include "wave.h"
 
 // Who started a note: the player at the keys, the looper playing a loop back
@@ -17,7 +20,8 @@ enum class Source {
     song,
 };
 
-// Plays one note: a wave at the note's pitch, through its own low-pass filter
+// Plays one note: a wave at the note's pitch, played by one or more copies
+// (docs/adr/0029-unison.md), through its own low-pass filter
 // (docs/adr/0028-a-low-pass-filter.md), shaped by its own envelope
 // (docs/adr/0009-how-notes-become-sound.md). Only the audio thread touches a
 // voice, so nothing in here locks, allocates or waits.
@@ -33,9 +37,11 @@ public:
     // still sounding, it is taken over without a click, even when `wave` is a
     // different wave, and its volume eases to the new one as it renders.
     // Its filter starts at `filter` and its filter envelope is `envelope`;
-    // one still sounding keeps its filter's memory and glides on.
+    // one still sounding keeps its filter's memory and glides on. Its copies
+    // are tuned and placed by `unison`; each one carries on from where it
+    // was in its cycle.
     void start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer, float volume,
-               const FilterTargets& filter, const FilterEnvelopeSettings& envelope);
+               const FilterTargets& filter, const FilterEnvelopeSettings& envelope, const UnisonSettings& unison);
 
     // Starts the fade to silence.
     void release();
@@ -69,14 +75,27 @@ public:
     void render(float* out, int frames, float volume, const FilterTargets& filter);
 
 private:
-    // The wave's height at the current phase, trimmed so every wave is
-    // equally loud.
-    double height_now() const;
+    // One copy of the wave (docs/adr/0029-unison.md).
+    struct Copy {
+        double phase = 0.0;       // where it is in one cycle, from 0 to 1
+        double phase_step = 0.0;  // how far the phase moves each sample
+        // How much of it goes to each speaker: exactly 1 and 1 in the middle.
+        double left = 1.0;
+        double right = 1.0;
+    };
 
-    // How much of the gap is left for the next sample. It shrinks in a
-    // straight line: all of it on the first sample, a little less on each
-    // one after, and none once its time is up.
-    double gap_now() const;
+    // Tunes and places the copies for `note` and `unison`. Their phases stay
+    // where they are.
+    void set_copies(int note, const UnisonSettings& unison);
+
+    // The copies' heights at their current phases, added up on each side,
+    // trimmed so every wave is equally loud.
+    Stereo height_now() const;
+
+    // How much of the gap is left on each side for the next sample. It
+    // shrinks in a straight line: all of it on the first sample, a little
+    // less on each one after, and none once its time is up.
+    Stereo gap_now() const;
 
     int sample_rate_;
     int gap_samples_;  // how many samples a gap takes to shrink away
@@ -93,13 +112,17 @@ private:
     float volume_ = 1.0f;
     float volume_step_;
 
-    double phase_ = 0.0;       // where we are in one cycle, from 0 to 1
-    double phase_step_ = 0.0;  // how far the phase moves each sample
+    // Every copy the voice can play, and how many its note plays: the first
+    // `copy_count_`. Their sum is scaled by `copy_scale_`, 1 over the square
+    // root of how many, so a note stays about as loud however many play it.
+    std::array<Copy, unison_most_copies> copies_{};
+    int copy_count_ = 1;
+    double copy_scale_ = 1.0;
 
     // When a voice that is still sounding starts a new wave, the new wave can
     // be at a different height from where the old one was heading. The gap
     // between them is added on top of the new wave and shrinks away, so the
-    // sound glides across instead of jumping.
-    double gap_ = 0.0;          // the gap when it started shrinking
+    // sound glides across instead of jumping. Each side has its own.
+    Stereo gap_;                // the gap when it started shrinking
     int gap_samples_left_ = 0;  // samples until it is gone
 };

@@ -69,6 +69,11 @@ static_assert(JELLO_FILTER_MOST_OCTAVES == static_cast<int>(filter_most_octaves)
               "the C API and the filter open the cutoff as far");
 static_assert(JELLO_FILTER_LONGEST_MS == filter_longest_ms, "the C API and the filter have the same longest stage");
 
+// The C API and unison agree on its ranges.
+static_assert(JELLO_UNISON_MOST_COPIES == unison_most_copies, "the C API and unison have the same most copies");
+static_assert(JELLO_UNISON_MOST_DETUNE_CENTS == static_cast<int>(unison_most_detune_cents),
+              "the C API and unison have the same most detune");
+
 // True if `value` is a number from `lowest` to `highest`. NaN, not a number
 // at all, is not.
 bool is_within(float value, float lowest, float highest) {
@@ -380,6 +385,27 @@ void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int att
     envelope.sustain = sustain;
     envelope.release_ms = release_ms;
     engine->conductor.set_filter_envelope(envelope);
+}
+
+void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents, float spread) {
+    if (copies < 1) {
+        return;
+    }
+    if (copies > JELLO_UNISON_MOST_COPIES) {
+        return;
+    }
+    if (!is_within(detune_cents, 0.0f, JELLO_UNISON_MOST_DETUNE_CENTS)) {
+        return;
+    }
+    if (!is_within(spread, 0.0f, 1.0f)) {
+        return;
+    }
+
+    UnisonSettings unison;
+    unison.copies = copies;
+    unison.detune_cents = detune_cents;
+    unison.spread = spread;
+    engine->conductor.set_unison(unison);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {

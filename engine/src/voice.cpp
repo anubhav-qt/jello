@@ -18,11 +18,30 @@ constexpr int volume_ease_ms = 10;
 // click. A starting value, to be tuned by ear in slice 5.
 constexpr int gap_ms = 5;
 
+// How far apart the copies start in their cycles when the engine starts:
+// the golden ratio's share of a cycle. Steps of it, wrapped back into one
+// cycle, never land close together, so the copies never start lined up.
+// Lined up, every note would start as one loud wave that then smears out.
+constexpr double copy_start_step = 0.6180339887498949;
+
+// How many cents make a half step, and so 12 times as many an octave.
+constexpr double cents_per_octave = 1200.0;
+
 // A note's pitch in Hz. Note 69 is A4 at 440 Hz. Every 12 notes is an octave,
 // and each octave up doubles the pitch.
 double note_to_frequency(int note) {
     double octaves_from_a4 = (note - 69) / 12.0;
     return 440.0 * std::pow(2.0, octaves_from_a4);
+}
+
+// Where copy `index` of `count` sits among them, from -1 (the lowest and
+// furthest left) to 1 (the highest and furthest right), evenly spaced. A
+// lone copy sits at 0, right on the note and in the middle.
+double place_among(int index, int count) {
+    if (count == 1) {
+        return 0.0;
+    }
+    return 2.0 * index / (count - 1) - 1.0;
 }
 
 // How hard the key was hit, turned into the envelope's peak, from 0 to 1.
@@ -39,23 +58,34 @@ Voice::Voice(int sample_rate)
       gap_samples_(sample_rate * gap_ms / 1000),
       envelope_(sample_rate),
       filter_(sample_rate),
-      volume_step_(1000.0f / static_cast<float>(sample_rate * volume_ease_ms)) {}
+      volume_step_(1000.0f / static_cast<float>(sample_rate * volume_ease_ms)) {
+    // The first copy starts at 0, so a note of one copy starts where it
+    // always did.
+    for (int i = 0; i < unison_most_copies; i++) {
+        double start = i * copy_start_step;
+        copies_[i].phase = start - std::floor(start);
+    }
+}
 
 void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave, Source source, int layer,
-                  float volume, const FilterTargets& filter, const FilterEnvelopeSettings& envelope) {
-    // Where the sound was heading next: the old wave, plus what is left of
-    // any earlier gap.
+                  float volume, const FilterTargets& filter, const FilterEnvelopeSettings& envelope,
+                  const UnisonSettings& unison) {
+    // Where the sound was heading next on each side: the old wave, plus what
+    // is left of any earlier gap.
     bool was_sounding = !is_free();
-    double old_height = height_now() + gap_now();
+    Stereo old_height = height_now();
+    Stereo old_gap = gap_now();
+    old_height.left += old_gap.left;
+    old_height.right += old_gap.right;
 
-    // The phase is left where it is, so a voice that is still sounding carries
-    // on from the same point in its wave instead of jumping.
+    // The phases are left where they are, so a voice that is still sounding
+    // carries on from the same point in its wave instead of jumping.
     note_ = note;
     press_number_ = press_number;
     source_ = source;
     layer_ = layer;
     wave_ = wave;
-    phase_step_ = note_to_frequency(note) / sample_rate_;
+    set_copies(note, unison);
     envelope_.start(velocity_to_peak(velocity));
     filter_.start(note, !was_sounding, filter, envelope);
 
@@ -63,10 +93,12 @@ void Voice::start(int note, int velocity, std::uint64_t press_number, Wave wave,
     // difference, so the sound carries on from where it was, then shrinks
     // away. A silent voice was heading nowhere, so it has no gap.
     if (was_sounding) {
-        gap_ = old_height - height_now();
+        Stereo new_height = height_now();
+        gap_.left = old_height.left - new_height.left;
+        gap_.right = old_height.right - new_height.right;
         gap_samples_left_ = gap_samples_;
     } else {
-        gap_ = 0.0;
+        gap_ = Stereo{};
         gap_samples_left_ = 0;
     }
 
@@ -129,39 +161,83 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
 
         // The wave goes through the filter before the envelope, so the
         // filter always hears the whole wave, however quiet the note is.
-        double exact_height = height_now() + gap_now();
-        double filtered = filter_.next(exact_height, filter);
-        float height = static_cast<float>(filtered);
+        Stereo exact_height = height_now();
+        Stereo gap = gap_now();
+        exact_height.left += gap.left;
+        exact_height.right += gap.right;
+        Stereo filtered = filter_.next(exact_height, filter);
         float loudness = envelope_.next();
-        float sample = height * loudness * voice_level;
-        sample = sample * volume_;
+
+        float left = static_cast<float>(filtered.left) * loudness * voice_level;
+        left = left * volume_;
+        float right = static_cast<float>(filtered.right) * loudness * voice_level;
+        right = right * volume_;
 
         // The gap shrinks a step each sample, until it is gone.
         if (gap_samples_left_ > 0) {
             gap_samples_left_ -= 1;
         }
 
-        // Move along the wave. Wrapping back to 0 keeps the number small and
-        // precise.
-        phase_ += phase_step_;
-        if (phase_ >= 1.0) {
-            phase_ -= 1.0;
+        // Move every copy along its wave. Wrapping back to 0 keeps the
+        // numbers small and precise.
+        for (int c = 0; c < copy_count_; c++) {
+            Copy& copy = copies_[c];
+            copy.phase += copy.phase_step;
+            if (copy.phase >= 1.0) {
+                copy.phase -= 1.0;
+            }
         }
 
-        out[2 * i] += sample;      // left
-        out[2 * i + 1] += sample;  // right
+        out[2 * i] += left;
+        out[2 * i + 1] += right;
     }
 }
 
-double Voice::height_now() const {
-    double height = wave_height(wave_, phase_, phase_step_);
-    return height * wave_trim(wave_);
+void Voice::set_copies(int note, const UnisonSettings& unison) {
+    copy_count_ = unison.copies;
+    copy_scale_ = 1.0 / std::sqrt(static_cast<double>(unison.copies));
+
+    double hz = note_to_frequency(note);
+    for (int i = 0; i < copy_count_; i++) {
+        Copy& copy = copies_[i];
+        double place = place_among(i, copy_count_);
+
+        // The lowest copy is tuned the detune below the note and the highest
+        // as far above.
+        double cents = place * unison.detune_cents;
+        double copy_hz = hz * std::exp2(cents / cents_per_octave);
+        copy.phase_step = copy_hz / sample_rate_;
+
+        // Below 0 is toward the left speaker, above 0 toward the right. Each
+        // side gets a square root, so the two squared always add up to 2:
+        // the copy is as loud wherever it sits, and in the middle each side
+        // gets exactly 1, as a voice did before unison.
+        double pan = place * unison.spread;
+        copy.left = std::sqrt(1.0 - pan);
+        copy.right = std::sqrt(1.0 + pan);
+    }
 }
 
-double Voice::gap_now() const {
+Stereo Voice::height_now() const {
+    Stereo sum;
+    for (int i = 0; i < copy_count_; i++) {
+        const Copy& copy = copies_[i];
+        double height = wave_height(wave_, copy.phase, copy.phase_step) * wave_trim(wave_);
+        sum.left += height * copy.left;
+        sum.right += height * copy.right;
+    }
+    sum.left *= copy_scale_;
+    sum.right *= copy_scale_;
+    return sum;
+}
+
+Stereo Voice::gap_now() const {
+    Stereo left_over;
     if (gap_samples_left_ == 0) {
-        return 0.0;
+        return left_over;
     }
     double share_left = static_cast<double>(gap_samples_left_) / gap_samples_;
-    return gap_ * share_left;
+    left_over.left = gap_.left * share_left;
+    left_over.right = gap_.right * share_left;
+    return left_over;
 }

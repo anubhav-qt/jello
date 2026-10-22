@@ -82,23 +82,30 @@ void LowPass::set(double cutoff_hz, double resonance, int sample_rate) {
     a3_ = g * a2_;
 }
 
-double LowPass::next(double input) {
+Stereo LowPass::next(Stereo input) {
+    Stereo output;
+    output.left = next_side(input.left, left_);
+    output.right = next_side(input.right, right_);
+    return output;
+}
+
+double LowPass::next_side(double input, Memory& memory) const {
     // How far the input is from where the second stage was.
-    double difference = input - memory2_;
+    double difference = input - memory.second;
 
     // The first stage passes a band around the cutoff, and the second turns
     // that into the low-pass: what comes out.
-    double band = a1_ * memory1_ + a2_ * difference;
-    double low = memory2_ + a2_ * memory1_ + a3_ * difference;
+    double band = a1_ * memory.first + a2_ * difference;
+    double low = memory.second + a2_ * memory.first + a3_ * difference;
 
-    memory1_ = 2.0 * band - memory1_;
-    memory2_ = 2.0 * low - memory2_;
+    memory.first = 2.0 * band - memory.first;
+    memory.second = 2.0 * low - memory.second;
     return low;
 }
 
 void LowPass::clear() {
-    memory1_ = 0.0;
-    memory2_ = 0.0;
+    left_ = Memory{};
+    right_ = Memory{};
 }
 
 VoiceFilter::VoiceFilter(int sample_rate)
@@ -135,7 +142,7 @@ void VoiceFilter::release() {
     envelope_.release();
 }
 
-double VoiceFilter::next(double wave, const FilterTargets& targets) {
+Stereo VoiceFilter::next(Stereo wave, const FilterTargets& targets) {
     // The note's cutoff follows middle C's, plus however far its filter
     // envelope has opened it right now.
     double opening = envelope_.next() * amount_;
@@ -159,6 +166,9 @@ double VoiceFilter::next(double wave, const FilterTargets& targets) {
     // The filter always runs, even when open, so turning it on mid-note
     // never starts it from nothing. Open, the share is 0 and the wave comes
     // out exactly as it went in.
-    double filtered = low_pass_.next(wave);
-    return wave * (1.0 - share) + filtered * share;
+    Stereo filtered = low_pass_.next(wave);
+    Stereo out;
+    out.left = wave.left * (1.0 - share) + filtered.left * share;
+    out.right = wave.right * (1.0 - share) + filtered.right * share;
+    return out;
 }

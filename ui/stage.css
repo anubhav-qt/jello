@@ -573,9 +573,9 @@
   color: var(--text);
 }
 
-/* The filter's dev panel (ui/FilterDevPanel.svelte) opens over Compose's
+/* The sound's dev panel (ui/SoundDevPanel.svelte) opens over Compose's
    tape, as wide as it, with the same 16px of room above. */
-.filter-panel {
+.sound-panel {
   position: absolute;
   z-index: 2;
   top: 16px;
@@ -586,17 +586,30 @@
   background: var(--panel-bg);
 }
 
-/* A row's name, then its sliders, five to a row. */
-.filter-rows {
-  display: grid;
-  grid-template-columns: 120px repeat(5, minmax(0, 1fr));
-  align-items: end;
-  gap: 8px 14px;
+/* Two rows of sliders. A third would not clear the keyboard in a short
+   window. */
+.sound-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-/* Each row's name starts a new row. */
-.filter-row-name {
-  grid-column: 1;
+/* A row's name, then its five sliders. */
+.sound-row {
+  display: grid;
+  grid-template-columns: 80px repeat(5, minmax(0, 1fr));
+  align-items: end;
+  gap: 14px;
+}
+
+/* The first row holds two groups: unison's three sliders, then the
+   filter's name and its two. */
+.sound-row.has-two-groups {
+  grid-template-columns: 80px repeat(3, minmax(0, 1fr)) auto repeat(2, minmax(0, 1fr));
+}
+
+/* A name too long for its 80px goes on two lines. */
+.sound-row-name {
   padding-bottom: 3px;
   font-size: 11px;
   letter-spacing: 0.06em;
@@ -605,7 +618,7 @@
 }
 
 /* A slider, with its name and readout over it. */
-.filter-field {
+.sound-field {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -613,26 +626,26 @@
 
 /* The name and readout stay on one line, so the panel stays short. In a
    narrow window the name ends in "..." before the readout runs over. */
-.filter-field-top {
+.sound-field-top {
   display: flex;
   justify-content: space-between;
   gap: 6px;
   font-size: 12px;
 }
 
-.filter-field-name {
+.sound-field-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-2);
 }
 
-.filter-field-value {
+.sound-field-value {
   flex: none;
   font-variant-numeric: tabular-nums;
 }
 
-.filter-field input {
+.sound-field input {
   width: 100%;
   margin: 0;
   accent-color: rgb(var(--ink));

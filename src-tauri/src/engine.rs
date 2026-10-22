@@ -105,6 +105,7 @@ unsafe extern "C" {
         sustain: f32,
         release_ms: c_int,
     );
+    fn jello_engine_set_unison(engine: *mut JelloEngine, copies: c_int, detune_cents: f32, spread: f32);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
@@ -197,6 +198,34 @@ pub const START_FILTER_ENVELOPE: FilterEnvelope = FilterEnvelope {
     decay_ms: 300,
     sustain: 0,
     release_ms: 300,
+};
+
+// Unison's ranges (`JELLO_UNISON_` in engine/include/jello_engine.h): the
+// most copies a note can have, and the most cents the highest is tuned
+// above the note.
+pub const UNISON_MOST_COPIES: u32 = 7;
+pub const UNISON_MOST_DETUNE_CENTS: u32 = 50;
+
+// Unison (docs/adr/0029-unison.md): how many copies of its wave play each
+// note, how far apart they are tuned and how far apart they sit between the
+// speakers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Unison {
+    // From 1, which is off, to UNISON_MOST_COPIES.
+    pub copies: u32,
+    // How far the highest copy is tuned above the note, and the lowest
+    // below it, in cents: hundredths of a half step.
+    pub detune_cents: u32,
+    // In percent: at 0 every copy plays in the middle, at 100 the lowest
+    // fully left and the highest fully right.
+    pub spread: u32,
+}
+
+// A new engine's unison: 1 copy, off. The C++ engine starts there too.
+pub const START_UNISON: Unison = Unison {
+    copies: 1,
+    detune_cents: 20,
+    spread: 100,
 };
 
 // `value` brought within `lowest` to `highest`. NaN, not a number at all,
@@ -365,6 +394,8 @@ pub struct Engine {
     // Where the filter and its envelope are.
     filter: Filter,
     filter_envelope: FilterEnvelope,
+    // The copies new notes are played by.
+    unison: Unison,
     // How many samples each chord of the song sent last plays, so the
     // engine's position in the song can be turned into a chord.
     song_lengths: Vec<u64>,
@@ -398,6 +429,7 @@ impl Engine {
             snap: true,
             filter: START_FILTER,
             filter_envelope: START_FILTER_ENVELOPE,
+            unison: START_UNISON,
             song_lengths: Vec::new(),
             layers: Vec::new(),
             looper_message: None,
@@ -998,6 +1030,26 @@ impl Engine {
         self.filter_envelope
     }
 
+    // Sets unison (`jello_engine_set_unison`) for the notes started after
+    // this. Values outside its ranges are brought within them.
+    pub fn set_unison(&mut self, unison: Unison) {
+        let copies = unison.copies.clamp(1, UNISON_MOST_COPIES);
+        let detune_cents = unison.detune_cents.min(UNISON_MOST_DETUNE_CENTS);
+        let spread = unison.spread.min(FULL_PERCENT);
+        let share = spread as f32 / FULL_PERCENT as f32;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_unison(self.raw, copies as c_int, detune_cents as f32, share) };
+        self.unison = Unison {
+            copies,
+            detune_cents,
+            spread,
+        };
+    }
+
+    pub fn unison(&self) -> Unison {
+        self.unison
+    }
+
     pub fn sample_rate(&self) -> u32 {
         // SAFETY: `raw` points to a live engine until Drop.
         let rate = unsafe { jello_engine_sample_rate(self.raw) };
@@ -1080,7 +1132,7 @@ mod tests {
     }
 
     // Renders `ms` milliseconds and keeps only the left channel. The right
-    // channel is the same for now.
+    // channel is the same unless unison spreads its copies apart.
     fn render_left(engine: &mut Engine, ms: u32) -> Vec<f32> {
         let frames = frames_in_ms(engine, ms);
         let samples = engine.render(frames);
@@ -1421,9 +1473,15 @@ mod tests {
     // its loudness. The fastest wave in `wave` sets that limit. The volume
     // moves at the same time, so half as much again is allowed on top.
     fn assert_no_click(engine: &Engine, wave: &[f32], fastest_hz: f64) {
+        assert_no_click_steeper(engine, wave, fastest_hz, 1.0);
+    }
+
+    // As assert_no_click, for sound that can move up to `steeper` times as
+    // fast as one note alone, like unison's copies added up.
+    fn assert_no_click_steeper(engine: &Engine, wave: &[f32], fastest_hz: f64, steeper: f32) {
         let samples_per_cycle = engine.sample_rate() as f64 / fastest_hz;
         let wave_step = (4.0 / samples_per_cycle) as f32;
-        let steepest = wave_step * full_level();
+        let steepest = wave_step * full_level() * steeper;
         let allowed = steepest * 1.5;
 
         let mut biggest_jump = 0.0;
@@ -5452,5 +5510,484 @@ mod tests {
         let engine = Engine::new().unwrap();
         assert_eq!(engine.filter(), filter(FILTER_OPEN_HZ, 0));
         assert_eq!(engine.filter_envelope(), filter_envelope(0.0, 5, 300, 0, 300));
+    }
+
+    // Unison (docs/adr/0029-unison.md). Every test above plays 1 copy, as a
+    // new engine starts, and hears exactly the sound the engine made before
+    // it had unison.
+
+    fn unison(copies: u32, detune_cents: u32, spread: u32) -> Unison {
+        Unison {
+            copies,
+            detune_cents,
+            spread,
+        }
+    }
+
+    // Renders `ms` milliseconds, both sides: left, right, left, ...
+    fn render_stereo(engine: &mut Engine, ms: u32) -> Vec<f32> {
+        let frames = frames_in_ms(engine, ms);
+        engine.render(frames)
+    }
+
+    // Renders `ms` milliseconds and splits it into the left side and the
+    // right.
+    fn render_sides(engine: &mut Engine, ms: u32) -> (Vec<f32>, Vec<f32>) {
+        let samples = render_stereo(engine, ms);
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for frame in samples.chunks(CHANNELS) {
+            left.push(frame[0]);
+            right.push(frame[1]);
+        }
+        (left, right)
+    }
+
+    // The pitch `cents` above `hz`, or below it when `cents` is below 0. A
+    // cent is a hundredth of a half step, so 1200 make an octave.
+    fn cents_above(hz: f64, cents: f64) -> f64 {
+        hz * 2.0_f64.powf(cents / 1200.0)
+    }
+
+    // Where copy `index` of `copies` sits, from -1 (the lowest and furthest
+    // left) to 1 (the highest and furthest right). Matches `place_among` in
+    // engine/src/voice.cpp.
+    fn place_among(index: u32, copies: u32) -> f64 {
+        2.0 * index as f64 / (copies - 1) as f64 - 1.0
+    }
+
+    // How much of copy `index` of `copies` goes to the left speaker and to
+    // the right, before the sum is turned down by the square root of the
+    // copies. Each is a square root, so the two squared add up to 2.
+    fn copy_sides(index: u32, copies: u32, spread: u32) -> (f64, f64) {
+        let pan = place_among(index, copies) * spread as f64 / 100.0;
+        ((1.0 - pan).sqrt(), (1.0 + pan).sqrt())
+    }
+
+    // The most times as fast as one note alone that `copies` copies spread
+    // `spread` percent apart can move on one side: when they line up, each
+    // moves by its share of that side. The two sides are mirror images, so
+    // the left tells for both.
+    fn steepest_side(copies: u32, spread: u32) -> f32 {
+        let mut shares = 0.0;
+        for index in 0..copies {
+            let (left, _) = copy_sides(index, copies, spread);
+            shares += left;
+        }
+        let steepest = shares / (copies as f64).sqrt();
+        steepest as f32
+    }
+
+    // How much louder `louder` is than `quieter`, in dB.
+    fn db_between(louder: f64, quieter: f64) -> f64 {
+        20.0 * (louder / quieter).log10()
+    }
+
+    #[test]
+    fn one_copy_ignores_detune_and_spread() {
+        // A lone copy sits right on the note, in the middle, so detune and
+        // spread change nothing: every sample, on both sides, is the same as
+        // on an engine whose unison was never touched, and the two sides are
+        // the same.
+        let mut touched = saw_engine();
+        let mut untouched = saw_engine();
+        touched.set_unison(unison(1, UNISON_MOST_DETUNE_CENTS, FULL_PERCENT));
+        for engine in [&mut touched, &mut untouched] {
+            engine.note_on(MIDDLE_C, VELOCITY);
+            engine.note_on(A4, VELOCITY);
+        }
+        let touched_sound = render_stereo(&mut touched, 500);
+        let untouched_sound = render_stereo(&mut untouched, 500);
+        assert!(touched_sound == untouched_sound, "detune or spread changed a lone copy");
+
+        let (left, right) = render_sides(&mut touched, 300);
+        assert!(left == right, "a lone copy's sides differ");
+    }
+
+    #[test]
+    fn two_copies_fully_apart_play_the_detune_below_and_above() {
+        // The lowest copy plays only on the left and the highest only on the
+        // right, so each side's pitch is one copy's. A sine has no harmonics
+        // to blur the measurement.
+        for detune in [10, UNISON_MOST_DETUNE_CENTS] {
+            let mut engine = Engine::new().unwrap();
+            engine.set_wave(Wave::Sine);
+            engine.set_unison(unison(2, detune, FULL_PERCENT));
+            engine.note_on(A4, VELOCITY);
+            render_sides(&mut engine, ATTACK_MS + DECAY_MS);
+            let (left, right) = render_sides(&mut engine, 1000);
+            assert_pitch(&engine, &left, cents_above(A4_HZ, -(detune as f64)));
+            assert_pitch(&engine, &right, cents_above(A4_HZ, detune as f64));
+        }
+    }
+
+    #[test]
+    fn seven_copies_sit_evenly_apart_in_pitch_and_between_the_speakers() {
+        // A held A5 sine in 7 copies, 50 cents and fully spread: copy n is
+        // tuned and placed at its even step from the lowest to the highest,
+        // and each side hears its share of it, over the square root of 7.
+        // Next to a lone copy's size, every copy's tone on each side is
+        // within 3% of what it should be. They are 8.5 Hz apart, so 4
+        // seconds keep each one's measurement clear of its neighbors'.
+        let copies = UNISON_MOST_COPIES;
+        let detune = UNISON_MOST_DETUNE_CENTS;
+        let mut lone = Engine::new().unwrap();
+        lone.set_wave(Wave::Sine);
+        lone.note_on(A5, VELOCITY);
+        render_sides(&mut lone, ATTACK_MS + DECAY_MS);
+        let (lone_left, _) = render_sides(&mut lone, 4000);
+        let lone_size = tone_size(&lone, &lone_left, 2.0 * A4_HZ);
+
+        let mut engine = Engine::new().unwrap();
+        engine.set_wave(Wave::Sine);
+        engine.set_unison(unison(copies, detune, FULL_PERCENT));
+        engine.note_on(A5, VELOCITY);
+        render_sides(&mut engine, ATTACK_MS + DECAY_MS);
+        let (left, right) = render_sides(&mut engine, 4000);
+
+        let scale = 1.0 / (copies as f64).sqrt();
+        for index in 0..copies {
+            let cents = place_among(index, copies) * detune as f64;
+            let hz = cents_above(2.0 * A4_HZ, cents);
+            let (left_share, right_share) = copy_sides(index, copies, FULL_PERCENT);
+            let sides = [(&left, left_share, "left"), (&right, right_share, "right")];
+            for (side, share, name) in sides {
+                let size = tone_size(&engine, side, hz) / lone_size;
+                let expected = share * scale;
+                assert!(
+                    (size - expected).abs() <= 0.03,
+                    "copy {index} at {hz} Hz was {size} on the {name}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn with_no_spread_both_speakers_play_the_same() {
+        // Every copy plays in the middle, so the two sides are the same, even
+        // through the filter: each side's filter hears the same and
+        // remembers the same.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(800.0, 60));
+        engine.set_unison(unison(UNISON_MOST_COPIES, 30, 0));
+        engine.note_on(MIDDLE_C, VELOCITY);
+        engine.note_on(E4, VELOCITY);
+        let (left, right) = render_sides(&mut engine, 500);
+        assert!(left == right, "the sides differ with no spread");
+
+        // Spread, the next notes' sides differ.
+        engine.set_unison(unison(UNISON_MOST_COPIES, 30, 50));
+        engine.note_on(G4, VELOCITY);
+        let (left, right) = render_sides(&mut engine, 500);
+        assert!(biggest_difference(&left, &right) > 0.01, "the sides are the same with spread");
+    }
+
+    #[test]
+    fn with_two_copies_fully_apart_each_side_is_a_lone_copy_through_the_filter() {
+        // At 0 cents, the lowest copy plays the note, alone on the left: its
+        // share of the side, the square root of 2, and the sum's, 1 over the
+        // square root of 2, make 1, so the left is a lone copy through its
+        // own filter, give or take the last digits of the math. The right is
+        // the other copy, the same wave started elsewhere in its cycle, so
+        // through its own filter it is just as loud.
+        let mut lone = saw_engine();
+        let mut pair = saw_engine();
+        pair.set_unison(unison(2, 0, FULL_PERCENT));
+        for engine in [&mut lone, &mut pair] {
+            engine.set_filter(filter(1000.0, 70));
+            engine.set_filter_envelope(filter_envelope(2.0, 5, 300, 30, 300));
+            engine.note_on(A4, VELOCITY);
+        }
+        let (lone_left, _) = render_sides(&mut lone, 1000);
+        let (left, right) = render_sides(&mut pair, 1000);
+        assert_nearly_same_sound(&left, &lone_left, 0.00001);
+        assert_within_percent(rms(&right) as f32, rms(&left) as f32, 1.0);
+    }
+
+    #[test]
+    fn copies_never_start_lined_up() {
+        // Each copy starts at its own point in its cycle, so a 7-copy saw's
+        // first 20 ms never peak above 1.5 times a lone copy's. Lined up,
+        // they would peak at about the square root of 7, 2.65 times.
+        let mut lone = saw_engine();
+        lone.note_on(A4, VELOCITY);
+        let lone_start = render_left(&mut lone, 20);
+
+        let mut engine = saw_engine();
+        engine.set_unison(unison(UNISON_MOST_COPIES, 20, 0));
+        engine.note_on(A4, VELOCITY);
+        let start = render_left(&mut engine, 20);
+        assert!(
+            peak(&start) < peak(&lone_start) * 1.5,
+            "the copies started at {}, a lone copy at {}",
+            peak(&start),
+            peak(&lone_start)
+        );
+    }
+
+    #[test]
+    fn seven_copies_are_as_loud_as_one_within_1_db() {
+        // Copies drift in and out of step, so on average they add up to the
+        // square root of how many there are, which the engine turns back
+        // down. Spread, each copy is as loud wherever it sits. Over 3 seconds
+        // of a held A4 saw, both sides together, 7 copies are within 1 dB of
+        // a lone copy.
+        let mut lone = saw_engine();
+        lone.note_on(A4, VELOCITY);
+        render_sides(&mut lone, ATTACK_MS + DECAY_MS);
+        let lone_loudness = rms(&render_stereo(&mut lone, 3000));
+
+        for (detune, spread) in [(20, 0), (UNISON_MOST_DETUNE_CENTS, FULL_PERCENT)] {
+            let mut engine = saw_engine();
+            engine.set_unison(unison(UNISON_MOST_COPIES, detune, spread));
+            engine.note_on(A4, VELOCITY);
+            render_sides(&mut engine, ATTACK_MS + DECAY_MS);
+            let loudness = rms(&render_stereo(&mut engine, 3000));
+            let db = db_between(loudness, lone_loudness);
+            assert!(db.abs() < 1.0, "7 copies at {detune} cents and {spread}% were {db} dB off");
+        }
+    }
+
+    #[test]
+    fn a_new_note_takes_over_a_unison_voice_without_a_click() {
+        // As a_new_note_takes_over_the_oldest_held_one_without_a_click, with
+        // middle C in 7 copies spread fully apart, taken over by C5 in 3.
+        // Each side has a gap of its own, so neither clicks. Copies added up
+        // move faster than one note alone, so the limit is as much faster as
+        // they can be, lined up.
+        let steeper = steepest_side(UNISON_MOST_COPIES, FULL_PERCENT);
+        let fastest_hz = cents_above(C5_HZ, 20.0);
+        for extra_ms in 0..10 {
+            let mut engine = Engine::new().unwrap();
+            engine.set_unison(unison(UNISON_MOST_COPIES, 20, FULL_PERCENT));
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
+            engine.note_on(MIDDLE_C, VELOCITY);
+            press_quiet_notes(&mut engine, VOICE_COUNT - 1);
+            let (mut left, mut right) = render_sides(&mut engine, 500 + extra_ms);
+
+            engine.set_unison(unison(3, 20, FULL_PERCENT));
+            engine.note_on(C5, VELOCITY);
+            let (left_after, right_after) = render_sides(&mut engine, 1000);
+            left.extend(left_after);
+            right.extend(right_after);
+            assert_no_click_steeper(&engine, &left, fastest_hz, steeper);
+            assert_no_click_steeper(&engine, &right, fastest_hz, steeper);
+        }
+    }
+
+    #[test]
+    fn the_filter_closes_on_both_sides_and_opened_leaves_both_as_they_were() {
+        // As an_open_filter_leaves_the_sound_exactly_as_it_was, with 7
+        // copies spread fully apart, so the two sides differ. Closed, the
+        // filter changes both. Opened again, once the glide is over, both are
+        // exactly as on an engine whose filter was never touched.
+        let mut touched = saw_engine();
+        let mut untouched = saw_engine();
+        for engine in [&mut touched, &mut untouched] {
+            engine.set_unison(unison(UNISON_MOST_COPIES, 20, FULL_PERCENT));
+            engine.note_on(A4, VELOCITY);
+            render_sides(engine, 100);
+        }
+
+        touched.set_filter(filter(1000.0, 50));
+        let (closed_left, closed_right) = render_sides(&mut touched, 100);
+        let (plain_left, plain_right) = render_sides(&mut untouched, 100);
+        assert!(biggest_difference(&closed_left, &plain_left) > 0.01);
+        assert!(biggest_difference(&closed_right, &plain_right) > 0.01);
+
+        touched.set_filter(START_FILTER);
+        render_sides(&mut touched, GLIDE_MS);
+        render_sides(&mut untouched, GLIDE_MS);
+        let opened = render_stereo(&mut touched, 500);
+        let plain = render_stereo(&mut untouched, 500);
+        assert!(opened == plain, "the opened filter still changed the sound");
+    }
+
+    #[test]
+    fn a_held_note_keeps_its_copies_and_the_next_note_gets_the_new_ones() {
+        // Like the wave, unison reaches the notes started after it. The held
+        // A4 sounds exactly as on an engine whose unison never changed; E4,
+        // pressed after, is played by the new copies, spread apart.
+        let mut changed = saw_engine();
+        let mut unchanged = saw_engine();
+        for engine in [&mut changed, &mut unchanged] {
+            engine.note_on(A4, VELOCITY);
+            render_sides(engine, 100);
+        }
+        changed.set_unison(unison(UNISON_MOST_COPIES, 30, FULL_PERCENT));
+        let held = render_stereo(&mut changed, 300);
+        let plain = render_stereo(&mut unchanged, 300);
+        assert!(held == plain, "the held note changed");
+
+        for engine in [&mut changed, &mut unchanged] {
+            engine.note_on(E4, VELOCITY);
+        }
+        let (left, right) = render_sides(&mut changed, 300);
+        let (plain_left, _) = render_sides(&mut unchanged, 300);
+        assert!(biggest_difference(&left, &plain_left) > 0.01, "E4 kept the old copies");
+        assert!(biggest_difference(&left, &right) > 0.01, "E4's copies were not spread");
+    }
+
+    #[test]
+    fn a_silent_voice_keeps_nothing_of_its_last_note_s_filter_on_either_side() {
+        // A4 spread apart through a closed filter leaves each side's filter
+        // remembering a different wave when it falls silent. The next A4 on
+        // that voice has no spread, so both sides hear the same wave, and
+        // with nothing left over they play exactly the same.
+        let mut engine = saw_engine();
+        engine.set_filter(filter(400.0, 60));
+        engine.set_unison(unison(2, 20, FULL_PERCENT));
+        engine.note_on(A4, VELOCITY);
+        render_sides(&mut engine, 300);
+        engine.note_off(A4);
+        render_sides(&mut engine, RELEASE_MS + 100);
+
+        engine.set_unison(unison(2, 20, 0));
+        engine.note_on(A4, VELOCITY);
+        let (left, right) = render_sides(&mut engine, 300);
+        assert!(left == right, "a side kept its last note's filter");
+    }
+
+    #[test]
+    fn a_layer_s_volume_turns_down_both_speakers() {
+        // A loop of A4 by 2 copies fully apart, so each side plays a copy of
+        // its own. Turned down to half, both sides play exactly half of what
+        // they play at full volume.
+        let loop_a4 = |percent: u32| {
+            let notes = [(0, NoteOn(A4)), (90_000, NoteOff(A4))];
+            let mut steps = vec![(0, PressLooper), (RECORDING_STARTS + 80_000, PressLooper)];
+            steps.extend(moved(&notes, RECORDING_STARTS));
+            steps.push((LOOP_STARTS, Volume(1, percent)));
+            let mut engine = engine_without_snap();
+            engine.set_unison(unison(2, 20, FULL_PERCENT));
+            play(&mut engine, &steps, LOOP_STARTS + 20_000);
+            render_sides(&mut engine, 300)
+        };
+        let (left, right) = loop_a4(FULL_VOLUME);
+        let (half_left, half_right) = loop_a4(50);
+
+        assert!(peak(&right) > 0.01, "the loop is silent");
+        for i in 0..left.len() {
+            assert_eq!(half_left[i], left[i] * 0.5, "left sample {i}");
+            assert_eq!(half_right[i], right[i] * 0.5, "right sample {i}");
+        }
+    }
+
+    #[test]
+    fn unison_sounds_the_same_however_the_sound_is_asked_for() {
+        // As the_same_notes_always_make_the_same_sound, both sides, with 7
+        // copies spread apart through the filter, a note taken over by fewer
+        // copies, and a let go.
+        let mut whole = saw_engine();
+        let mut chunked = saw_engine();
+        for engine in [&mut whole, &mut chunked] {
+            engine.set_filter(filter(700.0, 40));
+            engine.set_unison(unison(UNISON_MOST_COPIES, 35, 80));
+            engine.note_on(MIDDLE_C, VELOCITY);
+        }
+        let mut whole_sound = render_stereo(&mut whole, 300);
+        let mut chunked_sound = Vec::new();
+        for _ in 0..30 {
+            chunked_sound.extend(render_stereo(&mut chunked, 10));
+        }
+
+        for engine in [&mut whole, &mut chunked] {
+            engine.set_unison(unison(4, 10, 30));
+            engine.note_on(MIDDLE_C, VELOCITY);
+        }
+        whole_sound.extend(render_stereo(&mut whole, 300));
+        for _ in 0..30 {
+            chunked_sound.extend(render_stereo(&mut chunked, 10));
+        }
+
+        whole.note_off(MIDDLE_C);
+        chunked.note_off(MIDDLE_C);
+        whole_sound.extend(render_stereo(&mut whole, 400));
+        for _ in 0..40 {
+            chunked_sound.extend(render_stereo(&mut chunked, 10));
+        }
+
+        assert!(whole_sound == chunked_sound, "the two engines sounded different");
+    }
+
+    // A held A4 saw in 3 copies, 25 cents apart and spread halfway, after
+    // `send` asks the engine for something directly.
+    fn unison_a4_after(send: impl Fn(&Engine)) -> Vec<f32> {
+        let mut engine = saw_engine();
+        engine.set_unison(unison(3, 25, 50));
+        send(&engine);
+        engine.note_on(A4, VELOCITY);
+        render_stereo(&mut engine, 300)
+    }
+
+    #[test]
+    fn odd_unison_values_change_nothing() {
+        // Asked directly, the engine ignores values outside unison's ranges,
+        // and NaN. Each odd value goes to an engine of its own, as in
+        // odd_filter_values_change_nothing.
+        let plain = unison_a4_after(|_| {});
+
+        let odd_values = [
+            (0, 25.0, 0.5),
+            (-1, 25.0, 0.5),
+            (8, 25.0, 0.5),
+            (3, -0.1, 0.5),
+            (3, 50.1, 0.5),
+            (3, f32::NAN, 0.5),
+            (3, 25.0, -0.1),
+            (3, 25.0, 1.1),
+            (3, 25.0, f32::NAN),
+        ];
+        for (copies, detune_cents, spread) in odd_values {
+            let odd = unison_a4_after(|engine| {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_unison(engine.raw, copies, detune_cents, spread) };
+            });
+            assert!(
+                odd == plain,
+                "{copies} copies at {detune_cents} cents and {spread} changed the sound"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_brings_unison_values_within_their_ranges() {
+        // Too many copies, too much detune and too much spread are sent as
+        // the most of each, so they sound the same as the most. The engine
+        // takes those edges: they don't sound like a lone copy.
+        let mut over = saw_engine();
+        over.set_unison(unison(12, 80, 150));
+        let most = unison(UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS, FULL_PERCENT);
+        assert_eq!(over.unison(), most);
+        let mut edges = saw_engine();
+        edges.set_unison(most);
+        let mut lone = saw_engine();
+        for engine in [&mut over, &mut edges, &mut lone] {
+            engine.note_on(A4, VELOCITY);
+        }
+        let over_sound = render_stereo(&mut over, 300);
+        let edges_sound = render_stereo(&mut edges, 300);
+        let lone_sound = render_stereo(&mut lone, 300);
+        assert!(over_sound == edges_sound, "too much was not sent as the most");
+        assert!(biggest_difference(&edges_sound, &lone_sound) > 0.01, "the engine refused the most");
+
+        // No copies at all is sent as 1. The lowest detune and spread are
+        // taken too: 7 copies at 0 cents and 0% don't sound like a lone copy.
+        let mut engine = saw_engine();
+        engine.set_unison(unison(0, 0, 0));
+        assert_eq!(engine.unison(), unison(1, 0, 0));
+        engine.set_unison(unison(UNISON_MOST_COPIES, 0, 0));
+        let mut lone = saw_engine();
+        engine.note_on(A4, VELOCITY);
+        lone.note_on(A4, VELOCITY);
+        let lowest_sound = render_stereo(&mut engine, 300);
+        let lone_sound = render_stereo(&mut lone, 300);
+        assert!(biggest_difference(&lowest_sound, &lone_sound) > 0.01, "the engine refused the lowest");
+    }
+
+    #[test]
+    fn a_new_engine_starts_with_one_copy() {
+        let engine = Engine::new().unwrap();
+        assert_eq!(engine.unison(), unison(1, 20, 100));
     }
 }
