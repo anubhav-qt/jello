@@ -16,6 +16,8 @@ fn build_engine() {
         .file("../engine/src/envelope.cpp")
         .file("../engine/src/filter.cpp")
         .file("../engine/src/wave.cpp")
+        .file("../engine/src/oscillator.cpp")
+        .file("../engine/src/noise.cpp")
         .file("../engine/src/lfo.cpp")
         .file("../engine/src/routing.cpp")
         .file("../engine/src/voice.cpp")

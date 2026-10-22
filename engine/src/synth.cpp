@@ -122,10 +122,10 @@ void Synth::start_note(int note, int velocity, Source source, int layer) {
     voice->start(note, velocity, start, volume, filter_targets_, note_sound_, routing_);
 }
 
-void Synth::set_wave(Wave wave) {
-    // Only notes started from here on play it. Each voice keeps the wave
-    // its note started with.
-    note_sound_.wave = wave;
+void Synth::set_oscillator(int index, const OscillatorSettings& oscillator) {
+    // Only notes started from here on play it. Each voice keeps the
+    // oscillators its note started with.
+    note_sound_.oscillators[index] = oscillator;
 }
 
 void Synth::set_filter(const FilterSettings& settings) {
@@ -138,7 +138,7 @@ void Synth::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
 }
 
 void Synth::set_unison(const UnisonSettings& unison) {
-    // Like the wave, only notes started from here on hear it. Each voice
+    // Like the oscillators, only notes started from here on hear it. Each voice
     // keeps the copies its note started with.
     note_sound_.unison = unison;
 }

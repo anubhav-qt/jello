@@ -1,6 +1,6 @@
-<!-- The sound panel's Notes page (docs/design.md#sound-panel): the wave, the
-     loudness envelope, unison, the tuning and the vibrato key's times. All
-     of them start with the next key pressed. -->
+<!-- The sound panel's Notes page (docs/design.md#sound-panel): the loudness
+     envelope, unison, the tuning and the vibrato key's times. All of them
+     start with the next key pressed. -->
 <script lang="ts">
   import {
     evenScale,
@@ -22,7 +22,6 @@
     type SoundView,
     type Unison,
   } from "./sound";
-  import { clickThenLetGo } from "./dom";
   import SoundHandle from "./SoundHandle.svelte";
   import SoundValue from "./SoundValue.svelte";
 
@@ -34,14 +33,6 @@
   }
 
   let { sound, picked, onPick, send }: Props = $props();
-
-  // The four waves, each with a small drawing of it, 44 by 22.
-  const WAVES = [
-    { name: "sine", glyph: "M2 11 C 7 -3, 12 -3, 17 11 S 27 25, 32 11 S 37 2, 42 4" },
-    { name: "triangle", glyph: "M2 11 L 9 2 L 22 20 L 35 2 L 42 11" },
-    { name: "square", glyph: "M2 20 L 2 2 L 22 2 L 22 20 L 42 20 L 42 2" },
-    { name: "saw", glyph: "M2 20 L 22 2 L 22 20 L 42 2 L 42 20" },
-  ];
 
   // The loudness envelope as it is now, with `change` made to it.
   function sendLoudness(change: Partial<LoudnessEnvelope>) {
@@ -216,27 +207,7 @@
   let oneCopy = $derived(sound.unison.copies === 1);
 </script>
 
-<div class="sound-modules" style:grid-template-columns="186fr 341fr 251fr 209fr">
-  <div class="sound-module">
-    <div class="sound-module-top">
-      <span class="sound-label">Wave</span>
-      <span class="sound-key-chip">\</span>
-    </div>
-    <div class="sound-waves">
-      {#each WAVES as wave (wave.name)}
-        <button
-          type="button"
-          class="sound-wave"
-          class:is-chosen={sound.wave === wave.name}
-          onclick={(event) => clickThenLetGo(event, () => send.setWave(wave.name))}
-        >
-          <svg viewBox="0 0 44 22"><path class="sound-lit" d={wave.glyph} /></svg>
-          {wave.name}
-        </button>
-      {/each}
-    </div>
-  </div>
-
+<div class="sound-modules" style:grid-template-columns="341fr 251fr 209fr">
   <div class="sound-module">
     <div class="sound-module-top">
       <span class="sound-label">Loudness</span>

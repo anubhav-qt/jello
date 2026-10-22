@@ -28,7 +28,7 @@ bool jello_engine_start_audio(JelloEngine* engine);
 void jello_engine_stop_audio(JelloEngine* engine);
 
 // The functions from here to jello_engine_set_vibrato_key are for playing
-// notes, picking their wave, running the click and the looper, playing
+// notes, setting their oscillators, running the click and the looper, playing
 // Compose's song, moving the filter, setting unison, the loudness envelope,
 // key tracking and tuning, and the LFOs, the routing list and the vibrato
 // key. They are safe to call while the audio is running,
@@ -47,18 +47,37 @@ void jello_engine_note_off(JelloEngine* engine, int note);
 // Lets go of every note.
 void jello_engine_all_notes_off(JelloEngine* engine);
 
-// The waves a note can play.
+// Oscillators (docs/adr/0035-oscillators-with-kinds.md): every note is
+// played by JELLO_OSCILLATOR_COUNT of them at once, counted from 0, added up
+// before the filter. Each is tuned from the note by up to
+// JELLO_OSCILLATOR_MOST_OCTAVES octaves, JELLO_OSCILLATOR_MOST_HALF_STEPS
+// half steps and JELLO_OSCILLATOR_MOST_CENTS cents, either way.
 enum {
-    JELLO_WAVE_SINE = 0,
-    JELLO_WAVE_TRIANGLE = 1,
-    JELLO_WAVE_SQUARE = 2,
-    JELLO_WAVE_SAW = 3,
+    JELLO_OSCILLATOR_COUNT = 3,
+    JELLO_OSCILLATOR_MOST_OCTAVES = 3,
+    JELLO_OSCILLATOR_MOST_HALF_STEPS = 12,
+    JELLO_OSCILLATOR_MOST_CENTS = 100,
 };
 
-// Makes notes sent after this play `wave`, one of the JELLO_WAVE_ numbers
-// above. Notes sent before it keep their wave, even while they ring on. Any
-// other number is ignored. A new engine starts on JELLO_WAVE_TRIANGLE.
-void jello_engine_set_wave(JelloEngine* engine, int wave);
+// What an oscillator can play: the four waves, and noise, a new random
+// height every sample, which has no pitch.
+enum {
+    JELLO_KIND_SINE = 0,
+    JELLO_KIND_TRIANGLE = 1,
+    JELLO_KIND_SQUARE = 2,
+    JELLO_KIND_SAW = 3,
+    JELLO_KIND_NOISE = 4,
+};
+
+// Makes notes sent after this play oscillator `index` as `kind`, one of the
+// JELLO_KIND_ numbers above, at `level`, from 0 (silent) to 1, tuned
+// `octaves`, `half_steps` and `cents` from the note. Notes sent before it
+// keep theirs, even while they ring on. An index or any value outside the
+// ranges above is ignored. A new engine plays oscillator 0 as
+// JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level 0,
+// all tuned right on the note.
+void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
+                                 float cents);
 
 // Starts the click: a tick on every beat, higher on the first beat of each
 // bar. Its first tick is beat 1 of a bar. Does nothing if the click is
@@ -364,10 +383,12 @@ enum {
 };
 
 // What a connection moves, each in its own units, up to the amount given
-// either way. The ones before JELLO_TARGET_WAVE move live, while a note
-// sounds; the rest are read once as each note starts. LFO number n's speed
-// (from 0) is JELLO_TARGET_LFO_1_SPEED + n. Connections to one target add
-// up, and the sum is kept within the target's own range.
+// either way. The ones before JELLO_TARGET_OSCILLATOR_1_KIND move live,
+// while a note sounds; the rest are read once as each note starts. LFO
+// number n's speed (from 0) is JELLO_TARGET_LFO_1_SPEED + n, and oscillator
+// number n's level, pitch and kind are JELLO_TARGET_OSCILLATOR_1_LEVEL + n
+// and so on. Connections to one target add up, and the sum is kept within
+// the target's own range.
 enum {
     // Cents, up to 4800.
     JELLO_TARGET_PITCH = 0,
@@ -394,18 +415,21 @@ enum {
     // Octaves, up to 14: 1 is twice as fast. A shared LFO's speed is only
     // moved by shared LFOs, in Hz or beats.
     JELLO_TARGET_LFO_1_SPEED = 11,
-    // Whole steps through sine, triangle, square and saw, and round again,
-    // up to 3.
-    JELLO_TARGET_WAVE = 19,
+    // A share, up to 1: 1 moves it from silent to full.
+    JELLO_TARGET_OSCILLATOR_1_LEVEL = 19,
+    // Cents, up to 4800.
+    JELLO_TARGET_OSCILLATOR_1_PITCH = 22,
+    // Whole steps through the JELLO_KIND_ kinds, and round again, up to 4.
+    JELLO_TARGET_OSCILLATOR_1_KIND = 25,
     // Whole copies, up to 6.
-    JELLO_TARGET_COPIES = 20,
+    JELLO_TARGET_COPIES = 28,
     // Octaves of time, up to 14: 1 is twice as long.
-    JELLO_TARGET_LOUDNESS_ATTACK = 21,
-    JELLO_TARGET_LOUDNESS_DECAY = 22,
-    JELLO_TARGET_LOUDNESS_RELEASE = 23,
-    JELLO_TARGET_FILTER_ATTACK = 24,
-    JELLO_TARGET_FILTER_DECAY = 25,
-    JELLO_TARGET_FILTER_RELEASE = 26,
+    JELLO_TARGET_LOUDNESS_ATTACK = 29,
+    JELLO_TARGET_LOUDNESS_DECAY = 30,
+    JELLO_TARGET_LOUDNESS_RELEASE = 31,
+    JELLO_TARGET_FILTER_ATTACK = 32,
+    JELLO_TARGET_FILTER_DECAY = 33,
+    JELLO_TARGET_FILTER_RELEASE = 34,
 };
 
 // One connection of the routing list: `source` moves `target` by `amount`,
@@ -420,7 +444,8 @@ typedef struct JelloConnection {
     // Both ways, the target moves from -amount to amount; one way, from 0
     // to amount.
     bool one_way;
-    // For JELLO_TARGET_PITCH only: the move is rounded to whole half steps.
+    // For JELLO_TARGET_PITCH and the oscillators' pitches only: the move is
+    // rounded to whole half steps.
     bool snap;
     // Another JELLO_SOURCE_ the amount is multiplied by, read one way, from
     // 0 (no move) to 1 (the full amount). JELLO_SOURCE_NONE leaves it full.

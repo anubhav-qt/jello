@@ -11,6 +11,7 @@ import type {
   FilterEnvelope,
   LfoView,
   LoudnessEnvelope,
+  Oscillator,
   SoundSender,
   SoundView,
   Unison,
@@ -26,7 +27,7 @@ interface StageControls {
   keyUp(code: string): void;
   // Every key came up at once.
   releaseAll(): void;
-  // The wave new notes play, the tempo and what the looper is doing.
+  // The song's sound, the tempo and what the looper is doing.
   showSound(view: SoundView): void;
   // A message for the player, like where a file was saved.
   showStatus(message: string): void;
@@ -129,8 +130,8 @@ async function askForSound() {
 }
 
 // `key` is the key's place on the keyboard, like "KeyQ". Rust decides what it
-// does, and answers with the wave new notes play, the tempo and what the
-// looper is doing.
+// does, and answers with the song's sound, the tempo and what the looper is
+// doing.
 async function pressKey(key: string) {
   try {
     const view = await invoke<SoundView>("press_key", { key });
@@ -156,13 +157,14 @@ async function releaseAllNotes() {
   }
 }
 
-// The top bar's wave button does what the \ key does.
-async function switchWave() {
+// The top bar's wave button does what the \ key does: it steps the first
+// oscillator's kind.
+async function switchKind() {
   try {
-    const view = await invoke<SoundView>("switch_wave");
+    const view = await invoke<SoundView>("switch_kind");
     showSound(view);
   } catch (error) {
-    showStatus(`Could not switch the wave: ${error}`);
+    showStatus(`Could not switch the kind: ${error}`);
   }
 }
 
@@ -187,13 +189,21 @@ async function setLayerVolume(layer: number, volume: number) {
   }
 }
 
-// The sound panel's wave tiles set the wave new notes play, like "saw".
-async function setWave(wave: string) {
+// The sound panel's Oscillators page sets oscillator `index`, from 0, for
+// the next notes.
+async function setOscillator(index: number, oscillator: Oscillator) {
   try {
-    const view = await invoke<SoundView>("set_wave", { wave });
+    const view = await invoke<SoundView>("set_oscillator", {
+      index,
+      kind: oscillator.kind,
+      level: oscillator.level,
+      octaves: oscillator.octaves,
+      halfSteps: oscillator.halfSteps,
+      cents: oscillator.cents,
+    });
     showSound(view);
   } catch (error) {
-    showStatus(`Could not set the wave: ${error}`);
+    showStatus(`Could not set oscillator ${index + 1}: ${error}`);
   }
 }
 
@@ -494,7 +504,7 @@ window.addEventListener("blur", () => {
 
 // What the sound panel sends, each in order with the keys.
 const soundSender: SoundSender = {
-  setWave: (wave) => sendInOrder(() => setWave(wave)),
+  setOscillator: (index, oscillator) => sendInOrder(() => setOscillator(index, oscillator)),
   setLoudnessEnvelope: (envelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
   setFilter: (cutoffHz, resonance) => sendInOrder(() => setFilter(cutoffHz, resonance)),
   setFilterEnvelope: (envelope) => sendInOrder(() => setFilterEnvelope(envelope)),
@@ -521,7 +531,7 @@ async function start() {
     props: {
       platform: detectPlatform(),
       layout,
-      onWaveClick: () => sendInOrder(switchWave),
+      onWaveClick: () => sendInOrder(switchKind),
       onRenderClick: renderWav,
       onSnapClick: () => sendInOrder(switchSnap),
       onVolumeChange: (layer: number, volume: number) => sendInOrder(() => setLayerVolume(layer, volume)),

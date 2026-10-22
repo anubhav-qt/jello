@@ -50,7 +50,10 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    the vibrato key ([ADR 0032](adr/0032-the-vibrato-key.md)); see
    [Engine](#engine). The sound panel in Compose sets the profile
    ([ADR 0033](adr/0033-the-sound-panel.md)); it replaced the dev panel,
-   and every other placeholder screen goes the same way.
+   and every other placeholder screen goes the same way. Then 3
+   oscillators per note, each a sine, triangle, square, saw or noise with
+   its own level and tuning
+   ([ADR 0035](adr/0035-oscillators-with-kinds.md)).
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Guided composing came
    early: the Compose tab already builds a progression with guidance
@@ -201,17 +204,18 @@ and being built.
 
 - **C API:** `engine/include/jello_engine.h` is the only thing Rust sees:
   create, destroy, start and stop audio, note on, note off, all notes off,
-  set wave, start click, stop click, set tempo, press looper, clear loop,
-  set snap, looper status (with its place), next loop change, plan loop,
-  play song, stop song, song position, set filter, set filter envelope,
-  set unison, set loudness envelope, set key tracking, set tuning, set LFO,
-  set connection, set vibrato key times, set vibrato key, sample rate,
-  render.
+  set oscillator, start click, stop click, set tempo, press looper, clear
+  loop, set snap, looper status (with its place), next loop change, plan
+  loop, play song, stop song, song position, set filter, set filter
+  envelope, set unison, set loudness envelope, set key tracking, set tuning,
+  set LFO, set connection, set vibrato key times, set vibrato key, sample
+  rate, render.
 - **Files:**
   - `engine.cpp`: the C API and all device code.
   - `mailbox.h`: carries messages from one thread to another without
-    locks. One carries note, wave, click, tempo, looper, snap, song, sound,
-    LFO, connection and vibrato key messages to the audio thread; another
+    locks. One carries note, oscillator, click, tempo, looper, snap, song,
+    sound, LFO, connection and vibrato key messages to the audio thread;
+    another
     carries the loop's changes back to Rust.
     Sending says whether the message got in, and the sender can ask how
     much room is left.
@@ -227,8 +231,8 @@ and being built.
     and puts the sum through the soft clip, the last step before the
     speakers.
   - `synth.*`: the instrument. It adds up its voices, picks the voice for
-    each new note, and remembers the wave, filter envelope and unison new
-    notes play. It holds the routing list and works it out every 32
+    each new note, and remembers the oscillators, filter envelope and
+    unison new notes play. It holds the routing list and works it out every 32
     samples (see LFOs and the routing list below). It adds into the
     chunk instead of overwriting it, so the conductor can render it in
     pieces.
@@ -250,17 +254,20 @@ and being built.
     sample the engine makes, and knows which sample each beat starts on.
   - `click.*`: the click, a short tick on every beat while it is on, or
     while the looper counts in or records.
-  - `voice.*`: plays one note on one of the four waves, by up to 7 copies
-    of it, in stereo (see Unison below). The wave trim, the
-    velocity curve and the voice level set how loud it is. It knows who
-    started its note: the player (live), the looper or the song player,
-    and for the looper, which layer. A loop note also plays at its layer's
-    volume (see [Looper](#looper)). Everything a note starts with and keeps
-    until it ends comes in one `NoteSound`: its wave, loudness envelope,
-    filter envelope, key tracking, copies and tuning. The synth keeps one
-    for new notes, and each setter changes its part.
+  - `voice.*`: plays one note on its 3 oscillators, by up to 7 copies of
+    them, in stereo (see Oscillators and Unison below). The trims, the
+    oscillators' levels, the velocity curve and the voice level set how loud
+    it is. It knows who started its note: the player (live), the looper or
+    the song player, and for the looper, which layer. A loop note also plays
+    at its layer's volume (see [Looper](#looper)). Everything a note starts
+    with and keeps until it ends comes in one `NoteSound`: its oscillators,
+    loudness envelope, filter envelope, key tracking, copies and tuning. The
+    synth keeps one for new notes, and each setter changes its part.
+  - `oscillator.*`: the oscillators' kinds, settings and ranges, and where
+    a new song's start.
   - `wave.*`: the four wave shapes, with their jumps and corners rounded
     off, and the trims that make them equally loud.
+  - `noise.*`: white noise, a new random height every sample, and its trim.
   - `unison.h`: unison's controls and their ranges.
   - `stereo.h`: one moment of sound for both speakers.
   - `filter.*`: each voice's low-pass filter, one per speaker, its filter
@@ -294,10 +301,35 @@ and being built.
   how the engine knows which note is oldest. A voice stops on the sample it
   falls silent, so the point in its wave where its next note starts never
   depends on how the sound was split into chunks.
+- **Oscillators** ([ADR 0035](adr/0035-oscillators-with-kinds.md)): every
+  note is played by 3 oscillators, added up before the filter. Each has a
+  kind, a level from 0 to 100%, and a tuning from the note: up to 3
+  octaves, 12 half steps and 100 cents either way, added up in cents.
+  - The kinds are sine, triangle, square, saw and noise, in that order, so
+    the routing list steps through them round and round. Later kinds, like
+    wavetables, come after noise.
+  - A copy's oscillators all start their cycles together when the engine
+    starts, so like waves at the same pitch add up instead of cancelling:
+    two halves of a triangle are exactly one whole.
+  - An oscillator at 0% is skipped, and its level glides in straight lines
+    like the other live settings. A new engine plays oscillator 1 as a
+    triangle at 100% and the other two as silent triangles, all on the
+    note, so it sounds exactly as one wave did, sample for sample.
+  - A change only reaches notes started after it: each voice keeps the
+    oscillators its note started with. A voice taken over on new kinds
+    glides across with the gap, like any other takeover.
+  - The C API ignores an index or value out of range; Rust brings its own
+    within them.
+- **Noise:** a new random height every sample, spread evenly from -1 to 1,
+  so every pitch at once: a hiss. It has no pitch, so an oscillator's
+  tuning does nothing to it. Its heights come from SplitMix64 (the same
+  mixing step as the LFOs' random heights), started from the note's press
+  number, the copy and the oscillator. So every render sounds the same, and
+  no two copies or oscillators hiss alike: 7 copies, turned down by √7,
+  stay as loud as one, and spread makes the hiss wide. Its RMS is the
+  triangle's already, so its trim is 1, a starting value to tune by ear.
 - **Waves:** sine, triangle, square and saw. All four go from -1 to 1 and
-  start each cycle rising from zero, so they line up. A new engine plays
-  triangle. A switch only changes notes started after it: each voice keeps
-  the wave its note started with.
+  start each cycle rising from zero, so they line up.
   - The square and saw jump, and the triangle has corners. Played as they
     are, their harmonics too high for the sample rate would fold back down
     as stray, off-key tones (aliasing), worst on high notes. So the samples
@@ -308,7 +340,7 @@ and being built.
     square root of the average squared height): sine 0.8165, triangle 1,
     square 0.5774, saw 1. Starting values, to be tuned by ear.
 - **Unison** ([ADR 0029](adr/0029-unison.md)): every note is played by 1 to
-  7 copies of its wave at once, each tuned a little apart and placed
+  7 copies of its oscillators at once, each tuned a little apart and placed
   between the speakers. They drift in and out of step, which makes the
   sound thick and shimmering. A saw in unison is the supersaw.
   - The copies sit evenly from -1 to 1: copy i of n at 2i / (n - 1) - 1,
@@ -336,9 +368,9 @@ and being built.
   - Each voice is stereo now. Each side goes through a filter of its own,
     moved together, and the gap that keeps a takeover from clicking is
     worked out for each side.
-  - A change reaches the notes started after it, like the wave: a held
-    note keeps its copies. A note that takes over a sounding voice gets the
-    new copies and glides across with the gap.
+  - A change reaches the notes started after it, like the oscillators: a
+    held note keeps its copies. A note that takes over a sounding voice
+    gets the new copies and glides across with the gap.
   - A new engine starts at 1 copy, which is off, with detune 20 and spread
     100% waiting: notes sound exactly as before, sample for sample. Values
     outside their ranges are ignored by the C API and brought within them
@@ -407,21 +439,24 @@ and being built.
   - Random heights come from SplitMix64 on the note's press number, the
     LFO's number and the cycle, so each note and each LFO moves its own way,
     and the same notes always give the same samples.
-  - A connection has a source, a target, a signed amount in the target's
-    own unit, both ways (from minus the amount to the amount) or one way
-    (from 0 to the amount), snap (pitch only: whole half steps, sliding
-    between them) and an optional second source it is scaled by, read one
-    way. Sources: the 8 LFOs, the vibrato key, the note's height (-1 five
-    octaves below middle C, 1 five above), a random number per note, and
-    where the loudness and filter envelopes are. The envelopes are read as
-    each 32 samples start, so their moves come 32 samples late.
+  - A connection has a source, a target, a signed amount in the target's own
+    unit, both ways (from minus the amount to the amount) or one way (from 0
+    to the amount), snap (pitches only, the note's and each oscillator's:
+    whole half steps, sliding between them) and an optional second source it
+    is scaled by, read one way. Sources: the 8 LFOs, the vibrato key, the
+    note's height (-1 five octaves below middle C, 1 five above), a random
+    number per note, and where the loudness and filter envelopes are. The
+    envelopes are read as each 32 samples start, so their moves come 32
+    samples late.
   - Targets, live while a note sounds: pitch (cents, up to 4,800 either
     way), loudness (only down; -100% is silence), pan, cutoff (octaves, up
     to 10), resonance, key tracking, detune (cents, up to 50), spread, both
-    sustains, the filter envelope's amount (octaves, up to 8) and each LFO's
-    speed (octaves, up to 14). Read once as each note starts: the wave
-    (steps round sine, triangle, square and saw), the copies (up to 6) and
-    the six envelope times (octaves of time, up to 14). Moves on one
+    sustains, the filter envelope's amount (octaves, up to 8), each LFO's
+    speed (octaves, up to 14), each oscillator's level and each
+    oscillator's pitch (cents, up to 4,800 either way). Read once as each
+    note starts: each oscillator's kind (steps round sine, triangle,
+    square, saw and noise, up to 4), the copies (up to 6) and the six
+    envelope times (octaves of time, up to 14). Moves on one
     target add up, and the sum is kept within the setting's range. A
     connection moving the cutoff brings an open filter in.
   - Every 32 samples, counted from the engine's first, each sounding voice
@@ -453,9 +488,10 @@ and being built.
 - **Sound profile** ([ADR 0030](adr/0030-a-sound-profile-per-song.md)):
   how a song's notes sound belongs to the song, so no setting is tuned to
   one value for every song. Its sound profile
-  (`src-tauri/src/sound_profile.rs`) holds the wave, the loudness envelope,
-  the filter and filter envelope, key tracking, unison, tuning, the LFOs,
-  the routing list and the vibrato key's times, and the song in Compose
+  (`src-tauri/src/sound_profile.rs`) holds the oscillators, the loudness
+  envelope, the filter and filter envelope, key tracking, unison, tuning,
+  the LFOs, the routing list and the vibrato key's times, and the song in
+  Compose
   (`compose.rs`) holds the profile.
   - Every change, from the sound panel or the backslash key, goes to the
     profile, which sends it on to the engine and keeps it as the engine
@@ -463,8 +499,9 @@ and being built.
     engine wrapper keeps no sound of its own, and the screen reads the
     sound from the profile.
   - As the app starts, the song sends its tempo and its whole profile,
-    before the first note: 81 messages, which arrive in order.
-  - A new song starts where a new engine does: a triangle, a 5 ms attack
+    before the first note: 83 messages, which arrive in order.
+  - A new song starts where a new engine does: one triangle oscillator at
+    full level with the other two silent, a 5 ms attack
     held at the full peak with a 300 ms release, the filter open, no
     filter envelope, full key tracking, 1 copy, A4 at 440 Hz and 120 beats
     per minute. It also has vibrato ready: its first connection moves the
@@ -476,23 +513,24 @@ and being built.
     clicks. Its sustain goes from 0 to 100% of the peak. Tuning sets A4's
     pitch from 415 to 466 Hz, about a half step either way (further is a
     key change), and every other note keeps its distance from A4. Both, and
-    key tracking, reach the notes started after a change, like the wave: a
-    held note keeps its own.
+    key tracking, reach the notes started after a change, like the
+    oscillators: a held note keeps its own.
   - The song keeps its tempo too, though it is not sound: `-` and `=` change
     the song's tempo, which goes on to the engine, and the song keeps the
     tempo the engine plays, so while the looper is busy it stays put.
   - Some values stay the same for every song, since they are about how the
     engine works, not how a song sounds: the 5 ms takeover gap, the 10 ms
-    volume ease, the 20 ms filter glide, the wave trims, where the copies
-    start, the 32 voices, 48 kHz, the filter's limits and the click. The
-    voice level and the soft clip become each track's volume and the
+    volume ease, the 20 ms filter glide, the wave and noise trims, where the
+    copies start, the 32 voices, 48 kHz, the filter's limits and the click.
+    The voice level and the soft clip become each track's volume and the
     master limiter in step 6.
   - Play plays the open song's profile. Song files keep it from step 5,
     and so do copying a profile from another song and a profile per track.
 - **The sound panel** ([ADR 0033](adr/0033-the-sound-panel.md)): in
   Compose, the Sound button opens it over the tape, with pages for the
-  notes, the filter, the LFOs and the connections. Every change goes to
-  the song's sound profile and its readouts show Rust's answer. Nothing is
+  oscillators, the notes, the filter, the LFOs and the connections. Every
+  change goes to the song's sound profile and its readouts show Rust's
+  answer. Nothing is
   saved until song files: each launch starts a new song, at 1 copy, A4 at
   440 Hz, with the filter open. See [Sound panel](#sound-panel).
 - **No clicks:** a new song's notes fade in over 5 ms and out over 300 ms,
@@ -537,6 +575,13 @@ and being built.
   below 5,000 Hz stay at least 1,000 times quieter than the note, that all
   four line up and are equally loud, that a switch only changes new notes,
   and that a voice taken over on a new wave glides across without a click.
+  For the oscillators, they check that a new engine plays one triangle,
+  that each oscillator plays its own distance from the note, that they add
+  up at their levels, that a silent one changes not a single sample, that
+  noise has no pitch, is as loud as the triangle and never hisses alike
+  twice yet sounds the same on every render, that three oscillators glide
+  across to three others without a click, that snap rounds an
+  oscillator's pitch, and odd values, Rust's edges and all.
   For the click, they check that ticks start on exactly the right samples
   however the sound is asked for, that beat 1 ticks higher, how a tick
   fades and stops, that after 1,000 beats at 115 the beat is still on the
@@ -582,11 +627,13 @@ and being built.
   speakers, that a held note keeps its copies while the next note gets the
   new ones, the same samples in any chunk size, and odd values.
   For the sound profile, they check that a new song starts where a new
-  engine does and sounds just like one, that switching steps through the
-  waves in order and the engine plays the one it lands on, that the profile
+  engine does and sounds just like one, that switching steps the first
+  oscillator through the kinds in order and the engine plays the one it
+  lands on, that setting an oscillator plays it, that the profile
   keeps values as the engine sent them, that every change reaches the
   engine, that sending a profile sends every part (leaving any one out
-  changes the sound), and that the backslash key switches the song's wave.
+  changes the sound), and that the backslash key switches the first
+  oscillator's kind.
   For the loudness envelope, key tracking and tuning, they check every
   sample of a shaped note through all four stages against the envelope's
   math, that a held note keeps its envelope and its pitch while the next
@@ -706,12 +753,12 @@ Then each key press gets the next note. Details:
     octave is always the same row, three fingers over (M to /). The keys
     past the pinky play nothing yet.
   - A note that a chord and a melody key both play keeps sounding until
-    every key playing it is let go. The backslash key (`\`) steps the
-    song's wave to the next, and left Shift, held, brings in whatever the
-    song connects to the vibrato key: vibrato in a new song. Right Shift runs the [looper](#looper) and Esc removes a
-    layer from it.
-    `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option play nothing, saved for layer keys that will
-    switch whole mappings.
+    every key playing it is let go. The backslash key (`\`) steps the song's
+    first oscillator to its next kind, and left Shift, held, brings in
+    whatever the song connects to the vibrato key: vibrato in a new song.
+    Right Shift runs the [looper](#looper) and Esc removes a layer from it.
+    `-` slows the beat down by 5 and `=` speeds it up by 5. Cmd and Option
+    play nothing, saved for layer keys that will switch whole mappings.
   - Before ADR 0012, the default was the accordion grid: three keys per
     finger on both hands, C3 to B4, laid out like a chromatic button
     accordion's note buttons.
@@ -1184,8 +1231,8 @@ Falling notes on screen, colored by hand, with the keys lighting up.
 - **Todo: the harness gives each song its starting sound.** Every sound
   setting is the song's own ([ADR 0030](adr/0030-a-sound-profile-per-song.md)),
   so the harness can help set them as a song begins:
-  - **Starting a song by talking.** The user explains the song they have
-    in mind, and the harness sets its first sound profile (wave, filter,
+  - **Starting a song by talking.** The user explains the song they have in
+    mind, and the harness sets its first sound profile (oscillators, filter,
     unison and whatever comes next) from that. It is only a starting point:
     the user changes it from there.
   - **Voice mode in Compose.** The user sings or hums the idea of a tune.
@@ -1333,9 +1380,9 @@ panel. The mockups were approved one decision and one page at a time
   small wave and "Sound", lavender while open) opens it in the tape's
   place: 16 px under the tabs, as wide as the keyboard's panel and 320 px
   tall at fullscreen. The keyboard and the looper's lane stay in view, and
-  every key keeps playing. Page tabs along its top: Notes, Filter, LFOs and
-  Connections. It opens on Notes, and a note at the right end says when
-  changes are heard.
+  every key keeps playing. Page tabs along its top: Oscillators, Notes,
+  Filter, LFOs and Connections. It opens on Oscillators, and a note at the
+  right end says when changes are heard.
 - **Values.** Each one is a name in small capitals, its number in Doto with
   the unit dimmer, and a row of dots lit from the first up to the value.
   Drag along the dots, or click one to jump there. A row lights
@@ -1359,7 +1406,17 @@ panel. The mockups were approved one decision and one page at a time
   grid of dots, with square handles. Drawings, numbers and lit dots are
   white; lavender marks only the open page, the picked value and chosen
   tiles. A setting that would do nothing is dimmed to a third.
-- **Notes.** Wave: four tiles (`\` still steps them). Loudness ("how each
+- **Oscillators.** Three side by side, each "Oscillator 1" to 3 with its
+  kind's name as the hint (and the `\` key on oscillator 1, which still
+  steps it). A drawing of what it plays around a faint middle line, as
+  tall as its level, showing 2 cycles on the note and twice as many each
+  octave up (from 0.5 to 16), so the tuning shows too; noise draws a fixed
+  scribble. Its square, at the right end, drags the level. Under it, 5
+  kind tiles. Then level, octaves, half steps and cents, the last three
+  with dots growing either way from a middle zero, dimmed while the level
+  is 0 or the kind is noise; a silent oscillator's drawing is dimmed too.
+  Note: "Changes start with the next key you press".
+- **Notes.** Loudness ("how each
   note rises and fades"): the envelope drawn, KEY UP where the key comes
   up, each stage up to 90 px on the time curve; the peak's square drags
   the attack, the next corner the decay sideways and the sustain up and
@@ -1395,26 +1452,30 @@ panel. The mockups were approved one decision and one page at a time
   sounding".
 - **Connections.** The list ("6 of 64"): only connections in use, numbered
   in order, as "LFO 1 -> pitch" (an arrow on screen); a long one ends in
-  "...", and many scroll. The open one is framed, with an x that removes
-  it. "+ New connection" fills the first
-  free place: the first LFO nothing uses yet, moving the pitch by 0, so
-  nothing changes until its amount does. Moved by: the 8 LFOs (number and
-  shape), the vibrato key, note height, random and both envelopes. Moves:
-  every target, grouped Notes, Filter and LFO speed; the hint says "moves
-  while it sounds" or "read as each note starts". A shared LFO's speed is
-  dimmed unless a shared LFO moves it. How much (in the target's unit): a
-  picture of the move, not draggable; the amount, its dots growing either
-  way from a middle zero; [Both ways | One way]; "Snap to notes", dimmed
-  unless the target is pitch, styled like the looper's snap switch. Scaled
-  by: nothing, the 8 LFOs and the other sources. Note: "Changes here move
-  notes already sounding".
-- **Sending.** Each change sends its whole group, through `set_wave`,
+  "...", and many scroll. The open one is framed, with an x that removes it.
+  "+ New connection" fills the first free place: the first LFO nothing uses
+  yet, moving the pitch by 0, so nothing changes until its amount does.
+  Moved by: the 8 LFOs (number and shape), the vibrato key, note height,
+  random and both envelopes. Moves: every target, in four groups (Notes,
+  Oscillators, Filter and LFO speed) whose names sit two by two above one
+  group's targets at a time. Opening a connection shows its target's group;
+  clicking a name shows another. The shown name is lavender with dots under
+  it, like the page tabs, and the one holding the target is white. The hint
+  says "moves while it sounds" or "read as each note starts". A shared LFO's
+  speed is dimmed unless a shared LFO moves it. How much (in the target's
+  unit): a picture of the move, not draggable; the amount, its dots growing
+  either way from a middle zero; [Both ways | One way]; "Snap to notes",
+  dimmed unless the target is a pitch, styled like the looper's snap switch.
+  Scaled by: nothing, the 8 LFOs and the other sources. Note: "Changes here
+  move notes already sounding".
+- **Sending.** Each change sends its whole group, through `set_oscillator`,
   `set_loudness_envelope`, `set_unison`, `set_tuning`,
   `set_vibrato_key_times`, `set_filter`, `set_filter_envelope`,
   `set_key_tracking`, `set_lfo` or `set_connection`, and the panel shows
   Rust's answer. Steps start from the value Rust answered last.
 - **Code.** `ui/SoundPanel.svelte` holds the frame and the page tabs; a
-  component per page (`ui/SoundNotes.svelte`, `ui/SoundFilter.svelte`,
+  component per page (`ui/SoundOscillators.svelte`, `ui/SoundNotes.svelte`,
+  `ui/SoundFilter.svelte`,
   `ui/SoundLfos.svelte`, `ui/SoundConnections.svelte`), one for a value
   (`ui/SoundValue.svelte`) and one for a drawing's square
   (`ui/SoundHandle.svelte`). What is picked lives in `ui/Stage.svelte`, so

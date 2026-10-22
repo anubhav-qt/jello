@@ -12,7 +12,7 @@
     layout: KeyLayout;
     // Whether the key is held down right now.
     held: boolean;
-    // The wave, the tempo and the looper, or null until Rust has said.
+    // The sound, the tempo and the looper, or null until Rust has said.
     sound: SoundView | null;
     // How many beats into what the looper is doing it is now, for right
     // Shift's face.
@@ -165,12 +165,13 @@
     return chordNotes.includes(note % 12);
   });
 
-  // The wave keys say "wave" until Rust has said which wave it is.
+  // The wave keys say "wave" until Rust has said which kind the first
+  // oscillator plays.
   let waveLabel = $derived.by(() => {
     if (sound === null) {
       return "wave";
     }
-    return sound.wave;
+    return sound.oscillators[0].kind;
   });
 
   // Right Shift runs the looper and shows what it is doing.

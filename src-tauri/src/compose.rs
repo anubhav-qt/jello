@@ -33,9 +33,9 @@ pub struct Composer {
     // The song's tempo, in beats per minute: the click and the looper play
     // at it. A new song starts at 120.
     tempo: u32,
-    // How the song's notes sound: its wave, envelopes, filter, unison and
-    // tuning (docs/adr/0030-a-sound-profile-per-song.md). Every note played
-    // while the song is open plays it, in Play too.
+    // How the song's notes sound: its oscillators, envelopes, filter,
+    // unison and tuning (docs/adr/0030-a-sound-profile-per-song.md). Every
+    // note played while the song is open plays it, in Play too.
     sound_profile: SoundProfile,
 }
 
@@ -451,7 +451,7 @@ fn key_choice(key: Key) -> KeyChoice {
 mod tests {
     use super::*;
     use crate::commands::{all_keys_up, key_down, key_up};
-    use crate::engine::Wave;
+    use crate::engine::Kind;
     use crate::key_map::KeyAction;
 
     // How many samples the engine makes in 10 ms, the size of chunk the
@@ -639,13 +639,13 @@ mod tests {
         // there, on a square.
         let mut player = Player::new();
         player.composer.speed_up(&mut player.engine);
-        player.composer.sound_profile_mut().switch_wave(&mut player.engine);
+        player.composer.sound_profile_mut().switch_first_kind(&mut player.engine);
         let mut engine = Engine::new().unwrap();
         player.composer.send_all(&mut engine);
         assert_eq!(engine.tempo(), 125);
 
         let mut square = Engine::new().unwrap();
-        square.set_wave(Wave::Square);
+        square.set_first_kind(Kind::Square);
         let a4 = 69;
         engine.note_on(a4, LAPTOP_VELOCITY);
         square.note_on(a4, LAPTOP_VELOCITY);

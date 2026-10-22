@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "filter.h"
+#include "oscillator.h"
 #include "unison.h"
 
 namespace {
@@ -23,8 +24,9 @@ constexpr float most_cutoff_octaves = 10.0f;
 // 10,000 ms.
 constexpr float most_octaves_of_speed = 14.0f;
 
-// The most steps a connection can move the wave either way: through all 4.
-constexpr float most_wave_steps = 3.0f;
+// The most steps a connection can move an oscillator's kind either way:
+// through all of them.
+constexpr float most_kind_steps = static_cast<float>(kind_count - 1);
 
 // How long a shared LFO's jump glides, the same as a moved filter control.
 constexpr int glide_ms = 20;
@@ -34,6 +36,16 @@ double one_way(double both_ways) {
     return (both_ways + 1.0) / 2.0;
 }
 
+// True if `target` is one of the oscillators' targets that starts at
+// `first`, oscillator 1's.
+bool is_oscillator_target(RoutingTarget target, RoutingTarget first) {
+    int index = static_cast<int>(target) - static_cast<int>(first);
+    if (index < 0) {
+        return false;
+    }
+    return index < oscillator_count;
+}
+
 }  // namespace
 
 float most_amount(RoutingTarget target) {
@@ -41,7 +53,7 @@ float most_amount(RoutingTarget target) {
         return most_octaves_of_speed;
     }
 
-    if (target == RoutingTarget::pitch) {
+    if (is_pitch(target)) {
         return most_pitch_cents;
     } else if (target == RoutingTarget::cutoff) {
         return most_cutoff_octaves;
@@ -49,16 +61,16 @@ float most_amount(RoutingTarget target) {
         return unison_most_detune_cents;
     } else if (target == RoutingTarget::filter_amount) {
         return filter_most_octaves;
-    } else if (target == RoutingTarget::wave) {
-        return most_wave_steps;
+    } else if (is_oscillator_target(target, RoutingTarget::oscillator_1_kind)) {
+        return most_kind_steps;
     } else if (target == RoutingTarget::copies) {
         return static_cast<float>(unison_most_copies - 1);
     } else if (is_read_at_start(target)) {
         // The envelopes' times.
         return most_octaves_of_speed;
     } else {
-        // Loudness, pan, resonance, key tracking, spread and the sustains,
-        // each a share.
+        // Loudness, pan, resonance, key tracking, spread, the sustains and
+        // the oscillators' levels, each a share.
         return 1.0f;
     }
 }
@@ -85,8 +97,27 @@ int lfo_speed_of(RoutingTarget target) {
     return index;
 }
 
+RoutingTarget oscillator_level(int index) {
+    return static_cast<RoutingTarget>(static_cast<int>(RoutingTarget::oscillator_1_level) + index);
+}
+
+RoutingTarget oscillator_pitch(int index) {
+    return static_cast<RoutingTarget>(static_cast<int>(RoutingTarget::oscillator_1_pitch) + index);
+}
+
+RoutingTarget oscillator_kind(int index) {
+    return static_cast<RoutingTarget>(static_cast<int>(RoutingTarget::oscillator_1_kind) + index);
+}
+
+bool is_pitch(RoutingTarget target) {
+    if (target == RoutingTarget::pitch) {
+        return true;
+    }
+    return is_oscillator_target(target, RoutingTarget::oscillator_1_pitch);
+}
+
 bool is_read_at_start(RoutingTarget target) {
-    return static_cast<int>(target) >= static_cast<int>(RoutingTarget::wave);
+    return static_cast<int>(target) >= static_cast<int>(RoutingTarget::oscillator_1_kind);
 }
 
 double connection_move(const Connection& connection, const Slide& source, double fade, double scale) {
@@ -104,7 +135,7 @@ double connection_move(const Connection& connection, const Slide& source, double
     // smoothed step slides from one half step to the next.
     bool snaps = false;
     if (connection.snap) {
-        snaps = connection.target == RoutingTarget::pitch;
+        snaps = is_pitch(connection.target);
     }
     if (snaps) {
         from = std::round(from / cents_per_half_step) * cents_per_half_step;

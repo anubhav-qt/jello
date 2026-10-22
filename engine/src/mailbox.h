@@ -7,17 +7,17 @@
 #include "envelope.h"
 #include "filter.h"
 #include "lfo.h"
+#include "oscillator.h"
 #include "routing.h"
 #include "song_player.h"
 #include "unison.h"
-#include "wave.h"
 
 // What another thread can ask the audio thread to do.
 enum class EventType {
     note_on,
     note_off,
     all_notes_off,
-    set_wave,
+    set_oscillator,
     start_click,
     stop_click,
     set_tempo,
@@ -47,12 +47,13 @@ struct Event {
     int note;      // which key, 0 to 127; middle C is 60
     int velocity;  // how hard the key was hit, 1 to 127; only for note_on
 
-    // Which wave notes sent after this one play; only for set_wave. It has a
-    // starting value, so the other messages can leave it out.
-    Wave wave = Wave::triangle;
+    // How notes sent after this one play an oscillator; only for
+    // set_oscillator, which says which in `index`, below. It has a starting
+    // value, so the other messages can leave it out.
+    OscillatorSettings oscillator{};
 
     // The beat's new tempo, in beats per minute; only for set_tempo. Like
-    // `wave`, the other messages can leave it out.
+    // `oscillator`, the other messages can leave it out.
     int tempo = 0;
 
     // Whether loops snap to the beat; only for set_snap. The other messages
@@ -85,10 +86,11 @@ struct Event {
     float key_tracking = 1.0f;
     float a4_hz = 440.0f;
 
-    // Which LFO or connection, from 0, and its settings; only for set_lfo
-    // and set_connection. Whether the vibrato key is held; only for
-    // set_vibrato_key. And how long it takes to rise and fall; only for
-    // set_vibrato_key_times. The other messages can leave them out too.
+    // Which oscillator, LFO or connection, from 0, for set_oscillator,
+    // set_lfo and set_connection, and the LFO's or connection's settings.
+    // Whether the vibrato key is held; only for set_vibrato_key. And how
+    // long it takes to rise and fall; only for set_vibrato_key_times. The
+    // other messages can leave them out too.
     int index = 0;
     LfoSettings lfo{};
     Connection connection{};

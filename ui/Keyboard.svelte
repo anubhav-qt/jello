@@ -10,7 +10,7 @@
     layout: KeyLayout;
     // The keys held down right now, by place, like "KeyQ".
     held: Set<string>;
-    // The wave, the tempo and the looper, or null until Rust has said.
+    // The sound, the tempo and the looper, or null until Rust has said.
     sound: SoundView | null;
     // How many beats into what the looper is doing it is now.
     looperBeats: number;

@@ -85,16 +85,17 @@
   const held = new SvelteSet<string>();
   // Each held key that plays notes, with the notes it started.
   const started = new SvelteMap<string, number[]>();
-  // The wave, the tempo and the looper, or null until Rust has said, and
+  // The sound, the tempo and the looper, or null until Rust has said. and
   // when it said, by performance.now().
   let sound: SoundView | null = $state(null);
   let soundAt = $state(0);
-  // The wave new notes play, like "saw", or "" until Rust has said.
+  // The kind new notes' first oscillator plays, like "saw", or "" until
+  // Rust has said. The \ key and the top bar's wave button step it.
   let wave = $derived.by(() => {
     if (sound === null) {
       return "";
     }
-    return sound.wave;
+    return sound.oscillators[0].kind;
   });
 
   // The page's clock, by performance.now(). It ticks every frame while the

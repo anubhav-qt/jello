@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
-    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, LoudnessEnvelope,
-    Unison, VIBRATO_KEY_NOTE, Wave,
+    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, Kind, LoopLayer, LoopNote, LooperState, LooperStatus,
+    LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison, VIBRATO_KEY_NOTE,
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
@@ -30,15 +30,16 @@ const TEST_VELOCITY: u8 = 100;
 const HOLD_MS: u32 = 2000;
 const TAIL_MS: u32 = 400;
 
-// What the screen shows about the sound: the wave new notes play, the song's
-// tempo in beats per minute, whether loops snap to the beat, what the looper
-// is doing, the loudness envelope, where the filter is, unison's copies, the
+// What the screen shows about the sound: the oscillators new notes play, the
+// song's tempo in beats per minute, whether loops snap to the beat, what the
+// looper is doing, the loudness envelope, where the filter is, unison's copies, the
 // tuning, the LFOs, the routing list and the vibrato key's times. Everything
 // but the looper and snap comes from the song: its tempo and its sound
 // profile.
 #[derive(Serialize)]
 pub struct SoundView {
-    wave: &'static str,
+    // All 3 oscillators, in order (docs/adr/0035-oscillators-with-kinds.md).
+    oscillators: Vec<OscillatorView>,
     tempo: u32,
     snap: bool,
     looper: LooperView,
@@ -52,6 +53,28 @@ pub struct SoundView {
     lfos: Vec<LfoView>,
     connections: Vec<ConnectionView>,
     vibrato_key: VibratoKeyView,
+}
+
+// One oscillator, as the screen shows it. Its kind is named: "sine",
+// "triangle", "square", "saw" or "noise".
+#[derive(Serialize)]
+pub struct OscillatorView {
+    kind: &'static str,
+    // In percent.
+    level: u32,
+    octaves: i32,
+    half_steps: i32,
+    cents: i32,
+}
+
+fn oscillator_view_of(oscillator: &Oscillator) -> OscillatorView {
+    OscillatorView {
+        kind: oscillator.kind.name(),
+        level: oscillator.level,
+        octaves: oscillator.octaves,
+        half_steps: oscillator.half_steps,
+        cents: oscillator.cents,
+    }
 }
 
 // One LFO, as the screen shows it and sends it back to `set_lfo`. Its shape
@@ -333,7 +356,6 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     engine.finish_esc_wait(now);
 
     let sound_profile = composer.sound_profile();
-    let wave = sound_profile.wave();
     // The beat plays at the song's tempo. The loop's boxes are placed by the
     // beat's own, which is where the engine played the loop.
     let tempo = engine.tempo();
@@ -360,6 +382,10 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     looper.removing = engine.esc_removes(now);
     looper.message = engine.take_looper_message();
 
+    let mut oscillators = Vec::new();
+    for oscillator in sound_profile.oscillators() {
+        oscillators.push(oscillator_view_of(oscillator));
+    }
     let mut lfos = Vec::new();
     for lfo in sound_profile.lfos() {
         lfos.push(lfo_view_of(lfo));
@@ -371,7 +397,7 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     let key_times = sound_profile.vibrato_key_times();
 
     SoundView {
-        wave: wave.name(),
+        oscillators,
         tempo: composer.tempo(),
         snap: engine.snap(),
         looper,
@@ -517,16 +543,16 @@ pub fn release_all_notes(
     }
 }
 
-// Moves the song's notes played from now on to the next wave (sine,
-// triangle, square, saw, then sine again), and returns what the screen shows
-// about the sound. Notes already playing keep their wave. Like `play_note`,
-// it opens the speakers first: before they open, nothing empties the
-// engine's mailbox, so switches would pile up there.
+// Moves the first oscillator of the song's notes played from now on to the
+// next kind (sine, triangle, square, saw, noise, then sine again), and
+// returns what the screen shows about the sound. Notes already playing keep
+// theirs. Like `play_note`, it opens the speakers first: before they open,
+// nothing empties the engine's mailbox, so switches would pile up there.
 //
 // The commands that answer with the sound lock Compose before the engine,
 // since the song holds its tempo and sound profile.
 #[tauri::command]
-pub fn switch_wave(
+pub fn switch_kind(
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
 ) -> Result<SoundView, String> {
@@ -534,40 +560,59 @@ pub fn switch_wave(
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    composer.sound_profile_mut().switch_wave(&mut engine);
+    composer.sound_profile_mut().switch_first_kind(&mut engine);
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
-// Sets the song's wave for notes played from now on to the one called
-// `wave`: "sine", "triangle", "square" or "saw". The sound panel's wave
-// tiles send it. Returns what the screen shows about the sound. Fails on a
-// wave with no such name. Like `switch_wave`, it opens the speakers first.
+// Sets the song's oscillator `index`, from 0 to 2
+// (docs/adr/0035-oscillators-with-kinds.md), for notes played from now on:
+// its kind, "sine", "triangle", "square", "saw" or "noise", its level in
+// percent, and how far it is tuned from the note in octaves, half steps and
+// cents. Values outside their ranges are brought within them. The sound
+// panel's Oscillators page sends it, naming the arguments in camelCase, like
+// `halfSteps`. Returns what the screen shows about the sound. Fails on an
+// index past the oscillators or a kind with no such name. Like
+// `switch_kind`, it opens the speakers first.
 #[tauri::command]
-pub fn set_wave(
+pub fn set_oscillator(
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
-    wave: String,
+    index: usize,
+    kind: String,
+    level: u32,
+    octaves: i32,
+    half_steps: i32,
+    cents: i32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
-    let wave = wave_named(&wave)?;
+    if index >= OSCILLATOR_COUNT {
+        return Err(format!("there is no oscillator {}", index + 1));
+    }
+    let oscillator = Oscillator {
+        kind: kind_named(&kind)?,
+        level,
+        octaves,
+        half_steps,
+        cents,
+    };
 
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
-    composer.sound_profile_mut().set_wave(&mut engine, wave);
+    composer.sound_profile_mut().set_oscillator(&mut engine, index, oscillator);
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
-fn wave_named(name: &str) -> Result<Wave, String> {
-    match Wave::from_name(name) {
-        Some(wave) => Ok(wave),
-        None => Err(format!("there is no wave called {name}")),
+fn kind_named(name: &str) -> Result<Kind, String> {
+    match Kind::from_name(name) {
+        Some(kind) => Ok(kind),
+        None => Err(format!("there is no kind called {name}")),
     }
 }
 
 // Turns "snap to beat" off if it is on, and on if it is off, and returns
 // what the screen shows about the sound. A loop already playing changes
-// right away. Like `switch_wave`, it opens the speakers first.
+// right away. Like `switch_kind`, it opens the speakers first.
 #[tauri::command]
 pub fn switch_snap(
     composer: State<'_, Mutex<Composer>>,
@@ -584,7 +629,7 @@ pub fn switch_snap(
 // Sets layer `layer`'s volume, counted from 1, to `volume` percent, from 0
 // to 100 (docs/adr/0026-layers.md), and returns what the screen shows about
 // the sound. The layer's notes already sounding change too. A layer's volume
-// knob does this. Like `switch_wave`, it opens the speakers first.
+// knob does this. Like `switch_kind`, it opens the speakers first.
 #[tauri::command]
 pub fn set_layer_volume(
     composer: State<'_, Mutex<Composer>>,
@@ -606,7 +651,7 @@ pub fn set_layer_volume(
 // brought within them. Every note hears it, even those already sounding.
 // Returns what the screen shows about the sound. The sound's dev panel in
 // Compose sends it, naming the arguments in camelCase, like `cutoffHz`. Like
-// `switch_wave`, it opens the speakers first.
+// `switch_kind`, it opens the speakers first.
 #[tauri::command]
 pub fn set_filter(
     composer: State<'_, Mutex<Composer>>,
@@ -845,7 +890,7 @@ pub fn press_key(
         return Ok(sound_view_of(&mut engine, &composer, now));
     }
 
-    // Like `switch_wave`, every key that does something opens the speakers
+    // Like `switch_kind`, every key that does something opens the speakers
     // first: before they open, nothing empties the engine's mailbox.
     if let Some(action) = key_down(&mut key_map, &mut composer, &key, now) {
         engine.start_audio()?;
@@ -886,7 +931,7 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
             engine.set_vibrato_key(true);
         }
         KeyAction::SwitchWave => {
-            composer.sound_profile_mut().switch_wave(engine);
+            composer.sound_profile_mut().switch_first_kind(engine);
         }
         KeyAction::PressLooper => {
             engine.press_looper();
@@ -1060,7 +1105,7 @@ pub fn remove_last_chord(
 }
 
 // Plays the chord at `place` in the song, from 0, for as long as it was
-// held. Clicking a chord on the tape does this. Like `switch_wave`, it opens
+// held. Clicking a chord on the tape does this. Like `switch_kind`, it opens
 // the speakers first.
 #[tauri::command]
 pub fn play_chord_in_song(
@@ -1079,7 +1124,7 @@ pub fn play_chord_in_song(
 }
 
 // Plays the whole song from its first chord. The tape's play button does
-// this. Like `switch_wave`, it opens the speakers first.
+// this. Like `switch_kind`, it opens the speakers first.
 #[tauri::command]
 pub fn play_song(
     key_map: State<'_, Mutex<KeyMap>>,
@@ -1204,22 +1249,22 @@ mod tests {
     }
 
     #[test]
-    fn backslash_switches_the_song_s_wave() {
+    fn backslash_switches_the_song_s_first_kind() {
         // A new song starts on the triangle, so the switch lands on the
         // square, and the engine plays it.
         let mut engine = Engine::new().unwrap();
         let mut composer = Composer::new();
         press(&mut engine, &mut composer, "Backslash");
-        assert_eq!(composer.sound_profile().wave(), Wave::Square);
+        assert_eq!(composer.sound_profile().oscillators()[0].kind, Kind::Square);
 
         let mut square = Engine::new().unwrap();
-        square.set_wave(Wave::Square);
+        square.set_first_kind(Kind::Square);
         let mut square_composer = Composer::new();
         press(&mut engine, &mut composer, "KeyM");
         press(&mut square, &mut square_composer, "KeyM");
         let switched = engine.render(4800);
         let expected = square.render(4800);
-        assert!(switched == expected, "the engine does not play the song's new wave");
+        assert!(switched == expected, "the engine does not play the song's new kind");
     }
 
     #[test]
@@ -1258,7 +1303,7 @@ mod tests {
     #[test]
     fn the_ui_reads_the_sound_by_these_names() {
         // ui/sound.ts reads these names, so renaming them here would leave
-        // the wave, beat and looper keys blank.
+        // the wave key, the beat and looper keys and the oscillators blank.
         let mut engine = Engine::new().unwrap();
         let mut composer = Composer::new();
         composer.speed_up(&mut engine);
@@ -1266,7 +1311,8 @@ mod tests {
         engine.render(10);
 
         let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
-        assert_eq!(json["wave"], "triangle");
+        assert_eq!(json["oscillators"][0]["kind"], "triangle");
+        assert_eq!(json["oscillators"][0]["level"], 100);
         assert_eq!(json["tempo"], 125);
         assert_eq!(json["snap"], true);
         assert_eq!(json["looper"]["state"], "counting in");
@@ -1308,8 +1354,8 @@ mod tests {
         assert_eq!(json["filter"]["release_ms"], 400);
         assert_eq!(json["filter"]["key_tracking"], 30);
 
-        // And the song's unison, wave, loudness envelope and tuning, the
-        // same way.
+        // And the song's unison, oscillators, loudness envelope and tuning,
+        // the same way.
         let profile = composer.sound_profile_mut();
         profile.set_unison(
             &mut engine,
@@ -1319,7 +1365,15 @@ mod tests {
                 spread: 70,
             },
         );
-        profile.switch_wave(&mut engine);
+        profile.switch_first_kind(&mut engine);
+        let third = Oscillator {
+            kind: Kind::Noise,
+            level: 35,
+            octaves: -2,
+            half_steps: 4,
+            cents: -9,
+        };
+        profile.set_oscillator(&mut engine, 2, third);
         profile.set_loudness_envelope(
             &mut engine,
             LoudnessEnvelope {
@@ -1331,7 +1385,12 @@ mod tests {
         );
         profile.set_tuning(&mut engine, 432.0);
         let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
-        assert_eq!(json["wave"], "square");
+        assert_eq!(json["oscillators"][0]["kind"], "square");
+        assert_eq!(json["oscillators"][2]["kind"], "noise");
+        assert_eq!(json["oscillators"][2]["level"], 35);
+        assert_eq!(json["oscillators"][2]["octaves"], -2);
+        assert_eq!(json["oscillators"][2]["half_steps"], 4);
+        assert_eq!(json["oscillators"][2]["cents"], -9);
         assert_eq!(json["unison"]["copies"], 5);
         assert_eq!(json["unison"]["detune_cents"], 30);
         assert_eq!(json["unison"]["spread"], 70);
@@ -1572,11 +1631,11 @@ mod tests {
     }
 
     #[test]
-    fn every_wave_is_found_by_its_name_and_an_odd_name_fails() {
-        for wave in Wave::ALL {
-            assert_eq!(wave_named(wave.name()), Ok(wave));
+    fn every_kind_is_found_by_its_name_and_an_odd_name_fails() {
+        for kind in Kind::ALL {
+            assert_eq!(kind_named(kind.name()), Ok(kind));
         }
-        assert_eq!(wave_named("noise"), Err(String::from("there is no wave called noise")));
+        assert_eq!(kind_named("piano"), Err(String::from("there is no kind called piano")));
     }
 
     #[test]

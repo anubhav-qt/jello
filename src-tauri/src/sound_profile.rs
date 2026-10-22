@@ -1,14 +1,15 @@
 // A song's sound profile (docs/adr/0030-a-sound-profile-per-song.md):
-// everything about how its notes sound, which is its wave, its loudness
-// envelope, its low-pass filter with its filter envelope and key tracking,
+// everything about how its notes sound, which is its oscillators
+// (docs/adr/0035-oscillators-with-kinds.md), its loudness envelope, its low-pass filter with its filter envelope and key tracking,
 // its unison, its tuning, and its LFOs, routing list and vibrato key times
 // (docs/adr/0031-lfos-and-a-routing-list.md). The song holds it. Every change
 // to the sound goes through it to the engine, so the engine plays only what
 // the song says.
 
 use crate::engine::{
-    Engine, Filter, FilterEnvelope, LoudnessEnvelope, START_FILTER, START_FILTER_ENVELOPE, START_KEY_TRACKING,
-    START_LOUDNESS_ENVELOPE, START_TUNING_HZ, START_UNISON, START_WAVE, Unison, Wave,
+    Engine, Filter, FilterEnvelope, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, START_FILTER,
+    START_FILTER_ENVELOPE, START_KEY_TRACKING, START_LOUDNESS_ENVELOPE, START_OSCILLATORS, START_TUNING_HZ,
+    START_UNISON, Unison,
 };
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, Lfo, NO_CONNECTION, START_LFO, Source, Target, VibratoKeyTimes,
@@ -36,8 +37,8 @@ const START_SONG_KEY_TIMES: VibratoKeyTimes = VibratoKeyTimes {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoundProfile {
-    // The wave new notes play.
-    wave: Wave,
+    // The oscillators new notes play.
+    oscillators: [Oscillator; OSCILLATOR_COUNT],
     // The loudness envelope new notes start with.
     loudness_envelope: LoudnessEnvelope,
     // Where the filter is. Every note hears it, even those already sounding.
@@ -58,7 +59,8 @@ pub struct SoundProfile {
 }
 
 impl SoundProfile {
-    // A new song's sound profile: a triangle wave, a 5 ms attack held at the
+    // A new song's sound profile: one triangle oscillator at full level and
+    // two silent ones, a 5 ms attack held at the
     // full peak with a 300 ms release, the filter open, no filter envelope,
     // full key tracking, 1 copy and A4 at 440 Hz, the same place a new
     // engine starts, plus vibrato ready on the vibrato key. It is only where
@@ -67,7 +69,7 @@ impl SoundProfile {
         let mut connections = [NO_CONNECTION; CONNECTION_COUNT];
         connections[0] = START_VIBRATO;
         SoundProfile {
-            wave: START_WAVE,
+            oscillators: START_OSCILLATORS,
             loudness_envelope: START_LOUDNESS_ENVELOPE,
             filter: START_FILTER,
             filter_envelope: START_FILTER_ENVELOPE,
@@ -83,7 +85,9 @@ impl SoundProfile {
     // Sends the whole profile to `engine`, so the notes started after this
     // play it. The song does this as the app starts, before the first note.
     pub fn send_all(&self, engine: &mut Engine) {
-        engine.set_wave(self.wave);
+        for (index, oscillator) in self.oscillators.iter().enumerate() {
+            engine.set_oscillator(index, *oscillator);
+        }
         engine.set_loudness_envelope(self.loudness_envelope);
         engine.set_filter(self.filter);
         engine.set_filter_envelope(self.filter_envelope);
@@ -99,18 +103,23 @@ impl SoundProfile {
         engine.set_vibrato_key_times(self.vibrato_key_times);
     }
 
-    // Moves new notes on to the next wave (sine, triangle, square, saw, then
-    // sine again), on `engine` too. Notes already playing keep their wave.
-    pub fn switch_wave(&mut self, engine: &mut Engine) {
-        self.wave = self.wave.next();
-        engine.set_wave(self.wave);
+    // Moves new notes' first oscillator on to the next kind (sine,
+    // triangle, square, saw, noise, then sine again), on `engine` too. Notes
+    // already playing keep theirs.
+    pub fn switch_first_kind(&mut self, engine: &mut Engine) {
+        let mut first = self.oscillators[0];
+        first.kind = first.kind.next();
+        self.set_oscillator(engine, 0, first);
     }
 
-    // Sets the wave new notes play, on `engine` too. Notes already playing
-    // keep their wave.
-    pub fn set_wave(&mut self, engine: &mut Engine, wave: Wave) {
-        self.wave = wave;
-        engine.set_wave(self.wave);
+    // Sets oscillator `index`, from 0, for the notes started after this, on
+    // `engine` too, kept as the engine sent it. An index past the
+    // oscillators changes nothing.
+    pub fn set_oscillator(&mut self, engine: &mut Engine, index: usize, oscillator: Oscillator) {
+        if index >= OSCILLATOR_COUNT {
+            return;
+        }
+        self.oscillators[index] = engine.set_oscillator(index, oscillator);
     }
 
     // Sets the loudness envelope for the notes started after this, on
@@ -175,8 +184,8 @@ impl SoundProfile {
         self.vibrato_key_times = engine.set_vibrato_key_times(times);
     }
 
-    pub fn wave(&self) -> Wave {
-        self.wave
+    pub fn oscillators(&self) -> &[Oscillator; OSCILLATOR_COUNT] {
+        &self.oscillators
     }
 
     pub fn loudness_envelope(&self) -> LoudnessEnvelope {
@@ -225,15 +234,17 @@ mod tests {
     use super::*;
 
     use crate::engine::{
-        FILTER_LONGEST_MS, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT, LOUDNESS_LONGEST_MS,
-        LOUDNESS_SHORTEST_MS, TUNING_HIGHEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS,
+        FILTER_LONGEST_MS, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT, Kind, LOUDNESS_LONGEST_MS,
+        LOUDNESS_SHORTEST_MS, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS, OSCILLATOR_MOST_OCTAVES,
+        TUNING_HIGHEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS,
     };
     use crate::modulation::{LFO_FASTEST_HZ, LfoShape, VIBRATO_KEY_LONGEST_MS};
 
     const A4: u8 = 69;
     const VELOCITY: u8 = 100;
 
-    // A profile unlike a new song's in every way: a saw, a slow attack that
+    // A profile unlike a new song's in every way: a saw, with a square an
+    // octave and a fifth down at 40%, a slow attack that
     // falls to half the peak, a closed filter with resonance, a filter
     // envelope, half key tracking, 5 spread copies, A4 at 432 Hz, LFO 1 a
     // triangle at 7 Hz, LFO 2 moving the cutoff, and a vibrato key that
@@ -242,8 +253,16 @@ mod tests {
         // The app sends a new song's profile as it starts, then changes it.
         let mut profile = SoundProfile::new();
         profile.send_all(engine);
-        profile.switch_wave(engine);
-        profile.switch_wave(engine);
+        profile.switch_first_kind(engine);
+        profile.switch_first_kind(engine);
+        let square_below = Oscillator {
+            kind: Kind::Square,
+            level: 40,
+            octaves: -1,
+            half_steps: -5,
+            cents: 3,
+        };
+        profile.set_oscillator(engine, 1, square_below);
         profile.set_loudness_envelope(
             engine,
             LoudnessEnvelope {
@@ -318,7 +337,7 @@ mod tests {
 
     // Every part of a profile, as play_a4_without names them.
     const PARTS: [&str; 10] = [
-        "wave",
+        "oscillators",
         "loudness envelope",
         "filter",
         "filter envelope",
@@ -334,8 +353,10 @@ mod tests {
     // one of PARTS, or "nothing". Then plays A4 on it.
     fn play_a4_without(profile: &SoundProfile, left_out: &str) -> Vec<f32> {
         let mut engine = Engine::new().unwrap();
-        if left_out != "wave" {
-            engine.set_wave(profile.wave());
+        if left_out != "oscillators" {
+            for (index, oscillator) in profile.oscillators().iter().enumerate() {
+                engine.set_oscillator(index, *oscillator);
+            }
         }
         if left_out != "loudness envelope" {
             engine.set_loudness_envelope(profile.loudness_envelope());
@@ -374,7 +395,7 @@ mod tests {
     #[test]
     fn a_new_song_starts_where_a_new_engine_does() {
         let profile = SoundProfile::new();
-        assert_eq!(profile.wave(), Wave::Triangle);
+        assert_eq!(profile.oscillators(), &START_OSCILLATORS);
         assert_eq!(profile.loudness_envelope(), START_LOUDNESS_ENVELOPE);
         assert_eq!(profile.filter(), START_FILTER);
         assert_eq!(profile.filter_envelope(), START_FILTER_ENVELOPE);
@@ -486,39 +507,48 @@ mod tests {
     }
 
     #[test]
-    fn switching_steps_through_the_waves_in_order() {
+    fn switching_steps_the_first_oscillator_through_the_kinds_in_order() {
         // A new song starts on the triangle, so the first switch lands on
-        // the square. After the saw, it wraps around to the sine.
+        // the square. After the noise, it wraps around to the sine. The
+        // other oscillators stay as they are.
         let mut engine = Engine::new().unwrap();
         let mut profile = SoundProfile::new();
         let mut names = Vec::new();
-        for _ in 0..5 {
-            profile.switch_wave(&mut engine);
-            names.push(profile.wave().name());
+        for _ in 0..6 {
+            profile.switch_first_kind(&mut engine);
+            names.push(profile.oscillators()[0].kind.name());
         }
-        assert_eq!(names, ["square", "saw", "sine", "triangle", "square"]);
+        assert_eq!(names, ["square", "saw", "noise", "sine", "triangle", "square"]);
+        assert_eq!(profile.oscillators()[1..], START_OSCILLATORS[1..]);
 
-        // And the engine plays the wave it landed on.
+        // And the engine plays the kind it landed on.
         let mut square = Engine::new().unwrap();
-        square.set_wave(Wave::Square);
+        square.set_first_kind(Kind::Square);
         let switched = play_a4(&mut engine);
         let expected = play_a4(&mut square);
-        assert!(switched == expected, "the engine does not play the profile's wave");
+        assert!(switched == expected, "the engine does not play the profile's kind");
     }
 
     #[test]
-    fn setting_a_wave_plays_it() {
-        // The sound panel picks a wave by its tile, not by stepping.
+    fn setting_an_oscillator_plays_it() {
+        // The sound panel sets each oscillator's values, not only its kind.
         let mut engine = Engine::new().unwrap();
         let mut profile = SoundProfile::new();
-        profile.set_wave(&mut engine, Wave::Saw);
-        assert_eq!(profile.wave(), Wave::Saw);
+        let fifth_up = Oscillator {
+            kind: Kind::Saw,
+            level: 50,
+            octaves: 0,
+            half_steps: 7,
+            cents: -4,
+        };
+        profile.set_oscillator(&mut engine, 2, fifth_up);
+        assert_eq!(profile.oscillators()[2], fifth_up);
 
-        let mut saw = Engine::new().unwrap();
-        saw.set_wave(Wave::Saw);
+        let mut expected_engine = Engine::new().unwrap();
+        expected_engine.set_oscillator(2, fifth_up);
         let set = play_a4(&mut engine);
-        let expected = play_a4(&mut saw);
-        assert!(set == expected, "the engine does not play the wave the profile set");
+        let expected = play_a4(&mut expected_engine);
+        assert!(set == expected, "the engine does not play the oscillator the profile set");
     }
 
     #[test]
@@ -562,6 +592,14 @@ mod tests {
             },
         );
         profile.set_tuning(&mut engine, 500.0);
+        let too_far_off = Oscillator {
+            kind: Kind::Noise,
+            level: 150,
+            octaves: 5,
+            half_steps: -20,
+            cents: 300,
+        };
+        profile.set_oscillator(&mut engine, 1, too_far_off);
         let too_fast = Lfo {
             hz: 200.0,
             start: 150,
@@ -611,6 +649,14 @@ mod tests {
         assert_eq!(profile.key_tracking(), FULL_PERCENT);
         assert_eq!(profile.unison(), unison);
         assert_eq!(profile.tuning_hz(), TUNING_HIGHEST_HZ);
+        let at_the_edges = Oscillator {
+            kind: Kind::Noise,
+            level: FULL_PERCENT,
+            octaves: OSCILLATOR_MOST_OCTAVES,
+            half_steps: -OSCILLATOR_MOST_HALF_STEPS,
+            cents: OSCILLATOR_MOST_CENTS,
+        };
+        assert_eq!(profile.oscillators()[1], at_the_edges);
         let at_the_top = Lfo {
             hz: LFO_FASTEST_HZ,
             start: FULL_PERCENT,
@@ -629,8 +675,9 @@ mod tests {
         };
         assert_eq!(profile.vibrato_key_times(), longest);
 
-        // An LFO or connection past the last changes nothing.
+        // An oscillator, LFO or connection past the last changes nothing.
         let before = profile;
+        profile.set_oscillator(&mut engine, OSCILLATOR_COUNT, too_far_off);
         profile.set_lfo(&mut engine, LFO_COUNT, too_fast);
         profile.set_connection(&mut engine, CONNECTION_COUNT, too_far);
         assert_eq!(profile, before);

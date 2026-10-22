@@ -14,7 +14,7 @@
   import { BEATS_PER_BAR, barNow, isLoopPlaying, litBeat, loopBeats, type LayerView, type LoopNote, type SoundView } from "./sound";
 
   interface Props {
-    // The wave, the tempo, snap and the looper.
+    // The sound, the tempo, snap and the looper.
     sound: SoundView;
     // How many beats into the count-in, the recording or the repeat playing
     // now the looper is, counted on to this frame.

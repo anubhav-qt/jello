@@ -40,7 +40,8 @@ public:
     void note_on(int note, int velocity);
     void note_off(int note);
     void all_notes_off();
-    void set_wave(Wave wave);
+    // Oscillator `index`, from 0 (Synth::set_oscillator).
+    void set_oscillator(int index, const OscillatorSettings& oscillator);
     // Starts the click on beat 1 of a bar. Does nothing if it is already on.
     void start_click();
     // Stops the click. A tick already sounding rings out.

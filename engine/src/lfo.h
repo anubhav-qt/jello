@@ -116,6 +116,11 @@ struct Slide {
 // the same note always moves the same way.
 Slide lfo_height(const LfoSettings& settings, double cycles, std::uint64_t who, int lfo);
 
+// Turns a number into one that looks unrelated to it: SplitMix64's mixing
+// step, by Sebastiano Vigna (public domain). Numbers next to each other come
+// out far apart.
+std::uint64_t mix(std::uint64_t number);
+
 // A number from -1 to 1 that looks random but is always the same for the
 // same three numbers, so a render always sounds the same.
 double random_height(std::uint64_t who, std::uint64_t what, std::uint64_t when);

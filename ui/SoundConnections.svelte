@@ -8,6 +8,7 @@
   import { untrack } from "svelte";
   import {
     amountScale,
+    isPitch,
     lfoHeight,
     lfoIndexOf,
     movesLive,
@@ -40,7 +41,6 @@
     { words: "pitch", target: "pitch" },
     { words: "loudness", target: "loudness" },
     { words: "pan", target: "pan" },
-    { words: "wave", target: "wave" },
     { words: "attack", target: "loudness attack" },
     { words: "decay", target: "loudness decay" },
     { words: "sustain", target: "loudness sustain" },
@@ -48,6 +48,17 @@
     { words: "copies", target: "copies" },
     { words: "detune", target: "detune" },
     { words: "spread", target: "spread" },
+  ];
+  const OSCILLATOR_TARGETS = [
+    { words: "level 1", target: "osc 1 level" },
+    { words: "level 2", target: "osc 2 level" },
+    { words: "level 3", target: "osc 3 level" },
+    { words: "pitch 1", target: "osc 1 pitch" },
+    { words: "pitch 2", target: "osc 2 pitch" },
+    { words: "pitch 3", target: "osc 3 pitch" },
+    { words: "kind 1", target: "osc 1 kind" },
+    { words: "kind 2", target: "osc 2 kind" },
+    { words: "kind 3", target: "osc 3 kind" },
   ];
   const FILTER_TARGETS = [
     { words: "cutoff", target: "cutoff" },
@@ -59,6 +70,40 @@
     { words: "release", target: "filter release" },
     { words: "key tracking", target: "key tracking" },
   ];
+
+  // Moves shows one group of targets at a time, picked by its name. The
+  // LFOs' speeds are the last group.
+  type Group = "notes" | "oscillators" | "filter" | "lfo speed";
+
+  const GROUPS: { group: Group; name: string }[] = [
+    { group: "notes", name: "Notes" },
+    { group: "oscillators", name: "Oscillators" },
+    { group: "filter", name: "Filter" },
+    { group: "lfo speed", name: "LFO speed" },
+  ];
+
+  function isAmong(targets: { words: string; target: string }[], target: string): boolean {
+    for (const each of targets) {
+      if (each.target === target) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The group `target` is in.
+  function groupOf(target: string): Group {
+    if (isAmong(NOTE_TARGETS, target)) {
+      return "notes";
+    }
+    if (isAmong(OSCILLATOR_TARGETS, target)) {
+      return "oscillators";
+    }
+    if (isAmong(FILTER_TARGETS, target)) {
+      return "filter";
+    }
+    return "lfo speed";
+  }
 
   // Where each connection in use is in the list of all of them, in order.
   function usedPlaces(connections: ConnectionView[]): number[] {
@@ -89,8 +134,25 @@
   let connection = $derived(sound.connections[open]);
   let isOpen = $derived(connection.source !== "none");
 
+  // The group Moves shows: the open connection's target's group, until
+  // another group's name is clicked, and again once another connection
+  // opens.
+  let browsed: Group | null = $state(null);
+  let targetGroup = $derived(groupOf(connection.target));
+  let shownGroup = $derived.by(() => {
+    if (browsed !== null) {
+      return browsed;
+    }
+    return targetGroup;
+  });
+
+  function showGroup(group: Group) {
+    browsed = group;
+  }
+
   function openConnection(place: number) {
     open = place;
+    browsed = null;
     onLetGo();
   }
 
@@ -380,7 +442,7 @@
     return { x: LEFT, words: "ONE NOTE" };
   });
 
-  let snapsPitch = $derived(connection.target === "pitch");
+  let snapsPitch = $derived(isPitch(connection.target));
 </script>
 
 <!-- The tiles of every source, for Moved by and Scaled by. -->
@@ -493,24 +555,41 @@
           {/if}
         </span>
       </div>
-      <div class="sound-group-name">Notes</div>
-      {@render targetChips(NOTE_TARGETS)}
-      <div class="sound-group-name">Filter</div>
-      {@render targetChips(FILTER_TARGETS)}
-      <div class="sound-group-name">LFO speed</div>
-      <div class="sound-chips is-last">
-        {#each sound.lfos as _, index}
+      <!-- The groups' names: the shown one lavender, the target's white. -->
+      <div class="sound-group-tabs">
+        {#each GROUPS as each (each.group)}
           <button
             type="button"
-            class="sound-tile is-number"
-            class:is-chosen={connection.target === `lfo ${index + 1} speed`}
-            class:is-dim={cannotMoveSpeed(index)}
-            onclick={(event) => clickThenLetGo(event, () => setTarget(`lfo ${index + 1} speed`))}
+            class="sound-group-tab"
+            class:is-open={shownGroup === each.group}
+            class:has-target={targetGroup === each.group}
+            onclick={(event) => clickThenLetGo(event, () => showGroup(each.group))}
           >
-            {index + 1}
+            {each.name}
           </button>
         {/each}
       </div>
+      {#if shownGroup === "notes"}
+        {@render targetChips(NOTE_TARGETS)}
+      {:else if shownGroup === "oscillators"}
+        {@render targetChips(OSCILLATOR_TARGETS)}
+      {:else if shownGroup === "filter"}
+        {@render targetChips(FILTER_TARGETS)}
+      {:else}
+        <div class="sound-chips">
+          {#each sound.lfos as _, index}
+            <button
+              type="button"
+              class="sound-tile is-number"
+              class:is-chosen={connection.target === `lfo ${index + 1} speed`}
+              class:is-dim={cannotMoveSpeed(index)}
+              onclick={(event) => clickThenLetGo(event, () => setTarget(`lfo ${index + 1} speed`))}
+            >
+              {index + 1}
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <div class="sound-module">

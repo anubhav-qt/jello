@@ -10,16 +10,6 @@ constexpr double pi = 3.14159265358979323846;
 // worked out as a fraction like 1/3, can land a hair before it.
 constexpr double step_nudge = 1e-9;
 
-// Turns a number into one that looks unrelated to it: SplitMix64's mixing
-// step, by Sebastiano Vigna (public domain). Numbers next to each other come
-// out far apart.
-std::uint64_t mix(std::uint64_t number) {
-    std::uint64_t x = number + 0x9e3779b97f4a7c15ULL;
-    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-    return x ^ (x >> 31);
-}
-
 // A shape that holds one height for each stretch of its cycle and jumps
 // between them, `into` of the way through a stretch, from 0 to 1. With
 // smoothing, the first `smooth` share of the stretch slides from `before`,
@@ -147,6 +137,13 @@ Slide lfo_height(const LfoSettings& settings, double cycles, std::uint64_t who, 
     } else {
         return steps(settings, phase);
     }
+}
+
+std::uint64_t mix(std::uint64_t number) {
+    std::uint64_t x = number + 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
 }
 
 double random_height(std::uint64_t who, std::uint64_t what, std::uint64_t when) {

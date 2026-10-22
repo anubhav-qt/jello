@@ -6,10 +6,10 @@
 
 #include "filter.h"
 #include "lfo.h"
+#include "oscillator.h"
 #include "routing.h"
 #include "unison.h"
 #include "voice.h"
-#include "wave.h"
 
 // The instrument as a whole (docs/adr/0009-how-notes-become-sound.md). The
 // conductor passes it notes on the audio thread, and it turns them into
@@ -59,9 +59,10 @@ public:
     // Every layer starts at 1. Live notes and the song always play at 1.
     void set_layer_volume(int layer, float volume);
 
-    // Notes started after this play `wave`. Notes started before it keep
-    // theirs.
-    void set_wave(Wave wave);
+    // Notes started after this play oscillator `index`, from 0, as
+    // `oscillator` says (docs/adr/0035-oscillators-with-kinds.md). Notes
+    // started before it keep theirs.
+    void set_oscillator(int index, const OscillatorSettings& oscillator);
 
     // Moves the filter's cutoff and resonance (docs/adr/0028-a-low-pass-filter.md).
     // Every note hears it, even those already sounding, each gliding there
@@ -154,8 +155,8 @@ private:
     // thread never allocates.
     std::vector<Voice> voices_;
 
-    // How new notes sound: their wave, envelopes, key tracking, copies and
-    // tuning. It starts where a new song does.
+    // How new notes sound: their oscillators, envelopes, key tracking,
+    // copies and tuning. It starts where a new song does.
     NoteSound note_sound_{};
 
     // The filter's settings, and where every voice's filter glides to.

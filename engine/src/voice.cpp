@@ -14,7 +14,7 @@ constexpr float voice_level = 0.35f;
 constexpr int volume_ease_ms = 10;
 
 // How long a gap takes to shrink away, the same as a new song's loudness
-// attack. Short enough that the new wave takes over at once, long enough not
+// attack. Short enough that the new note takes over at once, long enough not
 // to click. Part of how a voice takes over without a click, not of how a
 // song sounds, so it stays the same for every song.
 constexpr int gap_ms = 5;
@@ -23,6 +23,8 @@ constexpr int gap_ms = 5;
 // the golden ratio's share of a cycle. Steps of it, wrapped back into one
 // cycle, never land close together, so the copies never start lined up.
 // Lined up, every note would start as one loud wave that then smears out.
+// A copy's oscillators all start together, so like waves at the same pitch
+// add up instead of cancelling.
 constexpr double copy_start_step = 0.6180339887498949;
 
 // How many cents make a half step, and so 12 times as many an octave.
@@ -43,13 +45,11 @@ constexpr double most_pitch_cents = 4800.0;
 // stops behaving.
 constexpr double highest_share_of_rate = 0.45;
 
-// How many waves there are, for stepping through them.
-constexpr int wave_count = 4;
-
 // What a note's random numbers are for (random_height's `what`). Each LFO's
 // own random heights use its number, from 0; these come after.
 constexpr std::uint64_t spread_what = lfo_count;  // plus the LFO's number
 constexpr std::uint64_t random_what = 2 * lfo_count;
+constexpr std::uint64_t noise_what = 2 * lfo_count + 1;  // plus the copy's and oscillator's place
 
 // A hair before the end of a cycle, where an LFO set to "once" holds.
 constexpr double once_end_nudge = 1e-9;
@@ -83,15 +83,15 @@ double one_way(double both_ways) {
     return (both_ways + 1.0) / 2.0;
 }
 
-// `wave` moved `steps` steps through sine, triangle, square and saw, round
-// and round. Steps are rounded to whole ones.
-Wave moved_wave(Wave wave, double steps) {
-    int index = static_cast<int>(wave) + static_cast<int>(std::round(steps));
-    index = index % wave_count;
+// `kind` moved `steps` steps through sine, triangle, square, saw and
+// noise, round and round. Steps are rounded to whole ones.
+Kind moved_kind(Kind kind, double steps) {
+    int index = static_cast<int>(kind) + static_cast<int>(std::round(steps));
+    index = index % kind_count;
     if (index < 0) {
-        index += wave_count;
+        index += kind_count;
     }
-    return static_cast<Wave>(index);
+    return static_cast<Kind>(index);
 }
 
 // A stage `ms` long moved by `octaves` of time: each one doubles it. Kept
@@ -161,7 +161,9 @@ Voice::Voice(int sample_rate)
     // always did.
     for (int i = 0; i < unison_most_copies; i++) {
         double start = i * copy_start_step;
-        copies_[i].phase = start - std::floor(start);
+        for (int o = 0; o < oscillator_count; o++) {
+            copies_[i].phases[o] = start - std::floor(start);
+        }
     }
     gain_.head_to(1.0, 0);
 }
@@ -206,8 +208,13 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     NoteSound moved = moved_sound(sound, moves);
 
     // The phases are left where they are, so a voice that is still sounding
-    // carries on from the same point in its wave instead of jumping.
-    wave_ = moved.wave;
+    // carries on from the same point in its waves instead of jumping.
+    for (int o = 0; o < oscillator_count; o++) {
+        const OscillatorSettings& oscillator = moved.oscillators[o];
+        kinds_[o] = oscillator.kind;
+        offset_cents_[o] = offset_cents(oscillator);
+        levels_[o] = oscillator.level;
+    }
     hz_ = note_to_frequency(note, moved.a4_hz);
     copy_count_ = moved.unison.copies;
     copy_scale_ = 1.0 / std::sqrt(static_cast<double>(moved.unison.copies));
@@ -223,11 +230,19 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     envelope_.start(velocity_to_peak(velocity));
     filter_.start(note, !was_sounding, filter, moved.filter_envelope, moved.key_tracking);
 
+    // Every copy's noise starts a new run of heights for the note.
+    for (int c = 0; c < unison_most_copies; c++) {
+        for (int o = 0; o < oscillator_count; o++) {
+            std::uint64_t place = static_cast<std::uint64_t>(c * oscillator_count + o);
+            copies_[c].noises[o].start(press_number_, noise_what + place);
+        }
+    }
+
     // The live settings start right where the routing list puts them, which
     // tunes and places the copies.
     head_for(moves, 0);
 
-    // A new wave can be at a different height here. The gap makes up the
+    // The new kinds can be at a different height here. The gap makes up the
     // difference, so the sound carries on from where it was, then shrinks
     // away. A silent voice was heading nowhere, so it has no gap.
     if (was_sounding) {
@@ -339,18 +354,27 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
             gap_samples_left_ -= 1;
         }
 
-        // Move every copy along its wave. Wrapping back to 0 keeps the
-        // numbers small and precise. Then every moved setting takes its
-        // step along its straight line.
+        // Move every copy's oscillators along their waves, and its noise on
+        // to the next sample. Wrapping back to 0 keeps the numbers small and
+        // precise. Then every moved setting takes its step along its
+        // straight line.
         for (int c = 0; c < copy_count_; c++) {
             Copy& copy = copies_[c];
-            copy.phase += copy.phase_step.value;
-            if (copy.phase >= 1.0) {
-                copy.phase -= 1.0;
+            for (int o = 0; o < oscillator_count; o++) {
+                copy.phases[o] += copy.phase_steps[o].value;
+                if (copy.phases[o] >= 1.0) {
+                    copy.phases[o] -= 1.0;
+                }
+                copy.phase_steps[o].next();
+                if (kinds_[o] == Kind::noise) {
+                    copy.noises[o].next();
+                }
             }
-            copy.phase_step.next();
             copy.left.next();
             copy.right.next();
+        }
+        for (int o = 0; o < oscillator_count; o++) {
+            oscillator_levels_[o].next();
         }
         gain_.next();
         cutoff_move_.next();
@@ -448,7 +472,10 @@ Voice::Moves Voice::add_moves(const Routing& routing, const Readings& readings, 
 
 NoteSound Voice::moved_sound(const NoteSound& sound, const Moves& moves) const {
     NoteSound moved = sound;
-    moved.wave = moved_wave(sound.wave, moves.of(RoutingTarget::wave));
+    for (int o = 0; o < oscillator_count; o++) {
+        Kind kind = sound.oscillators[o].kind;
+        moved.oscillators[o].kind = moved_kind(kind, moves.of(oscillator_kind(o)));
+    }
 
     int copies = sound.unison.copies + static_cast<int>(std::round(moves.of(RoutingTarget::copies)));
     moved.unison.copies = std::clamp(copies, 1, unison_most_copies);
@@ -476,16 +503,28 @@ void Voice::head_for(const Moves& moves, int samples) {
     double pan = moves.of(RoutingTarget::pan);
     double highest_hz = sample_rate_ * highest_share_of_rate;
 
+    // Each oscillator is tuned its own distance from the note, moved by its
+    // own pitch's move.
+    std::array<double, oscillator_count> oscillator_cents{};
+    for (int o = 0; o < oscillator_count; o++) {
+        double move = std::clamp(moves.of(oscillator_pitch(o)), -most_pitch_cents, most_pitch_cents);
+        oscillator_cents[o] = offset_cents_[o] + move;
+    }
+
     for (int i = 0; i < copy_count_; i++) {
         Copy& copy = copies_[i];
         double place = place_among(i, copy_count_);
 
         // The lowest copy is tuned the detune below the note and the highest
-        // as far above, and every copy is moved by the pitch's move.
+        // as far above, and every copy is moved by the pitch's move. Then
+        // each of its oscillators is tuned from there.
         double copy_cents = place * detune + cents;
-        double copy_hz = hz_ * std::exp2(copy_cents / cents_per_octave);
-        copy_hz = std::min(copy_hz, highest_hz);
-        copy.phase_step.head_to(copy_hz / sample_rate_, samples);
+        for (int o = 0; o < oscillator_count; o++) {
+            double cents_here = copy_cents + oscillator_cents[o];
+            double hz = hz_ * std::exp2(cents_here / cents_per_octave);
+            hz = std::min(hz, highest_hz);
+            copy.phase_steps[o].head_to(hz / sample_rate_, samples);
+        }
 
         // Below 0 is toward the left speaker, above 0 toward the right. Each
         // side gets a square root, so the two squared always add up to 2:
@@ -494,6 +533,12 @@ void Voice::head_for(const Moves& moves, int samples) {
         double copy_pan = std::clamp(place * spread + pan, -1.0, 1.0);
         copy.left.head_to(std::sqrt(1.0 - copy_pan), samples);
         copy.right.head_to(std::sqrt(1.0 + copy_pan), samples);
+    }
+
+    // An oscillator's level goes from silent to full.
+    for (int o = 0; o < oscillator_count; o++) {
+        double level = std::clamp(levels_[o] + moves.of(oscillator_level(o)), 0.0, 1.0);
+        oscillator_levels_[o].head_to(level, samples);
     }
 
     // Loudness only ever goes down, to silence at most.
@@ -520,11 +565,27 @@ void Voice::head_for(const Moves& moves, int samples) {
     }
 }
 
+double Voice::oscillator_height(const Copy& copy, int index) const {
+    Kind kind = kinds_[index];
+    if (kind == Kind::noise) {
+        return copy.noises[index].height() * noise_trim;
+    }
+    Wave wave = wave_of(kind);
+    return wave_height(wave, copy.phases[index], copy.phase_steps[index].value) * wave_trim(wave);
+}
+
 Stereo Voice::height_now() const {
     Stereo sum;
     for (int i = 0; i < copy_count_; i++) {
         const Copy& copy = copies_[i];
-        double height = wave_height(wave_, copy.phase, copy.phase_step.value) * wave_trim(wave_);
+        double height = 0.0;
+        for (int o = 0; o < oscillator_count; o++) {
+            // A silent oscillator adds nothing, so it is skipped.
+            double level = oscillator_levels_[o].value;
+            if (level > 0.0) {
+                height += oscillator_height(copy, o) * level;
+            }
+        }
         sum.left += height * copy.left.value;
         sum.right += height * copy.right.value;
     }

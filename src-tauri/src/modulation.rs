@@ -3,6 +3,8 @@
 // name for every shape, source and target, so song files and the AI harness
 // can write them later. src/engine.rs sends them on to the C++ engine.
 
+use crate::engine::OSCILLATOR_COUNT;
+
 // How many LFOs and connections a song has, and the most steps an LFO's
 // steps shape can have (`JELLO_LFO_COUNT`, `JELLO_CONNECTION_COUNT` and
 // `JELLO_LFO_MOST_STEPS` in engine/include/jello_engine.h).
@@ -281,7 +283,7 @@ pub enum Unit {
     Percent,
     // Each one doubles: the cutoff's pitch, an LFO's speed, or a time.
     Octaves,
-    // Whole steps through the waves.
+    // Whole steps through the oscillators' kinds.
     Steps,
     // Whole copies.
     Copies,
@@ -299,8 +301,8 @@ impl Unit {
     }
 }
 
-// What a connection moves. Those before `Wave` move live, while a note
-// sounds; the rest are read once as each note starts.
+// What a connection moves. Those before `OscillatorKind` move live, while a
+// note sounds; the rest are read once as each note starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Pitch,
@@ -316,7 +318,12 @@ pub enum Target {
     FilterSustain,
     // LFO number n's speed, from 0. Called "lfo 1 speed" to "lfo 8 speed".
     LfoSpeed(usize),
-    Wave,
+    // Oscillator number n's level, pitch and kind, from 0
+    // (docs/adr/0035-oscillators-with-kinds.md). Called "osc 1 level",
+    // "osc 1 pitch" and "osc 1 kind", and so on to "osc 3 kind".
+    OscillatorLevel(usize),
+    OscillatorPitch(usize),
+    OscillatorKind(usize),
     Copies,
     LoudnessAttack,
     LoudnessDecay,
@@ -327,8 +334,9 @@ pub enum Target {
 }
 
 impl Target {
-    // Every target but the LFOs' speeds, which come in LFO_COUNT.
-    pub(crate) const OTHERS: [Target; 19] = [
+    // Every target but the LFOs' speeds, which come in LFO_COUNT, and the
+    // oscillators' targets, which come in OSCILLATOR_COUNT.
+    pub(crate) const OTHERS: [Target; 18] = [
         Target::Pitch,
         Target::Loudness,
         Target::Pan,
@@ -340,7 +348,6 @@ impl Target {
         Target::LoudnessSustain,
         Target::FilterAmount,
         Target::FilterSustain,
-        Target::Wave,
         Target::Copies,
         Target::LoudnessAttack,
         Target::LoudnessDecay,
@@ -364,7 +371,9 @@ impl Target {
             Target::FilterAmount => String::from("filter amount"),
             Target::FilterSustain => String::from("filter sustain"),
             Target::LfoSpeed(index) => format!("lfo {} speed", index + 1),
-            Target::Wave => String::from("wave"),
+            Target::OscillatorLevel(index) => format!("osc {} level", index + 1),
+            Target::OscillatorPitch(index) => format!("osc {} pitch", index + 1),
+            Target::OscillatorKind(index) => format!("osc {} kind", index + 1),
             Target::Copies => String::from("copies"),
             Target::LoudnessAttack => String::from("loudness attack"),
             Target::LoudnessDecay => String::from("loudness decay"),
@@ -388,6 +397,18 @@ impl Target {
                 return Some(speed);
             }
         }
+        for index in 0..OSCILLATOR_COUNT {
+            let oscillator_targets = [
+                Target::OscillatorLevel(index),
+                Target::OscillatorPitch(index),
+                Target::OscillatorKind(index),
+            ];
+            for target in oscillator_targets {
+                if target.name() == name {
+                    return Some(target);
+                }
+            }
+        }
         None
     }
 
@@ -406,21 +427,28 @@ impl Target {
             Target::FilterAmount => 9,
             Target::FilterSustain => 10,
             Target::LfoSpeed(index) => 11 + index as i32,
-            Target::Wave => 19,
-            Target::Copies => 20,
-            Target::LoudnessAttack => 21,
-            Target::LoudnessDecay => 22,
-            Target::LoudnessRelease => 23,
-            Target::FilterAttack => 24,
-            Target::FilterDecay => 25,
-            Target::FilterRelease => 26,
+            Target::OscillatorLevel(index) => 19 + index as i32,
+            Target::OscillatorPitch(index) => 22 + index as i32,
+            Target::OscillatorKind(index) => 25 + index as i32,
+            Target::Copies => 28,
+            Target::LoudnessAttack => 29,
+            Target::LoudnessDecay => 30,
+            Target::LoudnessRelease => 31,
+            Target::FilterAttack => 32,
+            Target::FilterDecay => 33,
+            Target::FilterRelease => 34,
         }
     }
 
-    // The same target, with an LFO's number brought within LFO_COUNT.
+    // The same target, with an LFO's number brought within LFO_COUNT and
+    // an oscillator's within OSCILLATOR_COUNT.
     pub fn within_range(self) -> Target {
+        let last_oscillator = OSCILLATOR_COUNT - 1;
         match self {
             Target::LfoSpeed(index) => Target::LfoSpeed(index.min(LFO_COUNT - 1)),
+            Target::OscillatorLevel(index) => Target::OscillatorLevel(index.min(last_oscillator)),
+            Target::OscillatorPitch(index) => Target::OscillatorPitch(index.min(last_oscillator)),
+            Target::OscillatorKind(index) => Target::OscillatorKind(index.min(last_oscillator)),
             other => other,
         }
     }
@@ -428,6 +456,7 @@ impl Target {
     pub fn unit(self) -> Unit {
         match self {
             Target::Pitch => Unit::Cents,
+            Target::OscillatorPitch(_) => Unit::Cents,
             Target::Detune => Unit::Cents,
             Target::Cutoff => Unit::Octaves,
             Target::FilterAmount => Unit::Octaves,
@@ -438,7 +467,7 @@ impl Target {
             Target::FilterAttack => Unit::Octaves,
             Target::FilterDecay => Unit::Octaves,
             Target::FilterRelease => Unit::Octaves,
-            Target::Wave => Unit::Steps,
+            Target::OscillatorKind(_) => Unit::Steps,
             Target::Copies => Unit::Copies,
             _ => Unit::Percent,
         }
@@ -448,10 +477,12 @@ impl Target {
     pub fn most_amount(self) -> f32 {
         match self {
             Target::Pitch => 4800.0,
+            Target::OscillatorPitch(_) => 4800.0,
             Target::Detune => 50.0,
             Target::Cutoff => 10.0,
             Target::FilterAmount => 8.0,
-            Target::Wave => 3.0,
+            // Round through all five kinds.
+            Target::OscillatorKind(_) => 4.0,
             Target::Copies => 6.0,
             _ => {
                 // An LFO's speed or an envelope's time, both in octaves, run
@@ -476,7 +507,8 @@ pub struct Connection {
     // Both ways, the target moves from -amount to amount; one way, from 0
     // to amount.
     pub one_way: bool,
-    // For pitch only: the move is rounded to whole half steps.
+    // For the pitch targets only, the note's and each oscillator's: the
+    // move is rounded to whole half steps.
     pub snap: bool,
     // Another source the amount is multiplied by, read one way, from 0 (no
     // move) to 100% (the full amount). None leaves it full.
@@ -526,13 +558,23 @@ mod tests {
         sources
     }
 
-    // Every target, the LFOs' speeds included, in the C API's order.
+    // Every target, the LFOs' speeds and the oscillators' targets included,
+    // in the C API's order.
     fn every_target() -> Vec<Target> {
         let mut targets = Vec::new();
         for target in Target::OTHERS {
-            if target == Target::Wave {
+            if target == Target::Copies {
                 for index in 0..LFO_COUNT {
                     targets.push(Target::LfoSpeed(index));
+                }
+                for index in 0..OSCILLATOR_COUNT {
+                    targets.push(Target::OscillatorLevel(index));
+                }
+                for index in 0..OSCILLATOR_COUNT {
+                    targets.push(Target::OscillatorPitch(index));
+                }
+                for index in 0..OSCILLATOR_COUNT {
+                    targets.push(Target::OscillatorKind(index));
                 }
             }
             targets.push(target);
@@ -556,6 +598,8 @@ mod tests {
         }
         assert_eq!(Source::from_name("lfo 9"), None);
         assert_eq!(Target::from_name("lfo 0 speed"), None);
+        assert_eq!(Target::from_name("osc 4 level"), None);
+        assert_eq!(Target::from_name("wave"), None);
     }
 
     #[test]
@@ -573,7 +617,7 @@ mod tests {
             assert_eq!(source.number(), number as i32, "{}", source.name());
         }
         let targets = every_target();
-        assert_eq!(targets.len(), 27);
+        assert_eq!(targets.len(), 35);
         for (number, target) in targets.iter().enumerate() {
             assert_eq!(target.number(), number as i32, "{}", target.name());
         }
@@ -585,6 +629,8 @@ mod tests {
         assert_eq!(Source::Lfo(3).within_range(), Source::Lfo(3));
         assert_eq!(Source::Random.within_range(), Source::Random);
         assert_eq!(Target::LfoSpeed(20).within_range(), Target::LfoSpeed(7));
+        assert_eq!(Target::OscillatorKind(5).within_range(), Target::OscillatorKind(2));
+        assert_eq!(Target::OscillatorLevel(1).within_range(), Target::OscillatorLevel(1));
         assert_eq!(Target::Pan.within_range(), Target::Pan);
     }
 }

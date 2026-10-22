@@ -1,6 +1,6 @@
 # 0033: The sound panel
 
-- Status: Accepted
+- Status: Accepted; the wave tiles moved to an Oscillators page by 0035
 - Date: 2026-10-22
 
 The sound's dev panel is replaced by a designed sound panel, approved through

@@ -1,8 +1,9 @@
 // What Rust says about the sound after each key press (`SoundView` in
 // src-tauri/src/commands.rs).
 export interface SoundView {
-  // The wave new notes play, like "saw".
-  wave: string;
+  // The OSCILLATOR_COUNT oscillators new notes play, in order
+  // (docs/adr/0035-oscillators-with-kinds.md).
+  oscillators: OscillatorView[];
   // The song's tempo, in beats per minute.
   tempo: number;
   // Whether loops snap to the beat: each time around, the loop plays its
@@ -24,6 +25,36 @@ export interface SoundView {
   connections: ConnectionView[];
   vibrato_key: VibratoKeyView;
 }
+
+// One oscillator (`OscillatorView` in src-tauri/src/commands.rs).
+export interface OscillatorView {
+  // "sine", "triangle", "square", "saw" or "noise".
+  kind: string;
+  // In percent: at 0 it is silent.
+  level: number;
+  // How far it is tuned from the note, each from minus to plus its most
+  // below. Noise has no pitch, so they do nothing to it.
+  octaves: number;
+  half_steps: number;
+  cents: number;
+}
+
+// An oscillator as the sound panel sends it (`set_oscillator` in
+// src-tauri/src/commands.rs).
+export interface Oscillator {
+  kind: string;
+  level: number;
+  octaves: number;
+  halfSteps: number;
+  cents: number;
+}
+
+// How many oscillators play each note, and how far each can be tuned from
+// it, either way (`OSCILLATOR_` in src-tauri/src/engine.rs).
+export const OSCILLATOR_COUNT = 3;
+export const OSCILLATOR_MOST_OCTAVES = 3;
+export const OSCILLATOR_MOST_HALF_STEPS = 12;
+export const OSCILLATOR_MOST_CENTS = 100;
 
 // The loudness envelope new notes start with (`LoudnessView` in
 // src-tauri/src/commands.rs).
@@ -201,7 +232,8 @@ export const VIBRATO_KEY_LONGEST_MS = 10000;
 // What the sound panel sends to Rust. ui/main.ts sends each in order, and
 // Rust's answer comes back through `showSound`.
 export interface SoundSender {
-  setWave(wave: string): void;
+  // `index` counts from 0.
+  setOscillator(index: number, oscillator: Oscillator): void;
   setLoudnessEnvelope(envelope: LoudnessEnvelope): void;
   // `cutoffHz` is middle C's cutoff, and `resonance` is in percent.
   setFilter(cutoffHz: number, resonance: number): void;

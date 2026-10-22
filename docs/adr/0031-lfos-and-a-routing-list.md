@@ -1,6 +1,6 @@
 # 0031: LFOs and a routing list
 
-- Status: Accepted
+- Status: Accepted; the wave target superseded by the oscillators' kinds (0035)
 - Date: 2026-10-22
 
 Every song gets 8 LFOs (low frequency oscillators: slow waves that move a

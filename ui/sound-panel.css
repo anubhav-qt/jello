@@ -251,7 +251,8 @@
   color: var(--text-3);
 }
 
-/* The key that steps the wave, drawn like a small key cap. */
+/* The key that steps the first oscillator's kind, drawn like a small key
+   cap. */
 .sound-key-chip {
   display: inline-block;
   padding: 1px 5px;
@@ -480,36 +481,18 @@
   margin-top: 4px;
 }
 
-/* Notes page: the wave tiles, two by two. */
-.sound-waves {
-  flex: 1 1 auto;
+/* Oscillators page: the five kind tiles under each drawing, drawn like
+   the LFO shapes. */
+.sound-kinds {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  margin-top: 10px;
 }
 
-.sound-wave {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.sound-wave svg {
-  width: 44px;
-  height: 22px;
-  overflow: visible;
-}
-
-.sound-wave .sound-lit {
-  stroke: rgba(var(--ink), 0.45);
-  filter: none;
-}
-
-.sound-wave.is-chosen .sound-lit {
-  stroke: rgba(var(--ink), 0.92);
-  filter: drop-shadow(0 0 3px rgba(var(--ink), 0.45));
+/* A silent oscillator's wave is a flat line, dimmed. */
+.sound-drawing.is-silent .sound-lit {
+  opacity: 0.32;
 }
 
 /* The unison's copies: the middle one brightest. */
@@ -527,9 +510,8 @@
   fill: rgba(var(--ink), 0.92);
 }
 
-/* Tiles to choose from: the waves, the LFO shapes, the sources and the
+/* Tiles to choose from: the kinds, the LFO shapes, the sources and the
    targets. The chosen one is lavender. */
-.sound-wave,
 .sound-shape,
 .sound-tile,
 .sound-choice button {
@@ -541,7 +523,6 @@
     color 600ms ease-out;
 }
 
-.sound-wave:hover,
 .sound-shape:hover,
 .sound-tile:hover,
 .sound-choice button:hover {
@@ -552,21 +533,12 @@
     color 40ms;
 }
 
-.sound-wave.is-chosen,
 .sound-shape.is-chosen,
 .sound-tile.is-chosen,
 .sound-choice button.is-chosen {
   border-color: rgba(var(--accent), 0.75);
   background: rgba(var(--accent), 0.1);
   color: rgb(var(--accent));
-}
-
-.sound-wave {
-  font-family: "Doto", monospace;
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 
 /* A shape drawn small, like in the LFO list. */
@@ -830,27 +802,58 @@
   stroke: rgba(var(--ink), 0.92);
 }
 
-/* The targets, in groups that wrap. */
-.sound-group-name {
-  margin: 0 0 5px;
+/* The targets' groups, two by two: the shown one lavender and dotted
+   under like the page tabs, the one holding the target white. */
+.sound-group-tabs {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  gap: 4px 16px;
+  margin-bottom: 9px;
+}
+
+.sound-group-tab {
+  position: relative;
+  height: 16px;
   font-family: "Doto", monospace;
   font-size: 10px;
   font-weight: 700;
-  line-height: 12px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: rgba(var(--ink), 0.3);
+  transition: color 600ms ease-out;
 }
 
+.sound-group-tab:hover {
+  color: rgba(var(--ink), 0.6);
+  transition: color 40ms;
+}
+
+.sound-group-tab.has-target {
+  color: rgba(var(--ink), 0.92);
+}
+
+.sound-group-tab.is-open {
+  color: rgb(var(--accent));
+}
+
+.sound-group-tab.is-open::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0.12em;
+  bottom: -1px;
+  height: 3px;
+  background-image: radial-gradient(circle, rgb(var(--accent)) 0.9px, transparent 1.3px);
+  background-size: 4px 3px;
+  background-repeat: repeat-x;
+}
+
+/* The shown group's targets, wrapping. */
 .sound-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 3px 4px;
-  margin-bottom: 7px;
-}
-
-.sound-chips.is-last {
-  margin-bottom: 0;
 }
 
 /* An LFO's speed, as a target: just its number. */

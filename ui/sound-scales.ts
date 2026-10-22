@@ -181,6 +181,31 @@ export function evenScale(lowest: number, highest: number, step: number, one: st
 // A percent, from 0 to 100.
 export const PERCENT = evenScale(0, 100, 1, "%", "%");
 
+// A whole number from minus to plus `most`, on a row lit either way from
+// its middle zero, like an oscillator's octaves. A step is 1. Its unit is
+// `one` for exactly one either way and `many` otherwise.
+export function signedScale(most: number, one: string, many: string): Scale {
+  return {
+    share(value: number) {
+      return value / most;
+    },
+    at(share: number) {
+      const value = Math.round(share * most);
+      return within(value, -most, most);
+    },
+    step(value: number, steps: number) {
+      const stepped = Math.round(value) + steps;
+      return within(stepped, -most, most);
+    },
+    words(value: number) {
+      return String(value);
+    },
+    unit(value: number) {
+      return unitFor(Math.abs(value), one, many);
+    },
+  };
+}
+
 // The loudness envelope's times. It needs at least 1 ms, or a note would
 // click.
 export const LOUDNESS_TIME = timeScale(LOUDNESS_SHORTEST_MS, LOUDNESS_LONGEST_MS);
@@ -384,7 +409,8 @@ export const LFO_DELAY_BEATS = listScale([0, ...BEAT_LENGTHS], ["0", ...BEAT_WOR
 
 // The targets moved in cents and in octaves (`Target::unit` in
 // src-tauri/src/modulation.rs). LFOs' speeds, "lfo 1 speed" and so on, are
-// in octaves too.
+// in octaves too, and the oscillators' pitches, "osc 1 pitch" and so on, in
+// cents.
 const CENTS_TARGETS = ["pitch", "detune"];
 const OCTAVE_TARGETS = [
   "cutoff",
@@ -398,9 +424,9 @@ const OCTAVE_TARGETS = [
 ];
 
 // The targets read once as each note starts. Every other one moves while
-// the note sounds.
+// the note sounds. The oscillators' kinds, "osc 1 kind" and so on, are read
+// as it starts too.
 const START_TARGETS = [
-  "wave",
   "copies",
   "loudness attack",
   "loudness decay",
@@ -410,10 +436,33 @@ const START_TARGETS = [
   "filter release",
 ];
 
+// Whether `target` is an oscillator's kind, like "osc 2 kind".
+function isOscillatorKind(target: string): boolean {
+  if (!target.startsWith("osc ")) {
+    return false;
+  }
+  return target.endsWith(" kind");
+}
+
+// Whether `target` moves a pitch: the note's, or an oscillator's, like
+// "osc 2 pitch". Only those can snap to notes.
+export function isPitch(target: string): boolean {
+  if (target === "pitch") {
+    return true;
+  }
+  if (!target.startsWith("osc ")) {
+    return false;
+  }
+  return target.endsWith(" pitch");
+}
+
 // The unit a connection moves `target` in: "cents", "octaves", "steps"
-// (through the waves), "copies" or "%" (of its whole range).
+// (through the oscillators' kinds), "copies" or "%" (of its whole range).
 export function targetUnit(target: string): string {
   if (CENTS_TARGETS.includes(target)) {
+    return "cents";
+  }
+  if (isPitch(target)) {
     return "cents";
   }
   if (OCTAVE_TARGETS.includes(target)) {
@@ -422,7 +471,7 @@ export function targetUnit(target: string): string {
   if (target.endsWith(" speed")) {
     return "octaves";
   }
-  if (target === "wave") {
+  if (isOscillatorKind(target)) {
     return "steps";
   }
   if (target === "copies") {
@@ -434,13 +483,16 @@ export function targetUnit(target: string): string {
 // Whether a connection moves `target` while a note sounds, rather than
 // once as it starts.
 export function movesLive(target: string): boolean {
+  if (isOscillatorKind(target)) {
+    return false;
+  }
   return !START_TARGETS.includes(target);
 }
 
 // The most a connection can move `target` either way, in its unit
 // (`Target::most_amount` in src-tauri/src/modulation.rs).
 export function mostAmount(target: string): number {
-  if (target === "pitch") {
+  if (isPitch(target)) {
     return 4800;
   }
   if (target === "detune") {
@@ -452,8 +504,9 @@ export function mostAmount(target: string): number {
   if (target === "filter amount") {
     return 8;
   }
-  if (target === "wave") {
-    return 3;
+  // Round through all five kinds.
+  if (isOscillatorKind(target)) {
+    return 4;
   }
   if (target === "copies") {
     return 6;
@@ -656,6 +709,16 @@ export function shapeJumps(shape: string): boolean {
   }
   return shape !== "smooth random";
 }
+
+// The oscillators' kinds, in Rust's order, each with a small drawing of it,
+// 20 by 12, for the kind tiles.
+export const KINDS = [
+  { name: "sine", glyph: "M1 6 C 4 -3, 7 -3, 10 6 S 16 15, 19 6" },
+  { name: "triangle", glyph: "M1 6 L 5.5 1 L 14.5 11 L 19 6" },
+  { name: "square", glyph: "M1 11 L 1 1 L 10 1 L 10 11 L 19 11 L 19 1" },
+  { name: "saw", glyph: "M1 6 L 10 1 L 10 11 L 19 6" },
+  { name: "noise", glyph: "M1 6 L 3 2 L 5 9 L 7 4 L 9 11 L 11 3 L 13 8 L 15 1 L 17 7 L 19 5" },
+];
 
 // The LFO shapes, in Rust's order, each with a small drawing of it, 20 by
 // 12, for the LFO lists and the shape tiles.

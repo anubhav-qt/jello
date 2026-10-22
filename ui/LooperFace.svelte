@@ -6,7 +6,7 @@
   import { isRecording, litBeat, looperFill, looperWords, type SoundView } from "./sound";
 
   interface Props {
-    // The wave, the tempo and the looper, or null until Rust has said.
+    // The sound, the tempo and the looper, or null until Rust has said.
     sound: SoundView | null;
     // How many beats into the count-in, the recording or the repeat playing
     // now the looper is, counted on to this frame.

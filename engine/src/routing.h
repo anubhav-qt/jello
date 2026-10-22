@@ -50,8 +50,8 @@ enum class RoutingSource {
 };
 
 // What a connection moves, each in its own units. The first ones move live,
-// while a note sounds; the last ones, from `wave` on, are read once as each
-// note starts.
+// while a note sounds; the last ones, from `oscillator_1_kind` on, are read
+// once as each note starts.
 enum class RoutingTarget {
     pitch,             // cents: hundredths of a half step
     loudness,          // a share: 1 moves it all the way to silence
@@ -72,8 +72,16 @@ enum class RoutingTarget {
     lfo_6_speed,
     lfo_7_speed,
     lfo_8_speed,
-    wave,              // whole steps through sine, triangle, square, saw, and round again
-    copies,            // whole copies
+    oscillator_1_level,  // a share: 1 moves it from silent to full
+    oscillator_2_level,
+    oscillator_3_level,
+    oscillator_1_pitch,  // cents
+    oscillator_2_pitch,
+    oscillator_3_pitch,
+    oscillator_1_kind,   // whole steps through sine, triangle, square, saw, noise, and round again
+    oscillator_2_kind,
+    oscillator_3_kind,
+    copies,              // whole copies
     loudness_attack,   // octaves of time: 1 is twice as long
     loudness_decay,
     loudness_release,
@@ -84,7 +92,7 @@ enum class RoutingTarget {
 
 // How many sources and targets there are, `none` included.
 constexpr int source_count = 14;
-constexpr int target_count = 27;
+constexpr int target_count = 35;
 
 // One connection: `source` moves `target` by `amount`, in the target's own
 // units, up to most_amount(target) either way.
@@ -95,7 +103,8 @@ struct Connection {
     // Both ways, the target moves from -amount to amount; one way, from 0
     // to amount.
     bool one_way = false;
-    // For pitch only: the move is rounded to whole half steps.
+    // For the pitch targets only (is_pitch): the move is rounded to whole
+    // half steps.
     bool snap = false;
     // Another source the amount is multiplied by, read one way, from 0
     // (no move at all) to 1 (the full amount). None leaves it at full.
@@ -110,6 +119,15 @@ int lfo_of(RoutingSource source);
 
 // Which LFO's speed `target` is, from 0, or -1 if it is no LFO's speed.
 int lfo_speed_of(RoutingTarget target);
+
+// Oscillator `index`'s level, pitch and kind, from 0
+// (docs/adr/0035-oscillators-with-kinds.md).
+RoutingTarget oscillator_level(int index);
+RoutingTarget oscillator_pitch(int index);
+RoutingTarget oscillator_kind(int index);
+
+// True for every pitch target: the note's and each oscillator's.
+bool is_pitch(RoutingTarget target);
 
 // True for the targets read once as each note starts.
 bool is_read_at_start(RoutingTarget target);

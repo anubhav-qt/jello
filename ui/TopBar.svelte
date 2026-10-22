@@ -13,7 +13,8 @@
     // The tab open now.
     tab: Tab;
     onTabClick: (tab: Tab) => void;
-    // The wave new notes play, like "saw", or "" until Rust has said.
+    // The kind new notes' first oscillator plays, like "saw", or "" until
+    // Rust has said.
     wave: string;
     onWaveClick: () => void;
     onRenderClick: () => void;
@@ -43,7 +44,7 @@
       <button
         type="button"
         class="action"
-        title="Next wave (the \ key)"
+        title="Oscillator 1's next kind (the \ key)"
         onclick={(event) => clickThenLetGo(event, onWaveClick)}
       >
         <span class="action-label">Wave</span>

@@ -81,6 +81,18 @@ static_assert(JELLO_LOUDNESS_SHORTEST_MS == loudness_shortest_ms,
 static_assert(JELLO_LOUDNESS_LONGEST_MS == loudness_longest_ms,
               "the C API and the loudness envelope have the same longest stage");
 
+// The C API and the oscillators agree on how many there are and how far
+// they can be tuned.
+static_assert(JELLO_OSCILLATOR_COUNT == oscillator_count, "the C API and the voices have the same oscillators");
+static_assert(JELLO_OSCILLATOR_MOST_OCTAVES == oscillator_most_octaves,
+              "the C API and the oscillators tune as many octaves");
+static_assert(JELLO_OSCILLATOR_MOST_HALF_STEPS == oscillator_most_half_steps,
+              "the C API and the oscillators tune as many half steps");
+static_assert(JELLO_OSCILLATOR_MOST_CENTS == static_cast<int>(oscillator_most_cents),
+              "the C API and the oscillators tune as many cents");
+static_assert(JELLO_KIND_NOISE == static_cast<int>(Kind::noise), "noise is the same kind");
+static_assert(JELLO_KIND_NOISE + 1 == kind_count, "every kind has a number");
+
 // The C API and the voices agree on how far notes can be tuned.
 static_assert(JELLO_TUNING_LOWEST_HZ == static_cast<int>(tuning_lowest_hz), "the C API and the voices tune as low");
 static_assert(JELLO_TUNING_HIGHEST_HZ == static_cast<int>(tuning_highest_hz), "the C API and the voices tune as high");
@@ -151,7 +163,13 @@ static_assert(JELLO_SOURCE_FILTER_ENVELOPE == static_cast<int>(RoutingSource::fi
               "the filter envelope is the same source");
 static_assert(JELLO_SOURCE_FILTER_ENVELOPE + 1 == source_count, "every source has a number");
 static_assert(JELLO_TARGET_LFO_1_SPEED == static_cast<int>(RoutingTarget::lfo_1_speed), "LFO 1's speed is the same target");
-static_assert(JELLO_TARGET_WAVE == static_cast<int>(RoutingTarget::wave), "the wave is the same target");
+static_assert(JELLO_TARGET_OSCILLATOR_1_LEVEL == static_cast<int>(RoutingTarget::oscillator_1_level),
+              "oscillator 1's level is the same target");
+static_assert(JELLO_TARGET_OSCILLATOR_1_PITCH == static_cast<int>(RoutingTarget::oscillator_1_pitch),
+              "oscillator 1's pitch is the same target");
+static_assert(JELLO_TARGET_OSCILLATOR_1_KIND == static_cast<int>(RoutingTarget::oscillator_1_kind),
+              "oscillator 1's kind is the same target");
+static_assert(JELLO_TARGET_COPIES == static_cast<int>(RoutingTarget::copies), "the copies are the same target");
 static_assert(JELLO_TARGET_FILTER_RELEASE == static_cast<int>(RoutingTarget::filter_release),
               "the filter release is the same target");
 static_assert(JELLO_TARGET_FILTER_RELEASE + 1 == target_count, "every target has a number");
@@ -439,18 +457,35 @@ void jello_engine_all_notes_off(JelloEngine* engine) {
     engine->conductor.all_notes_off();
 }
 
-void jello_engine_set_wave(JelloEngine* engine, int wave) {
-    // Any number that isn't one of the four waves is ignored, so nothing odd
-    // reaches the synth.
-    if (wave == JELLO_WAVE_SINE) {
-        engine->conductor.set_wave(Wave::sine);
-    } else if (wave == JELLO_WAVE_TRIANGLE) {
-        engine->conductor.set_wave(Wave::triangle);
-    } else if (wave == JELLO_WAVE_SQUARE) {
-        engine->conductor.set_wave(Wave::square);
-    } else if (wave == JELLO_WAVE_SAW) {
-        engine->conductor.set_wave(Wave::saw);
+void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
+                                 float cents) {
+    // Anything out of range is ignored, so nothing odd reaches the synth.
+    if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
+        return;
     }
+    if (!is_within_int(kind, JELLO_KIND_SINE, JELLO_KIND_NOISE)) {
+        return;
+    }
+    if (!is_within(level, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_within_int(octaves, -JELLO_OSCILLATOR_MOST_OCTAVES, JELLO_OSCILLATOR_MOST_OCTAVES)) {
+        return;
+    }
+    if (!is_within_int(half_steps, -JELLO_OSCILLATOR_MOST_HALF_STEPS, JELLO_OSCILLATOR_MOST_HALF_STEPS)) {
+        return;
+    }
+    if (!is_within(cents, -JELLO_OSCILLATOR_MOST_CENTS, JELLO_OSCILLATOR_MOST_CENTS)) {
+        return;
+    }
+
+    OscillatorSettings oscillator;
+    oscillator.kind = static_cast<Kind>(kind);
+    oscillator.level = level;
+    oscillator.octaves = octaves;
+    oscillator.half_steps = half_steps;
+    oscillator.cents = cents;
+    engine->conductor.set_oscillator(index, oscillator);
 }
 
 void jello_engine_start_click(JelloEngine* engine) {

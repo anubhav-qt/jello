@@ -23,8 +23,9 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Tabs (0016) Play, Compose, Produce (dev panel). Compose: tape (0022), keys
   guided (0017, 0023, 0034) by `src-tauri/src/harmony.rs`, lit in playback.
 - Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
-  Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030),
-  8 LFOs, routing list (0031), left Shift vibrato (0032), sound panel (0033).
+  Step 4: 3 oscillators, kinds and noise (0035), filter (0028), unison (0029),
+  envelope, tuning, all per song (0030), 8 LFOs, routing list (0031), left
+  Shift vibrato (0032), sound panel (0033, opens on Oscillators).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout

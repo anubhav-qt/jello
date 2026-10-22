@@ -66,8 +66,11 @@ void Conductor::all_notes_off() {
     mailbox_.send(Event{EventType::all_notes_off, 0, 0});
 }
 
-void Conductor::set_wave(Wave wave) {
-    mailbox_.send(Event{EventType::set_wave, 0, 0, wave});
+void Conductor::set_oscillator(int index, const OscillatorSettings& oscillator) {
+    Event event{EventType::set_oscillator, 0, 0};
+    event.index = index;
+    event.oscillator = oscillator;
+    mailbox_.send(event);
 }
 
 void Conductor::start_click() {
@@ -328,8 +331,8 @@ void Conductor::handle(const Event& event) {
     } else if (event.type == EventType::all_notes_off) {
         synth_.all_notes_off(Source::live);
         looper_.all_notes_off(now);
-    } else if (event.type == EventType::set_wave) {
-        synth_.set_wave(event.wave);
+    } else if (event.type == EventType::set_oscillator) {
+        synth_.set_oscillator(event.index, event.oscillator);
     } else if (event.type == EventType::start_click) {
         click_on_ = true;
         // Starting again while the beat runs would jump back to beat 1.

@@ -1,7 +1,7 @@
 <!-- The sound panel (docs/adr/0033-the-sound-panel.md): the song's sound,
      set while the keyboard keeps playing. It opens in Compose's tape's
-     place, as wide as the keyboard's panel, on one of four pages: Notes,
-     Filter, LFOs and Connections. A note at the top right says when
+     place, as wide as the keyboard's panel, on one of five pages:
+     Oscillators, Notes, Filter, LFOs and Connections. A note at the top right says when
      changes are heard. While a value is picked, it says which, and what the
      arrow keys do to it. Clicking empty space in the panel lets go. -->
 <script lang="ts">
@@ -12,6 +12,7 @@
   import SoundFilter from "./SoundFilter.svelte";
   import SoundLfos from "./SoundLfos.svelte";
   import SoundNotes from "./SoundNotes.svelte";
+  import SoundOscillators from "./SoundOscillators.svelte";
 
   interface Props {
     // The song's sound, as Rust answered last.
@@ -28,17 +29,18 @@
 
   let { sound, keysAcross, picked, onPick, onLetGo, send }: Props = $props();
 
-  type Page = "notes" | "filter" | "lfos" | "connections";
+  type Page = "oscillators" | "notes" | "filter" | "lfos" | "connections";
 
   const PAGES: { page: Page; name: string; note: string }[] = [
+    { page: "oscillators", name: "Oscillators", note: "Changes start with the next key you press" },
     { page: "notes", name: "Notes", note: "Changes start with the next key you press" },
     { page: "filter", name: "Filter", note: "Cutoff and resonance move notes already sounding" },
     { page: "lfos", name: "LFOs", note: "Changes here move notes already sounding" },
     { page: "connections", name: "Connections", note: "Changes here move notes already sounding" },
   ];
 
-  // The page shown. It opens on the notes.
-  let page: Page = $state("notes");
+  // The page shown. It opens on the oscillators.
+  let page: Page = $state("oscillators");
 
   let note = $derived.by(() => {
     for (const each of PAGES) {
@@ -97,7 +99,9 @@
     {/if}
   </div>
 
-  {#if page === "notes"}
+  {#if page === "oscillators"}
+    <SoundOscillators {sound} {picked} {onPick} {send} />
+  {:else if page === "notes"}
     <SoundNotes {sound} {picked} {onPick} {send} />
   {:else if page === "filter"}
     <SoundFilter {sound} {picked} {onPick} {send} />

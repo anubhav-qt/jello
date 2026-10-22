@@ -107,7 +107,15 @@ unsafe extern "C" {
     fn jello_engine_note_on(engine: *mut JelloEngine, note: c_int, velocity: c_int);
     fn jello_engine_note_off(engine: *mut JelloEngine, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
-    fn jello_engine_set_wave(engine: *mut JelloEngine, wave: c_int);
+    fn jello_engine_set_oscillator(
+        engine: *mut JelloEngine,
+        index: c_int,
+        kind: c_int,
+        level: f32,
+        octaves: c_int,
+        half_steps: c_int,
+        cents: f32,
+    );
     // Only the tests start and stop the click for now.
     #[cfg(test)]
     fn jello_engine_start_click(engine: *mut JelloEngine);
@@ -443,63 +451,122 @@ fn loudness_ms(ms: u32) -> c_int {
     ms as c_int
 }
 
-// The shapes a note can play (docs/adr/0009-how-notes-become-sound.md).
+// What an oscillator plays (docs/adr/0035-oscillators-with-kinds.md): the
+// four waves (docs/adr/0009-how-notes-become-sound.md), and noise, a new
+// random height every sample, which has no pitch.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Wave {
+pub enum Kind {
     Sine,
     Triangle,
     Square,
     Saw,
+    Noise,
 }
 
-impl Wave {
-    pub const ALL: [Wave; 4] = [Wave::Sine, Wave::Triangle, Wave::Square, Wave::Saw];
+impl Kind {
+    pub const ALL: [Kind; 5] = [Kind::Sine, Kind::Triangle, Kind::Square, Kind::Saw, Kind::Noise];
 
-    // The wave after this one: sine, triangle, square, saw, then sine again.
-    pub fn next(self) -> Wave {
+    // The kind after this one: sine, triangle, square, saw, noise, then sine
+    // again.
+    pub fn next(self) -> Kind {
         match self {
-            Wave::Sine => Wave::Triangle,
-            Wave::Triangle => Wave::Square,
-            Wave::Square => Wave::Saw,
-            Wave::Saw => Wave::Sine,
+            Kind::Sine => Kind::Triangle,
+            Kind::Triangle => Kind::Square,
+            Kind::Square => Kind::Saw,
+            Kind::Saw => Kind::Noise,
+            Kind::Noise => Kind::Sine,
         }
     }
 
-    // What to call the wave when showing it.
+    // What to call the kind when showing it.
     pub fn name(self) -> &'static str {
         match self {
-            Wave::Sine => "sine",
-            Wave::Triangle => "triangle",
-            Wave::Square => "square",
-            Wave::Saw => "saw",
+            Kind::Sine => "sine",
+            Kind::Triangle => "triangle",
+            Kind::Square => "square",
+            Kind::Saw => "saw",
+            Kind::Noise => "noise",
         }
     }
 
-    // The wave called `name`, or None.
-    pub fn from_name(name: &str) -> Option<Wave> {
-        for wave in Wave::ALL {
-            if wave.name() == name {
-                return Some(wave);
+    // The kind called `name`, or None.
+    pub fn from_name(name: &str) -> Option<Kind> {
+        for kind in Kind::ALL {
+            if kind.name() == name {
+                return Some(kind);
             }
         }
         None
     }
 
-    // The wave's number in the C API (`JELLO_WAVE_` in
+    // The kind's number in the C API (`JELLO_KIND_` in
     // engine/include/jello_engine.h).
     fn number(self) -> c_int {
         match self {
-            Wave::Sine => 0,
-            Wave::Triangle => 1,
-            Wave::Square => 2,
-            Wave::Saw => 3,
+            Kind::Sine => 0,
+            Kind::Triangle => 1,
+            Kind::Square => 2,
+            Kind::Saw => 3,
+            Kind::Noise => 4,
         }
     }
 }
 
-// Where the C++ engine's wave starts. A new song's sound profile starts
-// there too.
-pub const START_WAVE: Wave = Wave::Triangle;
+// How many oscillators play each note, and how far each can be tuned from
+// the note, either way (`JELLO_OSCILLATOR_` in
+// engine/include/jello_engine.h).
+pub const OSCILLATOR_COUNT: usize = 3;
+pub const OSCILLATOR_MOST_OCTAVES: i32 = 3;
+pub const OSCILLATOR_MOST_HALF_STEPS: i32 = 12;
+pub const OSCILLATOR_MOST_CENTS: i32 = 100;
+
+// One oscillator (docs/adr/0035-oscillators-with-kinds.md): what it plays,
+// how loud, and how far it is tuned from the note.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Oscillator {
+    pub kind: Kind,
+    // In percent: at 0 it is silent, and skipped.
+    pub level: u32,
+    // How far it is tuned from the note: whole octaves, whole half steps
+    // and cents (hundredths of a half step), each from minus to plus its
+    // most. Noise has no pitch, so they do nothing to it.
+    pub octaves: i32,
+    pub half_steps: i32,
+    pub cents: i32,
+}
+
+// An oscillator that plays nothing: a triangle at level 0, right on the
+// note.
+const SILENT_OSCILLATOR: Oscillator = Oscillator {
+    kind: Kind::Triangle,
+    level: 0,
+    octaves: 0,
+    half_steps: 0,
+    cents: 0,
+};
+
+// Where the C++ engine's oscillators start: the first a triangle at full
+// level, the others silent, so a note sounds just as one wave did. A new
+// song's sound profile starts there too.
+pub const START_OSCILLATORS: [Oscillator; OSCILLATOR_COUNT] = [
+    Oscillator {
+        level: FULL_PERCENT,
+        ..SILENT_OSCILLATOR
+    },
+    SILENT_OSCILLATOR,
+    SILENT_OSCILLATOR,
+];
+
+// `oscillator` with every value brought within its range.
+fn oscillator_within_ranges(oscillator: Oscillator) -> Oscillator {
+    Oscillator {
+        kind: oscillator.kind,
+        level: oscillator.level.min(FULL_PERCENT),
+        octaves: oscillator.octaves.clamp(-OSCILLATOR_MOST_OCTAVES, OSCILLATOR_MOST_OCTAVES),
+        half_steps: oscillator.half_steps.clamp(-OSCILLATOR_MOST_HALF_STEPS, OSCILLATOR_MOST_HALF_STEPS),
+        cents: oscillator.cents.clamp(-OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_CENTS),
+    }
+}
 
 // What the looper is doing (docs/adr/0021-a-looper-on-a-beat.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -685,11 +752,42 @@ impl Engine {
         unsafe { jello_engine_all_notes_off(self.raw) };
     }
 
-    // Makes notes sent after this play `wave`. Notes sent before it keep
-    // theirs, even while they ring on.
-    pub fn set_wave(&mut self, wave: Wave) {
+    // Makes notes sent after this play oscillator `index`, from 0, as
+    // `oscillator` says (`jello_engine_set_oscillator`). Notes sent before it
+    // keep theirs, even while they ring on. Values outside their ranges are
+    // brought within them, and an index past OSCILLATOR_COUNT is ignored.
+    // Returns the oscillator as sent.
+    pub fn set_oscillator(&mut self, index: usize, oscillator: Oscillator) -> Oscillator {
+        let oscillator = oscillator_within_ranges(oscillator);
+        if index >= OSCILLATOR_COUNT {
+            return oscillator;
+        }
+        let level = share_of(oscillator.level) as f32;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_wave(self.raw, wave.number()) };
+        unsafe {
+            jello_engine_set_oscillator(
+                self.raw,
+                index as c_int,
+                oscillator.kind.number(),
+                level,
+                oscillator.octaves as c_int,
+                oscillator.half_steps as c_int,
+                oscillator.cents as f32,
+            )
+        };
+        oscillator
+    }
+
+    // Makes notes sent after this play `kind` on the first oscillator, at
+    // full level and right on the note, as a new engine does with the
+    // triangle. Only the tests use it, to play one kind on its own.
+    #[cfg(test)]
+    pub fn set_first_kind(&mut self, kind: Kind) {
+        let oscillator = Oscillator {
+            kind,
+            ..START_OSCILLATORS[0]
+        };
+        self.set_oscillator(0, oscillator);
     }
 
     // The click on its own, without the looper. Only the tests use it for
@@ -2027,13 +2125,13 @@ mod tests {
     }
 
     // Every wave, in the order switching steps through them.
-    const EVERY_WAVE: [Wave; 4] = [Wave::Sine, Wave::Triangle, Wave::Square, Wave::Saw];
+    const EVERY_WAVE: [Kind; 4] = [Kind::Sine, Kind::Triangle, Kind::Square, Kind::Saw];
 
     #[test]
     fn every_wave_plays_at_the_right_pitch() {
         for wave in EVERY_WAVE {
             let mut engine = Engine::new().unwrap();
-            engine.set_wave(wave);
+            engine.set_first_kind(wave);
             let held = hold(&mut engine, A4, VELOCITY);
             assert_pitch(&engine, &held, A4_HZ);
         }
@@ -2097,10 +2195,17 @@ mod tests {
     }
 
     #[test]
-    fn a_new_engine_plays_a_triangle_wave() {
-        // As START_WAVE says, so a new song's sound profile, sent as the app
-        // starts, changes nothing.
-        assert_eq!(START_WAVE, Wave::Triangle);
+    fn a_new_engine_plays_one_triangle_oscillator() {
+        // As START_OSCILLATORS says, so a new song's sound profile, sent as
+        // the app starts, changes nothing: the first oscillator a triangle
+        // at full level, right on the note, and the others silent.
+        let first = START_OSCILLATORS[0];
+        assert_eq!(first.kind, Kind::Triangle);
+        assert_eq!(first.level, FULL_PERCENT);
+        assert_eq!((first.octaves, first.half_steps, first.cents), (0, 0, 0));
+        for oscillator in &START_OSCILLATORS[1..] {
+            assert_eq!(oscillator.level, 0);
+        }
         let mut engine = Engine::new().unwrap();
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
@@ -2109,7 +2214,7 @@ mod tests {
     #[test]
     fn a_sine_wave_has_no_harmonics() {
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Sine);
+        engine.set_first_kind(Kind::Sine);
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SINE_HARMONICS);
     }
@@ -2119,8 +2224,8 @@ mod tests {
         // Away from the triangle and back again, so this checks that
         // switching to it works, not only that Jello starts on it.
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Saw);
-        engine.set_wave(Wave::Triangle);
+        engine.set_first_kind(Kind::Saw);
+        engine.set_first_kind(Kind::Triangle);
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
     }
@@ -2128,7 +2233,7 @@ mod tests {
     #[test]
     fn a_square_wave_has_odd_harmonics_that_fade_slowly() {
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Square);
+        engine.set_first_kind(Kind::Square);
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SQUARE_HARMONICS);
     }
@@ -2136,7 +2241,7 @@ mod tests {
     #[test]
     fn a_saw_wave_has_every_harmonic() {
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SAW_HARMONICS);
     }
@@ -2155,7 +2260,7 @@ mod tests {
         // main tone.
         for wave in EVERY_WAVE {
             let mut engine = Engine::new().unwrap();
-            engine.set_wave(wave);
+            engine.set_first_kind(wave);
             let held = hold(&mut engine, A7, VELOCITY);
             let main_tone = tone_size(&engine, &held, A7_HZ);
 
@@ -2185,7 +2290,7 @@ mod tests {
         // skipped.
         for wave in EVERY_WAVE {
             let mut engine = Engine::new().unwrap();
-            engine.set_wave(wave);
+            engine.set_first_kind(wave);
             engine.note_on(A4, VELOCITY);
             let start = render_left(&mut engine, 3);
 
@@ -2230,12 +2335,12 @@ mod tests {
         let triangle_loudness = held_level() as f64 / 3.0_f64.sqrt();
         for wave in EVERY_WAVE {
             let mut expected = triangle_loudness;
-            if matches!(wave, Wave::Square | Wave::Saw) {
+            if matches!(wave, Kind::Square | Kind::Saw) {
                 expected = triangle_loudness * 0.7943;
             }
 
             let mut engine = Engine::new().unwrap();
-            engine.set_wave(wave);
+            engine.set_first_kind(wave);
             let held = hold(&mut engine, A4, VELOCITY);
             let loudness = rms(&held);
             let difference = (loudness - expected).abs();
@@ -2255,7 +2360,7 @@ mod tests {
         engine.note_on(A4, VELOCITY);
         render_left(&mut engine, ATTACK_MS + DECAY_MS);
 
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
         let wave = render_left(&mut engine, 1000);
         assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
     }
@@ -2269,7 +2374,7 @@ mod tests {
         engine.note_on(A4, VELOCITY);
         render_left(&mut engine, 100);
 
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
         let wave = hold(&mut engine, A4, VELOCITY);
         assert_harmonics(&engine, &wave, SAW_HARMONICS);
     }
@@ -2281,35 +2386,281 @@ mod tests {
         // in the order they were sent, so A4 starts on the triangle.
         let mut engine = Engine::new().unwrap();
         engine.note_on(A4, VELOCITY);
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
         render_left(&mut engine, ATTACK_MS + DECAY_MS);
 
         let wave = render_left(&mut engine, 1000);
         assert_harmonics(&engine, &wave, TRIANGLE_HARMONICS);
     }
 
-    #[test]
-    fn numbers_that_are_not_waves_change_nothing() {
-        // The C API takes any number as a wave, so it must ignore all but the
-        // four it knows. Rust's Wave can only send those four, so this calls
-        // the C API directly.
-        let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Sine);
-        for number in [-1, 4, 255] {
-            // SAFETY: `raw` points to a live engine until Drop.
-            unsafe { jello_engine_set_wave(engine.raw, number) };
-        }
+    // One call to `jello_engine_set_oscillator`: its index, kind, level,
+    // octaves, half steps and cents.
+    type RawOscillator = (c_int, c_int, f32, c_int, c_int, f32);
 
-        let wave = hold(&mut engine, A4, VELOCITY);
-        assert_harmonics(&engine, &wave, SINE_HARMONICS);
+    // A4 held on a new engine playing a sine, after `call` reached the C API.
+    fn sine_after(call: RawOscillator) -> Vec<f32> {
+        let mut engine = Engine::new().unwrap();
+        engine.set_first_kind(Kind::Sine);
+        let (index, kind, level, octaves, half_steps, cents) = call;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_oscillator(engine.raw, index, kind, level, octaves, half_steps, cents) };
+        hold(&mut engine, A4, VELOCITY)
+    }
+
+    #[test]
+    fn values_outside_the_oscillators_ranges_change_nothing() {
+        // The C API takes any numbers, so it must ignore a call with any one
+        // of them out of range. Rust brings its own within them, so this
+        // calls the C API directly. Each call would otherwise play a saw an
+        // octave up on top of the sine, so one that got through would show.
+        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0));
+        let saw = Kind::Saw.number();
+        let odd_calls: [(&str, RawOscillator); 14] = [
+            ("index -1", (-1, saw, 1.0, 1, 0, 0.0)),
+            ("index 3", (3, saw, 1.0, 1, 0, 0.0)),
+            ("kind -1", (1, -1, 1.0, 1, 0, 0.0)),
+            ("kind 5", (1, 5, 1.0, 1, 0, 0.0)),
+            ("level -0.1", (1, saw, -0.1, 1, 0, 0.0)),
+            ("level 1.1", (1, saw, 1.1, 1, 0, 0.0)),
+            ("level NaN", (1, saw, f32::NAN, 1, 0, 0.0)),
+            ("octaves 4", (1, saw, 1.0, 4, 0, 0.0)),
+            ("octaves -4", (1, saw, 1.0, -4, 0, 0.0)),
+            ("half steps 13", (1, saw, 1.0, 1, 13, 0.0)),
+            ("half steps -13", (1, saw, 1.0, 1, -13, 0.0)),
+            ("cents 100.5", (1, saw, 1.0, 1, 0, 100.5)),
+            ("cents -101", (1, saw, 1.0, 1, 0, -101.0)),
+            ("cents NaN", (1, saw, 1.0, 1, 0, f32::NAN)),
+        ];
+        for (what, call) in odd_calls {
+            assert!(sine_after(call) == plain, "an oscillator with {what} changed the sound");
+        }
+    }
+
+    #[test]
+    fn the_engine_takes_every_oscillator_edge_rust_sends() {
+        // A saw at each edge of a range, on the second oscillator, changes
+        // the sine. The test above shows a hair further is ignored, so Rust
+        // and the engine agree on every range.
+        let plain = sine_after((1, 0, 0.0, 0, 0, 0.0));
+        let saw_on_the_note = Oscillator {
+            kind: Kind::Saw,
+            level: FULL_PERCENT,
+            octaves: 0,
+            half_steps: 0,
+            cents: 0,
+        };
+        let edges = [
+            Oscillator { kind: Kind::Noise, ..saw_on_the_note },
+            Oscillator { octaves: OSCILLATOR_MOST_OCTAVES, ..saw_on_the_note },
+            Oscillator { octaves: -OSCILLATOR_MOST_OCTAVES, ..saw_on_the_note },
+            Oscillator { half_steps: OSCILLATOR_MOST_HALF_STEPS, ..saw_on_the_note },
+            Oscillator { half_steps: -OSCILLATOR_MOST_HALF_STEPS, ..saw_on_the_note },
+            Oscillator { cents: OSCILLATOR_MOST_CENTS, ..saw_on_the_note },
+            Oscillator { cents: -OSCILLATOR_MOST_CENTS, ..saw_on_the_note },
+        ];
+        for edge in edges {
+            let mut engine = Engine::new().unwrap();
+            engine.set_first_kind(Kind::Sine);
+            engine.set_oscillator(1, edge);
+            let moved = hold(&mut engine, A4, VELOCITY);
+            assert!(moved != plain, "the engine refused {edge:?}");
+        }
+    }
+
+    // A new engine with its first oscillator silent and its second playing
+    // `oscillator`.
+    fn second_oscillator_engine(oscillator: Oscillator) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        let silent = Oscillator {
+            level: 0,
+            ..START_OSCILLATORS[0]
+        };
+        engine.set_oscillator(0, silent);
+        engine.set_oscillator(1, oscillator);
+        engine
+    }
+
+    #[test]
+    fn an_oscillator_plays_its_own_distance_from_the_note() {
+        // Only the second oscillator sounds, a sine tuned away from A4. Each
+        // octave doubles the pitch, each half step is 2 to the power of
+        // 1/12, and 100 cents make a half step.
+        let half_step = 2.0_f64.powf(1.0 / 12.0);
+        let cases = [
+            ((1, 0, 0), 2.0 * A4_HZ),
+            ((-1, 0, 0), A4_HZ / 2.0),
+            ((0, 7, 0), A4_HZ * half_step.powi(7)),
+            ((0, 0, 50), A4_HZ * half_step.sqrt()),
+            // An octave up, twelve half steps down, then a half step up.
+            ((1, -12, 100), A4_HZ * half_step),
+        ];
+        for ((octaves, half_steps, cents), hz) in cases {
+            let tuned = Oscillator {
+                kind: Kind::Sine,
+                level: FULL_PERCENT,
+                octaves,
+                half_steps,
+                cents,
+            };
+            let mut engine = second_oscillator_engine(tuned);
+            let held = hold(&mut engine, A4, VELOCITY);
+            assert_pitch(&engine, &held, hz);
+        }
+    }
+
+    #[test]
+    fn oscillators_add_up_at_their_levels() {
+        // Two halves of the same triangle make exactly one whole: a copy's
+        // oscillators start their cycles together, so like waves at the same
+        // pitch line up.
+        let half = Oscillator {
+            level: 50,
+            ..START_OSCILLATORS[0]
+        };
+        let mut halves = Engine::new().unwrap();
+        halves.set_oscillator(0, half);
+        halves.set_oscillator(1, half);
+        let mut whole = Engine::new().unwrap();
+        let halves_sound = hold(&mut halves, A4, VELOCITY);
+        let whole_sound = hold(&mut whole, A4, VELOCITY);
+        assert_same_samples(&halves_sound, &whole_sound);
+
+        // A sine with a sine an octave up at half its level: the octave's
+        // tone is half the size of the note's.
+        let mut engine = Engine::new().unwrap();
+        engine.set_first_kind(Kind::Sine);
+        let octave_up = Oscillator {
+            kind: Kind::Sine,
+            level: 50,
+            octaves: 1,
+            half_steps: 0,
+            cents: 0,
+        };
+        engine.set_oscillator(1, octave_up);
+        let held = hold(&mut engine, A4, VELOCITY);
+        let note = tone_size(&engine, &held, A4_HZ);
+        let octave = tone_size(&engine, &held, 2.0 * A4_HZ);
+        assert_within_percent((octave / note) as f32, 0.5, 0.5);
+    }
+
+    #[test]
+    fn a_silent_oscillator_changes_not_a_single_sample() {
+        // At level 0, however the rest of it is set, an oscillator is
+        // skipped, so a new engine sounds exactly as one wave did.
+        let mut plain = Engine::new().unwrap();
+        let mut silent = Engine::new().unwrap();
+        let saw_up = Oscillator {
+            kind: Kind::Saw,
+            level: 0,
+            octaves: 2,
+            half_steps: 5,
+            cents: 30,
+        };
+        let noise = Oscillator {
+            kind: Kind::Noise,
+            ..saw_up
+        };
+        silent.set_oscillator(1, saw_up);
+        silent.set_oscillator(2, noise);
+        let silent_sound = hold(&mut silent, A4, VELOCITY);
+        let plain_sound = hold(&mut plain, A4, VELOCITY);
+        assert_same_samples(&silent_sound, &plain_sound);
+    }
+
+    // The first oscillator playing noise at full level.
+    const NOISE: Oscillator = Oscillator {
+        kind: Kind::Noise,
+        level: FULL_PERCENT,
+        octaves: 0,
+        half_steps: 0,
+        cents: 0,
+    };
+
+    // A new engine playing `oscillators`, one after another from the first.
+    fn engine_playing(oscillators: &[Oscillator]) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        for (index, oscillator) in oscillators.iter().enumerate() {
+            engine.set_oscillator(index, *oscillator);
+        }
+        engine
+    }
+
+    #[test]
+    fn noise_has_no_pitch_and_hisses_the_same_on_every_render() {
+        // The first note on a new engine always starts its noise the same
+        // way, on any note and however the noise is tuned, so A4 and a low,
+        // retuned C2 hiss alike. Two renders of A4 do too.
+        let mut a4 = engine_playing(&[NOISE]);
+        let a4_sound = hold(&mut a4, A4, VELOCITY);
+        assert!(rms(&a4_sound) > 0.0, "the noise is silent");
+        let retuned = Oscillator {
+            octaves: -3,
+            half_steps: 5,
+            cents: 40,
+            ..NOISE
+        };
+        let mut c2 = engine_playing(&[retuned]);
+        let c2_sound = hold(&mut c2, 36, VELOCITY);
+        assert_same_samples(&c2_sound, &a4_sound);
+
+        let mut again = engine_playing(&[NOISE]);
+        let again_sound = hold(&mut again, A4, VELOCITY);
+        assert_same_samples(&again_sound, &a4_sound);
+
+        // It has no main tone: at A4 and its first harmonics, and at a
+        // pitch nowhere near them, no tone is a twentieth the size of a
+        // triangle's A4.
+        let mut triangle = Engine::new().unwrap();
+        let triangle_sound = hold(&mut triangle, A4, VELOCITY);
+        let triangle_tone = tone_size(&triangle, &triangle_sound, A4_HZ);
+        for hz in [A4_HZ, 2.0 * A4_HZ, 3.0 * A4_HZ, 1000.0] {
+            let size = tone_size(&a4, &a4_sound, hz) / triangle_tone;
+            assert!(size < 0.05, "the noise has a tone at {hz} Hz, {size} of a triangle's");
+        }
+    }
+
+    #[test]
+    fn noise_is_as_loud_as_the_triangle() {
+        // Its heights spread evenly from -1 to 1, so its RMS is the
+        // triangle's: held_level() divided by the square root of 3. A second
+        // of it lands within 2% of that.
+        let triangle_loudness = held_level() as f64 / 3.0_f64.sqrt();
+        let mut engine = engine_playing(&[NOISE]);
+        let held = hold(&mut engine, A4, VELOCITY);
+        let loudness = rms(&held);
+        assert_within_percent(loudness as f32, triangle_loudness as f32, 2.0);
+    }
+
+    #[test]
+    fn no_two_noises_hiss_alike() {
+        // Separate hisses add up by the square root of how many there are,
+        // and the same hiss twice by how many. So two noise oscillators are
+        // about 1.41 times as loud as one, not twice. And seven copies of a
+        // noise in the middle, turned down by the square root of 7, stay as
+        // loud as one copy, not 2.65 times.
+        let mut one = engine_playing(&[NOISE]);
+        let one_loudness = rms(&hold(&mut one, A4, VELOCITY)) as f32;
+
+        let mut two = engine_playing(&[NOISE, NOISE]);
+        let two_loudness = rms(&hold(&mut two, A4, VELOCITY)) as f32;
+        assert_within_percent(two_loudness, one_loudness * 2.0_f32.sqrt(), 5.0);
+
+        let mut copies = engine_playing(&[NOISE]);
+        copies.set_unison(Unison {
+            copies: UNISON_MOST_COPIES,
+            detune_cents: 0,
+            spread: 0,
+        });
+        let copies_loudness = rms(&hold(&mut copies, A4, VELOCITY)) as f32;
+        assert_within_percent(copies_loudness, one_loudness, 5.0);
     }
 
     // Plays A4 on `wave` for `held_ms`, then lets go of it and renders
     // `fade_ms` of its fade. A fade shorter than RELEASE_MS leaves its voice
     // still sounding.
-    fn play_and_let_go_of_a4(wave: Wave, held_ms: u32, fade_ms: u32) -> Engine {
+    fn play_and_let_go_of_a4(wave: Kind, held_ms: u32, fade_ms: u32) -> Engine {
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(wave);
+        engine.set_first_kind(wave);
         engine.note_on(A4, VELOCITY);
         render_left(&mut engine, held_ms);
         engine.note_off(A4);
@@ -2319,8 +2670,8 @@ mod tests {
 
     // Switches to `wave` and presses A4 again. If A4 is still sounding, the
     // press takes over its voice.
-    fn press_a4_again_on(engine: &mut Engine, wave: Wave) {
-        engine.set_wave(wave);
+    fn press_a4_again_on(engine: &mut Engine, wave: Kind) {
+        engine.set_first_kind(wave);
         engine.note_on(A4, VELOCITY);
     }
 
@@ -2362,6 +2713,111 @@ mod tests {
 
                 // The gap is the difference from the plain press. It never
                 // jumps, and after 5 ms it is gone, leaving the same sound.
+                let mut gap = Vec::new();
+                for i in 0..glide.len() {
+                    gap.push(glide[i] - plain[i]);
+                }
+                assert_no_click(&engine, &gap, A4_HZ);
+                let gone = frames_in_ms(&engine, 5);
+                assert_same_sound(&glide[gone..], &plain[gone..]);
+            }
+        }
+    }
+
+    // Three oscillators, one way: a saw, a square an octave up at half level
+    // and a triangle an octave down at 70%. The other way: a sine, noise at
+    // 40% and a saw an octave down. Each oscillator is tuned the same both
+    // ways, so its cycles run alike before the press, and a plain press
+    // differs from a glide only by the gap.
+    const THREE_ONE_WAY: [Oscillator; OSCILLATOR_COUNT] = [
+        Oscillator {
+            kind: Kind::Saw,
+            level: FULL_PERCENT,
+            octaves: 0,
+            half_steps: 0,
+            cents: 0,
+        },
+        Oscillator {
+            kind: Kind::Square,
+            level: 50,
+            octaves: 1,
+            half_steps: 0,
+            cents: 0,
+        },
+        Oscillator {
+            kind: Kind::Triangle,
+            level: 70,
+            octaves: -1,
+            half_steps: 0,
+            cents: 0,
+        },
+    ];
+    const THREE_THE_OTHER_WAY: [Oscillator; OSCILLATOR_COUNT] = [
+        Oscillator {
+            kind: Kind::Sine,
+            level: FULL_PERCENT,
+            octaves: 0,
+            half_steps: 0,
+            cents: 0,
+        },
+        Oscillator {
+            kind: Kind::Noise,
+            level: 40,
+            octaves: 1,
+            half_steps: 0,
+            cents: 0,
+        },
+        Oscillator {
+            kind: Kind::Saw,
+            level: FULL_PERCENT,
+            octaves: -1,
+            half_steps: 0,
+            cents: 0,
+        },
+    ];
+
+    // Plays A4 on `oscillators` for 100 ms, then lets go of it and renders
+    // `fade_ms` of its fade.
+    fn let_go_of_a4_on(oscillators: &[Oscillator], fade_ms: u32) -> Engine {
+        let mut engine = engine_playing(oscillators);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        engine.note_off(A4);
+        render_left(&mut engine, fade_ms);
+        engine
+    }
+
+    // Sets `oscillators` and presses A4 again, taking over its voice.
+    fn press_a4_again_with(engine: &mut Engine, oscillators: &[Oscillator]) {
+        for (index, oscillator) in oscillators.iter().enumerate() {
+            engine.set_oscillator(index, *oscillator);
+        }
+        engine.note_on(A4, VELOCITY);
+    }
+
+    #[test]
+    fn three_oscillators_glide_across_to_three_others_without_a_click() {
+        // As with one wave above, both ways round, the press landing at many
+        // points along the waves. Each engine's second press starts the same
+        // noise, so the gap is all that differs from a plain press.
+        let ways = [(THREE_ONE_WAY, THREE_THE_OTHER_WAY), (THREE_THE_OTHER_WAY, THREE_ONE_WAY)];
+        for (old, new) in ways {
+            for extra_ms in 0..10 {
+                let fade_ms = 100 + extra_ms;
+
+                let mut engine = let_go_of_a4_on(&old, fade_ms);
+                press_a4_again_with(&mut engine, &new);
+                let glide = render_left(&mut engine, 10);
+
+                let mut engine = let_go_of_a4_on(&old, fade_ms);
+                let fade = render_left(&mut engine, 10);
+                let mut engine = let_go_of_a4_on(&new, fade_ms);
+                press_a4_again_with(&mut engine, &new);
+                let plain = render_left(&mut engine, 10);
+
+                let jump = (glide[0] - fade[0]).abs();
+                assert!(jump <= full_level() / 100.0, "the press jumped by {jump}");
+
                 let mut gap = Vec::new();
                 for i in 0..glide.len() {
                     gap.push(glide[i] - plain[i]);
@@ -2774,7 +3230,7 @@ mod tests {
         Volume(u32, u32),
         StartClick,
         StopClick,
-        SetWave(Wave),
+        SetFirstKind(Kind),
         PlaySong(&'static [TestChord]),
         StopSong,
         Snap(bool),
@@ -2796,7 +3252,7 @@ mod tests {
             Volume(number, percent) => engine.set_layer_volume(number, percent).unwrap(),
             StartClick => engine.start_click(),
             StopClick => engine.stop_click(),
-            SetWave(wave) => engine.set_wave(wave),
+            SetFirstKind(kind) => engine.set_first_kind(kind),
             PlaySong(song) => engine.play_song(&song_chords(song)).unwrap(),
             StopSong => engine.stop_song(),
             Snap(on) => engine.set_snap(on),
@@ -3579,7 +4035,7 @@ mod tests {
         let start = RECORDING_STARTS;
         let first_time = start + BAR_AT_120;
         let bar = [(10_000, NoteOn(A4)), (60_000, NoteOff(A4))];
-        let switch = (first_time + 80_000, SetWave(Wave::Square));
+        let switch = (first_time + 80_000, SetFirstKind(Kind::Square));
         let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper), switch];
         looped.extend(moved(&bar, start));
 
@@ -3958,7 +4414,7 @@ mod tests {
         let mut looped = vec![
             (0, PressLooper),
             (start + 85_000, PressLooper),
-            (first_time + 40_000, SetWave(Wave::Square)),
+            (first_time + 40_000, SetFirstKind(Kind::Square)),
         ];
         looped.extend(moved(&played, start));
         let mut switched = looped.clone();
@@ -5117,7 +5573,7 @@ mod tests {
     // filter's whole shape.
     fn saw_engine() -> Engine {
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
         engine
     }
 
@@ -5842,7 +6298,7 @@ mod tests {
         // to blur the measurement.
         for detune in [10, UNISON_MOST_DETUNE_CENTS] {
             let mut engine = Engine::new().unwrap();
-            engine.set_wave(Wave::Sine);
+            engine.set_first_kind(Kind::Sine);
             engine.set_unison(unison(2, detune, FULL_PERCENT));
             engine.note_on(A4, VELOCITY);
             render_sides(&mut engine, ATTACK_MS + DECAY_MS);
@@ -5863,14 +6319,14 @@ mod tests {
         let copies = UNISON_MOST_COPIES;
         let detune = UNISON_MOST_DETUNE_CENTS;
         let mut lone = Engine::new().unwrap();
-        lone.set_wave(Wave::Sine);
+        lone.set_first_kind(Kind::Sine);
         lone.note_on(A5, VELOCITY);
         render_sides(&mut lone, ATTACK_MS + DECAY_MS);
         let (lone_left, _) = render_sides(&mut lone, 4000);
         let lone_size = tone_size(&lone, &lone_left, 2.0 * A4_HZ);
 
         let mut engine = Engine::new().unwrap();
-        engine.set_wave(Wave::Sine);
+        engine.set_first_kind(Kind::Sine);
         engine.set_unison(unison(copies, detune, FULL_PERCENT));
         engine.note_on(A5, VELOCITY);
         render_sides(&mut engine, ATTACK_MS + DECAY_MS);
@@ -6599,11 +7055,16 @@ mod tests {
         1.0 - (height + 1.0) / 2.0
     }
 
-    // Every target, the LFOs' speeds included.
+    // Every target, the LFOs' speeds and the oscillators' targets included.
     fn every_target() -> Vec<Target> {
         let mut targets = Target::OTHERS.to_vec();
         for index in 0..LFO_COUNT {
             targets.push(Target::LfoSpeed(index));
+        }
+        for index in 0..OSCILLATOR_COUNT {
+            targets.push(Target::OscillatorLevel(index));
+            targets.push(Target::OscillatorPitch(index));
+            targets.push(Target::OscillatorKind(index));
         }
         targets
     }
@@ -7357,6 +7818,35 @@ mod tests {
     }
 
     #[test]
+    fn snap_rounds_an_oscillator_s_pitch_to_half_steps() {
+        // 130 cents up, snapped, is one half step: just like tuning the
+        // oscillator a half step up.
+        let (left, right) = a4_after(
+            |engine| {
+                let snapped = Connection {
+                    snap: true,
+                    ..one_way_connection(Source::VibratoKey, Target::OscillatorPitch(0), 130.0)
+                };
+                engine.set_connection(CONNECTION_COUNT - 1, snapped);
+                engine.set_vibrato_key(true);
+            },
+            500,
+        );
+        let (expected_left, expected_right) = a4_after(
+            |engine| {
+                let half_step_up = Oscillator {
+                    half_steps: 1,
+                    ..START_OSCILLATORS[0]
+                };
+                engine.set_oscillator(0, half_step_up);
+            },
+            500,
+        );
+        assert_nearly_same_sound(&left, &expected_left, 0.00001);
+        assert_nearly_same_sound(&right, &expected_right, 0.00001);
+    }
+
+    #[test]
     fn the_pitch_moves_by_cents_and_the_loudness_and_pan_by_shares() {
         // 1200 cents is an octave up, and -1200 one down.
         let engine = Engine::new().unwrap();
@@ -7387,10 +7877,23 @@ mod tests {
         assert_eq!(peak(&right), 0.0);
     }
 
-    // A saw through the filter at 1000 Hz with a little resonance, a filter
-    // envelope, a loudness envelope that falls to 80%, and 3 copies.
+    // The second oscillator, playing `kind` at half level, right on the note.
+    fn half_level(kind: Kind) -> Oscillator {
+        Oscillator {
+            kind,
+            level: 50,
+            octaves: 0,
+            half_steps: 0,
+            cents: 0,
+        }
+    }
+
+    // A saw with a triangle at half level as its second oscillator, through
+    // the filter at 1000 Hz with a little resonance, a filter envelope, a
+    // loudness envelope that falls to 80%, and 3 copies.
     fn set_up_everything(engine: &mut Engine) {
-        engine.set_wave(Wave::Saw);
+        engine.set_first_kind(Kind::Saw);
+        engine.set_oscillator(1, half_level(Kind::Triangle));
         engine.set_filter(filter(1000.0, 20));
         engine.set_filter_envelope(filter_envelope(2.0, 20, 100, 50, 200));
         engine.set_loudness_envelope(loudness(10, 100, 80, 200));
@@ -7401,7 +7904,39 @@ mod tests {
     fn moving_a_live_setting_sounds_like_setting_it_there() {
         // Each target moved by the key sounds just like an engine with that
         // setting moved there, within rounding.
-        let cases: [(Target, f32, fn(&mut Engine)); 9] = [
+        let cases: [(Target, f32, fn(&mut Engine)); 13] = [
+            // Each oscillator's level and pitch: the saw's down by 40%, the
+            // triangle's up by 30% and the empty third's up from silent, and
+            // the saw 7 half steps up.
+            (Target::OscillatorLevel(0), -40.0, |engine| {
+                let quieter = Oscillator {
+                    level: 60,
+                    ..half_level(Kind::Saw)
+                };
+                engine.set_oscillator(0, quieter);
+            }),
+            (Target::OscillatorLevel(1), 30.0, |engine| {
+                let louder = Oscillator {
+                    level: 80,
+                    ..half_level(Kind::Triangle)
+                };
+                engine.set_oscillator(1, louder);
+            }),
+            (Target::OscillatorLevel(2), 25.0, |engine| {
+                let quiet = Oscillator {
+                    level: 25,
+                    ..START_OSCILLATORS[0]
+                };
+                engine.set_oscillator(2, quiet);
+            }),
+            (Target::OscillatorPitch(0), 700.0, |engine| {
+                let fifth_up = Oscillator {
+                    level: FULL_PERCENT,
+                    half_steps: 7,
+                    ..half_level(Kind::Saw)
+                };
+                engine.set_oscillator(0, fifth_up);
+            }),
             (Target::Cutoff, 1.0, |engine| {
                 engine.set_filter(filter(2000.0, 20));
             }),
@@ -7461,14 +7996,14 @@ mod tests {
         // 6 octaves down from 20,000 Hz is a filter at 312.5 Hz.
         let (left, _) = a4_after(
             |engine| {
-                engine.set_wave(Wave::Saw);
+                engine.set_first_kind(Kind::Saw);
                 hold_key_moving(engine, Target::Cutoff, -6.0);
             },
             500,
         );
         let (expected, _) = a4_after(
             |engine| {
-                engine.set_wave(Wave::Saw);
+                engine.set_first_kind(Kind::Saw);
                 engine.set_filter(filter(312.5, 0));
             },
             500,
@@ -7478,14 +8013,21 @@ mod tests {
 
     #[test]
     fn moving_a_setting_read_as_a_note_starts_sounds_exactly_like_setting_it_there() {
-        let cases: [(Target, f32, fn(&mut Engine)); 12] = [
-            // From the saw, a step on goes round to the sine, and two back
-            // to the triangle.
-            (Target::Wave, 1.0, |engine| {
-                engine.set_wave(Wave::Sine);
+        let cases: [(Target, f32, fn(&mut Engine)); 14] = [
+            // From the saw, a step on is the noise, two go round to the sine,
+            // and two back land on the triangle.
+            (Target::OscillatorKind(0), 1.0, |engine| {
+                engine.set_first_kind(Kind::Noise);
             }),
-            (Target::Wave, -2.0, |engine| {
-                engine.set_wave(Wave::Triangle);
+            (Target::OscillatorKind(0), 2.0, |engine| {
+                engine.set_first_kind(Kind::Sine);
+            }),
+            (Target::OscillatorKind(0), -2.0, |engine| {
+                engine.set_first_kind(Kind::Triangle);
+            }),
+            // The second oscillator's kind, from its triangle, at half level.
+            (Target::OscillatorKind(1), 1.0, |engine| {
+                engine.set_oscillator(1, half_level(Kind::Square));
             }),
             (Target::Copies, 2.0, |engine| {
                 engine.set_unison(unison(5, 10, 30));
@@ -7550,7 +8092,7 @@ mod tests {
             engine.note_on(A4, VELOCITY);
             render_left(engine, 100);
         }
-        hold_key_moving(&mut moved, Target::Wave, 1.0);
+        hold_key_moving(&mut moved, Target::OscillatorKind(0), 1.0);
         for engine in [&mut moved, &mut plain] {
             waves.push(render_left(engine, 300));
         }
@@ -7853,7 +8395,7 @@ mod tests {
         let engine = Engine::new().unwrap();
         for (cents, hz) in [(3000.0, 7040.0), (-3000.0, 27.5)] {
             let wave = a4_pitch_after(|engine| {
-                engine.set_wave(Wave::Sine);
+                engine.set_first_kind(Kind::Sine);
                 engine.set_connection(0, one_way_connection(Source::VibratoKey, Target::Pitch, cents));
                 hold_key_moving(engine, Target::Pitch, cents);
             });
@@ -8348,7 +8890,7 @@ mod tests {
             ("scaled by -1", RawConnection { scaled_by: -1, ..half_dip }),
             ("scaled by 14", RawConnection { scaled_by: 14, ..half_dip }),
             ("target -1", RawConnection { target: -1, ..half_dip }),
-            ("target 27", RawConnection { target: 27, ..half_dip }),
+            ("target 35", RawConnection { target: 35, ..half_dip }),
             ("amount NaN", RawConnection { amount: f32::NAN, ..half_dip }),
         ];
         for (what, raw) in odd_connections {
