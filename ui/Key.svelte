@@ -26,9 +26,21 @@
     chordNotes: number[];
     // What each action key does on the open tab, like "add" for Return.
     actions: Record<string, string>;
+    // True while a value is picked in the sound panel, so the arrow keys,
+    // which step it, are framed.
+    stepping: boolean;
   }
 
-  let { spec, layout, held, sound, looperBeats, guide, melody, chordNotes, actions }: Props = $props();
+  let { spec, layout, held, sound, looperBeats, guide, melody, chordNotes, actions, stepping }: Props = $props();
+
+  const ARROW_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+
+  let isStepping = $derived.by(() => {
+    if (!stepping) {
+      return false;
+    }
+    return ARROW_KEYS.includes(spec.code);
+  });
 
   let action = $derived(actions[spec.code]);
   let kind = $derived.by(() => {
@@ -141,6 +153,7 @@
   class:is-outside={isOutside}
   class:is-chord-note={isChordNote}
   class:is-looper={isLooper}
+  class:is-stepping={isStepping}
   style:--w={spec.width}
   data-code={spec.code}
   data-kind={kind}

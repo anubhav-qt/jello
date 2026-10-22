@@ -5,7 +5,7 @@
      (ui/beams.ts). The page powers on from the top down. Its tabs share the
      keyboard: Play shows the notes held, Compose adds its tape, outlines
      the chord keys and guides the melody keys, and Produce is a placeholder
-     for now. Compose also has the sound's dev panel. In every tab, right
+     for now. Compose also has the sound panel. In every tab, right
      Shift and a lane under the keyboard show the looper, and messages are
      typed out in the top bar. -->
 <script lang="ts">
@@ -19,8 +19,9 @@
   import Keyboard from "./Keyboard.svelte";
   import LooperLane from "./LooperLane.svelte";
   import { keysAcross, noteName, notesOf, type KeyLayout, type Platform } from "./keyboard";
-  import { beatsNow, type FilterEnvelope, type LoudnessEnvelope, type SoundView, type Unison } from "./sound";
-  import SoundDevPanel from "./SoundDevPanel.svelte";
+  import { beatsNow, type SoundSender, type SoundView } from "./sound";
+  import SoundPanel from "./SoundPanel.svelte";
+  import type { Picked } from "./sound-scales";
   import type { Tab } from "./tabs";
   import TopBar from "./TopBar.svelte";
 
@@ -37,15 +38,8 @@
     onKeyPick: (tonic: number, mode: "major" | "minor") => void;
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
-    // What the sound's dev panel does. `cutoffHz` is middle C's cutoff,
-    // `resonance` and `keyTracking` are in percent, and `a4Hz` is A4's
-    // pitch.
-    onLoudnessChange: (envelope: LoudnessEnvelope) => void;
-    onFilterChange: (cutoffHz: number, resonance: number) => void;
-    onFilterEnvelopeChange: (envelope: FilterEnvelope) => void;
-    onKeyTrackingChange: (keyTracking: number) => void;
-    onUnisonChange: (unison: Unison) => void;
-    onTuningChange: (a4Hz: number) => void;
+    // What the sound panel sends to Rust.
+    soundSender: SoundSender;
   }
 
   let {
@@ -58,12 +52,7 @@
     onKeyPick,
     onChordClick,
     onPlayClick,
-    onLoudnessChange,
-    onFilterChange,
-    onFilterEnvelopeChange,
-    onKeyTrackingChange,
-    onUnisonChange,
-    onTuningChange,
+    soundSender,
   }: Props = $props();
 
   // How long the page takes to power on, in milliseconds, and how it moves:
@@ -174,11 +163,22 @@
   let composeAt = $state(0);
   // The chord key pressed last, by place, like "KeyX".
   let tried: string | null = $state(null);
-  // Whether the sound's dev panel is open. It opens over Compose's tape.
+  // Whether the sound panel is open. It opens over Compose's tape.
   let soundPanelOpen = $state(false);
+  // The sound panel's value picked for the arrow keys, if any.
+  let picked: Picked | null = $state(null);
 
   function switchSoundPanel() {
     soundPanelOpen = !soundPanelOpen;
+    letGo();
+  }
+
+  function pick(newPicked: Picked) {
+    picked = newPicked;
+  }
+
+  function letGo() {
+    picked = null;
   }
 
   // Compose outlines the chord keys by how well they fit the song's key.
@@ -246,6 +246,8 @@
 
   function openTab(newTab: Tab) {
     tab = newTab;
+    // The sound panel is Compose's, so what it picked is let go.
+    letGo();
     // A tab's screen can move the keyboard, so the lane follows it once
     // the page is drawn.
     tick().then(placeLane);
@@ -412,6 +414,16 @@
     started.clear();
   }
 
+  // An arrow key went down: it steps the value picked in the sound panel,
+  // if any. `steps` is 1 or -1 for right and left, 10 or -10 for up and
+  // down.
+  export function stepPicked(steps: number) {
+    if (picked === null) {
+      return;
+    }
+    picked.step(steps);
+  }
+
   // Whether Compose is open, so main.ts knows what Return and Delete do.
   export function isComposing(): boolean {
     return tab === "compose";
@@ -460,21 +472,30 @@
   <!-- The line of light that sweeps down as the page powers on. -->
   <div class="stage-scan-line" bind:this={scanLine}></div>
 
-  <!-- Compose has a button for the sound's dev panel. -->
-  {#snippet devButtons()}
+  <!-- Compose has a button for the sound panel: a small wave and "Sound". -->
+  {#snippet endButtons()}
     {#if tab === "compose"}
       <button
         type="button"
-        class="dev-button"
+        class="sound-button"
         class:is-open={soundPanelOpen}
         onclick={(event) => clickThenLetGo(event, switchSoundPanel)}
       >
-        Dev: sound
+        <svg class="tab-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <path
+            d="M1 8c1.5-5 3-5 4.5 0s3 5 4.5 0 3-5 4.5 0"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        </svg>
+        Sound
       </button>
     {/if}
   {/snippet}
 
-  <TopBar {tab} onTabClick={openTab} {wave} {onWaveClick} {onRenderClick} message={messageText} {messageShown} {devButtons} />
+  <TopBar {tab} onTabClick={openTab} {wave} {onWaveClick} {onRenderClick} message={messageText} {messageShown} {endButtons} />
 
   <main class="screen-body" class:is-composing={tab === "compose"}>
     {#if tab === "play"}
@@ -490,8 +511,8 @@
     {/if}
 
     <!-- Compose shows its tape where Play shows the notes held, with the
-         sound's dev panel over it while open, and Produce a dev panel until
-         it is designed. -->
+         sound panel over it while open, and Produce a dev panel until it is
+         designed. -->
     {#if tab === "compose"}
       <ComposeTape
         view={compose}
@@ -505,18 +526,13 @@
       />
       {#if soundPanelOpen}
         {#if sound !== null}
-          <SoundDevPanel
-            loudness={sound.loudness}
-            filter={sound.filter}
-            unison={sound.unison}
-            tuningHz={sound.tuning_hz}
+          <SoundPanel
+            {sound}
             keysAcross={keysAcross(platform)}
-            {onLoudnessChange}
-            {onFilterChange}
-            onEnvelopeChange={onFilterEnvelopeChange}
-            {onKeyTrackingChange}
-            {onUnisonChange}
-            {onTuningChange}
+            {picked}
+            onPick={pick}
+            onLetGo={letGo}
+            send={soundSender}
           />
         {/if}
       {/if}
@@ -540,6 +556,7 @@
         melody={melodyGuide}
         {chordNotes}
         actions={keyboardActions}
+        stepping={picked !== null}
       />
     </div>
   </main>

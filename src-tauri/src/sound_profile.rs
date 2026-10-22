@@ -106,6 +106,13 @@ impl SoundProfile {
         engine.set_wave(self.wave);
     }
 
+    // Sets the wave new notes play, on `engine` too. Notes already playing
+    // keep their wave.
+    pub fn set_wave(&mut self, engine: &mut Engine, wave: Wave) {
+        self.wave = wave;
+        engine.set_wave(self.wave);
+    }
+
     // Sets the loudness envelope for the notes started after this, on
     // `engine` too, kept as the engine sent it.
     pub fn set_loudness_envelope(&mut self, engine: &mut Engine, envelope: LoudnessEnvelope) {
@@ -497,6 +504,21 @@ mod tests {
         let switched = play_a4(&mut engine);
         let expected = play_a4(&mut square);
         assert!(switched == expected, "the engine does not play the profile's wave");
+    }
+
+    #[test]
+    fn setting_a_wave_plays_it() {
+        // The sound panel picks a wave by its tile, not by stepping.
+        let mut engine = Engine::new().unwrap();
+        let mut profile = SoundProfile::new();
+        profile.set_wave(&mut engine, Wave::Saw);
+        assert_eq!(profile.wave(), Wave::Saw);
+
+        let mut saw = Engine::new().unwrap();
+        saw.set_wave(Wave::Saw);
+        let set = play_a4(&mut engine);
+        let expected = play_a4(&mut saw);
+        assert!(set == expected, "the engine does not play the wave the profile set");
     }
 
     #[test]

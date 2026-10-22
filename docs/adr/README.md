@@ -41,6 +41,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0030](0030-a-sound-profile-per-song.md) | A sound profile per song | Accepted; also holds the loudness envelope, key tracking and tuning |
 | [0031](0031-lfos-and-a-routing-list.md) | LFOs and a routing list | Accepted |
 | [0032](0032-the-vibrato-key.md) | The vibrato key | Accepted |
+| [0033](0033-the-sound-panel.md) | The sound panel | Accepted |
 
 ## Template
 

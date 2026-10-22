@@ -1,8 +1,9 @@
 <!-- The page's top bar, built like GitHub's repository header: a title row
      with where you are on the left and actions on the right, then a row of
      tabs: Play, Compose and Produce. Messages for the player are typed out
-     after the title, wrapping onto a second line when long. Buttons for dev
-     panels sit at the right end of the tabs. -->
+     after the title, wrapping onto a second line when long. Buttons for a
+     tab's own panels, like Compose's Sound, sit at the right end of the
+     tabs. -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { clickThenLetGo } from "./dom";
@@ -19,11 +20,11 @@
     // The message typed out so far, and whether it is shown.
     message: string;
     messageShown: boolean;
-    // Buttons for dev panels.
-    devButtons: Snippet;
+    // Buttons for the open tab's own panels.
+    endButtons: Snippet;
   }
 
-  let { tab, onTabClick, wave, onWaveClick, onRenderClick, message, messageShown, devButtons }: Props = $props();
+  let { tab, onTabClick, wave, onWaveClick, onRenderClick, message, messageShown, endButtons }: Props = $props();
 </script>
 
 <header class="topbar">
@@ -103,8 +104,8 @@
       <span class="tab-label">Produce</span>
     </button>
 
-    <div class="tabs-dev">
-      {@render devButtons()}
+    <div class="tabs-end">
+      {@render endButtons()}
     </div>
   </nav>
 </header>

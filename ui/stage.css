@@ -509,6 +509,16 @@
     text-shadow 40ms;
 }
 
+/* While a value is picked in the sound panel, the arrow keys, which step
+   it, are framed in lavender. The color is written out, because each key
+   sets its own --accent for its note. */
+.stage .key.is-stepping {
+  border-color: rgba(191, 165, 255, 0.8);
+  box-shadow:
+    0 0 0 0.5px rgba(191, 165, 255, 0.8),
+    0 0 10px rgba(191, 165, 255, 0.25);
+}
+
 /* Dev panels: plain stand-ins for screens not designed yet. One sits above
    the keyboard, pushing nothing else around. */
 .dev-panel {
@@ -546,134 +556,12 @@
   color: var(--text-2);
 }
 
-/* Buttons that open dev panels sit at the right end of the tabs, dashed
-   like the panels. */
-.tabs-dev {
+/* The buttons at the right end of the tabs, like Compose's Sound button
+   (ui/sound-panel.css). */
+.tabs-end {
   display: flex;
   align-items: center;
   margin-left: auto;
-}
-
-.dev-button {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px dashed rgba(var(--ink), 0.35);
-  border-radius: 4px;
-  background: transparent;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  cursor: default;
-}
-
-.dev-button.is-open {
-  background: rgba(var(--ink), 0.08);
-  color: var(--text);
-}
-
-/* The sound's dev panel (ui/SoundDevPanel.svelte) opens over Compose's
-   tape, as wide as it, with the same 16px of room above. */
-.sound-panel {
-  position: absolute;
-  z-index: 2;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: calc(var(--u) * var(--keys-across) + 2 * var(--panel-padding));
-  margin: 0;
-  background: var(--panel-bg);
-}
-
-/* The title, then the buttons that pick the page. */
-.sound-panel-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.sound-panel-top .dev-panel-title {
-  margin: 0;
-}
-
-.sound-pages {
-  display: flex;
-  gap: 6px;
-}
-
-.sound-pages .dev-button {
-  height: 22px;
-  padding: 0 8px;
-}
-
-/* Two rows of sliders on each page. A third would not clear the keyboard
-   in a short window. */
-.sound-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* A row's name, then its five sliders. */
-.sound-row {
-  display: grid;
-  grid-template-columns: 80px repeat(5, minmax(0, 1fr));
-  align-items: end;
-  gap: 14px;
-}
-
-/* The notes page's second row holds two groups: unison's three sliders,
-   then the tuning's name and its one. */
-.sound-row.has-two-groups {
-  grid-template-columns: 80px repeat(3, minmax(0, 1fr)) auto minmax(0, 1fr);
-}
-
-/* A name too long for its 80px goes on two lines. */
-.sound-row-name {
-  padding-bottom: 3px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
-/* A slider, with its name and readout over it. */
-.sound-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* The name and readout stay on one line, so the panel stays short. In a
-   narrow window the name ends in "..." before the readout runs over. */
-.sound-field-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.sound-field-name {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--text-2);
-}
-
-.sound-field-value {
-  flex: none;
-  font-variant-numeric: tabular-nums;
-}
-
-.sound-field input {
-  width: 100%;
-  margin: 0;
-  accent-color: rgb(var(--ink));
 }
 
 /* Compose's tape (ui/ComposeTape.svelte): the key, the song and the chord

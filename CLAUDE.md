@@ -24,7 +24,7 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
 - Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
   Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030),
-  8 LFOs and a routing list (0031), vibrato key on left Shift (0032).
+  8 LFOs, routing list (0031), left Shift vibrato (0032), sound panel (0033).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout
@@ -36,6 +36,7 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - [docs/design.md](docs/design.md): the design, roadmap and open questions.
 - [docs/adr/](docs/adr/README.md): one file per decision (ADRs).
 - `.github/workflows/ci.yml`: CI, builds and tests on macOS and Windows.
+- `tools/jello-drive.swift`: drives the real app on macOS; build steps inside.
 
 ## Working rules
 
@@ -54,8 +55,9 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 
 - The user is particular about UI: expect many rounds. Never build a design
   they have not approved: mock up one screen or component at a time first.
-- No placeholder dev panels: replace each with a designed screen, the sound
-  panel first, then Compose's guidance outlines. Ask before designing Produce.
+- No placeholder dev panels: replace each with a designed screen. Sound panel
+  done; Compose's guidance outlines next. Ask before designing Produce.
+- Check UI changes in the real app yourself with `tools/jello-drive`.
 
 ### Code
 

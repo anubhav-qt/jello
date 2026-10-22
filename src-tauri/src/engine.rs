@@ -453,6 +453,8 @@ pub enum Wave {
 }
 
 impl Wave {
+    pub const ALL: [Wave; 4] = [Wave::Sine, Wave::Triangle, Wave::Square, Wave::Saw];
+
     // The wave after this one: sine, triangle, square, saw, then sine again.
     pub fn next(self) -> Wave {
         match self {
@@ -471,6 +473,16 @@ impl Wave {
             Wave::Square => "square",
             Wave::Saw => "saw",
         }
+    }
+
+    // The wave called `name`, or None.
+    pub fn from_name(name: &str) -> Option<Wave> {
+        for wave in Wave::ALL {
+            if wave.name() == name {
+                return Some(wave);
+            }
+        }
+        None
     }
 
     // The wave's number in the C API (`JELLO_WAVE_` in

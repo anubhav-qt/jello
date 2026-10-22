@@ -1,0 +1,886 @@
+/* The sound panel (ui/SoundPanel.svelte) and the Sound button that opens
+   it. Values, drawings and readouts are white; lavender only marks what is
+   chosen, open or picked. */
+
+/* The Sound button at the right end of Compose's tabs: grey while the
+   panel is shut, lavender while it is open. */
+.sound-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 4px;
+  background: transparent;
+  font-family: "Doto", monospace;
+  font-size: 15px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: default;
+  transition:
+    border-color 600ms ease-out,
+    color 600ms ease-out;
+}
+
+.sound-button:hover {
+  color: var(--text);
+  transition:
+    border-color 40ms,
+    color 40ms;
+}
+
+.sound-button.is-open {
+  border-color: rgba(var(--accent), 0.75);
+  background: rgba(var(--accent), 0.12);
+  color: rgb(var(--accent));
+}
+
+/* The panel opens over Compose's tape, as wide as the keyboard's panel,
+   with the same 16px of room above. */
+.sound-panel {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(var(--u) * var(--keys-across) + 2 * var(--panel-padding));
+  height: 320px;
+  border-radius: 9px;
+  background: var(--panel-bg);
+  box-shadow:
+    0 0 0 1px rgba(var(--ink), 0.07),
+    var(--panel-shadow);
+  color: var(--text);
+}
+
+/* The panel's buttons start plain. :where() keeps this from beating any
+   button's own look. */
+:where(.sound-panel button) {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+/* The top: the title, the page tabs, then the note or the picked value. */
+.sound-panel-top {
+  display: flex;
+  align-items: flex-end;
+  gap: 28px;
+  height: 44px;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(var(--ink), 0.07);
+}
+
+.sound-panel-title {
+  align-self: center;
+  margin-top: 4px;
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(var(--ink), 0.38);
+}
+
+/* Page tabs: the open one lit in lavender and underlined with lavender
+   dots, like the tabs above. */
+.sound-page-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  font-family: "Doto", monospace;
+  font-size: 15px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--text-2);
+  transition: color 600ms ease-out;
+}
+
+.sound-page-tab:hover {
+  color: var(--text);
+  transition: color 40ms;
+}
+
+.sound-page-tab.is-open {
+  color: rgb(var(--accent));
+}
+
+.sound-page-tab.is-open::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 4px;
+  background-color: var(--panel-bg);
+  background-image: radial-gradient(circle, rgb(var(--accent)) 1.2px, transparent 1.7px);
+  background-size: 6px 4px;
+  background-repeat: repeat-x;
+}
+
+.sound-panel-note {
+  align-self: center;
+  margin-top: 4px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* While a value is picked: its name, then the arrow keys and what they do. */
+.sound-pick-hint {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.sound-picked-name {
+  margin-right: 10px;
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgb(var(--accent));
+}
+
+.sound-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  border: 1px solid rgba(var(--ink), 0.22);
+  border-radius: 3px;
+}
+
+.sound-arrow svg {
+  width: 9px;
+  height: 9px;
+}
+
+.sound-arrow path {
+  fill: none;
+  stroke: rgba(var(--ink), 0.7);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sound-arrow-words {
+  margin-left: 4px;
+}
+
+.sound-arrow-gap {
+  width: 14px;
+}
+
+/* Modules: one group of settings each, side by side, with a dotted line
+   between them. Each page sets its own columns. */
+.sound-modules {
+  display: grid;
+  height: calc(100% - 44px);
+  padding: 18px 0;
+}
+
+.sound-module {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 22px;
+}
+
+.sound-module + .sound-module::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.16) 0.9px, transparent 1.3px);
+  background-size: 2px 6px;
+  background-repeat: repeat-y;
+}
+
+/* A module's name, with a hint at the right. The name and hint line up on
+   their text's baseline, and the hint's font sits lower, so a module with
+   nothing to say still gets an empty hint (&nbsp;) to keep its name level
+   with the other modules' names. */
+.sound-module-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  height: 16px;
+  margin-bottom: 12px;
+}
+
+/* A second name further down the same module, like the vibrato key's. */
+.sound-module-top.is-second {
+  margin-top: 24px;
+}
+
+.sound-label {
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(var(--ink), 0.38);
+}
+
+.sound-hint {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* The key that steps the wave, drawn like a small key cap. */
+.sound-key-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid rgba(var(--ink), 0.18);
+  border-radius: 3px;
+  font-family: "Doto", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+/* A drawing: a faint grid of dots with the lit line on it. It takes the
+   module's room left over, unless it is fixed at its own height. */
+.sound-drawing {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 4px;
+  background-color: #0a0a0d;
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.07) 0.8px, transparent 1.2px);
+  background-size: 8px 8px;
+  background-position: 4px 4px;
+  box-shadow: inset 0 0 0 1px rgba(var(--ink), 0.05);
+}
+
+.sound-drawing.is-fixed {
+  flex: none;
+}
+
+.sound-drawing svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The lit line: a row of white dots, glowing. */
+.sound-lit {
+  fill: none;
+  stroke: rgba(var(--ink), 0.92);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 0 4.5;
+  filter: drop-shadow(0 0 3px rgba(var(--ink), 0.45));
+}
+
+/* Smaller dots, for a line with many turns. */
+.sound-lit.is-fine {
+  stroke-width: 2;
+  stroke-dasharray: 0 3;
+}
+
+/* Guide lines, dimmer than the lit line. */
+.sound-lit-soft {
+  fill: none;
+  stroke: rgba(var(--ink), 0.22);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 0 4.5;
+}
+
+.sound-lit-soft.is-faint {
+  stroke: rgba(var(--ink), 0.1);
+}
+
+/* Where an LFO's notes start, shaded. */
+.sound-band {
+  fill: rgba(var(--ink), 0.07);
+}
+
+.sound-axis {
+  font-family: "Doto", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  fill: rgba(var(--ink), 0.3);
+}
+
+/* A drawing's square (ui/SoundHandle.svelte). Only its bigger unseen
+   square catches the pointer. */
+.sound-handle {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.sound-square {
+  fill: var(--panel-bg);
+  stroke: rgba(var(--ink), 0.92);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.sound-square.is-solid {
+  fill: rgba(var(--ink), 0.92);
+}
+
+.sound-ring {
+  fill: none;
+  stroke: rgba(var(--accent), 0.85);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+/* Values (ui/SoundValue.svelte): a name, a number, and a row of dots lit
+   up to it. */
+.sound-fields {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+/* Right under a module's name, as the vibrato key's are. */
+.sound-fields.is-under-top {
+  margin-top: 0;
+}
+
+.sound-fields.is-speed {
+  row-gap: 12px;
+  margin-top: 16px;
+}
+
+.sound-fields.is-amount {
+  margin-top: 18px;
+}
+
+/* The frame is drawn outside the value's own room, so a picked value's
+   lavender frame moves nothing. */
+.sound-value {
+  position: relative;
+  min-width: 0;
+  margin: -6px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.sound-value.is-picked {
+  border-color: rgba(var(--accent), 0.75);
+}
+
+.sound-value.is-dim {
+  opacity: 0.32;
+}
+
+.sound-value-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.sound-value.is-picked .sound-value-name {
+  color: rgb(var(--accent));
+}
+
+.sound-value-number {
+  margin-top: 1px;
+  font-family: "Doto", monospace;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 22px;
+  white-space: nowrap;
+  color: rgba(var(--ink), 0.92);
+}
+
+.sound-value-number small {
+  font-size: 12px;
+  color: rgba(var(--ink), 0.55);
+}
+
+/* The dots sit 6px under the number. Their row is 4px taller on each side
+   than the dots, so they are easier to catch. */
+.sound-dots {
+  display: flex;
+  gap: 3px;
+  margin: 2px 0 -4px;
+  padding: 4px 0;
+}
+
+.sound-dots i {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(var(--ink), 0.13);
+}
+
+/* A value lit from the middle out marks its middle, where it is 0. */
+.sound-dots i.is-zero {
+  background: rgba(var(--ink), 0.4);
+}
+
+.sound-dots i.is-lit {
+  background: rgba(var(--ink), 0.92);
+  box-shadow: 0 0 4px rgba(var(--ink), 0.45);
+}
+
+/* A big value with no name over it, like the tuning. */
+.sound-value.is-big {
+  margin-bottom: 0;
+}
+
+.sound-value.is-big .sound-value-number {
+  margin-top: 0;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 40px;
+  color: rgba(var(--ink), 0.95);
+  text-shadow:
+    0 0 2px rgba(var(--ink), 0.6),
+    0 0 18px rgba(var(--ink), 0.25);
+}
+
+.sound-value.is-big .sound-value-number small {
+  font-size: 16px;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.sound-value.is-big .sound-dots {
+  margin-top: 4px;
+}
+
+/* Notes page: the wave tiles, two by two. */
+.sound-waves {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.sound-wave {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.sound-wave svg {
+  width: 44px;
+  height: 22px;
+  overflow: visible;
+}
+
+.sound-wave .sound-lit {
+  stroke: rgba(var(--ink), 0.45);
+  filter: none;
+}
+
+.sound-wave.is-chosen .sound-lit {
+  stroke: rgba(var(--ink), 0.92);
+  filter: drop-shadow(0 0 3px rgba(var(--ink), 0.45));
+}
+
+/* The unison's copies: the middle one brightest. */
+.sound-copy {
+  fill: rgba(var(--ink), 0.7);
+  filter: drop-shadow(0 0 4px rgba(var(--ink), 0.4));
+}
+
+.sound-copy.is-middle {
+  fill: rgb(var(--ink));
+  filter: drop-shadow(0 0 6px rgba(var(--ink), 0.7));
+}
+
+.sound-middle-c {
+  fill: rgba(var(--ink), 0.92);
+}
+
+/* Tiles to choose from: the waves, the LFO shapes, the sources and the
+   targets. The chosen one is lavender. */
+.sound-wave,
+.sound-shape,
+.sound-tile,
+.sound-choice button {
+  border: 1px solid rgba(var(--ink), 0.1);
+  border-radius: 4px;
+  color: var(--text-2);
+  transition:
+    border-color 600ms ease-out,
+    color 600ms ease-out;
+}
+
+.sound-wave:hover,
+.sound-shape:hover,
+.sound-tile:hover,
+.sound-choice button:hover {
+  border-color: rgba(var(--ink), 0.22);
+  color: var(--text);
+  transition:
+    border-color 40ms,
+    color 40ms;
+}
+
+.sound-wave.is-chosen,
+.sound-shape.is-chosen,
+.sound-tile.is-chosen,
+.sound-choice button.is-chosen {
+  border-color: rgba(var(--accent), 0.75);
+  background: rgba(var(--accent), 0.1);
+  color: rgb(var(--accent));
+}
+
+.sound-wave {
+  font-family: "Doto", monospace;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* A shape drawn small, like in the LFO list. */
+.sound-glyph {
+  flex: none;
+  width: 26px;
+  height: 14px;
+  overflow: visible;
+}
+
+.sound-glyph path {
+  fill: none;
+  stroke: rgba(var(--ink), 0.75);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 0 2.4;
+}
+
+/* Lists: the LFOs and the connections. Many connections scroll. */
+.sound-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.sound-list-row {
+  flex: none;
+  display: grid;
+  align-items: center;
+  gap: 9px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.sound-list-row.is-lfo {
+  grid-template-columns: 14px 26px 1fr;
+}
+
+.sound-list-row.is-open {
+  border-color: rgba(var(--accent), 0.75);
+  background: rgba(var(--accent), 0.1);
+}
+
+.sound-list-number {
+  font-family: "Doto", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-2);
+}
+
+.sound-list-row.is-open .sound-list-number {
+  color: rgb(var(--accent));
+}
+
+.sound-list-words {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.sound-list-words b {
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.sound-list-row.is-unused .sound-list-words,
+.sound-list-row.is-new .sound-list-words,
+.sound-list-row.is-new .sound-list-number {
+  color: var(--text-3);
+}
+
+.sound-list-row.is-unused .sound-glyph path {
+  stroke: rgba(var(--ink), 0.28);
+}
+
+/* The 8 LFO rows always fit, so the LFO list never scrolls. That lets an
+   unused LFO's "not connected" run past its row into the space before the
+   next module, as in the mockup, instead of being cut short. Rows that list
+   what an LFO moves still end in an ellipsis. */
+.sound-list.is-lfos {
+  overflow: visible;
+}
+
+.sound-list-row.is-unused .sound-list-words {
+  overflow: visible;
+}
+
+/* A connection's row: the part that opens it, then, while it is open, the
+   x that removes it. */
+.sound-list-row.is-connection {
+  grid-template-columns: 1fr auto;
+  gap: 0;
+  padding: 0;
+}
+
+.sound-list-open {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+}
+
+.sound-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 100%;
+}
+
+.sound-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.sound-remove path {
+  stroke: rgba(var(--ink), 0.55);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.sound-remove:hover path {
+  stroke: rgba(var(--ink), 0.92);
+}
+
+/* LFOs page: the eight shapes under the drawing. */
+.sound-shapes {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.sound-shape {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+}
+
+.sound-shape .sound-glyph path {
+  stroke: rgba(var(--ink), 0.45);
+}
+
+.sound-shape.is-chosen .sound-glyph path {
+  stroke: rgba(var(--ink), 0.92);
+}
+
+/* A choice of two or three, side by side. */
+.sound-choice {
+  flex: none;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+}
+
+.sound-choice button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  font-family: "Doto", monospace;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sound-choice.is-second {
+  margin-top: 8px;
+}
+
+.sound-choice.is-last {
+  margin-top: 14px;
+}
+
+.sound-choice.is-amount {
+  margin-top: 12px;
+}
+
+.sound-choice.is-dim {
+  opacity: 0.32;
+}
+
+/* Connections page: the sources, in tiles. */
+.sound-tiles {
+  display: grid;
+  gap: 4px;
+}
+
+.sound-tiles.is-lfos {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.sound-tiles.is-words {
+  margin-top: 8px;
+}
+
+/* Scaled by's "nothing", over the sources. */
+.sound-tiles.is-nothing {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.sound-tile {
+  display: flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 7px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.sound-tile.is-dim {
+  opacity: 0.32;
+}
+
+/* An LFO's tile: its number over its shape. */
+.sound-tile.is-lfo {
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  height: 32px;
+  padding: 0;
+}
+
+.sound-tile.is-lfo .sound-list-number {
+  font-size: 11.5px;
+  line-height: 11px;
+}
+
+.sound-tile.is-chosen .sound-list-number {
+  color: rgb(var(--accent));
+}
+
+.sound-tile.is-lfo .sound-glyph {
+  width: 18px;
+  height: 10px;
+}
+
+.sound-tile.is-lfo .sound-glyph path {
+  stroke: rgba(var(--ink), 0.45);
+  stroke-width: 1.3;
+  stroke-dasharray: 0 2.2;
+}
+
+.sound-tile.is-lfo.is-chosen .sound-glyph path {
+  stroke: rgba(var(--ink), 0.92);
+}
+
+/* The targets, in groups that wrap. */
+.sound-group-name {
+  margin: 0 0 5px;
+  font-family: "Doto", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(var(--ink), 0.3);
+}
+
+.sound-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  margin-bottom: 7px;
+}
+
+.sound-chips.is-last {
+  margin-bottom: 0;
+}
+
+/* An LFO's speed, as a target: just its number. */
+.sound-tile.is-number {
+  justify-content: center;
+  width: 23px;
+  padding: 0;
+  font-family: "Doto", monospace;
+  font-weight: 800;
+}
+
+/* The snap switch, like the looper lane's but as tall as the choices. */
+.sound-snap {
+  flex: none;
+  height: 26px;
+  margin-top: 8px;
+}
+
+.sound-snap.is-dim {
+  opacity: 0.32;
+}
+
+/* With no connection open, the rest of the page says how to add one. */
+.sound-module.is-empty {
+  grid-column: 2 / -1;
+  justify-content: center;
+}
+
+.sound-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}

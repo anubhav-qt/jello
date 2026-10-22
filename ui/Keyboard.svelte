@@ -23,9 +23,12 @@
     chordNotes: number[];
     // What each action key does on the open tab, like "add" for Return.
     actions: Record<string, string>;
+    // True while a value is picked in the sound panel: the arrow keys step
+    // it, so they are framed.
+    stepping: boolean;
   }
 
-  let { platform, layout, held, sound, looperBeats, guide, melody, chordNotes, actions }: Props = $props();
+  let { platform, layout, held, sound, looperBeats, guide, melody, chordNotes, actions, stepping }: Props = $props();
 
   let rows = $derived(keyRows(platform));
 </script>
@@ -38,12 +41,23 @@
           <!-- Not a key, just room between keys. -->
           <div class="key-gap" style:--w={spec.width}></div>
         {:else if spec.below === undefined}
-          <Key {spec} {layout} {sound} {looperBeats} {guide} {melody} {chordNotes} {actions} held={held.has(spec.code)} />
+          <Key {spec} {layout} {sound} {looperBeats} {guide} {melody} {chordNotes} {actions} {stepping} held={held.has(spec.code)} />
         {:else}
           <!-- A key with another stacked under it shares its spot in the row. -->
           <div class="key-stack" style:--w={spec.width}>
-            <Key {spec} {layout} {sound} {looperBeats} {guide} {melody} {chordNotes} {actions} held={held.has(spec.code)} />
-            <Key spec={spec.below} {layout} {sound} {looperBeats} {guide} {melody} {chordNotes} {actions} held={held.has(spec.below.code)} />
+            <Key {spec} {layout} {sound} {looperBeats} {guide} {melody} {chordNotes} {actions} {stepping} held={held.has(spec.code)} />
+            <Key
+              spec={spec.below}
+              {layout}
+              {sound}
+              {looperBeats}
+              {guide}
+              {melody}
+              {chordNotes}
+              {actions}
+              {stepping}
+              held={held.has(spec.below.code)}
+            />
           </div>
         {/if}
       {/each}

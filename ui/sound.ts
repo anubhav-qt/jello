@@ -18,6 +18,11 @@ export interface SoundView {
   unison: UnisonView;
   // A4's pitch in Hz, which new notes are tuned from.
   tuning_hz: number;
+  // All LFO_COUNT LFOs and all CONNECTION_COUNT connections, in order, and
+  // the vibrato key's times (docs/adr/0031-lfos-and-a-routing-list.md).
+  lfos: LfoView[];
+  connections: ConnectionView[];
+  vibrato_key: VibratoKeyView;
 }
 
 // The loudness envelope new notes start with (`LoudnessView` in
@@ -30,7 +35,7 @@ export interface LoudnessView {
   release_ms: number;
 }
 
-// A loudness envelope as the sound's dev panel sends it
+// A loudness envelope as the sound panel sends it
 // (`set_loudness_envelope` in src-tauri/src/commands.rs).
 export interface LoudnessEnvelope {
   attackMs: number;
@@ -38,6 +43,11 @@ export interface LoudnessEnvelope {
   sustain: number;
   releaseMs: number;
 }
+
+// The shortest and longest a loudness envelope's stage takes, in ms
+// (`LOUDNESS_` in src-tauri/src/engine.rs).
+export const LOUDNESS_SHORTEST_MS = 1;
+export const LOUDNESS_LONGEST_MS = 10000;
 
 // The lowest and highest A4 notes can be tuned to, in Hz (`TUNING_` in
 // src-tauri/src/engine.rs).
@@ -62,7 +72,7 @@ export interface FilterView {
   key_tracking: number;
 }
 
-// A filter envelope as the filter's dev panel sends it
+// A filter envelope as the sound panel sends it
 // (`set_filter_envelope` in src-tauri/src/commands.rs).
 export interface FilterEnvelope {
   amount: number;
@@ -92,7 +102,7 @@ export interface UnisonView {
   spread: number;
 }
 
-// Unison as the sound's dev panel sends it (`set_unison` in
+// Unison as the sound panel sends it (`set_unison` in
 // src-tauri/src/commands.rs).
 export interface Unison {
   copies: number;
@@ -105,43 +115,106 @@ export interface Unison {
 export const UNISON_MOST_COPIES = 7;
 export const UNISON_MOST_DETUNE_CENTS = 50;
 
-// The dev panel's cutoff and stage sliders go from 0 to this.
-export const SLIDER_STEPS = 1000;
-
-// The cutoff at a slider position. Each step is the same number of
-// octaves, so low cutoffs get as much of the slider as high ones.
-export function cutoffAt(position: number): number {
-  const share = position / SLIDER_STEPS;
-  return FILTER_LOWEST_HZ * Math.pow(FILTER_OPEN_HZ / FILTER_LOWEST_HZ, share);
+// One LFO (`LfoView` in src-tauri/src/commands.rs), as Rust sends it and
+// the sound panel sends it back to `set_lfo`.
+export interface LfoView {
+  // "sine", "triangle", "square", "saw up", "saw down", "random steps",
+  // "smooth random" or "steps".
+  shape: string;
+  // For the steps shape: how many steps play, from 1 to LFO_MOST_STEPS, and
+  // every step's height in percent, from -100 to 100. `steps` always lists
+  // LFO_MOST_STEPS of them.
+  step_count: number;
+  steps: number[];
+  // True: every note starts its own copy of it. False: one runs for every
+  // note.
+  per_note: boolean;
+  // What its speed is counted in, "hz", "beats" or "presses", and its
+  // speed in each.
+  speed: string;
+  hz: number;
+  beats: number;
+  presses: number;
+  // Where in its cycle it starts, and for a per-note LFO how far each
+  // note's start is moved at random on top, in percent of a cycle.
+  start: number;
+  spread: number;
+  // How long after each note starts it waits, then how long it takes to
+  // grow to its full size: in ms, or in beats while its speed is in beats.
+  delay_ms: number;
+  fade_ms: number;
+  delay_beats: number;
+  fade_beats: number;
+  // How much of the time between jumps is spent sliding instead, in
+  // percent.
+  smooth: number;
+  // For a per-note LFO: one cycle, then it holds where it ended.
+  once: boolean;
 }
 
-// Where the slider sits for a cutoff.
-export function cutoffPosition(hz: number): number {
-  const share = Math.log(hz / FILTER_LOWEST_HZ) / Math.log(FILTER_OPEN_HZ / FILTER_LOWEST_HZ);
-  return Math.round(share * SLIDER_STEPS);
+// One connection of the routing list (`ConnectionView` in
+// src-tauri/src/commands.rs): `source` moves `target` by `amount`, in the
+// target's unit. An unused one's source is "none".
+export interface ConnectionView {
+  // "none", "lfo 1" to "lfo 8", "vibrato key", "note height", "random",
+  // "loudness envelope" or "filter envelope".
+  source: string;
+  // Like "pitch", "filter attack" or "lfo 2 speed".
+  target: string;
+  amount: number;
+  // Both ways, the target moves from -amount to amount; one way, from 0 to
+  // amount.
+  one_way: boolean;
+  // For pitch only: the move is rounded to whole half steps.
+  snap: boolean;
+  // Another source the amount is multiplied by, or "none".
+  scaled_by: string;
+  // The target's unit, like "cents". Rust needs no unit sent back.
+  unit: string;
 }
 
-// The cutoff in words: "open" at the top, its Hz below it, like "880 Hz".
-export function cutoffWords(hz: number): string {
-  if (hz >= FILTER_OPEN_HZ) {
-    return "open";
-  }
-  return `${Math.round(hz)} Hz`;
+// How long the vibrato key takes to rise when held and fall when let go,
+// in ms (`VibratoKeyView` in src-tauri/src/commands.rs).
+export interface VibratoKeyView {
+  rise_ms: number;
+  fall_ms: number;
 }
 
-// An envelope stage's length at a slider position, in ms, for the loudness
-// and filter envelopes alike: both go up to 10,000 ms. The slider is
-// curved, so short times, where small changes are heard, get most of it:
-// halfway is 1250 ms.
-export function stageMsAt(position: number): number {
-  const share = position / SLIDER_STEPS;
-  return Math.round(FILTER_LONGEST_MS * share * share * share);
-}
+// How many LFOs and connections a song has, and the most steps an LFO's
+// steps shape can have (src-tauri/src/modulation.rs).
+export const LFO_COUNT = 8;
+export const CONNECTION_COUNT = 64;
+export const LFO_MOST_STEPS = 32;
 
-// Where the slider sits for a stage's length.
-export function stagePosition(ms: number): number {
-  const share = Math.cbrt(ms / FILTER_LONGEST_MS);
-  return Math.round(share * SLIDER_STEPS);
+// An LFO's ranges: its speed in Hz and in key presses a cycle, and its
+// delay and fade-in in ms and in beats (`LFO_` in
+// src-tauri/src/modulation.rs). Its beats come from a list of note lengths
+// (ui/sound-scales.ts).
+export const LFO_SLOWEST_HZ = 0.01;
+export const LFO_FASTEST_HZ = 100;
+export const LFO_MOST_PRESSES = 32;
+export const LFO_LONGEST_MS = 10000;
+
+// The longest the vibrato key takes to rise or fall, in ms.
+export const VIBRATO_KEY_LONGEST_MS = 10000;
+
+// What the sound panel sends to Rust. ui/main.ts sends each in order, and
+// Rust's answer comes back through `showSound`.
+export interface SoundSender {
+  setWave(wave: string): void;
+  setLoudnessEnvelope(envelope: LoudnessEnvelope): void;
+  // `cutoffHz` is middle C's cutoff, and `resonance` is in percent.
+  setFilter(cutoffHz: number, resonance: number): void;
+  setFilterEnvelope(envelope: FilterEnvelope): void;
+  // In percent.
+  setKeyTracking(keyTracking: number): void;
+  setUnison(unison: Unison): void;
+  // A4's pitch in Hz.
+  setTuning(a4Hz: number): void;
+  setVibratoKeyTimes(riseMs: number, fallMs: number): void;
+  // `index` counts from 0.
+  setLfo(index: number, lfo: LfoView): void;
+  setConnection(index: number, connection: ConnectionView): void;
 }
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).

@@ -6,7 +6,15 @@ import { mount } from "svelte";
 import type { ComposeView } from "./compose";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
-import type { FilterEnvelope, LoudnessEnvelope, SoundView, Unison } from "./sound";
+import type {
+  ConnectionView,
+  FilterEnvelope,
+  LfoView,
+  LoudnessEnvelope,
+  SoundSender,
+  SoundView,
+  Unison,
+} from "./sound";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -22,6 +30,8 @@ interface StageControls {
   showSound(view: SoundView): void;
   // A message for the player, like where a file was saved.
   showStatus(message: string): void;
+  // An arrow key steps the value picked in the sound panel, if any.
+  stepPicked(steps: number): void;
   // Whether the Compose tab is open.
   isComposing(): boolean;
   // What Compose shows, as Rust answered.
@@ -177,7 +187,17 @@ async function setLayerVolume(layer: number, volume: number) {
   }
 }
 
-// The sound's dev panel sets the loudness envelope for the next notes.
+// The sound panel's wave tiles set the wave new notes play, like "saw".
+async function setWave(wave: string) {
+  try {
+    const view = await invoke<SoundView>("set_wave", { wave });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the wave: ${error}`);
+  }
+}
+
+// The sound panel sets the loudness envelope for the next notes.
 async function setLoudnessEnvelope(envelope: LoudnessEnvelope) {
   try {
     const view = await invoke<SoundView>("set_loudness_envelope", {
@@ -251,6 +271,37 @@ async function setUnison(unison: Unison) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set unison: ${error}`);
+  }
+}
+
+// It sets how long the vibrato key takes to rise when held and fall when
+// let go, in ms.
+async function setVibratoKeyTimes(riseMs: number, fallMs: number) {
+  try {
+    const view = await invoke<SoundView>("set_vibrato_key_times", { riseMs, fallMs });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the vibrato key: ${error}`);
+  }
+}
+
+// It sets LFO `index`, from 0, which moves notes already sounding.
+async function setLfo(index: number, lfo: LfoView) {
+  try {
+    const view = await invoke<SoundView>("set_lfo", { index, lfo });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set LFO ${index + 1}: ${error}`);
+  }
+}
+
+// And it sets connection `index` of the routing list, from 0.
+async function setConnection(index: number, connection: ConnectionView) {
+  try {
+    const view = await invoke<SoundView>("set_connection", { index, connection });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the connection: ${error}`);
   }
 }
 
@@ -341,6 +392,28 @@ function askForComposeAfterLetGo() {
   sendInOrder(askForCompose);
 }
 
+// The arrow keys step the value picked in the sound panel: left and right
+// one step, down and up ten (docs/design.md#sound-panel). They have no other
+// job, so they play nothing and never reach Rust.
+const ARROW_STEPS: Record<string, number> = {
+  ArrowLeft: -1,
+  ArrowRight: 1,
+  ArrowDown: -10,
+  ArrowUp: 10,
+};
+
+// An arrow key went down. Held, the system sends it again and again, and
+// each time it steps again, but the drawn key only goes down once.
+function stepWithArrow(key: string, steps: number, again: boolean) {
+  if (screen === null) {
+    return;
+  }
+  if (!again) {
+    screen.keyDown(key);
+  }
+  screen.stepPicked(steps);
+}
+
 window.addEventListener("keydown", (event) => {
   // While Cmd or Option/Alt is held, the key is a shortcut like Cmd+Q: it
   // plays nothing and is left alone. Every note is let go too, because on a
@@ -357,15 +430,21 @@ window.addEventListener("keydown", (event) => {
   // button.
   event.preventDefault();
 
+  // `event.code` is the key's place on the keyboard, like "KeyQ", whatever is
+  // printed on it.
+  const key = event.code;
+  const steps = ARROW_STEPS[key];
+  if (steps !== undefined) {
+    stepWithArrow(key, steps, event.repeat);
+    return;
+  }
+
   // Holding a key down makes the system send it again and again, but its
   // note is already playing.
   if (event.repeat) {
     return;
   }
 
-  // `event.code` is the key's place on the keyboard, like "KeyQ", whatever is
-  // printed on it.
-  const key = event.code;
   if (screen !== null) {
     screen.keyDown(key);
   }
@@ -393,12 +472,15 @@ function sendComposeKey(key: string) {
   }
 }
 
-// Every let-go goes to Rust, even while Cmd is held. Rust ignores keys
-// that did not start a note.
+// Every let-go but an arrow key's goes to Rust, even while Cmd is held. Rust
+// ignores keys that did not start a note.
 window.addEventListener("keyup", (event) => {
   const key = event.code;
   if (screen !== null) {
     screen.keyUp(key);
+  }
+  if (ARROW_STEPS[key] !== undefined) {
+    return;
   }
   sendInOrder(() => releaseKey(key));
   askForComposeAfterLetGo();
@@ -409,6 +491,20 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("blur", () => {
   letGoOfEverything();
 });
+
+// What the sound panel sends, each in order with the keys.
+const soundSender: SoundSender = {
+  setWave: (wave) => sendInOrder(() => setWave(wave)),
+  setLoudnessEnvelope: (envelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
+  setFilter: (cutoffHz, resonance) => sendInOrder(() => setFilter(cutoffHz, resonance)),
+  setFilterEnvelope: (envelope) => sendInOrder(() => setFilterEnvelope(envelope)),
+  setKeyTracking: (keyTracking) => sendInOrder(() => setKeyTracking(keyTracking)),
+  setUnison: (unison) => sendInOrder(() => setUnison(unison)),
+  setTuning: (a4Hz) => sendInOrder(() => setTuning(a4Hz)),
+  setVibratoKeyTimes: (riseMs, fallMs) => sendInOrder(() => setVibratoKeyTimes(riseMs, fallMs)),
+  setLfo: (index, lfo) => sendInOrder(() => setLfo(index, lfo)),
+  setConnection: (index, connection) => sendInOrder(() => setConnection(index, connection)),
+};
 
 // Asks Rust what each key does, then shows the page.
 async function start() {
@@ -432,12 +528,7 @@ async function start() {
       onKeyPick: (tonic: number, mode: "major" | "minor") => sendInOrder(() => pickKey(tonic, mode)),
       onChordClick: (place: number) => sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),
-      onLoudnessChange: (envelope: LoudnessEnvelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
-      onFilterChange: (cutoffHz: number, resonance: number) => sendInOrder(() => setFilter(cutoffHz, resonance)),
-      onFilterEnvelopeChange: (envelope: FilterEnvelope) => sendInOrder(() => setFilterEnvelope(envelope)),
-      onKeyTrackingChange: (keyTracking: number) => sendInOrder(() => setKeyTracking(keyTracking)),
-      onUnisonChange: (unison: Unison) => sendInOrder(() => setUnison(unison)),
-      onTuningChange: (a4Hz: number) => sendInOrder(() => setTuning(a4Hz)),
+      soundSender,
     },
   });
   sendInOrder(askForSound);

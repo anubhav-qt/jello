@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
     BEATS_PER_BAR, Engine, Filter, FilterEnvelope, LoopLayer, LoopNote, LooperState, LooperStatus, LoudnessEnvelope,
-    Unison, VIBRATO_KEY_NOTE,
+    Unison, VIBRATO_KEY_NOTE, Wave,
 };
 use crate::harmony::{Key, Mode};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
@@ -536,6 +536,33 @@ pub fn switch_wave(
     engine.start_audio()?;
     composer.sound_profile_mut().switch_wave(&mut engine);
     Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets the song's wave for notes played from now on to the one called
+// `wave`: "sine", "triangle", "square" or "saw". The sound panel's wave
+// tiles send it. Returns what the screen shows about the sound. Fails on a
+// wave with no such name. Like `switch_wave`, it opens the speakers first.
+#[tauri::command]
+pub fn set_wave(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    wave: String,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let wave = wave_named(&wave)?;
+
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_wave(&mut engine, wave);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+fn wave_named(name: &str) -> Result<Wave, String> {
+    match Wave::from_name(name) {
+        Some(wave) => Ok(wave),
+        None => Err(format!("there is no wave called {name}")),
+    }
 }
 
 // Turns "snap to beat" off if it is on, and on if it is off, and returns
@@ -1130,7 +1157,6 @@ mod tests {
 
     use std::time::Duration;
 
-    use crate::engine::Wave;
     use crate::modulation::{NO_CONNECTION, START_LFO};
 
     // What key `key` does in the default layout.
@@ -1543,6 +1569,14 @@ mod tests {
             ..view
         };
         assert_eq!(connection_of_view(&odd_target), Err(String::from("there is no target called volume")));
+    }
+
+    #[test]
+    fn every_wave_is_found_by_its_name_and_an_odd_name_fails() {
+        for wave in Wave::ALL {
+            assert_eq!(wave_named(wave.name()), Ok(wave));
+        }
+        assert_eq!(wave_named("noise"), Err(String::from("there is no wave called noise")));
     }
 
     #[test]

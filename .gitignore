@@ -2,6 +2,7 @@
 node_modules/
 dist/
 target/
+tools/build/
 
 # Rendered audio (test renders, exports)
 *.wav

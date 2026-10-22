@@ -48,9 +48,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    can move every sound setting
    ([ADR 0031](adr/0031-lfos-and-a-routing-list.md)), with left Shift as
    the vibrato key ([ADR 0032](adr/0032-the-vibrato-key.md)); see
-   [Engine](#engine). A dev panel in Compose sets the profile until its
-   screens are designed, mockups first; they replace it, and every other
-   placeholder screen goes the same way.
+   [Engine](#engine). The sound panel in Compose sets the profile
+   ([ADR 0033](adr/0033-the-sound-panel.md)); it replaced the dev panel,
+   and every other placeholder screen goes the same way.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Playing a composed song
    highlights its next chords on the same keyboard. Guided composing came
@@ -435,8 +435,9 @@ and being built.
     their ranges are ignored by the C API and brought within them by Rust,
     in `modulation.rs`, which also names every shape, speed, source and
     target for the screen and later song files.
-  - No screen yet: the `set_lfo`, `set_connection` and
-    `set_vibrato_key_times` commands wait for the designed sound screens.
+  - The sound panel's LFOs and Connections pages set them through
+    `set_lfo` and `set_connection`, and its Notes page sets the vibrato
+    key's times through `set_vibrato_key_times`.
 - **Vibrato key** ([ADR 0032](adr/0032-the-vibrato-key.md)): left Shift.
   Held, it rises from 0 to 1 in a straight line over its rise time; let
   go, it falls back over its fall time, each 0 to 10,000 ms, the song's
@@ -453,7 +454,7 @@ and being built.
   the filter and filter envelope, key tracking, unison, tuning, the LFOs,
   the routing list and the vibrato key's times, and the song in Compose
   (`compose.rs`) holds the profile.
-  - Every change, from the dev panel or the backslash key, goes to the
+  - Every change, from the sound panel or the backslash key, goes to the
     profile, which sends it on to the engine and keeps it as the engine
     sent it, with values outside their ranges brought within them. Rust's
     engine wrapper keeps no sound of its own, and the screen reads the
@@ -485,24 +486,12 @@ and being built.
     master limiter in step 6.
   - Play plays the open song's profile. Song files keep it from step 5,
     and so do copying a profile from another song and a profile per track.
-- **The sound's dev panel:** until their screen is designed, a dev panel
-  sets the song's sound profile (`ui/SoundDevPanel.svelte`). In Compose, a
-  "Dev: sound" button at the right end of the tabs opens it over the tape.
-  It has two pages, picked by the "Notes" and "Filter" buttons beside its
-  title, and opens on Notes. Each page has two rows, so it clears the
-  keyboard even in an 800 by 600 window. Notes: the loudness envelope's
-  attack, decay, sustain and release, then unison's copies, detune and
-  spread, and the tuning, A4 from 415 to 466 Hz. Filter: cutoff, resonance
-  and key tracking, then the filter envelope. Cutoff moves in octaves along
-  its slider, and both envelopes' stages on a curve that gives short times
-  most of it (halfway is 1250 ms). Each slider sends every value of its
-  group as it moves, through `set_loudness_envelope`, `set_unison`,
-  `set_tuning`, `set_filter`, `set_key_tracking` or `set_filter_envelope`,
-  to the song's sound profile, and its readout shows Rust's answer. Nothing
-  is saved until song files: each launch starts a new song, at 1 copy, A4
-  at 440 Hz, with the filter open. The LFOs and routing list are not on
-  it. The sound's screens will be designed, mockups first, and replace
-  this panel and its "Dev: sound" button.
+- **The sound panel** ([ADR 0033](adr/0033-the-sound-panel.md)): in
+  Compose, the Sound button opens it over the tape, with pages for the
+  notes, the filter, the LFOs and the connections. Every change goes to
+  the song's sound profile and its readouts show Rust's answer. Nothing is
+  saved until song files: each launch starts a new song, at 1 copy, A4 at
+  440 Hz, with the filter open. See [Sound panel](#sound-panel).
 - **No clicks:** a new song's notes fade in over 5 ms and out over 300 ms,
   and no stage is shorter than 1 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
@@ -1169,11 +1158,10 @@ themes and saved theme selection are removed. Development and packaged
 builds use the same colors, with no palette name shown in the app.
 
 Still to design: the Produce screen (a dev panel for now,
-[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the sound's
-controls (a dev panel in Compose for now), the
-look of the
+[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the look of the
 guidance outlines on the chord keys, and the tab icons (a pencil for
-Compose, faders for Produce). Compose's tape (below) is built.
+Compose, faders for Produce). Compose's tape and the sound panel (below)
+are built.
 
 1. Explore directions with mockups before any UI code.
 2. Settle a design system with the user (colors, type, spacing, components).
@@ -1248,6 +1236,105 @@ room above and below, and it still fits at 1000x640.
   shows it). 2: a song player in the engine plays one chord, or the whole
   song, each for its own length, on its exact samples (done). 3: the tape
   screen replaces the dev panel (done, `ui/ComposeTape.svelte`).
+
+### Sound panel
+
+[ADR 0033](adr/0033-the-sound-panel.md): it replaces the sound's dev
+panel. The mockups were approved one decision and one page at a time
+(2026-10-22).
+
+- **Where.** Compose only. A Sound button at the right end of the tabs (a
+  small wave and "Sound", lavender while open) opens it in the tape's
+  place: 16 px under the tabs, as wide as the keyboard's panel and 320 px
+  tall at fullscreen. The keyboard and the looper's lane stay in view, and
+  every key keeps playing. Page tabs along its top: Notes, Filter, LFOs and
+  Connections. It opens on Notes, and a note at the right end says when
+  changes are heard.
+- **Values.** Each one is a name in small capitals, its number in Doto with
+  the unit dimmer, and a row of dots lit from the first up to the value.
+  Drag along the dots, or click one to jump there. A row lights
+  `1 + round(share * (dots - 1))` dots, along the value's own curve: times
+  go as `10000 ms * share^3`, so short times, where small changes are
+  heard, get most of the row; the cutoff and an LFO's speed in Hz go in
+  octaves; cents of a connection's pitch go as a cube too.
+- **Picking.** Clicking a value (its name, number or dots), dragging it, or
+  a drawing's square picks it: its frame and name turn lavender, its square
+  is ringed, the drawn keyboard's arrow keys are framed, and the page's
+  note becomes the value's name with "step" and "ten steps" beside the
+  arrows. Left and right step it once, up and down ten times, and a held
+  arrow keeps stepping. A step is 1 in the value's unit (ms, %, Hz, cents,
+  copies, presses, steps), 0.1 for octaves, the shown digit for an LFO's
+  Hz (0.01 below 1 Hz, 0.1 below 10, then 1), and the next note length for
+  beats (1/16 to 128). Clicking empty panel space, another page or the
+  Sound button lets go. The arrows play nothing and never reach Rust; Esc
+  keeps its looper job.
+- **Look.** The keyboard's dark panel, dotted lines between its parts, Doto
+  labels and square corners. Drawings are dotted white lines on a faint
+  grid of dots, with square handles. Drawings, numbers and lit dots are
+  white; lavender marks only the open page, the picked value and chosen
+  tiles. A setting that would do nothing is dimmed to a third.
+- **Notes.** Wave: four tiles (`\` still steps them). Loudness ("how each
+  note rises and fades"): the envelope drawn, KEY UP where the key comes
+  up, each stage up to 90 px on the time curve; the peak's square drags
+  the attack, the next corner the decay sideways and the sustain up and
+  down, the KEY UP square the sustain, the last one the release; then
+  attack, decay, sustain and release. Unison ("copies of each note"): a
+  picture of the copies, not draggable, spread left to right and detuned
+  up and down; copies (7 dots, one per count), detune and spread. Tuning:
+  A4 in big digits, 415 to 466 Hz. Vibrato key ("hold left Shift"): rise
+  and fall. Note: "Changes start with the next key you press".
+- **Filter.** Filter ("takes the top off the sound"): the low-pass's real
+  curve from 20 Hz to 20 kHz with the resonance's bump, and a faint curve,
+  ENVELOPE PEAK, where the envelope takes the cutoff. Its one square drags
+  the cutoff sideways and the resonance up and down; at the far right the
+  cutoff reads "open". Filter envelope ("opens it as each note starts"):
+  drawn like loudness, with its peak and sustain in octaves; amount (0 to 8
+  octaves), attack, decay, sustain and release. Key tracking ("follows the
+  note"): 0% and 100% as faint lines, the song's line lit through middle C
+  and a square at its right end. Note: "Cutoff and resonance move notes
+  already sounding".
+- **LFOs.** The list: all 8, each with its number, its shape and what it
+  moves (from the connections); unconnected ones are dim, and a click opens
+  one. Its shape ("LFO 1 shape", the shape's name as the hint): two cycles
+  drawn, its start a solid square and, per note, its spread a shaded band
+  ending in a hollow square ("each note starts in the shaded part"). The
+  steps shape draws its steps instead, a square on each to drag its height
+  and one at the right end to drag how many there are (1 to 32). Under it,
+  8 shape tiles. Speed: [Per note | Shared], [Hz | Beats | Presses], then
+  speed, start, spread and smooth. Delay, fade-in: the wobble waiting, then
+  growing, with a square at the end of each; delay and fade-in, in ms or,
+  while the speed is in beats, beats; [Keeps going | Once]. Dimmed: smooth
+  unless the shape jumps (square, both saws, random steps, steps), and
+  spread and once while shared. Note: "Changes here move notes already
+  sounding".
+- **Connections.** The list ("6 of 64"): only connections in use, numbered
+  in order, as "LFO 1 -> pitch" (an arrow on screen); a long one ends in
+  "...", and many scroll. The open one is framed, with an x that removes
+  it. "+ New connection" fills the first
+  free place: the first LFO nothing uses yet, moving the pitch by 0, so
+  nothing changes until its amount does. Moved by: the 8 LFOs (number and
+  shape), the vibrato key, note height, random and both envelopes. Moves:
+  every target, grouped Notes, Filter and LFO speed; the hint says "moves
+  while it sounds" or "read as each note starts". A shared LFO's speed is
+  dimmed unless a shared LFO moves it. How much (in the target's unit): a
+  picture of the move, not draggable; the amount, its dots growing either
+  way from a middle zero; [Both ways | One way]; "Snap to notes", dimmed
+  unless the target is pitch, styled like the looper's snap switch. Scaled
+  by: nothing, the 8 LFOs and the other sources. Note: "Changes here move
+  notes already sounding".
+- **Sending.** Each change sends its whole group, through `set_wave`,
+  `set_loudness_envelope`, `set_unison`, `set_tuning`,
+  `set_vibrato_key_times`, `set_filter`, `set_filter_envelope`,
+  `set_key_tracking`, `set_lfo` or `set_connection`, and the panel shows
+  Rust's answer. Steps start from the value Rust answered last.
+- **Code.** `ui/SoundPanel.svelte` holds the frame and the page tabs; a
+  component per page (`ui/SoundNotes.svelte`, `ui/SoundFilter.svelte`,
+  `ui/SoundLfos.svelte`, `ui/SoundConnections.svelte`), one for a value
+  (`ui/SoundValue.svelte`) and one for a drawing's square
+  (`ui/SoundHandle.svelte`). What is picked lives in `ui/Stage.svelte`, so
+  the arrow keys (sent from `ui/main.ts` to `stepPicked`) and the framed
+  arrow keys reach it. The curves, steps and drawings' math are in
+  `ui/sound-scales.ts`; the look is in `ui/sound-panel.css`.
 
 ## Open questions
 

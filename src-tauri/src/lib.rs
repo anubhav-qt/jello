@@ -39,6 +39,7 @@ pub fn run() {
             commands::release_note,
             commands::release_all_notes,
             commands::switch_wave,
+            commands::set_wave,
             commands::switch_snap,
             commands::set_layer_volume,
             commands::set_filter,
