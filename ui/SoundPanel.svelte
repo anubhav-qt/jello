@@ -1,7 +1,8 @@
 <!-- The sound panel (docs/adr/0033-the-sound-panel.md): the song's sound,
      set while the keyboard keeps playing. It opens in Compose's tape's
-     place, as wide as the keyboard's panel, on one of five pages:
-     Oscillators, Notes, Filter, LFOs and Connections. A note at the top right says when
+     place, as wide as the keyboard's panel, on one of six pages:
+     Oscillators, Notes, Filter, LFOs, Connections and Presets
+     (docs/adr/0037-presets.md). A note at the top right says when
      changes are heard. While a value is picked, it says which, and what the
      arrow keys do to it. Clicking empty space in the panel lets go. -->
 <script lang="ts">
@@ -13,6 +14,7 @@
   import SoundLfos from "./SoundLfos.svelte";
   import SoundNotes from "./SoundNotes.svelte";
   import SoundOscillators from "./SoundOscillators.svelte";
+  import SoundPresets from "./SoundPresets.svelte";
 
   interface Props {
     // The song's sound, as Rust answered last.
@@ -29,7 +31,7 @@
 
   let { sound, keysAcross, picked, onPick, onLetGo, send }: Props = $props();
 
-  type Page = "oscillators" | "notes" | "filter" | "lfos" | "connections";
+  type Page = "oscillators" | "notes" | "filter" | "lfos" | "connections" | "presets";
 
   const PAGES: { page: Page; name: string; note: string }[] = [
     { page: "oscillators", name: "Oscillators", note: "Changes start with the next key you press" },
@@ -37,6 +39,7 @@
     { page: "filter", name: "Filter", note: "Cutoff and resonance move notes already sounding" },
     { page: "lfos", name: "LFOs", note: "Changes here move notes already sounding" },
     { page: "connections", name: "Connections", note: "Changes here move notes already sounding" },
+    { page: "presets", name: "Presets", note: "Loading one changes the song's sound" },
   ];
 
   // The page shown. It opens on the oscillators.
@@ -107,7 +110,9 @@
     <SoundFilter {sound} {picked} {onPick} {send} />
   {:else if page === "lfos"}
     <SoundLfos {sound} {picked} {onPick} {onLetGo} {send} />
-  {:else}
+  {:else if page === "connections"}
     <SoundConnections {sound} {picked} {onPick} {onLetGo} {send} />
+  {:else}
+    <SoundPresets {sound} {send} />
   {/if}
 </section>

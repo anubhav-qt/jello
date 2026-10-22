@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
+use crate::sound_file::Sound;
 use crate::sound_profile::SoundProfile;
 
 // How much slowing down or speeding up changes the song's tempo.
@@ -37,6 +38,11 @@ pub struct Composer {
     // unison and tuning (docs/adr/0030-a-sound-profile-per-song.md). Every
     // note played while the song is open plays it, in Play too.
     sound_profile: SoundProfile,
+    // The preset the song's sound was loaded from or saved as last, with
+    // the sound profile as it was right then (docs/adr/0037-presets.md).
+    // While the song still sounds exactly like that, the Presets page
+    // lights the preset's tile. None until a preset is loaded or saved.
+    preset: Option<(String, SoundProfile)>,
 }
 
 // A chord as it was played: by which key, when, and for how long. The player
@@ -166,6 +172,7 @@ impl Composer {
             playing_until: 0,
             tempo: START_TEMPO,
             sound_profile: SoundProfile::new(),
+            preset: None,
         }
     }
 
@@ -215,6 +222,31 @@ impl Composer {
     // For changing the song's sound. Each change goes on to the engine.
     pub fn sound_profile_mut(&mut self) -> &mut SoundProfile {
         &mut self.sound_profile
+    }
+
+    // Copies preset `name`'s `sound` into the song, on `engine` too, and
+    // remembers it as the preset the song sounds like.
+    pub fn take_preset(&mut self, engine: &mut Engine, name: &str, sound: &Sound) {
+        self.sound_profile.take_sound(engine, sound);
+        self.preset = Some((String::from(name), self.sound_profile));
+    }
+
+    // Remembers that the song's sound was just saved as preset `name`.
+    pub fn saved_as_preset(&mut self, name: &str) {
+        self.preset = Some((String::from(name), self.sound_profile));
+    }
+
+    // The preset the song sounds exactly like, or None once its sound has
+    // changed since loading or saving it, or if it never did either.
+    pub fn lit_preset(&self) -> Option<&str> {
+        let Some((name, profile)) = &self.preset else {
+            return None;
+        };
+        if *profile == self.sound_profile {
+            Some(name.as_str())
+        } else {
+            None
+        }
     }
 
     // Sets the song's key. Chords added already stay, named for the new key.
@@ -581,6 +613,30 @@ mod tests {
         } else {
             format!("{} for {} ms", chord.name, chord.held_ms)
         }
+    }
+
+    #[test]
+    fn a_preset_s_tile_is_lit_while_the_song_sounds_exactly_like_it() {
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        assert_eq!(composer.lit_preset(), None);
+
+        let mut sound = SoundProfile::new().sound();
+        sound.tuning_hz = 432.0;
+        composer.take_preset(&mut engine, "Low", &sound);
+        assert_eq!(composer.lit_preset(), Some("Low"));
+
+        // Changed, it no longer sounds like the preset...
+        composer.sound_profile_mut().set_tuning(&mut engine, 435.0);
+        assert_eq!(composer.lit_preset(), None);
+        // ...until it is changed back.
+        composer.sound_profile_mut().set_tuning(&mut engine, 432.0);
+        assert_eq!(composer.lit_preset(), Some("Low"));
+
+        // Saving lights the name it was saved as.
+        composer.sound_profile_mut().set_tuning(&mut engine, 450.0);
+        composer.saved_as_preset("High");
+        assert_eq!(composer.lit_preset(), Some("High"));
     }
 
     #[test]

@@ -45,6 +45,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0034](0034-best-next-chords.md) | Best next chords | Accepted |
 | [0035](0035-oscillators-with-kinds.md) | Oscillators with kinds | Accepted |
 | [0036](0036-glide.md) | Glide | Accepted |
+| [0037](0037-presets.md) | Presets | Accepted |
 
 ## Template
 

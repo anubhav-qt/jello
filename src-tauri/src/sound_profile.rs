@@ -14,6 +14,7 @@ use crate::engine::{
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, Lfo, NO_CONNECTION, START_LFO, Source, Target, VibratoKeyTimes,
 };
+use crate::sound_file::Sound;
 
 // A new song comes with vibrato ready on the vibrato key
 // (docs/adr/0032-the-vibrato-key.md): its first connection swings the pitch
@@ -107,6 +108,48 @@ impl SoundProfile {
         }
         engine.set_vibrato_key_times(self.vibrato_key_times);
         engine.set_glide_time(self.glide_ms);
+    }
+
+    // Every part of the profile, as plain values: what a sound file writes
+    // (docs/adr/0037-presets.md).
+    pub fn sound(&self) -> Sound {
+        Sound {
+            oscillators: self.oscillators,
+            loudness_envelope: self.loudness_envelope,
+            filter: self.filter,
+            filter_envelope: self.filter_envelope,
+            key_tracking: self.key_tracking,
+            unison: self.unison,
+            tuning_hz: self.tuning_hz,
+            lfos: self.lfos,
+            connections: self.connections,
+            vibrato_key_times: self.vibrato_key_times,
+            glide_ms: self.glide_ms,
+        }
+    }
+
+    // Makes `sound` the whole profile, on `engine` too, as a preset does
+    // when it is loaded. Each part goes through the engine like any other
+    // change, so values outside their ranges are brought within them, and
+    // the profile keeps what the engine sent.
+    pub fn take_sound(&mut self, engine: &mut Engine, sound: &Sound) {
+        for (index, oscillator) in sound.oscillators.iter().enumerate() {
+            self.set_oscillator(engine, index, *oscillator);
+        }
+        self.set_loudness_envelope(engine, sound.loudness_envelope);
+        self.set_filter(engine, sound.filter);
+        self.set_filter_envelope(engine, sound.filter_envelope);
+        self.set_key_tracking(engine, sound.key_tracking);
+        self.set_unison(engine, sound.unison);
+        self.set_tuning(engine, sound.tuning_hz);
+        for (index, lfo) in sound.lfos.iter().enumerate() {
+            self.set_lfo(engine, index, *lfo);
+        }
+        for (index, connection) in sound.connections.iter().enumerate() {
+            self.set_connection(engine, index, *connection);
+        }
+        self.set_vibrato_key_times(engine, sound.vibrato_key_times);
+        self.set_glide_time(engine, sound.glide_ms);
     }
 
     // Moves new notes' first oscillator on to the next kind (sine,

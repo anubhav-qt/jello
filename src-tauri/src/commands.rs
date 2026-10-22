@@ -1,7 +1,7 @@
 // Named commands the UI can call (docs/adr/0003-every-action-is-a-command.md).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -19,6 +19,7 @@ use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
     VibratoKeyTimes,
 };
+use crate::presets::{self, PresetView};
 use crate::sound_profile::SoundProfile;
 use crate::wav::write_wav;
 
@@ -57,6 +58,9 @@ pub struct SoundView {
     // How long each melody note played with the glide key held takes to
     // slide in, in ms (docs/adr/0036-glide.md).
     glide_ms: u32,
+    // The preset the song sounds exactly like, whose tile is lit, or None
+    // (null for the UI) (docs/adr/0037-presets.md).
+    preset: Option<String>,
 }
 
 // One oscillator, as the screen shows it. Its kind is named: "sine",
@@ -424,6 +428,7 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
             fall_ms: key_times.fall_ms,
         },
         glide_ms: sound_profile.glide_time(),
+        preset: composer.lit_preset().map(String::from),
     }
 }
 
@@ -925,6 +930,86 @@ pub fn set_glide_time(
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
+// Every preset in the Sounds folder, sorted by name, with whether each can
+// be read and which is the starting sound (docs/adr/0037-presets.md). The
+// Presets page asks each time it opens, so presets added, renamed or
+// removed in the folder show up.
+#[tauri::command]
+pub fn preset_list(app: AppHandle) -> Result<Vec<PresetView>, String> {
+    let sounds = sounds_folder(&app)?;
+    let settings = settings_folder(&app)?;
+    let starting = presets::starting_name(&settings);
+    Ok(presets::list(&sounds, starting.as_deref()))
+}
+
+// Copies preset `name` into the song's sound profile. Whatever the file
+// leaves out takes a new song's value. Fails, changing nothing, if the
+// file is missing or is not a sound file.
+#[tauri::command]
+pub fn load_preset(
+    app: AppHandle,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    name: String,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let sounds = sounds_folder(&app)?;
+    let sound = presets::read(&sounds, &name, &SoundProfile::new())?;
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.take_preset(&mut engine, &name, &sound);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Saves the song's sound profile as preset `name`, replacing one already
+// called that, with upper and lower case taken as the same.
+#[tauri::command]
+pub fn save_preset(
+    app: AppHandle,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    name: String,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let sounds = sounds_folder(&app)?;
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    let sound = composer.sound_profile().sound();
+    let saved_name = presets::save(&sounds, &name, &sound)?;
+    composer.saved_as_preset(&saved_name);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Why `name` can't name a preset, for the hint beside the name field, or
+// None (null for the UI) if it can.
+#[tauri::command]
+pub fn preset_name_problem(name: String) -> Option<String> {
+    presets::name_problem(&name)
+}
+
+// Marks preset `name` as the starting sound every new song starts with, or
+// with None (null from the UI), unmarks it.
+#[tauri::command]
+pub fn mark_starting_preset(app: AppHandle, name: Option<String>) -> Result<(), String> {
+    let settings = settings_folder(&app)?;
+    presets::mark_starting(&settings, name.as_deref())
+}
+
+// Copies the starting sound, kept in `sounds`, into the song in
+// `composer`, on `engine` too. The app does this as it starts. With no
+// preset marked, or one that is gone or can't be read, the song keeps a
+// new song's sound.
+pub fn load_starting_sound(sounds: &Path, settings: &Path, composer: &mut Composer, engine: &mut Engine) {
+    let Some(name) = presets::starting_name(settings) else {
+        return;
+    };
+    let Ok(sound) = presets::read(sounds, &name, &SoundProfile::new()) else {
+        return;
+    };
+    composer.take_preset(engine, &name, &sound);
+}
+
 // Does what a laptop key does when pressed: plays its note or chord, holds
 // the vibrato key or the glide key, switches the wave, runs the looper or changes the tempo.
 // `key` is the key's place on the keyboard, like "KeyQ". Returns what the
@@ -1263,6 +1348,20 @@ fn jello_music_folder(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
+// The folder presets are kept in: Sounds, in the Jello folder in Music.
+pub fn sounds_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Sounds"))
+}
+
+// Jello's own settings folder, where its settings file is kept.
+pub fn settings_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    match app.path().app_config_dir() {
+        Ok(folder) => Ok(folder),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 // These tests look at what the commands answer and what each key does to
 // the engine. They render without speakers.
 #[cfg(test)]
@@ -1300,6 +1399,84 @@ mod tests {
             }
         }
         loudest
+    }
+
+    // A preset of a new song's sound on a saw at A4 = 432 Hz, saved in
+    // `sounds` and marked as the starting sound in `settings`.
+    fn save_starting_saw(sounds: &Path, settings: &Path) -> crate::sound_file::Sound {
+        let mut sound = SoundProfile::new().sound();
+        sound.oscillators[0].kind = Kind::Saw;
+        sound.tuning_hz = 432.0;
+        presets::save(sounds, "Low saw", &sound).unwrap();
+        presets::mark_starting(settings, Some("Low saw")).unwrap();
+        sound
+    }
+
+    #[test]
+    fn the_starting_sound_reaches_the_engine_before_the_first_note() {
+        let sounds = presets::test_folder("start-sounds");
+        let settings = presets::test_folder("start-settings");
+        save_starting_saw(&sounds, &settings);
+
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        composer.send_all(&mut engine);
+        load_starting_sound(&sounds, &settings, &mut composer, &mut engine);
+        assert_eq!(composer.sound_profile().oscillators()[0].kind, Kind::Saw);
+        assert_eq!(composer.sound_profile().tuning_hz(), 432.0);
+        assert_eq!(composer.lit_preset(), Some("Low saw"));
+
+        // The engine plays it, as an engine set by hand does.
+        let mut by_hand = Engine::new().unwrap();
+        let mut by_hand_composer = Composer::new();
+        by_hand_composer.send_all(&mut by_hand);
+        let profile = by_hand_composer.sound_profile_mut();
+        let mut saw = profile.oscillators()[0];
+        saw.kind = Kind::Saw;
+        profile.set_oscillator(&mut by_hand, 0, saw);
+        profile.set_tuning(&mut by_hand, 432.0);
+
+        let mut new_song = Engine::new().unwrap();
+        let mut new_song_composer = Composer::new();
+        new_song_composer.send_all(&mut new_song);
+
+        press(&mut engine, &mut composer, "KeyM");
+        press(&mut by_hand, &mut by_hand_composer, "KeyM");
+        press(&mut new_song, &mut new_song_composer, "KeyM");
+        let started = engine.render(4800);
+        assert!(started == by_hand.render(4800), "the engine does not play the starting sound");
+        assert!(started != new_song.render(4800), "the starting sound sounds like a new song");
+    }
+
+    #[test]
+    fn with_its_preset_gone_or_unreadable_the_song_starts_on_a_new_song_s_sound() {
+        let sounds = presets::test_folder("gone-sounds");
+        let settings = presets::test_folder("gone-settings");
+        save_starting_saw(&sounds, &settings);
+
+        fs::remove_file(sounds.join("Low saw.sound")).unwrap();
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        load_starting_sound(&sounds, &settings, &mut composer, &mut engine);
+        assert!(*composer.sound_profile() == SoundProfile::new());
+        assert_eq!(composer.lit_preset(), None);
+
+        fs::write(sounds.join("Low saw.sound"), "this is [not a sound").unwrap();
+        load_starting_sound(&sounds, &settings, &mut composer, &mut engine);
+        assert!(*composer.sound_profile() == SoundProfile::new());
+    }
+
+    #[test]
+    fn with_no_starting_sound_marked_the_song_starts_on_a_new_song_s_sound() {
+        let sounds = presets::test_folder("unmarked-sounds");
+        let settings = presets::test_folder("unmarked-settings");
+        save_starting_saw(&sounds, &settings);
+        presets::mark_starting(&settings, None).unwrap();
+
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        load_starting_sound(&sounds, &settings, &mut composer, &mut engine);
+        assert!(*composer.sound_profile() == SoundProfile::new());
     }
 
     #[test]
@@ -1367,6 +1544,24 @@ mod tests {
         press(&mut engine, &mut composer, "ShiftRight");
         press(&mut engine, &mut composer, "Equal");
         assert_eq!(composer.tempo(), 115);
+    }
+
+    #[test]
+    fn the_ui_reads_the_lit_preset_by_this_name() {
+        // ui/SoundPresets.svelte lights the tile `preset` names.
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["preset"], serde_json::Value::Null);
+
+        let sound = SoundProfile::new().sound();
+        composer.take_preset(&mut engine, "Low saw", &sound);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["preset"], "Low saw");
+
+        composer.sound_profile_mut().set_tuning(&mut engine, 450.0);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["preset"], serde_json::Value::Null);
     }
 
     #[test]

@@ -27,6 +27,19 @@ export interface SoundView {
   // How long each melody note played with the glide key held takes to
   // slide in, in ms (docs/adr/0036-glide.md).
   glide_ms: number;
+  // The preset the song sounds exactly like, whose tile is lit, or null
+  // (docs/adr/0037-presets.md).
+  preset: string | null;
+}
+
+// One preset in Music/Jello/Sounds (`PresetView` in
+// src-tauri/src/presets.rs).
+export interface PresetView {
+  name: string;
+  // False for a file that is not a sound file: its tile is dimmed.
+  readable: boolean;
+  // Whether new songs start with it.
+  starting: boolean;
 }
 
 // One oscillator (`OscillatorView` in src-tauri/src/commands.rs).
@@ -270,6 +283,17 @@ export interface SoundSender {
   // `index` counts from 0.
   setLfo(index: number, lfo: LfoView): void;
   setConnection(index: number, connection: ConnectionView): void;
+  // The presets, as Rust lists them now (docs/adr/0037-presets.md).
+  listPresets(): Promise<PresetView[]>;
+  // Copies preset `name` into the song.
+  loadPreset(name: string): void;
+  // Saves the song's sound as preset `name`. Done once it is saved, or
+  // once saving failed and the top bar says why.
+  savePreset(name: string): Promise<void>;
+  // Why `name` can't name a preset, or null if it can.
+  presetNameProblem(name: string): Promise<string | null>;
+  // Marks preset `name` as the starting sound, or with null, unmarks it.
+  markStartingPreset(name: string | null): Promise<void>;
 }
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).

@@ -882,3 +882,111 @@
   font-size: 12px;
   color: var(--text-3);
 }
+
+/* Presets page (ui/SoundPresets.svelte): the saved sounds as tiles,
+   sorted by name, in as many rows as they need, scrolling past the
+   page's height. The lit tile is the preset the song sounds like. */
+.preset-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-content: start;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.preset-tile {
+  position: relative;
+  height: 34px;
+  padding: 0;
+}
+
+.preset-load {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0 46px 0 10px;
+  color: inherit;
+  text-align: left;
+}
+
+.preset-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-unreadable {
+  font-size: 10px;
+}
+
+/* The START mark in a tile's corner. Faint until the tile is hovered;
+   always shown, white, on the starting sound. */
+.preset-start {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  padding: 1px 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: "Doto", monospace;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: transparent;
+}
+
+.preset-tile:hover .preset-start {
+  border-color: rgba(var(--ink), 0.14);
+  color: var(--text-3);
+}
+
+.preset-tile:hover .preset-start:hover {
+  color: var(--text);
+}
+
+.preset-start.is-starting,
+.preset-tile:hover .preset-start.is-starting {
+  border-color: rgba(var(--ink), 0.5);
+  color: var(--text);
+}
+
+/* The name to save under. */
+.preset-name-field {
+  flex: none;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 4px;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.preset-name-field::placeholder {
+  color: var(--text-3);
+}
+
+.preset-name-field:focus {
+  border-color: rgba(var(--ink), 0.4);
+}
+
+.preset-save-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.preset-save-hint.is-problem {
+  color: var(--text);
+}

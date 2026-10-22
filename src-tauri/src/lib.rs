@@ -7,10 +7,14 @@ mod engine;
 mod harmony;
 mod key_map;
 mod modulation;
+mod presets;
+mod sound_file;
 mod sound_profile;
 mod wav;
 
 use std::sync::Mutex;
+
+use tauri::Manager;
 
 use compose::Composer;
 use engine::Engine;
@@ -34,6 +38,25 @@ pub fn run() {
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
         .manage(Mutex::new(composer))
+        // The starting sound replaces a new song's before the window opens
+        // (docs/adr/0037-presets.md). The folders it is kept in are only
+        // known once the app is running. If either can't be found, Jello
+        // still opens, with a new song's sound.
+        .setup(|app| {
+            let handle = app.handle();
+            let Ok(sounds) = commands::sounds_folder(handle) else {
+                return Ok(());
+            };
+            let Ok(settings) = commands::settings_folder(handle) else {
+                return Ok(());
+            };
+            let composer = app.state::<Mutex<Composer>>();
+            let engine = app.state::<Mutex<Engine>>();
+            let mut composer = composer.lock().unwrap();
+            let mut engine = engine.lock().unwrap();
+            commands::load_starting_sound(&sounds, &settings, &mut composer, &mut engine);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::play_note,
             commands::release_note,
@@ -52,6 +75,11 @@ pub fn run() {
             commands::set_connection,
             commands::set_vibrato_key_times,
             commands::set_glide_time,
+            commands::preset_list,
+            commands::load_preset,
+            commands::save_preset,
+            commands::preset_name_problem,
+            commands::mark_starting_preset,
             commands::press_key,
             commands::release_key,
             commands::sound_view,

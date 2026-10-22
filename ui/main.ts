@@ -12,6 +12,7 @@ import type {
   LfoView,
   LoudnessEnvelope,
   Oscillator,
+  PresetView,
   SoundSender,
   SoundView,
   Unison,
@@ -328,6 +329,63 @@ async function setConnection(index: number, connection: ConnectionView) {
   }
 }
 
+// It lists the presets in Music/Jello/Sounds.
+async function listPresets(): Promise<PresetView[]> {
+  try {
+    return await invoke<PresetView[]>("preset_list");
+  } catch (error) {
+    showStatus(`Could not list the presets: ${error}`);
+    return [];
+  }
+}
+
+// It copies preset `name` into the song.
+async function loadPreset(name: string) {
+  try {
+    const view = await invoke<SoundView>("load_preset", { name });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not load ${name}: ${error}`);
+  }
+}
+
+// It saves the song's sound as preset `name`.
+async function savePreset(name: string) {
+  try {
+    const view = await invoke<SoundView>("save_preset", { name });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not save ${name}: ${error}`);
+  }
+}
+
+async function presetNameProblem(name: string): Promise<string | null> {
+  try {
+    return await invoke<string | null>("preset_name_problem", { name });
+  } catch (error) {
+    return String(error);
+  }
+}
+
+async function markStartingPreset(name: string | null) {
+  try {
+    await invoke("mark_starting_preset", { name });
+  } catch (error) {
+    showStatus(`Could not mark the starting sound: ${error}`);
+  }
+}
+
+// Sends `send` in order with the keys, like `sendInOrder`, and is done once
+// it has been sent and answered.
+function sendInOrderAndWait(send: () => Promise<void>): Promise<void> {
+  return new Promise((done) => {
+    sendInOrder(async () => {
+      await send();
+      done();
+    });
+  });
+}
+
 async function askForCompose() {
   try {
     const view = await invoke<ComposeView>("compose_view");
@@ -437,6 +495,28 @@ function stepWithArrow(key: string, steps: number, again: boolean) {
   screen.stepPicked(steps);
 }
 
+// Whether the key went to a text field, like the Presets page's name field.
+function isTyping(event: KeyboardEvent): boolean {
+  const target = event.target;
+  if (target instanceof HTMLInputElement) {
+    return true;
+  }
+  if (target instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  return false;
+}
+
+// While typing in a text field, keys go to the field and play nothing.
+// Esc and Return only leave the field, so keys play again.
+function typeInField(event: KeyboardEvent) {
+  if (event.code === "Escape" || event.code === "Enter" || event.code === "NumpadEnter") {
+    event.preventDefault();
+    const field = event.target as HTMLElement;
+    field.blur();
+  }
+}
+
 window.addEventListener("keydown", (event) => {
   // While Cmd is held, the key is a shortcut like Cmd+Q: it plays nothing
   // and is left alone. Every note is let go too, because on a Mac a key let
@@ -446,6 +526,11 @@ window.addEventListener("keydown", (event) => {
   // (docs/adr/0032-the-vibrato-key.md, docs/adr/0036-glide.md).
   if (event.metaKey) {
     letGoOfEverything();
+    return;
+  }
+
+  if (isTyping(event)) {
+    typeInField(event);
     return;
   }
 
@@ -529,6 +614,11 @@ const soundSender: SoundSender = {
   setGlideTime: (glideMs) => sendInOrder(() => setGlideTime(glideMs)),
   setLfo: (index, lfo) => sendInOrder(() => setLfo(index, lfo)),
   setConnection: (index, connection) => sendInOrder(() => setConnection(index, connection)),
+  listPresets: () => listPresets(),
+  loadPreset: (name) => sendInOrder(() => loadPreset(name)),
+  savePreset: (name) => sendInOrderAndWait(() => savePreset(name)),
+  presetNameProblem: (name) => presetNameProblem(name),
+  markStartingPreset: (name) => markStartingPreset(name),
 };
 
 // Asks Rust what each key does, then shows the page.

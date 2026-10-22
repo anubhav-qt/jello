@@ -1276,6 +1276,62 @@ artist sound studies.
 Sampling other people's records is a copyright problem for anything published.
 Use our own recordings or licensed sample packs.
 
+### Presets
+
+[ADR 0037](adr/0037-presets.md): a song's whole sound, saved by name.
+
+- **Files.** `Music/Jello/Sounds/<name>.sound`, TOML, written by
+  `src-tauri/src/sound_file.rs`: `tuning_hz` and `glide_ms`, then 3
+  `[[oscillators]]`, `[loudness]`, `[filter]` (with `key_tracking`),
+  `[filter_envelope]`, `[unison]`, `[vibrato_key]`, 8 `[[lfos]]` with all
+  32 steps, and a `[[connections]]` for each one in use. Choices are words,
+  the names the UI shows. Saving then reading gives back exactly the same
+  sound.
+- **Reading.** Starts from a new song's sound and takes what the text gives.
+  Left out, the wrong sort, or an unknown word: a new song's value. Unknown
+  names: skipped. Counts below 0 read as 0, fractions round. Out of range:
+  kept until the song takes the sound, when the engine brings them in, as
+  with any change. Connections fill the routing list from the top in the
+  file's order, leaving out any whose source or target Jello does not know,
+  and none listed means none. Text that is not TOML can't be read.
+- **Names.** Spaces at the ends are left off. Letters, numbers, spaces, `-`
+  and `_`, 1 to 40 of them; never CON, PRN, AUX, NUL, COM1 to 9 or LPT1
+  to 9 in any case. Saving under a name that differs only in case replaces
+  that preset and keeps its name.
+- **Page.** Presets, the sound panel's sixth page
+  (`ui/SoundPresets.svelte`). Tiles sorted by name, upper and lower case
+  together, scrolling. Clicking one loads it; a file that can't be read is
+  a dimmed tile saying so. The tile the song sounds exactly like is lit:
+  Compose remembers the profile right after loading or saving and compares
+  (`Composer::lit_preset`), so changing a value back lights it again. Each
+  tile's START mark, faint until hovered, white when marked, makes it the
+  starting sound; clicking it again unmarks it. At the right, a name field
+  and Save, which reads Replace over an existing name; the hint under it
+  gives Rust's reason a name is refused, what it saves over, or where
+  presets are kept. The page lists the folder again each time it opens.
+- **Typing.** While a text field has the focus, keys go to it and play
+  nothing (`ui/main.ts`). Esc and Return leave the field. Let-gos still
+  reach Rust, which ignores keys that started nothing.
+- **Starting sound.** `starting_sound = "<name>"` in `settings.toml` in
+  Jello's settings folder (on a Mac, `~/Library/Application
+  Support/com.jello.app`). As Jello starts, before the window opens, the
+  song takes that preset; with none marked, or it gone or unreadable, it
+  keeps a new song's sound. If the folders can't be found, Jello still
+  opens.
+- **Commands.** `preset_list`, `load_preset`, `save_preset`,
+  `preset_name_problem` and `mark_starting_preset`; the files themselves in
+  `src-tauri/src/presets.rs`. `SoundView.preset` names the lit tile.
+- **Later.** Renaming and removing on the page; song files writing their
+  sound the same way.
+- Tests check the round trip, taking a sound setting every part of the
+  song's, words in the text, only used connections written, missing, wrong-sort, unknown and out-of-range values, unknown
+  connections moving up, the 64 limit, broken text, allowed and refused
+  names, saving, listing order, hidden and other files, replacing in another
+  case, unreadable files, names reaching outside the folder, the starting
+  mark (one at a time, other settings kept, broken settings), the lit tile
+  and its name reaching the screen, and the starting sound reaching the engine, or a new song's when its
+  preset is gone, unreadable or unmarked.
+
 ## Vocals (v1.5)
 
 Audio tracks hold audio clips instead of notes.
@@ -1501,7 +1557,7 @@ panel. The mockups were approved one decision and one page at a time
   place: 16 px under the tabs, as wide as the keyboard's panel and 320 px
   tall at fullscreen. The keyboard and the looper's lane stay in view, and
   every key keeps playing. Page tabs along its top: Oscillators, Notes,
-  Filter, LFOs and Connections. It opens on Oscillators, and a note at the
+  Filter, LFOs, Connections and Presets ([presets](#presets)). It opens on Oscillators, and a note at the
   right end says when changes are heard.
 - **Values.** Each one is a name in small capitals, its number in Doto with
   the unit dimmer, and a row of dots lit from the first up to the value.
