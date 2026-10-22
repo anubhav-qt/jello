@@ -1,6 +1,6 @@
 # 0017: Guided Compose
 
-- Status: Accepted
+- Status: Accepted; following the key only superseded by 0034
 - Date: 2026-10-20
 
 Compose starts with picking the song's key from all 24. Trying a chord only

@@ -15,7 +15,10 @@
 //   jello-drive press <text>      press the first button whose name has <text>
 //   jello-drive click <x> <y>     click at a point in the window
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
-//                                 esc, return, space, tab)
+//                                 esc, return, space, tab, delete, a to z,
+//                                 0 to 9)
+//   jello-drive hold <name> <ms>  hold a key down for <ms> milliseconds, the
+//                                 way Compose's chords get their length
 //   jello-drive shot <file.png>   capture the window
 //
 // Clicks and keys are real macOS events, the same as a person's, so they go
@@ -224,13 +227,20 @@ let keyCodes: [String: CGKeyCode] = [
   "return": 36,
   "space": 49,
   "tab": 48,
+  "delete": 51,
+  "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
+  "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
+  "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
+  "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
+  "8": 28, "9": 25,
 ]
 
-func pressKey(_ code: CGKeyCode) {
+// Presses a key, holds it down for `holdMs` milliseconds and lets it go.
+func pressKey(_ code: CGKeyCode, holdMs: UInt32 = 60) {
   let source = CGEventSource(stateID: .hidSystemState)
   let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)!
   down.post(tap: .cghidEventTap)
-  usleep(60_000)
+  usleep(holdMs * 1000)
   let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)!
   up.post(tap: .cghidEventTap)
   usleep(60_000)
@@ -251,7 +261,7 @@ if !AXIsProcessTrusted() {
 }
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments.isEmpty {
-  fail("usage: jello-drive info|front|back|tree|press|click|key|shot")
+  fail("usage: jello-drive info|front|back|tree|press|click|key|hold|shot")
 }
 let command = arguments[0]
 
@@ -319,6 +329,19 @@ if command == "info" {
     pressKey(code)
   }
   print("pressed \(arguments[1]) x\(count)")
+} else if command == "hold" {
+  if arguments.count < 3 {
+    fail("usage: jello-drive hold <name> <ms>")
+  }
+  guard let code = keyCodes[arguments[1]] else {
+    fail("unknown key \(arguments[1])")
+  }
+  guard let holdMs = UInt32(arguments[2]) else {
+    fail("hold needs a time in milliseconds, like 1000")
+  }
+  requireFront(jello)
+  pressKey(code, holdMs: holdMs)
+  print("held \(arguments[1]) for \(holdMs) ms")
 } else if command == "shot" {
   if arguments.count < 2 {
     fail("usage: jello-drive shot <file.png>")

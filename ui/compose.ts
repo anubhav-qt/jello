@@ -12,6 +12,17 @@ export interface ChordGuide {
   fit: Fit;
   // Why it fits, or doesn't, in a few plain words.
   why: string;
+  // Whether it is one of the best chords to play next, or null if it isn't
+  // (docs/adr/0034-best-next-chords.md).
+  next: BestNext | null;
+}
+
+// One of the best chords to play next.
+export interface BestNext {
+  // 1 for the strongest, then 2 and 3.
+  rank: number;
+  // Why it follows the song's last chord well.
+  why: string;
 }
 
 // A key the player can pick, like Db major.
@@ -41,6 +52,22 @@ export interface Playhead {
   chord: number;
   // How far into it, in milliseconds.
   ms_in: number;
+  // The chord keys that play the chord playing, like ["KeyC"].
+  now_keys: string[];
+  // The chord keys that play the chord after it. Empty when the song stops
+  // after the chord playing.
+  next_keys: string[];
+}
+
+// The chord keys the keyboard lights while Compose's song plays.
+export interface SongKeys {
+  // The keys for the chord playing.
+  now: string[];
+  // The keys for the chord after it. Empty at the song's end.
+  next: string[];
+  // How far the song is through the chord playing, from 0 at its start to
+  // 1 at its end, so the next keys fill up as their chord comes.
+  share: number;
 }
 
 export interface ComposeView {
@@ -62,6 +89,40 @@ export interface ComposeView {
   // Where the song is playing, or null while it isn't. The tape draws the
   // playhead from it.
   playing: Playhead | null;
+}
+
+// How long `chord` is, in milliseconds, `sinceAnswer` milliseconds after
+// Rust said: one still held has grown by that much.
+export function lengthSince(chord: ChordInSong, sinceAnswer: number): number {
+  if (chord.still_held) {
+    return chord.held_ms + sinceAnswer;
+  }
+  return chord.held_ms;
+}
+
+// How far the song is through the chord playing, from 0 at its start to 1
+// at its end, `sinceAnswer` milliseconds after Rust said where it was.
+export function playingShare(playing: Playhead, progression: ChordInSong[], sinceAnswer: number): number {
+  const chord = progression[playing.chord];
+  const length = lengthSince(chord, sinceAnswer);
+  if (length === 0) {
+    return 0;
+  }
+  const msIn = playing.ms_in + sinceAnswer;
+  return Math.min(msIn / length, 1);
+}
+
+// While the song plays, the chord keys the keyboard lights, `sinceAnswer`
+// milliseconds after Rust said where it was. Null while it isn't playing.
+export function songKeysOf(view: ComposeView, sinceAnswer: number): SongKeys | null {
+  if (view.playing === null) {
+    return null;
+  }
+  return {
+    now: view.playing.now_keys,
+    next: view.playing.next_keys,
+    share: playingShare(view.playing, view.progression, sinceAnswer),
+  };
 }
 
 // The fit in a few words, for Trying.

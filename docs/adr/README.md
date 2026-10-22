@@ -25,7 +25,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0014](0014-one-color-per-note-family.md) | One color per note family | Accepted |
 | [0015](0015-minor-on-space-sharp-on-right-shift.md) | Minor on Space, sharp on right Shift | Superseded by 0020 |
 | [0016](0016-play-compose-and-produce-tabs.md) | Play, Compose and Produce tabs | Accepted |
-| [0017](0017-guided-compose.md) | Guided Compose | Accepted |
+| [0017](0017-guided-compose.md) | Guided Compose | Accepted; following the key only superseded by 0034 |
 | [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Accepted |
 | [0019](0019-instruments-built-from-scratch-no-guitar.md) | Instruments built from scratch, no guitar | Accepted |
 | [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted; F#m on left Shift superseded by 0032 |
@@ -42,6 +42,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0031](0031-lfos-and-a-routing-list.md) | LFOs and a routing list | Accepted |
 | [0032](0032-the-vibrato-key.md) | The vibrato key | Accepted |
 | [0033](0033-the-sound-panel.md) | The sound panel | Accepted |
+| [0034](0034-best-next-chords.md) | Best next chords | Accepted |
 
 ## Template
 

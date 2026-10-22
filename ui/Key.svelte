@@ -1,7 +1,7 @@
 <!-- One key: what is printed on it, and the note, chord or wave it plays,
      or what it does to the beat. -->
 <script lang="ts">
-  import type { ChordGuide, Fit } from "./compose";
+  import type { ChordGuide, Fit, SongKeys } from "./compose";
   import { colorForNote, NOTE_COLORS } from "./note-colors";
   import { kindOf, noteName, notesOf, type KeyLayout, type KeySpec } from "./keyboard";
   import LooperFace from "./LooperFace.svelte";
@@ -24,6 +24,8 @@
     // The notes of the chords held now, as pitches from 0 (C) to 11 (B).
     // Empty outside Compose.
     chordNotes: number[];
+    // The chord keys Compose's song lights while it plays, or null.
+    song: SongKeys | null;
     // What each action key does on the open tab, like "add" for Return.
     actions: Record<string, string>;
     // True while a value is picked in the sound panel, so the arrow keys,
@@ -31,7 +33,7 @@
     stepping: boolean;
   }
 
-  let { spec, layout, held, sound, looperBeats, guide, melody, chordNotes, actions, stepping }: Props = $props();
+  let { spec, layout, held, sound, looperBeats, guide, melody, chordNotes, song, actions, stepping }: Props = $props();
 
   const ARROW_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 
@@ -91,6 +93,59 @@
       return undefined;
     }
     return chordGuide.fit;
+  });
+
+  // Whether that chord is one of the best to play next, by its rank: 1 is
+  // the strongest. Undefined if it isn't one, and while the song plays,
+  // since the keys show the song then.
+  let bestRank = $derived.by(() => {
+    if (kind !== "chord") {
+      return undefined;
+    }
+    if (song !== null) {
+      return undefined;
+    }
+    if (chordGuide === undefined) {
+      return undefined;
+    }
+    if (chordGuide.next === null) {
+      return undefined;
+    }
+    return chordGuide.next.rank;
+  });
+
+  // The corner's three squares, lit like signal bars: all three for the
+  // strongest, one for the third.
+  let bestSquares = $derived.by(() => {
+    const squares: boolean[] = [];
+    if (bestRank === undefined) {
+      return squares;
+    }
+    const lit = 4 - bestRank;
+    for (let square = 1; square <= 3; square++) {
+      squares.push(square <= lit);
+    }
+    return squares;
+  });
+
+  // While Compose's song plays, whether this key plays the chord playing...
+  let isSongNow = $derived.by(() => {
+    if (song === null) {
+      return false;
+    }
+    return song.now.includes(spec.code);
+  });
+
+  // ...and how full it is if it plays the chord coming next, like "40%",
+  // full as that chord starts. Undefined if it doesn't.
+  let songFill = $derived.by(() => {
+    if (song === null) {
+      return undefined;
+    }
+    if (!song.next.includes(spec.code)) {
+      return undefined;
+    }
+    return `${song.share * 100}%`;
   });
 
   // Compose dims a melody key whose note is outside the song's key...
@@ -154,11 +209,15 @@
   class:is-chord-note={isChordNote}
   class:is-looper={isLooper}
   class:is-stepping={isStepping}
+  class:is-song-now={isSongNow}
+  class:is-song-next={songFill !== undefined}
   style:--w={spec.width}
+  style:--song-fill={songFill}
   data-code={spec.code}
   data-kind={kind}
   data-note={note}
   data-fit={fit}
+  data-best={bestRank}
   style:--accent={color.accent}
   style:--accent-core={color.core}
 >
@@ -175,6 +234,13 @@
   {/if}
   {#if kind === "chord"}
     <span class="key-note">{chordName}</span>
+  {/if}
+  {#if bestRank !== undefined}
+    <span class="key-best">
+      {#each bestSquares as lit}
+        <span class="key-best-square" class:is-lit={lit}></span>
+      {/each}
+    </span>
   {/if}
   {#if kind === "wave"}
     <span class="key-note">{waveLabel}</span>

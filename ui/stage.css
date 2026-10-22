@@ -424,9 +424,10 @@
   box-shadow: 0 0 8px rgba(var(--rec), 0.9);
 }
 
-/* Compose's guidance on the chord keys. Not designed yet: a plain outline,
-   drawn over the key so the key's own slow fades stay as they are. Solid
-   is in the key, dashed is outside it but can work. */
+/* Compose's guidance on the chord keys (docs/design.md, "Chord guidance"):
+   an outline in the chord's own color, drawn over the key so the key's own
+   slow fades stay as they are. Solid is in the key, dashed is outside it
+   but can work, and a chord outside the key dims. */
 .stage .key[data-fit]::before {
   content: "";
   position: absolute;
@@ -446,6 +447,55 @@
 .stage .key[data-fit="outside"] .key-label,
 .stage .key[data-fit="outside"] .key-note {
   opacity: 0.35;
+}
+
+/* The best chords to play next (docs/adr/0034-best-next-chords.md) light
+   up in their own color, the strongest most, over the key's own background
+   so holding the key still lights and fades as usual. Three squares in the
+   corner light like signal bars: three for the strongest, one for the
+   third. */
+.stage .key[data-best] {
+  background-image: linear-gradient(rgba(var(--accent), var(--best-fill)), rgba(var(--accent), var(--best-fill)));
+}
+
+.stage .key[data-best="1"] {
+  --best-fill: 0.24;
+  box-shadow: 0 0 16px rgba(var(--accent), 0.35);
+}
+
+.stage .key[data-best="2"] {
+  --best-fill: 0.16;
+}
+
+.stage .key[data-best="3"] {
+  --best-fill: 0.1;
+}
+
+.stage .key[data-best] .key-note {
+  color: rgb(var(--accent));
+  text-shadow: 0 0 8px rgba(var(--accent), 0.6);
+}
+
+.stage .key-best {
+  position: absolute;
+  top: calc(var(--u) * 0.08);
+  right: calc(var(--u) * 0.08);
+  display: flex;
+  gap: calc(var(--u) * 0.035);
+}
+
+.stage .key-best-square {
+  box-sizing: border-box;
+  width: calc(var(--u) * 0.09);
+  height: calc(var(--u) * 0.09);
+  border: 1px solid rgba(var(--accent), 0.45);
+  border-radius: 1px;
+}
+
+.stage .key-best-square.is-lit {
+  border-color: rgb(var(--accent));
+  background-color: rgb(var(--accent-core));
+  box-shadow: 0 0 6px rgba(var(--accent), 0.9);
 }
 
 /* Compose's guidance on the melody keys: a note outside the song's key
@@ -479,7 +529,8 @@
     text-shadow 40ms;
 }
 
-.stage .key.is-held {
+.stage .key.is-held,
+.stage .key.is-song-now {
   border-color: rgba(var(--ink), 0.45);
   background-color: var(--held-key-bg);
   transition:
@@ -490,7 +541,8 @@
 }
 
 .stage .key[data-kind="note"].is-held,
-.stage .key[data-kind="chord"].is-held {
+.stage .key[data-kind="chord"].is-held,
+.stage .key[data-kind="chord"].is-song-now {
   border-color: rgba(var(--accent), 0.95);
   background-color: rgba(var(--accent), 0.16);
   box-shadow:
@@ -499,7 +551,8 @@
   color: rgb(var(--held-text));
 }
 
-.stage .key.is-held .key-note {
+.stage .key.is-held .key-note,
+.stage .key.is-song-now .key-note {
   font-variation-settings: "ROND" 100;
   color: rgb(var(--accent));
   text-shadow: 0 0 10px rgba(var(--accent), 0.8);
@@ -507,6 +560,32 @@
     font-variation-settings 40ms,
     color 40ms,
     text-shadow 40ms;
+}
+
+/* While Compose's song plays, the key for the chord playing glows as if
+   held (above), and the key for the chord after it fills up from the
+   bottom in its color, with a bright edge on top, full as its chord
+   starts. Both show at full strength, even outside the key, since the song
+   plays them. Best next waits until the song stops. */
+.stage .key.is-song-next {
+  background-image: linear-gradient(
+    to top,
+    rgba(var(--accent), 0.22) calc(var(--song-fill) - 2px),
+    rgba(var(--accent), 0.95) calc(var(--song-fill) - 2px),
+    rgba(var(--accent), 0.95) var(--song-fill),
+    transparent var(--song-fill)
+  );
+}
+
+.stage .key.is-song-now .key-label,
+.stage .key.is-song-now .key-note,
+.stage .key.is-song-next .key-label,
+.stage .key.is-song-next .key-note {
+  opacity: 1;
+}
+
+.stage .key.is-song-next .key-note {
+  color: rgb(var(--accent));
 }
 
 /* While a value is picked in the sound panel, the arrow keys, which step

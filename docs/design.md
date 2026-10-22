@@ -52,10 +52,11 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    ([ADR 0033](adr/0033-the-sound-panel.md)); it replaced the dev panel,
    and every other placeholder screen goes the same way.
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
-   tempo and key changes, the text song format. Playing a composed song
-   highlights its next chords on the same keyboard. Guided composing came
+   tempo and key changes, the text song format. Guided composing came
    early: the Compose tab already builds a progression with guidance
-   ([ADR 0017](adr/0017-guided-compose.md)). See
+   ([ADR 0017](adr/0017-guided-compose.md)), which ranks the best next
+   chords ([ADR 0034](adr/0034-best-next-chords.md)), and lights the
+   song's chords on the same keyboard as it plays back. See
    [chord guidance](#chord-guidance).
 6. **Mix.** Mixer, effects, sidechain, automation, master limiter, WAV export.
 
@@ -120,6 +121,8 @@ in turn:
 1. Every chord on its own key, instead of holding Space or right Shift
    ([ADR 0020](adr/0020-every-chord-on-its-own-key.md)). Done.
 2. Guidance that changes after each chord is added, to what fits best next.
+   Done: rules in [ADR 0034](adr/0034-best-next-chords.md), look in
+   [chord guidance](#chord-guidance).
 3. Guidance on the melody keys too. Done
    ([ADR 0023](adr/0023-guidance-on-the-melody-keys.md)); see
    [chord guidance](#chord-guidance).
@@ -725,12 +728,13 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   C# major). Trying a chord only plays it. Return adds the chord played
   last to the progression and Delete takes the last one off. Picking
   another key keeps the chords and renames them for the new key.
-- **Two levels.** The chord keys are outlined by how the chord they would
-  play right now fits the key: in the key (its own chords), or outside it
-  but able to work, for a named reason. The rest are outside and dimmed,
-  but still play. Every chord key is outlined, since each plays one chord.
-  Guidance follows the key only, not the chord before, so it never ranks
-  what should come next.
+- **Four levels** ([ADR 0034](adr/0034-best-next-chords.md)). Best next:
+  up to three chords that follow the song's last chord well (below). Then
+  how the chord the key would play right now fits the key: in the key (its
+  own chords), or outside it but able to work, for a named reason. The rest
+  are outside and dimmed, but still play. Every chord key shows its level,
+  since each plays one chord. A best next chord is always in the key or can
+  work, never outside. Before ADR 0034, guidance followed the key only.
 - **Major keys** (C major in brackets). In the key: home (C), the soft two
   (Dm), three (Em), four (F), five (G) and the sad six (Am). Can work:
   lead-ins that pull toward a chord of the key the way the five pulls home
@@ -749,6 +753,66 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
 - **Reasons.** Each chord gets one plain sentence, naming the chords it
   means: "Tension that pulls back home to C." The tape's Trying shows it
   for the chord tried last.
+- **Best next** ([ADR 0034](adr/0034-best-next-chords.md), approved
+  2026-10-22). After each chord added to the song, guidance ranks what
+  comes next from the song's last chord only: up to three chords, strongest
+  first, each with its own reason. Trying a chord never changes the
+  ranking; adding or deleting one does. Before the first chord it shows the
+  best starts, and after a chord outside the key, home. Strongest means
+  strongest pull: the counts decide, and where they are close or missing,
+  a root falling a fifth or rising a step comes first, and so does the
+  order of jobs (away, then tension, then home). Trying shows the best-next
+  reason for a chord that is one, and the key's reason otherwise. The look
+  is below the tables. Major keys (C major):
+
+  | After | Best next | Why |
+  |---|---|---|
+  | Nothing yet | C, F, Am | home is the usual start; F starts away, as the royal road does; Am starts on the sad side |
+  | C | F, G, Am | the most common move away from home; tension that wants to come back; the sad side |
+  | Dm | G, C, F | falls a fifth to the tension chord; straight back home; climbs and stays soft |
+  | Em | Am, F | the end of the royal road; steps up (93% of songs go to one of these) |
+  | F | C, G, Fm | home, the most common move of all; tension, the royal road's next step; F turns minor, as in "Creep" |
+  | G | C, Am, F | settles the pull home; a surprise landing, as in the four chords of pop; steps down, the rock move |
+  | Am | F, Dm, G | the most common move after Am; falls a fifth, round the circle to C; steps down toward home |
+  | D, E, A, B | G, Am, Dm, Em | each lead-in falls a fifth to the chord it leads into |
+  | Fm | C, G | a tender way home; on to the tension chord |
+  | Eb | Ab, F, C | falls a fifth, staying in the borrowed colors; back in the key; home |
+  | Ab | Bb, C | a heroic climb on to C; straight home, big and warm |
+  | Bb | C, F, Ab | steps up home, the rock ending; falls a fifth; steps down, darker |
+  | Outside the key | C | going home settles it |
+
+  Fm after F comes from theory: the counts below treat F and Fm as one
+  chord. After G, Am comes before F by pull, though rock uses F more. Minor
+  keys (A minor), ordered by pull and jobs, since the counts are mostly of
+  major-key songs:
+
+  | After | Best next | Why |
+  |---|---|---|
+  | Nothing yet | Am, F | home is the usual start; many minor-key pop songs start on F |
+  | Am | F, Dm, G | the loop Am F C G; falls a fifth, darker still; steps down, starting Am G F E |
+  | C | F, Am, G | falls a fifth; back home, as in "Eye in the Sky"; on round the loop |
+  | Dm | E, G, Am | away, then the strongest tension; falls a fifth; straight home, as in "The Chain" |
+  | Em | Am, F | falls a fifth home, gently; steps up |
+  | E | Am, F | the strongest pull home; a surprise landing instead |
+  | F | G, C, E | the climb F G Am, and the royal road's next step; round the loop; slips down to the tension chord |
+  | G | Am, C, Em | steps up home, the rock ending; falls a fifth to the bright side; the royal road F G Em Am |
+  | A | Dm | A major is Dm's own five |
+  | D | Am, E, G | back home, the sway of "Breathe"; up to the tension chord; falls a fifth |
+  | B | E | falls a fifth to the tension chord |
+  | Bb | E, Am | down to the tension chord; slides a half step down home |
+  | Outside the key | Am | going home settles it |
+
+  After G in a minor key, Em (the royal road) was picked over F (Am G F
+  E). In a major key, G does not light Em, since its pull home is stronger.
+- **The look** (built 2026-10-22). Each chord key draws its level in its
+  own note color. Best next: the key lights up, the strongest most, with
+  three squares in its top right corner lit like signal bars (three for
+  the strongest, one for the third). In the key: a solid outline. Can
+  work: a dashed outline. Outside: dimmed. A best next key keeps its
+  outline, so it still shows how it fits. Trying reads like "Am in the
+  key, best next." and then the best-next reason. The hint under the tape
+  says "Keys: lit is best next, solid in the key, dashed can work, dim
+  outside."
 - **Melody keys** ([ADR 0023](adr/0023-guidance-on-the-melody-keys.md)).
   Guided quietly, with no outline, so the chord keys' outlines still stand
   out. A melody key whose note is outside the key dims, and still plays. A
@@ -760,12 +824,19 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   always sound right over it: G# fills while E is held in C major. The fill
   comes at once and fades out slowly when the chord is let go, like a held
   key. Holding a melody key fills nothing. Play shows none of this.
-- **While playing a composed song** (step 5): the song already tells us what
-  comes next, so highlight the keys for its upcoming chords as it moves
-  forward. Chords played together are highlighted together.
+- **While the song plays** (built 2026-10-22, ahead of step 5). The song
+  already says what comes next. The key for the chord playing glows as if
+  held, and the key for the chord after it fills up from the bottom in its
+  color, with a bright edge on top, full as that chord starts. The last
+  chord fills nothing, and neither does a chord clicked on the tape, since
+  it plays alone. Best next waits until the song stops; the outlines stay.
+  The hint under the tape says "Keys: glowing plays now, filling plays
+  next." Rust finds the keys that play each chord (`now_keys` and
+  `next_keys` on the playhead), so chords played together would light
+  together; today a song plays one chord at a time.
 - Highlights point at what a key already plays; they never change it. Music
   decisions stay in Rust (`src-tauri/src/harmony.rs`, `compose.rs`); the
-  UI only draws them. The highlight look is not designed yet.
+  UI only draws them.
 - Sources the rules lean on: the borrowed chords most used in major keys
   are bVI, bVII and iv, then bIII
   ([fachords](https://www.fachords.com/modal-interchanges/),
@@ -777,6 +848,20 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   a major four in minor is the Dorian sound, and a major home is a
   Picardy third
   ([Secrets of Songwriting](https://www.secretsofsongwriting.com/?p=2334)).
+  Best next leans on the jobs of chords
+  ([Open Music Theory](https://viva.pressbooks.pub/openmusictheory/chapter/intro-to-harmony/)),
+  chord-to-chord counts and root motions in 100 rock songs
+  ([de Clercq and Temperley 2011](https://rockcorpus.midside.com/2011_paper/declercq_temperley_2011.pdf),
+  Tables 3, 6 and 7), Em going to Am or F 93% of the time
+  ([Hooktheory](https://www.hooktheory.com/blog/i-analyzed-the-chords-of-1300-popular-songs-for-patterns-this-is-what-i-found/)),
+  the chords minor-key songs use most
+  ([Hooktheory](https://www.hooktheory.com/blog/minor-chord-progressions/)),
+  J-pop's royal road
+  ([Wikipedia](https://en.wikipedia.org/wiki/Royal_road_progression)), the
+  four chords of pop
+  ([Wikipedia](https://en.wikipedia.org/wiki/I%E2%80%93V%E2%80%93vi%E2%80%93IV_progression))
+  and the Andalusian cadence
+  ([Wikipedia](https://en.wikipedia.org/wiki/Andalusian_cadence)).
 
 ### MIDI keyboard
 
@@ -1158,16 +1243,16 @@ themes and saved theme selection are removed. Development and packaged
 builds use the same colors, with no palette name shown in the app.
 
 Still to design: the Produce screen (a dev panel for now,
-[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)), the look of the
-guidance outlines on the chord keys, and the tab icons (a pencil for
-Compose, faders for Produce). Compose's tape and the sound panel (below)
-are built.
+[ADR 0016](adr/0016-play-compose-and-produce-tabs.md)) and the tab icons (a
+pencil for Compose, faders for Produce). Compose's tape, its chord guidance
+and the sound panel (below) are built.
 
-1. Explore directions with mockups before any UI code.
-2. Settle a design system with the user (colors, type, spacing, components).
-3. Design one screen or component at a time; build it only after approval.
-4. Until a screen is approved, it is a plain "dev panel" placeholder that only
-   exposes the feature for testing.
+Until 2026-10-22, each screen was explored with mockups and built only
+after approval. Since then, UI is built straight in the settled look
+(Stage, note colors, white values, lavender only for what is picked, no
+pills) and checked in the real app; the user asks for changes while using
+Jello. Until a screen is built, it is a plain "dev panel" placeholder that
+only exposes the feature for testing.
 
 ### Compose screen
 
@@ -1217,7 +1302,8 @@ room above and below, and it still fits at 1000x640.
   off.
 - **Hearing it.** Clicking a block lights it and plays that chord for its
   own length, with a playhead sweeping across. The play button plays every
-  chord in turn.
+  chord in turn, and the keyboard lights them as they come
+  ([chord guidance](#chord-guidance)).
 - **Empty song.** A dashed lane: "Your song shows up here. Play a chord,
   then press return to add it." The play button comes with the first
   chord.

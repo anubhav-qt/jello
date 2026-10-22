@@ -12,7 +12,7 @@
   import { onMount, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { createBeams, type Beams } from "./beams";
-  import type { ChordGuide, ComposeView, Fit } from "./compose";
+  import { songKeysOf, type ChordGuide, type ComposeView, type Fit, type SongKeys } from "./compose";
   import ComposeTape from "./ComposeTape.svelte";
   import { clickThenLetGo } from "./dom";
   import { colorForNote, DOT_CELL, NOTE_COLORS } from "./note-colors";
@@ -97,30 +97,16 @@
     return sound.wave;
   });
 
-  // The page's clock for the looper, by performance.now(). It ticks every
-  // frame while the looper is busy, so its lights, bar and playhead move
-  // smoothly between Rust's answers, which come every 50 ms.
-  let looperClock = $state(performance.now());
+  // The page's clock, by performance.now(). It ticks every frame while the
+  // looper is busy or Compose's song plays (see clockMoving), so the
+  // looper's lights, bar and playhead, and the chord keys the song lights,
+  // move smoothly between Rust's answers, which come every 50 ms.
+  let clock = $state(performance.now());
   let looperBusy = $derived.by(() => {
     if (sound === null) {
       return false;
     }
     return sound.looper.busy;
-  });
-
-  $effect(() => {
-    if (!looperBusy) {
-      return;
-    }
-    let frame = 0;
-    function nextFrame() {
-      looperClock = performance.now();
-      frame = requestAnimationFrame(nextFrame);
-    }
-    frame = requestAnimationFrame(nextFrame);
-    return () => {
-      cancelAnimationFrame(frame);
-    };
   });
 
   // How many beats into the count-in, the recording or the repeat playing
@@ -129,7 +115,7 @@
     if (sound === null) {
       return 0;
     }
-    const msSince = Math.max(0, looperClock - soundAt);
+    const msSince = Math.max(0, clock - soundAt);
     return beatsNow(sound, msSince);
   });
 
@@ -180,6 +166,50 @@
   function letGo() {
     picked = null;
   }
+
+  // Whether Compose's song is playing.
+  let songPlaying = $derived.by(() => {
+    if (compose === null) {
+      return false;
+    }
+    return compose.playing !== null;
+  });
+
+  let clockMoving = $derived.by(() => {
+    if (looperBusy) {
+      return true;
+    }
+    return songPlaying;
+  });
+
+  $effect(() => {
+    if (!clockMoving) {
+      return;
+    }
+    let frame = 0;
+    function nextFrame() {
+      clock = performance.now();
+      frame = requestAnimationFrame(nextFrame);
+    }
+    frame = requestAnimationFrame(nextFrame);
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  });
+
+  // While Compose's song plays, the chord keys it lights: the one for the
+  // chord playing, and the one for the chord after it, filling up as it
+  // comes. Null while it isn't playing.
+  let songKeys: SongKeys | null = $derived.by(() => {
+    if (tab !== "compose") {
+      return null;
+    }
+    if (compose === null) {
+      return null;
+    }
+    const sinceAnswer = Math.max(0, clock - composeAt);
+    return songKeysOf(compose, sinceAnswer);
+  });
 
   // Compose outlines the chord keys by how well they fit the song's key.
   let keyboardGuide = $derived.by(() => {
@@ -555,6 +585,7 @@
         guide={keyboardGuide}
         melody={melodyGuide}
         {chordNotes}
+        song={songKeys}
         actions={keyboardActions}
         stepping={picked !== null}
       />

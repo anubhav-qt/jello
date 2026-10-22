@@ -6,7 +6,9 @@
 <script lang="ts">
   import {
     fitWords,
+    lengthSince,
     pickerName,
+    playingShare,
     secondsWords,
     songWords,
     type ChordGuide,
@@ -86,10 +88,7 @@
   // How long `chord` has been held, in milliseconds: what Rust said, and
   // while it is still held, the time since then too.
   function lengthNow(chord: ChordInSong): number {
-    if (chord.still_held) {
-      return chord.held_ms + sinceAnswer;
-    }
-    return chord.held_ms;
+    return lengthSince(chord, sinceAnswer);
   }
 
   // How wide a chord `ms` milliseconds long is drawn. A block is never
@@ -100,9 +99,9 @@
     return `${pixels}px`;
   }
 
-  // How far the playhead is through `chord`, at `place` in the song, from 0
-  // at its start to 1 at its end. Null while that chord isn't playing.
-  function playedShare(place: number, chord: ChordInSong): number | null {
+  // How far the playhead is through the chord at `place` in the song, from
+  // 0 at its start to 1 at its end. Null while that chord isn't playing.
+  function playedShare(place: number): number | null {
     if (view === null) {
       return null;
     }
@@ -112,12 +111,7 @@
     if (view.playing.chord !== place) {
       return null;
     }
-    const length = lengthNow(chord);
-    if (length === 0) {
-      return 0;
-    }
-    const msIn = view.playing.ms_in + sinceAnswer;
-    return Math.min(msIn / length, 1);
+    return playingShare(view.playing, view.progression, sinceAnswer);
   }
 
   // How long the whole song is, in milliseconds.
@@ -182,6 +176,31 @@
     return view.holding === null;
   });
 
+  // What Trying says about the chord tried last: how it fits the key, and
+  // why. A best next chord says why it follows the song well instead.
+  let triedWords = $derived.by(() => {
+    if (tried === null) {
+      return "";
+    }
+    if (tried.next === null) {
+      return `${fitWords(tried.fit)}. ${tried.why}`;
+    }
+    return `${fitWords(tried.fit)}, best next. ${tried.next.why}`;
+  });
+
+  // What the hint says the chord keys show: while the song plays, its
+  // chords; otherwise how each one fits.
+  let keysWords = $derived.by(() => {
+    const fits = "Keys: lit is best next, solid in the key, dashed can work, dim outside.";
+    if (view === null) {
+      return fits;
+    }
+    if (view.playing === null) {
+      return fits;
+    }
+    return "Keys: glowing plays now, filling plays next.";
+  });
+
   let triedColor = $derived.by(() => {
     if (triedRoot === null) {
       return colorForNote(0).accent;
@@ -239,7 +258,7 @@
           {:else}
             <p class="tape-value">
               <span class="tape-trying-name" style:--accent={triedColor}>{tried.name}</span>
-              {fitWords(tried.fit)}. {tried.why}
+              {triedWords}
             </p>
           {/if}
         </div>
@@ -289,7 +308,7 @@
           <div class="tape-scroller">
             <div class="tape-track" use:keepEndInView>
               {#each view.progression as chord, place}
-                {@const played = playedShare(place, chord)}
+                {@const played = playedShare(place)}
                 <button
                   type="button"
                   class="tape-block"
@@ -322,8 +341,7 @@
     </div>
 
     <p class="tape-hint" class:is-hidden={pickerShown}>
-      Return adds the chord you're holding or just let go of. Delete takes the last one off. Key outlines: solid is in
-      the key, dashed can work, dim is outside.
+      Return adds the chord you're holding or just let go of. Delete takes the last one off. {keysWords}
     </p>
   {/if}
 </section>

@@ -20,8 +20,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Step 2 [slices](docs/design.md#step-2-slices) are done and tuned by ear:
   Stage (0010), Svelte 5 (0011), chords left and melody right (0012), note
   colors (0014). Keep this layout. Every chord has its own key (0020).
-- Tabs (0016) Play, Compose, Produce (dev panel). Compose: chord and melody
-  keys guided (0017, 0023), rules in `src-tauri/src/harmony.rs`, tape (0022).
+- Tabs (0016) Play, Compose, Produce (dev panel). Compose: tape (0022), keys
+  guided (0017, 0023, 0034) by `src-tauri/src/harmony.rs`, lit in playback.
 - Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
   Step 4: filter (0028), unison (0029), envelope, tuning, all per song (0030),
   8 LFOs, routing list (0031), left Shift vibrato (0032), sound panel (0033).
@@ -53,10 +53,10 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 
 ### UI
 
-- The user is particular about UI: expect many rounds. Never build a design
-  they have not approved: mock up one screen or component at a time first.
+- Build UI straight in the settled look (Stage, note colors, no pills); no
+  mockup rounds. The user asks for changes while using Jello.
 - No placeholder dev panels: replace each with a designed screen. Sound panel
-  done; Compose's guidance outlines next. Ask before designing Produce.
+  and Compose's guidance done. Ask before designing Produce.
 - Check UI changes in the real app yourself with `tools/jello-drive`.
 
 ### Code

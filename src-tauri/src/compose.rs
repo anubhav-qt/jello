@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
-use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide, key_name, note_fit};
+use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::sound_profile::SoundProfile;
 
@@ -27,6 +27,9 @@ pub struct Composer {
     // Where in the song the chords played last start, so the playhead can
     // tell which chord is playing.
     playing_from: usize,
+    // Where they stop: the place just after the last of them, so the
+    // keyboard knows whether another chord comes after the one playing.
+    playing_until: usize,
     // The song's tempo, in beats per minute: the click and the looper play
     // at it. A new song starts at 120.
     tempo: u32,
@@ -114,13 +117,19 @@ pub struct ChordInSong {
     still_held: bool,
 }
 
-// Where the song is playing, for the UI to draw the playhead.
+// Where the song is playing, for the UI to draw the playhead and light the
+// chord keys the song plays.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Playhead {
     // The chord playing, by its place in the song, from 0.
     chord: usize,
     // How far into it, in milliseconds.
     ms_in: u64,
+    // The chord keys that play the chord playing, like ["KeyC"].
+    now_keys: Vec<String>,
+    // The chord keys that play the chord after it, so the keyboard shows it
+    // coming. Empty when the song stops after the chord playing.
+    next_keys: Vec<String>,
 }
 
 // Everything Compose shows, for the UI to draw.
@@ -154,6 +163,7 @@ impl Composer {
             tried: None,
             progression: Vec::new(),
             playing_from: 0,
+            playing_until: 0,
             tempo: START_TEMPO,
             sound_profile: SoundProfile::new(),
         }
@@ -275,6 +285,7 @@ impl Composer {
         };
         engine.play_song(&[played.to_play(now)])?;
         self.playing_from = place;
+        self.playing_until = place + 1;
         Ok(())
     }
 
@@ -289,6 +300,7 @@ impl Composer {
         }
         engine.play_song(&chords)?;
         self.playing_from = 0;
+        self.playing_until = chords.len();
         Ok(())
     }
 
@@ -307,11 +319,14 @@ impl Composer {
             progression.push(self.chord_in_song(played, now));
         }
 
+        // Guidance ranks what comes next after the song's last chord, never
+        // after the chord tried last (docs/adr/0034-best-next-chords.md).
+        let last = self.last_chord();
         let mut chord_guide = HashMap::new();
         let mut melody = HashMap::new();
         if let Some(key) = self.key {
             for (code, chord) in key_map.chord_keys() {
-                chord_guide.insert(code, guide(key, chord));
+                chord_guide.insert(code, guide_after(key, last, chord));
             }
             for (code, note) in key_map.note_keys() {
                 melody.insert(code, note_fit(key, note));
@@ -325,7 +340,15 @@ impl Composer {
             holding: self.holding(now),
             guide: chord_guide,
             melody,
-            playing: self.playhead(song_place),
+            playing: self.playhead(key_map, song_place),
+        }
+    }
+
+    // The song's last chord, or None while it has none.
+    fn last_chord(&self) -> Option<Chord> {
+        match self.progression.last() {
+            Some(played) => Some(played.chord),
+            None => None,
         }
     }
 
@@ -359,9 +382,10 @@ impl Composer {
     }
 
     // Where the playhead goes when the engine says the song is at
-    // `song_place`. None while the song isn't playing, or once the chord
-    // playing has been taken off the song.
-    fn playhead(&self, song_place: Option<SongPlace>) -> Option<Playhead> {
+    // `song_place`, and which keys on `key_map` play the chord playing and
+    // the one after it. None while the song isn't playing, or once the
+    // chord playing has been taken off the song.
+    fn playhead(&self, key_map: &KeyMap, song_place: Option<SongPlace>) -> Option<Playhead> {
         let song_place = match song_place {
             Some(song_place) => song_place,
             None => return None,
@@ -370,11 +394,46 @@ impl Composer {
         if chord >= self.progression.len() {
             return None;
         }
+        let now_keys = keys_playing(key_map, self.progression[chord].chord);
+        let next_keys = match self.next_place(chord) {
+            Some(next) => keys_playing(key_map, self.progression[next].chord),
+            None => Vec::new(),
+        };
         Some(Playhead {
             chord,
             ms_in: song_place.ms_in,
+            now_keys,
+            next_keys,
         })
     }
+
+    // The place of the chord the song plays after the one at `place`, or
+    // None if it stops there: at the last chord sent to the engine, or once
+    // the chord after has been taken off the song.
+    fn next_place(&self, place: usize) -> Option<usize> {
+        let next = place + 1;
+        if next >= self.playing_until {
+            return None;
+        }
+        if next >= self.progression.len() {
+            return None;
+        }
+        Some(next)
+    }
+}
+
+// The chord keys on `key_map` that play `chord`, in order by name. Every
+// chord has its own key (docs/adr/0020-every-chord-on-its-own-key.md), so this
+// is one key, or none if no key plays it now.
+fn keys_playing(key_map: &KeyMap, chord: Chord) -> Vec<String> {
+    let mut keys = Vec::new();
+    for (code, key_chord) in key_map.chord_keys() {
+        if key_chord == chord {
+            keys.push(code);
+        }
+    }
+    keys.sort();
+    keys
 }
 
 fn key_choice(key: Key) -> KeyChoice {
@@ -478,10 +537,23 @@ mod tests {
             sound
         }
 
-        // Where the playhead is, read the way the UI reads it. The clock
-        // plays no part, so it is read at 0.
-        fn playhead(&self) -> Option<Playhead> {
-            self.view(0).playing
+        // Where the playhead is, as the chord playing and how far into it,
+        // read the way the UI reads it. The clock plays no part, so it is
+        // read at 0.
+        fn playhead(&self) -> Option<(usize, u64)> {
+            match self.view(0).playing {
+                Some(playing) => Some((playing.chord, playing.ms_in)),
+                None => None,
+            }
+        }
+
+        // The chord keys the keyboard lights while the song plays: the ones
+        // for the chord playing, then the ones for the chord after it.
+        fn lit_keys(&self) -> Option<(Vec<String>, Vec<String>)> {
+            match self.view(0).playing {
+                Some(playing) => Some((playing.now_keys, playing.next_keys)),
+                None => None,
+            }
         }
 
         // The song at `ms`, each chord with how long it was held, like
@@ -811,6 +883,82 @@ mod tests {
         }
     }
 
+    // The best chords to play next, as the view says, strongest first.
+    fn best_next(view: &ComposeView) -> Vec<String> {
+        let mut ranked = Vec::new();
+        for chord in view.guide.values() {
+            if let Some(next) = &chord.next {
+                ranked.push((next.rank, chord.name.clone()));
+            }
+        }
+        ranked.sort();
+        let mut names = Vec::new();
+        for (_, name) in ranked {
+            names.push(name);
+        }
+        names
+    }
+
+    #[test]
+    fn best_next_follows_the_song_s_last_chord() {
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+
+        // Before the first chord, the best starts.
+        assert_eq!(best_next(&player.view(0)), ["C", "F", "Am"]);
+
+        // After C, then after G, added while still held.
+        player.tap("KeyC", 0, 500);
+        player.composer.add_last_chord();
+        assert_eq!(best_next(&player.view(500)), ["F", "G", "Am"]);
+        player.press("KeyG", 500);
+        player.composer.add_last_chord();
+        assert_eq!(best_next(&player.view(600)), ["C", "Am", "F"]);
+
+        // After Bbm, outside the key, home.
+        player.release("KeyG", 1000);
+        player.tap("Space", 1000, 1500);
+        player.composer.add_last_chord();
+        assert_eq!(best_next(&player.view(1500)), ["C"]);
+
+        // Delete takes the last chord off, so the one before is last again.
+        player.composer.remove_last_chord();
+        assert_eq!(best_next(&player.view(1500)), ["C", "Am", "F"]);
+        player.composer.remove_last_chord();
+        player.composer.remove_last_chord();
+        assert_eq!(best_next(&player.view(1500)), ["C", "F", "Am"]);
+    }
+
+    #[test]
+    fn trying_a_chord_never_changes_the_best_next() {
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+        player.tap("KeyC", 0, 500);
+        player.composer.add_last_chord();
+
+        // G tried and let go, then Bbm held: C is still the last chord.
+        player.tap("KeyG", 500, 1000);
+        assert_eq!(best_next(&player.view(1000)), ["F", "G", "Am"]);
+        player.press("Space", 1000);
+        assert_eq!(best_next(&player.view(1200)), ["F", "G", "Am"]);
+    }
+
+    #[test]
+    fn a_new_key_ranks_the_song_s_last_chord_again() {
+        // G is the tension chord in C major, and home in G major.
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+        player.tap("KeyG", 0, 500);
+        player.composer.add_last_chord();
+        assert_eq!(best_next(&player.view(500)), ["C", "Am", "F"]);
+
+        player.composer.pick_key(Key {
+            tonic: 7,
+            mode: Mode::Major,
+        });
+        assert_eq!(best_next(&player.view(500)), ["C", "D", "Em"]);
+    }
+
     #[test]
     fn every_melody_key_is_guided() {
         let mut player = Player::new();
@@ -834,8 +982,21 @@ mod tests {
         assert_eq!(view.melody["KeyY"], Fit::Outside);
     }
 
-    fn playhead(chord: usize, ms_in: u64) -> Option<Playhead> {
-        Some(Playhead { chord, ms_in })
+    fn playhead(chord: usize, ms_in: u64) -> Option<(usize, u64)> {
+        Some((chord, ms_in))
+    }
+
+    // The keys lit while the song plays, as `lit_keys` reads them.
+    fn lit(now: &[&str], next: &[&str]) -> Option<(Vec<String>, Vec<String>)> {
+        let mut now_keys = Vec::new();
+        for key in now {
+            now_keys.push(String::from(*key));
+        }
+        let mut next_keys = Vec::new();
+        for key in next {
+            next_keys.push(String::from(*key));
+        }
+        Some((now_keys, next_keys))
     }
 
     // The notes laptop key `key` plays.
@@ -944,17 +1105,113 @@ mod tests {
 
     #[test]
     fn a_song_longer_than_the_engine_plays_stops_after_512_chords() {
-        // 513 chords of 10 ms: the first 512 play, 5,120 ms in all.
+        // 513 chords of 10 ms: the first 512 play, 5,120 ms in all. The
+        // 512th lights nothing as next, since the 513th never plays.
         let mut player = Player::new();
         player.tap("KeyC", 0, 10);
         for _ in 0..513 {
             player.composer.add_last_chord();
         }
         player.play(1000);
-        player.listen(5110);
+        player.listen(5100);
+        assert_eq!(player.playhead(), playhead(510, 0));
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyC"]));
+        player.listen(10);
         assert_eq!(player.playhead(), playhead(511, 0));
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &[]));
         player.listen(10);
         assert_eq!(player.playhead(), None);
+    }
+
+    #[test]
+    fn while_the_song_plays_the_keyboard_lights_the_chord_playing_and_the_next() {
+        // C, G and Am, a second each. Am is on Q.
+        let mut player = Player::new();
+        for (key, from) in [("KeyC", 0), ("KeyG", 1000), ("KeyQ", 2000)] {
+            player.tap(key, from, from + 1000);
+            player.composer.add_last_chord();
+        }
+        assert_eq!(player.lit_keys(), None);
+
+        player.play(3000);
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyG"]));
+        player.listen(990);
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyG"]));
+        player.listen(10);
+        assert_eq!(player.lit_keys(), lit(&["KeyG"], &["KeyQ"]));
+
+        // Am is the song's last chord, so nothing comes after it.
+        player.listen(1000);
+        assert_eq!(player.lit_keys(), lit(&["KeyQ"], &[]));
+        player.listen(1000);
+        assert_eq!(player.lit_keys(), None);
+    }
+
+    #[test]
+    fn the_keys_lit_are_the_ones_that_play_those_chords() {
+        // Bbm, outside every key here, is on Space, and F#m on left
+        // Control. Picking a key renames chords but never moves them.
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+        for (key, from) in [("Space", 0), ("ControlLeft", 1000)] {
+            player.tap(key, from, from + 1000);
+            player.composer.add_last_chord();
+        }
+        player.play(2000);
+        assert_eq!(player.lit_keys(), lit(&["Space"], &["ControlLeft"]));
+
+        player.composer.pick_key(Key {
+            tonic: 6,
+            mode: Mode::Minor,
+        });
+        assert_eq!(player.lit_keys(), lit(&["Space"], &["ControlLeft"]));
+    }
+
+    #[test]
+    fn a_chord_played_twice_in_a_row_lights_its_key_now_and_next() {
+        let mut player = Player::new();
+        player.tap("KeyC", 0, 1000);
+        player.composer.add_last_chord();
+        player.composer.add_last_chord();
+        player.play(1000);
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyC"]));
+        player.listen(1000);
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &[]));
+    }
+
+    #[test]
+    fn a_chord_clicked_on_its_own_lights_nothing_next() {
+        // Clicking C plays C alone, so G after it is not coming.
+        let mut player = Player::new();
+        for (key, from) in [("KeyC", 0), ("KeyG", 1000)] {
+            player.tap(key, from, from + 1000);
+            player.composer.add_last_chord();
+        }
+        player.click(0, 2000).unwrap();
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &[]));
+
+        // Play then plays on to G again.
+        player.play(2500);
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyG"]));
+    }
+
+    #[test]
+    fn nothing_is_lit_next_once_the_chord_after_is_taken_off() {
+        // Chords added while the song plays don't play, so they aren't lit
+        // either.
+        let mut player = Player::new();
+        player.tap("KeyC", 0, 1000);
+        player.composer.add_last_chord();
+        player.tap("KeyG", 1000, 2000);
+        player.composer.add_last_chord();
+        player.play(2000);
+        player.listen(500);
+        player.composer.remove_last_chord();
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &[]));
+
+        player.tap("KeyF", 2500, 3000);
+        player.composer.add_last_chord();
+        assert_eq!(player.lit_keys(), lit(&["KeyC"], &["KeyF"]));
     }
 
     #[test]
@@ -994,14 +1251,25 @@ mod tests {
         assert_eq!(json["guide"]["KeyG"]["fit"], "in_key");
         assert_eq!(json["guide"]["KeyG"]["why"], "Tension that pulls back home to C.");
         assert_eq!(json["guide"]["KeyQ"]["fit"], "in_key");
+        // F is the song's last chord, so C is the best next and Am isn't one.
+        assert_eq!(json["guide"]["KeyC"]["next"]["rank"], 1);
+        assert_eq!(json["guide"]["KeyC"]["next"]["why"], "Home, the most common move of all.");
+        assert_eq!(json["guide"]["KeyQ"]["next"], serde_json::Value::Null);
         assert_eq!(json["melody"]["KeyM"], "in_key");
         assert_eq!(json["melody"]["KeyJ"], "outside");
+
+        player.play(1500);
+        let json = serde_json::to_value(player.view(1500)).unwrap();
+        assert_eq!(json["playing"]["now_keys"][0], "KeyG");
+        assert_eq!(json["playing"]["next_keys"][0], "KeyF");
 
         player.click(1, 1500).unwrap();
         player.listen(100);
         let json = serde_json::to_value(player.view(1600)).unwrap();
         assert_eq!(json["playing"]["chord"], 1);
         assert_eq!(json["playing"]["ms_in"], 100);
+        assert_eq!(json["playing"]["now_keys"][0], "KeyF");
+        assert_eq!(json["playing"]["next_keys"], serde_json::json!([]));
 
         player.press("KeyQ", 1600);
         let json = serde_json::to_value(player.view(1700)).unwrap();

@@ -77,6 +77,18 @@ pub struct Guide {
     pub fit: Fit,
     // Why it fits, or doesn't, in a few plain words.
     pub why: String,
+    // Whether it is one of the best chords to play next, and why. None if
+    // it isn't (docs/adr/0034-best-next-chords.md).
+    pub next: Option<BestNext>,
+}
+
+// One of the best chords to play next.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BestNext {
+    // 1 for the strongest, then 2 and 3.
+    pub rank: u8,
+    // Why it follows the song's last chord well.
+    pub why: String,
 }
 
 // The seven letters, and the pitch each one has with no sharp or flat.
@@ -169,7 +181,24 @@ struct Role {
     // C major's twin.
     why: &'static str,
     to: Option<Place>,
+    // The best chords to play right after it, strongest first
+    // (docs/adr/0034-best-next-chords.md).
+    next: &'static [Next],
 }
+
+// One of the best chords to play next, and why. In the words, {last} stands
+// for the song's last chord and {home} for the key's home chord.
+struct Next {
+    place: Place,
+    why: &'static str,
+}
+
+const fn next(place: Place, why: &'static str) -> Next {
+    Next { place, why }
+}
+
+// Why a lead-in chord's best next is the chord it pulls toward.
+const LEADS_HERE: &str = "{last} leads here, a fifth down.";
 
 // The chords a major key's guidance knows, with C major's in the comments.
 // Its own seventh chord, Bdim, is left out: the chord keys play no
@@ -181,36 +210,65 @@ const MAJOR_KEY_ROLES: [Role; 14] = [
         fit: Fit::InKey,
         why: "Home. It sounds settled and finished.",
         to: None,
+        next: &[
+            next(major(3, 5), "The most common move away from home."),  // F
+            next(major(4, 7), "Tension that wants to come back home."), // G
+            next(minor(5, 9), "Down to the key's sad side."),           // Am
+        ],
     },
     Role {
         place: minor(1, 2), // Dm
         fit: Fit::InKey,
         why: "A soft step away from home. It often moves on to {to}.",
         to: Some(major(4, 7)),
+        next: &[
+            next(major(4, 7), "Falls a fifth to the tension chord."), // G
+            next(major(0, 0), "Straight back home."),                 // C
+            next(major(3, 5), "Climbs, and stays soft."),             // F
+        ],
     },
     Role {
         place: minor(2, 4), // Em
         fit: Fit::InKey,
         why: "Gentle and a little sad. It often moves on to {to}.",
         to: Some(minor(5, 9)),
+        next: &[
+            next(minor(5, 9), "The royal road's last step."), // Am
+            next(major(3, 5), "Steps up, away from home."),   // F
+        ],
     },
     Role {
         place: major(3, 5), // F
         fit: Fit::InKey,
         why: "It lifts away from home, open and hopeful.",
         to: None,
+        next: &[
+            next(major(0, 0), "Home, the most common move of all."),   // C
+            next(major(4, 7), "Tension, the royal road's next step."), // G
+            next(minor(3, 5), "{last} turns minor, as in \"Creep\"."), // Fm
+        ],
     },
     Role {
         place: major(4, 7), // G
         fit: Fit::InKey,
         why: "Tension that pulls back home to {to}.",
         to: Some(major(0, 0)),
+        next: &[
+            next(major(0, 0), "Settles the pull home."),                            // C
+            next(minor(5, 9), "A surprise landing, as in the four chords of pop."), // Am
+            next(major(3, 5), "Steps down, the rock move."),                        // F
+        ],
     },
     Role {
         place: minor(5, 9), // Am
         fit: Fit::InKey,
         why: "The key's sad side, and a surprise landing right after {to}.",
         to: Some(major(4, 7)),
+        next: &[
+            next(major(3, 5), "The most common move after {last}."),         // F
+            next(minor(1, 2), "Falls a fifth, on the way round to {home}."), // Dm
+            next(major(4, 7), "Steps down toward home."),                    // G
+        ],
     },
     // Lead-in chords: each pulls toward one of the key's own chords, the
     // way the five chord pulls home.
@@ -219,24 +277,28 @@ const MAJOR_KEY_ROLES: [Role; 14] = [
         fit: Fit::CanWork,
         why: "Outside the key, but it pulls toward {to}. The most common lead-in chord.",
         to: Some(major(4, 7)),
+        next: &[next(major(4, 7), LEADS_HERE)], // G
     },
     Role {
         place: major(2, 4), // E
         fit: Fit::CanWork,
         why: "Outside the key, but it pulls hard toward {to}.",
         to: Some(minor(5, 9)),
+        next: &[next(minor(5, 9), LEADS_HERE)], // Am
     },
     Role {
         place: major(5, 9), // A
         fit: Fit::CanWork,
         why: "Outside the key, but it pulls toward {to}.",
         to: Some(minor(1, 2)),
+        next: &[next(minor(1, 2), LEADS_HERE)], // Dm
     },
     Role {
         place: major(6, 11), // B
         fit: Fit::CanWork,
         why: "Outside the key, but it pulls toward {to}. Rare in pop.",
         to: Some(minor(2, 4)),
+        next: &[next(minor(2, 4), LEADS_HERE)], // Em
     },
     // Chords borrowed from the twin minor key.
     Role {
@@ -244,24 +306,42 @@ const MAJOR_KEY_ROLES: [Role; 14] = [
         fit: Fit::CanWork,
         why: "Borrowed from {twin}. Tender and bittersweet, often right before {to}.",
         to: Some(major(0, 0)),
+        next: &[
+            next(major(0, 0), "A tender way home."),       // C
+            next(major(4, 7), "On to the tension chord."), // G
+        ],
     },
     Role {
         place: major(2, 3), // Eb
         fit: Fit::CanWork,
         why: "Borrowed from {twin}. Bright and dark at the same time.",
         to: None,
+        next: &[
+            next(major(5, 8), "Falls a fifth, staying in the borrowed colors."), // Ab
+            next(major(3, 5), "Back to the key's own chords."),                  // F
+            next(major(0, 0), "Straight home."),                                 // C
+        ],
     },
     Role {
         place: major(5, 8), // Ab
         fit: Fit::CanWork,
         why: "Borrowed from {twin}. Big and cinematic.",
         to: None,
+        next: &[
+            next(major(6, 10), "A heroic climb, on to {home}."), // Bb
+            next(major(0, 0), "Straight home, big and warm."),   // C
+        ],
     },
     Role {
         place: major(6, 10), // Bb
         fit: Fit::CanWork,
         why: "Borrowed from {twin}. Bold and rock-like, often going home to {to}.",
         to: Some(major(0, 0)),
+        next: &[
+            next(major(0, 0), "Steps up home, the rock ending."),   // C
+            next(major(3, 5), "Falls a fifth, back into the key."), // F
+            next(major(5, 8), "Steps down, darker."),               // Ab
+        ],
     },
 ];
 
@@ -275,42 +355,75 @@ const MINOR_KEY_ROLES: [Role; 11] = [
         fit: Fit::InKey,
         why: "Home. Settled, with a darker color.",
         to: None,
+        next: &[
+            next(major(5, 8), "Starts the most common minor-key loop."),                  // F
+            next(minor(3, 5), "Falls a fifth, darker still."),                            // Dm
+            next(major(6, 10), "Steps down, starting a walk down to the tension chord."), // G
+        ],
     },
     Role {
         place: major(2, 3), // C
         fit: Fit::InKey,
         why: "The key's bright side.",
         to: None,
+        next: &[
+            next(major(5, 8), "Falls a fifth, the strongest pull."),        // F
+            next(minor(0, 0), "Back home, as in \"Eye in the Sky\"."),      // Am
+            next(major(6, 10), "On round the most common minor-key loop."), // G
+        ],
     },
     Role {
         place: minor(3, 5), // Dm
         fit: Fit::InKey,
         why: "It moves away from home, darker still.",
         to: None,
+        next: &[
+            next(major(4, 7), "From away to the strongest tension."), // E
+            next(major(6, 10), "Falls a fifth, lifting up."),         // G
+            next(minor(0, 0), "Straight home, as in \"The Chain\"."), // Am
+        ],
     },
     Role {
         place: minor(4, 7), // Em
         fit: Fit::InKey,
         why: "A gentle pull back home to {to}.",
         to: Some(minor(0, 0)),
+        next: &[
+            next(minor(0, 0), "Falls a fifth home, gently."),     // Am
+            next(major(5, 8), "Steps up instead of going home."), // F
+        ],
     },
     Role {
         place: major(4, 7), // E
         fit: Fit::InKey,
         why: "The strongest pull back home to {to}.",
         to: Some(minor(0, 0)),
+        next: &[
+            next(minor(0, 0), "The strongest pull home."),            // Am
+            next(major(5, 8), "A surprise landing instead of home."), // F
+        ],
     },
     Role {
         place: major(5, 8), // F
         fit: Fit::InKey,
         why: "Warm and wide. It often moves on to {to}.",
         to: Some(major(6, 10)),
+        next: &[
+            next(major(6, 10), "Climbs toward {home}, the royal road's next step."), // G
+            next(major(2, 3), "On round the most common minor-key loop."),           // C
+            next(major(4, 7), "Slips down to the tension chord."),                   // E
+        ],
     },
     Role {
         place: major(6, 10), // G
         fit: Fit::InKey,
         why: "It lifts up, toward {to} or back home.",
         to: Some(major(2, 3)),
+        next: &[
+            next(minor(0, 0), "Steps up home, the rock ending."),              // Am
+            next(major(2, 3), "Falls a fifth to the bright side."),            // C
+            next(minor(4, 7), "The royal road's next step, on its way home."), // Em
+        ],
     },
     // Chords from outside the key that still work.
     Role {
@@ -318,26 +431,53 @@ const MINOR_KEY_ROLES: [Role; 11] = [
         fit: Fit::CanWork,
         why: "Home turned major: a bright, surprising ending.",
         to: None,
+        next: &[next(minor(3, 5), LEADS_HERE)], // Dm
     },
     Role {
         place: major(3, 5), // D
         fit: Fit::CanWork,
         why: "A major four, like a ray of light in a dark key.",
         to: None,
+        next: &[
+            next(minor(0, 0), "Back home, the sway of \"Breathe\"."), // Am
+            next(major(4, 7), "Up to the tension chord."),            // E
+            next(major(6, 10), "Falls a fifth, the strongest pull."), // G
+        ],
     },
     Role {
         place: major(1, 2), // B
         fit: Fit::CanWork,
         why: "Outside the key, but it pulls toward {to}.",
         to: Some(major(4, 7)),
+        next: &[next(major(4, 7), LEADS_HERE)], // E
     },
     Role {
         place: major(1, 1), // Bb
         fit: Fit::CanWork,
         why: "Dramatic, heard in film and classical music. It often moves on to {to}.",
         to: Some(major(4, 7)),
+        next: &[
+            next(major(4, 7), "Drops to the tension chord."),   // E
+            next(minor(0, 0), "Slides a half step down home."), // Am
+        ],
     },
 ];
+
+// The best chords to start a song on, strongest first.
+const MAJOR_KEY_STARTS: [Next; 3] = [
+    next(major(0, 0), "Home, the usual place to start."),                // C
+    next(major(3, 5), "Starts away from home, as the royal road does."), // F
+    next(minor(5, 9), "Starts on the key's sad side."),                  // Am
+];
+const MINOR_KEY_STARTS: [Next; 2] = [
+    next(minor(0, 0), "Home, the usual place to start."),      // Am
+    next(major(5, 8), "Many minor-key pop songs start here."), // F
+];
+
+// After a chord from outside the key, home is best.
+const HOME_AFTER_OUTSIDE: &str = "Home, which settles a chord from outside the key.";
+const MAJOR_KEY_AFTER_OUTSIDE: [Next; 1] = [next(major(0, 0), HOME_AFTER_OUTSIDE)];
+const MINOR_KEY_AFTER_OUTSIDE: [Next; 1] = [next(minor(0, 0), HOME_AFTER_OUTSIDE)];
 
 // What guidance says about a chord it doesn't know.
 const OUTSIDE_WHY: &str = "Outside the key, so it will likely clash. It still plays.";
@@ -393,18 +533,16 @@ pub fn chord_name(chord: Chord, key: Option<Key>) -> String {
     }
 }
 
-// What guidance says about `chord` in `key`.
+// What guidance says about `chord` in `key`, with nothing about what comes
+// next.
 pub fn guide(key: Key, chord: Chord) -> Guide {
-    let half_steps = (chord.pitch() + 12 - key.tonic) % 12;
-    for role in roles_of(key) {
-        let place = role.place;
-        if place.half_steps == half_steps && place.quality == chord.quality {
-            return Guide {
-                name: name_at(key, place),
-                fit: role.fit,
-                why: explain(key, role),
-            };
-        }
+    if let Some(role) = role_of(key, chord) {
+        return Guide {
+            name: name_at(key, role.place),
+            fit: role.fit,
+            why: explain(key, role),
+            next: None,
+        };
     }
 
     // A chord guidance doesn't know is spelled the way the key spells its
@@ -414,6 +552,38 @@ pub fn guide(key: Key, chord: Chord) -> Guide {
         name: with_quality(root, chord.quality),
         fit: Fit::Outside,
         why: String::from(OUTSIDE_WHY),
+        next: None,
+    }
+}
+
+// What guidance says about `chord` in `key` right after `last`, the song's
+// last chord, or None while the song has no chords: the same as `guide`,
+// and whether `chord` is one of the best to play next.
+pub fn guide_after(key: Key, last: Option<Chord>, chord: Chord) -> Guide {
+    let mut guide = guide(key, chord);
+    let best = best_next(key, last);
+    for (index, next) in best.iter().enumerate() {
+        if is_at(key, chord, next.place) {
+            guide.next = Some(BestNext {
+                rank: index as u8 + 1,
+                why: explain_next(key, last, next.why),
+            });
+        }
+    }
+    guide
+}
+
+// The best chords to play after `last` in `key`, strongest first. Before
+// the song has a chord, the best starts. After a chord guidance doesn't
+// know, which is outside the key, home.
+fn best_next(key: Key, last: Option<Chord>) -> &'static [Next] {
+    let last = match last {
+        Some(last) => last,
+        None => return starts_of(key),
+    };
+    match role_of(key, last) {
+        Some(role) => role.next,
+        None => after_outside(key),
     }
 }
 
@@ -440,6 +610,44 @@ fn roles_of(key: Key) -> &'static [Role] {
     }
 }
 
+fn starts_of(key: Key) -> &'static [Next] {
+    match key.mode {
+        Mode::Major => &MAJOR_KEY_STARTS,
+        Mode::Minor => &MINOR_KEY_STARTS,
+    }
+}
+
+fn after_outside(key: Key) -> &'static [Next] {
+    match key.mode {
+        Mode::Major => &MAJOR_KEY_AFTER_OUTSIDE,
+        Mode::Minor => &MINOR_KEY_AFTER_OUTSIDE,
+    }
+}
+
+// Where the key's home chord sits: C in C major, Am in A minor.
+fn home_of(key: Key) -> Place {
+    match key.mode {
+        Mode::Major => major(0, 0),
+        Mode::Minor => minor(0, 0),
+    }
+}
+
+// The role guidance gives `chord` in `key`, or None if it doesn't know it.
+fn role_of(key: Key, chord: Chord) -> Option<&'static Role> {
+    for role in roles_of(key) {
+        if is_at(key, chord, role.place) {
+            return Some(role);
+        }
+    }
+    None
+}
+
+// Whether `chord` is the chord at `place` in `key`, in any octave.
+fn is_at(key: Key, chord: Chord, place: Place) -> bool {
+    let half_steps = (chord.pitch() + 12 - key.tonic) % 12;
+    place.half_steps == half_steps && place.quality == chord.quality
+}
+
 // The role's words, with the chord names filled in.
 fn explain(key: Key, role: &Role) -> String {
     let mut why = String::from(role.why);
@@ -452,6 +660,17 @@ fn explain(key: Key, role: &Role) -> String {
     };
     why = why.replace("{twin}", &key_name(twin));
     why
+}
+
+// A best next chord's words, with the chord names filled in: {last} is the
+// song's last chord, and {home} the key's home chord.
+fn explain_next(key: Key, last: Option<Chord>, why: &str) -> String {
+    let mut words = String::from(why);
+    if let Some(last) = last {
+        words = words.replace("{last}", &guide(key, last).name);
+    }
+    words = words.replace("{home}", &name_at(key, home_of(key)));
+    words
 }
 
 fn twin_mode(mode: Mode) -> Mode {
@@ -818,6 +1037,256 @@ mod tests {
         }
     }
 
+    // The chord called `name` in `key`, from the 24 the chord keys play.
+    fn chord_called(key: Key, name: &str) -> Chord {
+        for chord in every_chord() {
+            if guide(key, chord).name == name {
+                return chord;
+            }
+        }
+        panic!("no chord is called {name} in {}", key_name(key));
+    }
+
+    // The chord called `name` in `key`, or None for no name: the song's last
+    // chord, or none before the song has one.
+    fn last_called(key: Key, name: Option<&str>) -> Option<Chord> {
+        match name {
+            Some(name) => Some(chord_called(key, name)),
+            None => None,
+        }
+    }
+
+    fn rank_of(guide: &Guide) -> u8 {
+        match &guide.next {
+            Some(next) => next.rank,
+            None => 0,
+        }
+    }
+
+    // The best chords to play next in `key` after `last`, strongest first,
+    // each with what guidance says about it.
+    fn best_next_of(key: Key, last: Option<Chord>) -> Vec<(Chord, Guide)> {
+        let mut best = Vec::new();
+        for chord in every_chord() {
+            let guide = guide_after(key, last, chord);
+            if guide.next.is_some() {
+                best.push((chord, guide));
+            }
+        }
+        best.sort_by_key(|(_, guide)| rank_of(guide));
+        best
+    }
+
+    // The names of the best chords to play next in `key` after the chord
+    // called `last`, strongest first.
+    fn best_names(key: Key, last: Option<&str>) -> Vec<String> {
+        let mut names = Vec::new();
+        for (_, guide) in best_next_of(key, last_called(key, last)) {
+            names.push(guide.name);
+        }
+        names
+    }
+
+    // Why each of them is one of the best, the same way.
+    fn best_words(key: Key, last: Option<&str>) -> Vec<String> {
+        let mut words = Vec::new();
+        for (_, guide) in best_next_of(key, last_called(key, last)) {
+            words.push(guide.next.unwrap().why);
+        }
+        words
+    }
+
+    #[test]
+    fn c_major_ranks_what_comes_next_as_approved() {
+        // docs/design.md, "Best next": the song's last chord, then the best
+        // chords to play after it, strongest first. F# is outside the key.
+        let rows: [(Option<&str>, &[&str]); 16] = [
+            (None, &["C", "F", "Am"]),
+            (Some("C"), &["F", "G", "Am"]),
+            (Some("Dm"), &["G", "C", "F"]),
+            (Some("Em"), &["Am", "F"]),
+            (Some("F"), &["C", "G", "Fm"]),
+            (Some("G"), &["C", "Am", "F"]),
+            (Some("Am"), &["F", "Dm", "G"]),
+            (Some("D"), &["G"]),
+            (Some("E"), &["Am"]),
+            (Some("A"), &["Dm"]),
+            (Some("B"), &["Em"]),
+            (Some("Fm"), &["C", "G"]),
+            (Some("Eb"), &["Ab", "F", "C"]),
+            (Some("Ab"), &["Bb", "C"]),
+            (Some("Bb"), &["C", "F", "Ab"]),
+            (Some("F#"), &["C"]),
+        ];
+        for (last, best) in rows {
+            assert_eq!(best_names(C_MAJOR, last), best, "after {last:?}");
+        }
+    }
+
+    #[test]
+    fn a_minor_ranks_what_comes_next_as_approved() {
+        // The same for A minor. Cm is outside the key.
+        let rows: [(Option<&str>, &[&str]); 13] = [
+            (None, &["Am", "F"]),
+            (Some("Am"), &["F", "Dm", "G"]),
+            (Some("C"), &["F", "Am", "G"]),
+            (Some("Dm"), &["E", "G", "Am"]),
+            (Some("Em"), &["Am", "F"]),
+            (Some("E"), &["Am", "F"]),
+            (Some("F"), &["G", "C", "E"]),
+            (Some("G"), &["Am", "C", "Em"]),
+            (Some("A"), &["Dm"]),
+            (Some("D"), &["Am", "E", "G"]),
+            (Some("B"), &["E"]),
+            (Some("Bb"), &["E", "Am"]),
+            (Some("Cm"), &["Am"]),
+        ];
+        for (last, best) in rows {
+            assert_eq!(best_names(A_MINOR, last), best, "after {last:?}");
+        }
+    }
+
+    // Where each chord sits above `key`'s home note, in half steps, and
+    // whether it is major or minor.
+    fn places_in(key: Key, best: Vec<(Chord, Guide)>) -> Vec<(u8, Quality)> {
+        let mut places = Vec::new();
+        for (chord, _) in best {
+            let half_steps = (chord.pitch() + 12 - key.tonic) % 12;
+            places.push((half_steps, chord.quality));
+        }
+        places
+    }
+
+    #[test]
+    fn every_key_ranks_like_its_mode_moved_to_its_home_note() {
+        // D major after A ranks like C major after G, two half steps up.
+        for key in all_keys() {
+            let model = match key.mode {
+                Mode::Major => C_MAJOR,
+                Mode::Minor => A_MINOR,
+            };
+            let shift = (key.tonic + 12 - model.tonic) % 12;
+
+            let starts = places_in(key, best_next_of(key, None));
+            let model_starts = places_in(model, best_next_of(model, None));
+            assert_eq!(starts, model_starts, "starts in {}", key_name(key));
+
+            for last in every_chord() {
+                let moved = Chord {
+                    root: 48 + (last.pitch() + shift) % 12,
+                    quality: last.quality,
+                };
+                let best = places_in(key, best_next_of(key, Some(moved)));
+                let model_best = places_in(model, best_next_of(model, Some(last)));
+                let last_name = chord_name(moved, Some(key));
+                assert_eq!(best, model_best, "after {last_name} in {}", key_name(key));
+            }
+        }
+    }
+
+    #[test]
+    fn best_next_names_follow_the_key() {
+        let d_major = Key {
+            tonic: 2,
+            mode: Mode::Major,
+        };
+        let e_flat_major = Key {
+            tonic: 3,
+            mode: Mode::Major,
+        };
+        let e_minor = Key {
+            tonic: 4,
+            mode: Mode::Minor,
+        };
+        let f_minor = Key {
+            tonic: 5,
+            mode: Mode::Minor,
+        };
+        assert_eq!(best_names(d_major, Some("A")), ["D", "Bm", "G"]);
+        assert_eq!(best_names(e_flat_major, Some("Bb")), ["Eb", "Cm", "Ab"]);
+        assert_eq!(best_names(e_minor, Some("B")), ["Em", "C"]);
+        assert_eq!(best_names(f_minor, Some("C")), ["Fm", "Db"]);
+    }
+
+    #[test]
+    fn best_next_words_name_the_chords_they_mean() {
+        let d_major = Key {
+            tonic: 2,
+            mode: Mode::Major,
+        };
+        assert_eq!(best_words(C_MAJOR, Some("F"))[2], "F turns minor, as in \"Creep\".");
+        assert_eq!(best_words(d_major, Some("G"))[2], "G turns minor, as in \"Creep\".");
+        assert_eq!(best_words(C_MAJOR, Some("D")), ["D leads here, a fifth down."]);
+        assert_eq!(best_words(C_MAJOR, Some("Ab"))[0], "A heroic climb, on to C.");
+        assert_eq!(best_words(d_major, Some("Bm"))[1], "Falls a fifth, on the way round to D.");
+        assert_eq!(best_words(A_MINOR, Some("F"))[0], "Climbs toward Am, the royal road's next step.");
+        assert_eq!(best_words(A_MINOR, None)[0], "Home, the usual place to start.");
+    }
+
+    #[test]
+    fn best_next_is_one_to_three_chords_that_fit_the_key() {
+        // In every key, after every chord and before the first: at least
+        // one chord, at most three, ranked 1, 2, 3 with none left out or
+        // used twice, never outside the key, never the last chord again,
+        // and every name in the words filled in.
+        for key in all_keys() {
+            let mut lasts = vec![None];
+            for chord in every_chord() {
+                lasts.push(Some(chord));
+            }
+            for last in lasts {
+                let best = best_next_of(key, last);
+                let after = match last {
+                    Some(last) => chord_name(last, Some(key)),
+                    None => String::from("nothing"),
+                };
+                let context = format!("after {after} in {}", key_name(key));
+                assert!(!best.is_empty(), "{context}");
+                assert!(best.len() <= 3, "{context}");
+                for (index, (chord, guide)) in best.iter().enumerate() {
+                    assert_eq!(rank_of(guide) as usize, index + 1, "{context}");
+                    assert_ne!(guide.fit, Fit::Outside, "{} {context}", guide.name);
+                    assert_ne!(Some(*chord), last, "{} {context}", guide.name);
+                    let why = &guide.next.as_ref().unwrap().why;
+                    assert!(!why.contains('{'), "{} {context}: {why}", guide.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn after_a_chord_outside_the_key_home_is_best() {
+        for key in all_keys() {
+            let home = name_at(key, home_of(key));
+            for last in every_chord() {
+                if guide(key, last).fit != Fit::Outside {
+                    continue;
+                }
+                let context = format!("after {} in {}", chord_name(last, Some(key)), key_name(key));
+                let best = best_next_of(key, Some(last));
+                assert_eq!(best.len(), 1, "{context}");
+                assert_eq!(best[0].1.name, home, "{context}");
+                let why = &best[0].1.next.as_ref().unwrap().why;
+                assert_eq!(why, "Home, which settles a chord from outside the key.", "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn best_next_says_nothing_new_about_how_a_chord_fits() {
+        // Being one of the best changes only `next`: the name, the fit and
+        // its words stay what `guide` says.
+        for key in all_keys() {
+            for last in every_chord() {
+                for chord in every_chord() {
+                    let mut after = guide_after(key, Some(last), chord);
+                    after.next = None;
+                    assert_eq!(after, guide(key, chord));
+                }
+            }
+        }
+    }
+
     // The notes from C4 up to B4 that are in `key`, by name.
     fn notes_in(key: Key) -> Vec<&'static str> {
         let mut names = Vec::new();
@@ -888,5 +1357,18 @@ mod tests {
         assert_eq!(serde_json::to_value(Fit::CanWork).unwrap(), "can_work");
         assert_eq!(serde_json::to_value(Fit::Outside).unwrap(), "outside");
         assert_eq!(serde_json::to_value(Mode::Minor).unwrap(), "minor");
+    }
+
+    #[test]
+    fn the_ui_reads_best_next_by_these_names() {
+        // After G in C major, C is the best next chord and Em isn't one.
+        let g = chord_called(C_MAJOR, "G");
+        let c = chord_called(C_MAJOR, "C");
+        let e_minor = chord_called(C_MAJOR, "Em");
+        let best = serde_json::to_value(guide_after(C_MAJOR, Some(g), c)).unwrap();
+        assert_eq!(best["next"]["rank"], 1);
+        assert_eq!(best["next"]["why"], "Settles the pull home.");
+        let not_best = serde_json::to_value(guide_after(C_MAJOR, Some(g), e_minor)).unwrap();
+        assert_eq!(not_best["next"], serde_json::Value::Null);
     }
 }
