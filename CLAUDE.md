@@ -1,7 +1,7 @@
 # Jello
 
-Jello is a desktop synthesizer and music studio, played with a computer or
-MIDI keyboard. Later versions add vocals, a learning mode and AI music making.
+Jello is a desktop synthesizer and music studio, played on computer keyboards
+only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 
 ## Stack
 

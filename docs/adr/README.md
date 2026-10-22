@@ -35,6 +35,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0024](0024-the-looper-s-look.md) | The looper's look | Accepted; lane superseded by 0025 |
 | [0025](0025-the-looper-s-lane-as-wide-as-the-keyboard.md) | The looper's lane, as wide as the keyboard | Accepted |
 | [0026](0026-layers.md) | Layers | Accepted |
+| [0027](0027-computer-keyboards-only.md) | Computer keyboards only | Accepted |
 
 ## Template
 
