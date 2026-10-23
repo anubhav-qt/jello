@@ -118,6 +118,48 @@ void Conductor::set_layer_volume(int layer, float volume) {
     mailbox_.send(event);
 }
 
+void Conductor::pause_loop() {
+    bool sent = mailbox_.send(Event{EventType::pause_loop, 0, 0});
+    if (sent) {
+        looper_messages_sent_ += 1;
+    }
+}
+
+void Conductor::play_loop() {
+    bool sent = mailbox_.send(Event{EventType::play_loop, 0, 0});
+    if (sent) {
+        looper_messages_sent_ += 1;
+    }
+}
+
+void Conductor::set_layer_playing(int layer, bool playing) {
+    Event event{EventType::set_layer_playing, 0, 0};
+    event.layer = layer;
+    event.playing = playing;
+    mailbox_.send(event);
+}
+
+bool Conductor::load_loop(const LoadedNote* notes, int count, int layers, int bars) {
+    // Every note, then the one event that takes them in.
+    if (loaded_notes_.room() < static_cast<std::uint64_t>(count)) {
+        return false;
+    }
+    if (mailbox_.room() < 1) {
+        return false;
+    }
+
+    for (int i = 0; i < count; i++) {
+        loaded_notes_.send(notes[i]);
+    }
+    Event event{EventType::load_loop, 0, 0};
+    event.loaded_count = count;
+    event.loaded_layers = layers;
+    event.loaded_bars = bars;
+    mailbox_.send(event);
+    looper_messages_sent_ += 1;
+    return true;
+}
+
 void Conductor::set_snap(bool snap) {
     Event event{EventType::set_snap, 0, 0};
     event.snap = snap;
@@ -375,6 +417,26 @@ void Conductor::handle(const Event& event) {
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::set_layer_volume) {
         looper_.set_layer_volume(event.layer, event.volume, synth_);
+    } else if (event.type == EventType::set_layer_playing) {
+        looper_.set_layer_playing(event.layer, event.playing, now, synth_);
+    } else if (event.type == EventType::pause_loop) {
+        looper_.pause(now, synth_);
+        stop_beat_if_unused();
+        looper_messages_handled_ += 1;
+    } else if (event.type == EventType::play_loop) {
+        // Like Right Shift while paused: the loop starts on a new bar.
+        if (looper_.is_paused()) {
+            clock_.start_beat();
+            looper_.play(now, synth_);
+        }
+        looper_messages_handled_ += 1;
+    } else if (event.type == EventType::load_loop) {
+        // The tempo is the one asked for last, sent after the clear that
+        // comes before a load, while the looper was idle.
+        looper_.load(loaded_notes_, event.loaded_count, event.loaded_layers, event.loaded_bars,
+                     clock_.asked_beat_length(), synth_);
+        stop_beat_if_unused();
+        looper_messages_handled_ += 1;
     } else if (event.type == EventType::set_snap) {
         looper_.set_snap(event.snap, now, synth_);
     } else if (event.type == EventType::set_filter) {
@@ -429,8 +491,11 @@ void Conductor::handle(const Event& event) {
 }
 
 void Conductor::handle_looper_press() {
-    // The count-in starts a new bar right away.
+    // The count-in starts a new bar right away, and so does playing a
+    // paused loop.
     if (looper_.is_idle()) {
+        clock_.start_beat();
+    } else if (looper_.is_paused()) {
         clock_.start_beat();
     }
     looper_.press(clock_, synth_);
@@ -451,7 +516,7 @@ void Conductor::stop_beat_if_unused() {
     if (click_on_) {
         return;
     }
-    if (!looper_.is_idle()) {
+    if (looper_.needs_beat()) {
         return;
     }
     clock_.stop_beat();

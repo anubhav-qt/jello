@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
+use crate::song_file::{HeldChord, Song};
 use crate::sound_file::Sound;
 use crate::sound_profile::SoundProfile;
 
@@ -173,6 +174,58 @@ impl Composer {
             tempo: START_TEMPO,
             sound_profile: SoundProfile::new(),
             preset: None,
+        }
+    }
+
+    // The song in `song`, opened at `now` (docs/adr/0038-song-files.md):
+    // its key, its chords with their lengths, and its sound, sent to
+    // `engine` too. The tempo is the one `engine` plays, which opening the
+    // song's loop sets first (Engine::open_loop). No preset is lit until
+    // remember_preset_if_same says so.
+    pub fn opened(engine: &mut Engine, song: &Song, now: Instant) -> Composer {
+        let mut composer = Composer::new();
+        composer.key = song.key;
+        // No laptop key holds them, so none lets go of them.
+        for held in &song.chords {
+            let played = PlayedChord {
+                chord: held.chord,
+                key: String::new(),
+                pressed_at: now,
+                held_for: Some(Duration::from_millis(held.held_ms)),
+            };
+            composer.progression.push(played);
+        }
+        composer.tempo = engine.tempo();
+        composer.sound_profile.take_sound(engine, &song.sound);
+        composer
+    }
+
+    // The song's key, or None before one is picked.
+    pub fn key(&self) -> Option<Key> {
+        self.key
+    }
+
+    // The chords added so far that have been let go, with how long each was
+    // held, for the song file. A chord still held waits until it is let go.
+    pub fn held_chords(&self) -> Vec<HeldChord> {
+        let mut chords = Vec::new();
+        for played in &self.progression {
+            if let Some(held_for) = played.held_for {
+                chords.push(HeldChord {
+                    chord: played.chord,
+                    held_ms: held_for.as_millis() as u64,
+                });
+            }
+        }
+        chords
+    }
+
+    // Lights preset `name`'s tile if the song sounds exactly like `sound`,
+    // the preset's file as it is now. Opening a song that names its preset
+    // does this.
+    pub fn remember_preset_if_same(&mut self, name: &str, sound: &Sound) {
+        if self.sound_profile.sound() == *sound {
+            self.preset = Some((String::from(name), self.sound_profile));
         }
     }
 

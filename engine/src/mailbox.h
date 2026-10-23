@@ -25,6 +25,10 @@ enum class EventType {
     clear_loop,
     remove_layer,
     set_layer_volume,
+    set_layer_playing,
+    pause_loop,
+    play_loop,
+    load_loop,
     set_snap,
     stop_song,
     add_song_chord,
@@ -63,10 +67,19 @@ struct Event {
     bool snap = true;
 
     // Which layer of the loop, from 0, or Looper::newest_layer; only for
-    // remove_layer and set_layer_volume. And its new volume, from 0 to 1;
-    // only for set_layer_volume.
+    // remove_layer, set_layer_volume and set_layer_playing. Its new volume,
+    // from 0 to 1; only for set_layer_volume. And whether it plays; only for
+    // set_layer_playing.
     int layer = 0;
     float volume = 1.0f;
+    bool playing = true;
+
+    // A loaded loop: how many notes wait for it in the loaded notes'
+    // mailbox, how many layers they make, and how many bars it lasts; only
+    // for load_loop.
+    int loaded_count = 0;
+    int loaded_layers = 0;
+    int loaded_bars = 0;
 
     // The chord to add to the song's queue; only for add_song_chord. The
     // other messages can leave it out too.

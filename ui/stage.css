@@ -114,6 +114,32 @@
   color: var(--text-2);
 }
 
+/* The open song's name: a button that opens the Songs panel, lavender
+   while it is open. */
+.stage .crumb-song {
+  max-width: 40vw;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+  transition: color 600ms ease-out;
+}
+
+.stage .crumb-song:hover {
+  color: var(--text);
+  transition: color 40ms;
+}
+
+.stage .crumb-song.is-open {
+  color: rgb(var(--accent));
+}
+
 /* Messages, typed out after the title with a blinking cursor, on up to
    two lines. They take the room between the title and the buttons, and
    never squeeze the buttons. */
@@ -1040,10 +1066,17 @@
   margin-left: 5px;
 }
 
+/* A layer's head: its knob, and under it its play and pause button. */
 .lane-head {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+
+.lane-loops.is-stacked .lane-head {
+  gap: 1px;
 }
 
 /* The volume knob: a ring of dots around the layer's number, lit up to its
@@ -1199,9 +1232,82 @@
   color: rgba(var(--ink), 0.7);
 }
 
+/* Play and pause: two white bars while it plays, a triangle while paused.
+   Under each knob, small and borderless; beside Snap, a square like it. */
+.lane-play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: rgba(var(--ink), 0.62);
+  cursor: default;
+  transition: color 600ms ease-out;
+}
+
+.lane-play svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lane-play path {
+  fill: currentColor;
+}
+
+.lane-play:hover {
+  color: var(--text);
+  transition: color 40ms;
+}
+
+.lane-play.is-layer {
+  width: 11px;
+  height: 11px;
+}
+
+.lane-loops.is-stacked .lane-play.is-layer {
+  width: 9px;
+  height: 9px;
+}
+
+.lane-play.is-loop {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  padding: 6px;
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 4px;
+  color: var(--text);
+  transition:
+    border-color 600ms ease-out,
+    background-color 600ms ease-out;
+}
+
+.lane-play.is-loop:hover {
+  border-color: rgba(var(--accent), 0.75);
+  transition:
+    border-color 40ms,
+    background-color 40ms;
+}
+
+.lane-play.is-loop:active {
+  background-color: rgba(var(--accent), 0.2);
+}
+
+/* The snap switch and, once there is a loop, its play and pause button,
+   side by side. */
+.lane-side-buttons {
+  display: flex;
+  gap: 6px;
+}
+
 /* The snap switch, styled like the top bar's Wave button. */
 .lane-snap {
   box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -990,3 +990,17 @@
 .preset-save-hint.is-problem {
   color: var(--text);
 }
+
+/* Songs panel (ui/SongsPanel.svelte): the songs as tiles like the
+   presets', with "+ New song" first. The lit tile is the open song. */
+.song-tile {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  height: 34px;
+  padding: 0 10px;
+}
+
+.song-tile.is-new {
+  border-style: dashed;
+}

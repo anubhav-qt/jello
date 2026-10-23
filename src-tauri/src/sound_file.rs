@@ -1,6 +1,6 @@
 // A sound written as text (docs/adr/0037-presets.md): what a preset file
-// holds, and later the sound part of song files
-// (docs/adr/0004-songs-are-text.md). The text is TOML: names and values,
+// holds, and the sound part of a song file, under [sound]
+// (docs/adr/0038-song-files.md). The text is TOML: names and values,
 // with a heading for each group. Every choice is a word, like "saw" or
 // "low-pass", never a number.
 //
@@ -55,76 +55,87 @@ pub fn text_of(sound: &Sound) -> String {
     let mut text = String::new();
     text.push_str(HEADING);
     text.push('\n');
+    write_sound(&mut text, sound, "");
+    text
+}
 
-    // Single values come first: TOML wants them before any heading.
-    text.push('\n');
-    write_number(&mut text, "tuning_hz", sound.tuning_hz);
-    write_number(&mut text, "glide_ms", sound.glide_ms);
+// Writes `sound` onto the end of `text`, every heading under `under`: ""
+// for a sound file, or "sound" for a song file's [sound], where its
+// oscillators come under [[sound.oscillators]].
+pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
+    // Single values come first: TOML wants them before any heading. In a
+    // song file they come under [sound] itself.
+    if under.is_empty() {
+        text.push('\n');
+    } else {
+        start_group(text, &format!("[{under}]"));
+    }
+    write_number(text, "tuning_hz", sound.tuning_hz);
+    write_number(text, "glide_ms", sound.glide_ms);
 
     for oscillator in &sound.oscillators {
-        start_group(&mut text, "[[oscillators]]");
-        write_word(&mut text, "kind", oscillator.kind.name());
-        write_number(&mut text, "level", oscillator.level);
-        write_number(&mut text, "octaves", oscillator.octaves);
-        write_number(&mut text, "half_steps", oscillator.half_steps);
-        write_number(&mut text, "cents", oscillator.cents);
-        write_number(&mut text, "width", oscillator.width);
+        start_group(text, &heading(under, "[[oscillators]]"));
+        write_word(text, "kind", oscillator.kind.name());
+        write_number(text, "level", oscillator.level);
+        write_number(text, "octaves", oscillator.octaves);
+        write_number(text, "half_steps", oscillator.half_steps);
+        write_number(text, "cents", oscillator.cents);
+        write_number(text, "width", oscillator.width);
     }
 
     let loudness = sound.loudness_envelope;
-    start_group(&mut text, "[loudness]");
-    write_number(&mut text, "attack_ms", loudness.attack_ms);
-    write_number(&mut text, "decay_ms", loudness.decay_ms);
-    write_number(&mut text, "sustain", loudness.sustain);
-    write_number(&mut text, "release_ms", loudness.release_ms);
+    start_group(text, &heading(under, "[loudness]"));
+    write_number(text, "attack_ms", loudness.attack_ms);
+    write_number(text, "decay_ms", loudness.decay_ms);
+    write_number(text, "sustain", loudness.sustain);
+    write_number(text, "release_ms", loudness.release_ms);
 
     let filter = sound.filter;
-    start_group(&mut text, "[filter]");
-    write_word(&mut text, "type", filter.filter_type.name());
-    write_number(&mut text, "cutoff_hz", filter.cutoff_hz);
-    write_number(&mut text, "resonance", filter.resonance);
-    write_number(&mut text, "key_tracking", sound.key_tracking);
+    start_group(text, &heading(under, "[filter]"));
+    write_word(text, "type", filter.filter_type.name());
+    write_number(text, "cutoff_hz", filter.cutoff_hz);
+    write_number(text, "resonance", filter.resonance);
+    write_number(text, "key_tracking", sound.key_tracking);
 
     let envelope = sound.filter_envelope;
-    start_group(&mut text, "[filter_envelope]");
-    write_number(&mut text, "amount", envelope.amount);
-    write_number(&mut text, "attack_ms", envelope.attack_ms);
-    write_number(&mut text, "decay_ms", envelope.decay_ms);
-    write_number(&mut text, "sustain", envelope.sustain);
-    write_number(&mut text, "release_ms", envelope.release_ms);
+    start_group(text, &heading(under, "[filter_envelope]"));
+    write_number(text, "amount", envelope.amount);
+    write_number(text, "attack_ms", envelope.attack_ms);
+    write_number(text, "decay_ms", envelope.decay_ms);
+    write_number(text, "sustain", envelope.sustain);
+    write_number(text, "release_ms", envelope.release_ms);
 
     let unison = sound.unison;
-    start_group(&mut text, "[unison]");
-    write_number(&mut text, "copies", unison.copies);
-    write_number(&mut text, "detune_cents", unison.detune_cents);
-    write_number(&mut text, "spread", unison.spread);
+    start_group(text, &heading(under, "[unison]"));
+    write_number(text, "copies", unison.copies);
+    write_number(text, "detune_cents", unison.detune_cents);
+    write_number(text, "spread", unison.spread);
 
     let key_times = sound.vibrato_key_times;
-    start_group(&mut text, "[vibrato_key]");
-    write_number(&mut text, "rise_ms", key_times.rise_ms);
-    write_number(&mut text, "fall_ms", key_times.fall_ms);
+    start_group(text, &heading(under, "[vibrato_key]"));
+    write_number(text, "rise_ms", key_times.rise_ms);
+    write_number(text, "fall_ms", key_times.fall_ms);
 
     for lfo in &sound.lfos {
-        write_lfo(&mut text, lfo);
+        write_lfo(text, lfo, under);
     }
 
     for connection in &sound.connections {
         if connection.source == Source::None {
             continue;
         }
-        start_group(&mut text, "[[connections]]");
-        write_word(&mut text, "source", &connection.source.name());
-        write_word(&mut text, "target", &connection.target.name());
-        write_number(&mut text, "amount", connection.amount);
-        write_flag(&mut text, "one_way", connection.one_way);
-        write_flag(&mut text, "snap", connection.snap);
-        write_word(&mut text, "scaled_by", &connection.scaled_by.name());
+        start_group(text, &heading(under, "[[connections]]"));
+        write_word(text, "source", &connection.source.name());
+        write_word(text, "target", &connection.target.name());
+        write_number(text, "amount", connection.amount);
+        write_flag(text, "one_way", connection.one_way);
+        write_flag(text, "snap", connection.snap);
+        write_word(text, "scaled_by", &connection.scaled_by.name());
     }
-    text
 }
 
-fn write_lfo(text: &mut String, lfo: &Lfo) {
-    start_group(text, "[[lfos]]");
+fn write_lfo(text: &mut String, lfo: &Lfo, under: &str) {
+    start_group(text, &heading(under, "[[lfos]]"));
     write_word(text, "shape", lfo.shape.name());
     write_flag(text, "per_note", lfo.per_note);
     write_word(text, "speed", lfo.speed.name());
@@ -152,8 +163,22 @@ fn write_lfo(text: &mut String, lfo: &Lfo) {
     text.push_str("]\n");
 }
 
+// `heading`, like "[[oscillators]]", under `under`: "[[sound.oscillators]]"
+// under "sound", and as it is under "".
+fn heading(under: &str, heading: &str) -> String {
+    if under.is_empty() {
+        return String::from(heading);
+    }
+    let name = heading.trim_matches(|letter| letter == '[' || letter == ']');
+    if heading.starts_with("[[") {
+        format!("[[{under}.{name}]]")
+    } else {
+        format!("[{under}.{name}]")
+    }
+}
+
 // A heading, after an empty line.
-fn start_group(text: &mut String, heading: &str) {
+pub fn start_group(text: &mut String, heading: &str) {
     text.push('\n');
     text.push_str(heading);
     text.push('\n');
@@ -161,7 +186,7 @@ fn start_group(text: &mut String, heading: &str) {
 
 // A number, like `level = 100` or `hz = 5.5`. Rust writes the shortest
 // digits that read back as exactly the same number.
-fn write_number(text: &mut String, name: &str, number: impl ToString) {
+pub fn write_number(text: &mut String, name: &str, number: impl ToString) {
     text.push_str(name);
     text.push_str(" = ");
     text.push_str(&number.to_string());
@@ -170,14 +195,14 @@ fn write_number(text: &mut String, name: &str, number: impl ToString) {
 
 // A word, like `kind = "saw"`. Words come from Jello's own lists, so none
 // has a quote or a backslash that would need escaping.
-fn write_word(text: &mut String, name: &str, word: &str) {
+pub fn write_word(text: &mut String, name: &str, word: &str) {
     text.push_str(name);
     text.push_str(" = \"");
     text.push_str(word);
     text.push_str("\"\n");
 }
 
-fn write_flag(text: &mut String, name: &str, flag: bool) {
+pub fn write_flag(text: &mut String, name: &str, flag: bool) {
     write_number(text, name, flag);
 }
 
@@ -188,7 +213,12 @@ pub fn sound_of(text: &str, new_song: &SoundProfile) -> Result<Sound, String> {
         Ok(table) => table,
         Err(error) => return Err(format!("it is not a sound file: {}", error.message())),
     };
+    Ok(sound_of_table(&table, new_song))
+}
 
+// The sound the names and values in `table` describe, starting from
+// `new_song`'s, as for sound_of. A song file's [sound] is such a table.
+pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Sound {
     let mut sound = new_song.sound();
     sound.tuning_hz = read_f32(&table, "tuning_hz", sound.tuning_hz);
     sound.glide_ms = read_count(&table, "glide_ms", sound.glide_ms);
@@ -254,7 +284,7 @@ pub fn sound_of(text: &str, new_song: &SoundProfile) -> Result<Sound, String> {
             filled += 1;
         }
     }
-    Ok(sound)
+    sound
 }
 
 // The oscillator `group` describes, with `missing`'s values for what it
@@ -324,7 +354,7 @@ fn read_connection(group: &Table) -> Option<Connection> {
 }
 
 // The group under heading `name`, like [filter], or None.
-fn group<'a>(table: &'a Table, name: &str) -> Option<&'a Table> {
+pub fn group<'a>(table: &'a Table, name: &str) -> Option<&'a Table> {
     match table.get(name) {
         Some(Value::Table(group)) => Some(group),
         _ => None,
@@ -332,7 +362,7 @@ fn group<'a>(table: &'a Table, name: &str) -> Option<&'a Table> {
 }
 
 // The groups under each heading `name`, like [[oscillators]], in order.
-fn groups<'a>(table: &'a Table, name: &str) -> Vec<&'a Table> {
+pub fn groups<'a>(table: &'a Table, name: &str) -> Vec<&'a Table> {
     let mut found = Vec::new();
     if let Some(Value::Array(items)) = table.get(name) {
         for item in items {
@@ -345,7 +375,7 @@ fn groups<'a>(table: &'a Table, name: &str) -> Vec<&'a Table> {
 }
 
 // A whole number or a fraction as a number, or None for anything else.
-fn number_in(value: &Value) -> Option<f64> {
+pub fn number_in(value: &Value) -> Option<f64> {
     match value {
         Value::Integer(number) => Some(*number as f64),
         Value::Float(number) => Some(*number),
@@ -353,7 +383,7 @@ fn number_in(value: &Value) -> Option<f64> {
     }
 }
 
-fn read_f64(group: &Table, name: &str, missing: f64) -> f64 {
+pub fn read_f64(group: &Table, name: &str, missing: f64) -> f64 {
     let Some(value) = group.get(name) else {
         return missing;
     };
@@ -371,7 +401,7 @@ fn read_f32(group: &Table, name: &str, missing: f32) -> f32 {
 // A count can't go below 0, so a number below 0 reads as 0. A fraction is
 // rounded to the nearest whole number. Anything too big reads as the
 // biggest count, which the engine brings within range.
-fn read_count(group: &Table, name: &str, missing: u32) -> u32 {
+pub fn read_count(group: &Table, name: &str, missing: u32) -> u32 {
     let number = read_f64(group, name, missing as f64);
     if number.is_nan() {
         return missing;
@@ -402,14 +432,14 @@ fn read_signed(group: &Table, name: &str, missing: i32) -> i32 {
     rounded as i32
 }
 
-fn read_flag(group: &Table, name: &str, missing: bool) -> bool {
+pub fn read_flag(group: &Table, name: &str, missing: bool) -> bool {
     match group.get(name) {
         Some(Value::Boolean(flag)) => *flag,
         _ => missing,
     }
 }
 
-fn read_word<'a>(group: &'a Table, name: &str) -> Option<&'a str> {
+pub fn read_word<'a>(group: &'a Table, name: &str) -> Option<&'a str> {
     match group.get(name) {
         Some(Value::String(word)) => Some(word),
         _ => None,

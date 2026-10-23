@@ -45,6 +45,7 @@ const LOOP_LAYER_STARTED: c_int = 4;
 const LOOP_LAYER_STOPPED: c_int = 5;
 const LOOP_LAYER_DROPPED: c_int = 6;
 const LOOP_LAYER_REMOVED: c_int = 7;
+const LOOP_LOADED: c_int = 8;
 
 // The number for the layer recorded last (`JELLO_NEWEST_LAYER` in
 // engine/include/jello_engine.h).
@@ -55,6 +56,16 @@ const NEWEST_LAYER: c_int = -1;
 #[derive(Clone, Copy)]
 struct RawLoopNote {
     note: c_int,
+    start: u64,
+    end: u64,
+}
+
+// `JelloLoadedNote` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawLoadedNote {
+    layer: c_int,
+    note: c_int,
+    velocity: c_int,
     start: u64,
     end: u64,
 }
@@ -124,9 +135,17 @@ unsafe extern "C" {
     fn jello_engine_stop_click(engine: *mut JelloEngine);
     fn jello_engine_set_tempo(engine: *mut JelloEngine, tempo: c_int);
     fn jello_engine_press_looper(engine: *mut JelloEngine);
-    // Only the tests clear the whole loop at once for now.
-    #[cfg(test)]
     fn jello_engine_clear_loop(engine: *mut JelloEngine);
+    fn jello_engine_pause_loop(engine: *mut JelloEngine);
+    fn jello_engine_play_loop(engine: *mut JelloEngine);
+    fn jello_engine_set_layer_playing(engine: *mut JelloEngine, layer: c_int, playing: bool);
+    fn jello_engine_load_loop(
+        engine: *mut JelloEngine,
+        notes: *const RawLoadedNote,
+        count: c_int,
+        layers: c_int,
+        bars: c_int,
+    ) -> bool;
     fn jello_engine_remove_layer(engine: *mut JelloEngine, layer: c_int);
     fn jello_engine_set_layer_volume(engine: *mut JelloEngine, layer: c_int, volume: f32);
     fn jello_engine_set_snap(engine: *mut JelloEngine, snap: bool);
@@ -665,6 +684,9 @@ pub enum LooperState {
     // Playing the loop and recording a layer over it, with the click on
     // (docs/adr/0026-layers.md).
     Layering,
+    // Holding the loop without playing it, until play or Right Shift
+    // (docs/adr/0038-song-files.md).
+    Paused,
 }
 
 impl LooperState {
@@ -676,6 +698,7 @@ impl LooperState {
             LooperState::Recording => "recording",
             LooperState::Looping => "looping",
             LooperState::Layering => "layering",
+            LooperState::Paused => "paused",
         }
     }
 
@@ -687,6 +710,7 @@ impl LooperState {
             2 => LooperState::Recording,
             3 => LooperState::Looping,
             4 => LooperState::Layering,
+            5 => LooperState::Paused,
             _ => LooperState::Idle,
         }
     }
@@ -722,6 +746,8 @@ pub struct LoopLayer {
     pub notes: Vec<LoopNote>,
     // How loud it plays, in percent, from 0 to FULL_VOLUME.
     pub volume: u32,
+    // False while it is paused (docs/adr/0038-song-files.md).
+    pub playing: bool,
     // True while it is being recorded.
     pub recording: bool,
 }
@@ -769,6 +795,10 @@ pub struct Engine {
     looper_message: Option<String>,
     // When Esc was pressed, while it waits for a layer's number.
     esc_pressed_at: Option<Instant>,
+    // A loop sent to the engine from a song file, with how many bars it
+    // lasts, kept until the engine says it has taken it in. Then its layers
+    // become Rust's copy.
+    loading: Option<(u32, Vec<LoopLayer>)>,
 }
 
 // The C++ engine can be used from any thread, one call at a time. The app
@@ -792,6 +822,7 @@ impl Engine {
             layers: Vec::new(),
             looper_message: None,
             esc_pressed_at: None,
+            loading: None,
         };
         Ok(engine)
     }
@@ -910,11 +941,151 @@ impl Engine {
 
     // Stops every layer's notes and forgets the loop, or cancels the
     // count-in or the recording. Live notes play on. Only the tests clear
-    // the whole loop at once for now; Esc removes a layer at a time.
+    // the whole loop at once; Esc removes a layer at a time, and opening a
+    // song clears it with open_loop.
     #[cfg(test)]
     pub fn clear_loop(&mut self) {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_clear_loop(self.raw) };
+    }
+
+    // The lane's play and pause for the whole loop
+    // (`jello_engine_pause_loop` and `jello_engine_play_loop`). Pausing
+    // stops every layer's notes, and playing starts the loop from beat 1.
+    pub fn pause_loop(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_pause_loop(self.raw) };
+    }
+
+    pub fn play_loop(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_play_loop(self.raw) };
+    }
+
+    // Pauses layer `number` (counted from 1) or plays it again
+    // (`jello_engine_set_layer_playing`). A paused layer is silent and
+    // keeps its volume. Fails for a layer that doesn't exist.
+    pub fn set_layer_playing(&mut self, number: u32, playing: bool) -> Result<(), String> {
+        let count = self.loop_layers().len();
+        if number == 0 {
+            return Err(String::from("layers are counted from 1"));
+        }
+        if number as usize > count {
+            return Err(format!("there is no layer {number}"));
+        }
+
+        let place = number as usize - 1;
+        let layer = place as c_int;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_layer_playing(self.raw, layer, playing) };
+        self.layers[place].playing = playing;
+        Ok(())
+    }
+
+    // Opens a song's loop (docs/adr/0038-song-files.md): forgets the loop
+    // there is, plays the beat at `tempo`, and loads `layers`, a loop `bars`
+    // bars long, paused, each layer at its own volume, playing or paused.
+    // Every note plays at `velocity`. Layers with no notes are left out, and
+    // with none left the loop is only forgotten. Notes past the loop's end
+    // are kept to it, and each layer's notes go in the order they start.
+    // Fails, leaving no loop, if the engine refuses the notes or has no room
+    // for them.
+    pub fn open_loop(&mut self, tempo: u32, bars: u32, layers: &[LoopLayer], velocity: u8) -> Result<(), String> {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_clear_loop(self.raw) };
+        self.loading = None;
+
+        // The clear goes first, so the engine takes the tempo with the looper
+        // idle. A number too big for a C int becomes -1, which it ignores.
+        let number = c_int::try_from(tempo).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_tempo(self.raw, number) };
+        if tempo >= SLOWEST_TEMPO && tempo <= FASTEST_TEMPO {
+            self.tempo = tempo;
+        }
+
+        let mut kept_layers = Vec::new();
+        for layer in layers {
+            if !layer.notes.is_empty() {
+                kept_layers.push(layer);
+            }
+        }
+        if kept_layers.is_empty() {
+            return Ok(());
+        }
+
+        // The loop's length, worked out as the engine does.
+        let samples_per_minute = u64::from(self.sample_rate()) * 60;
+        let length = u64::from(bars) * u64::from(BEATS_PER_BAR) * samples_per_minute / u64::from(self.tempo);
+
+        let mut copy = Vec::new();
+        let mut raw_notes = Vec::new();
+        for (place, layer) in kept_layers.iter().enumerate() {
+            let mut notes = Vec::new();
+            for note in &layer.notes {
+                let mut end = note.end.unwrap_or(note.start);
+                if end > length {
+                    end = length;
+                }
+                let mut start = note.start;
+                if start > end {
+                    start = end;
+                }
+                notes.push(LoopNote {
+                    note: note.note,
+                    start,
+                    end: Some(end),
+                });
+            }
+            notes.sort_by_key(|note| note.start);
+
+            for note in &notes {
+                raw_notes.push(RawLoadedNote {
+                    layer: place as c_int,
+                    note: c_int::from(note.note),
+                    velocity: c_int::from(velocity),
+                    start: note.start,
+                    end: note.end.unwrap_or(note.start),
+                });
+            }
+            copy.push(LoopLayer {
+                notes,
+                volume: layer.volume.min(FULL_VOLUME),
+                playing: layer.playing,
+                recording: false,
+            });
+        }
+
+        // Numbers too big for a C int become -1 or 0, which the engine
+        // refuses.
+        let count = c_int::try_from(raw_notes.len()).unwrap_or(-1);
+        let layer_count = c_int::try_from(copy.len()).unwrap_or(-1);
+        let bar_count = c_int::try_from(bars).unwrap_or(0);
+        // SAFETY: `raw` points to a live engine until Drop, and `raw_notes`
+        // holds exactly `count` notes.
+        let loaded = unsafe { jello_engine_load_loop(self.raw, raw_notes.as_ptr(), count, layer_count, bar_count) };
+        if !loaded {
+            return Err(String::from(
+                "the engine did not take the loop: too many notes or layers, a note out of range, or too many messages waiting",
+            ));
+        }
+
+        // Each layer starts at full volume and playing, so only the others
+        // are sent.
+        for (place, layer) in copy.iter().enumerate() {
+            let number = place as c_int;
+            if layer.volume != FULL_VOLUME {
+                let volume = layer.volume as f32 / FULL_VOLUME as f32;
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_layer_volume(self.raw, number, volume) };
+            }
+            if !layer.playing {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_set_layer_playing(self.raw, number, false) };
+            }
+        }
+        self.loading = Some((bars, copy));
+        Ok(())
     }
 
     // Stops the newest layer's notes and forgets it
@@ -1170,6 +1341,7 @@ impl Engine {
             let started = LoopLayer {
                 notes: Vec::new(),
                 volume: FULL_VOLUME,
+                playing: true,
                 recording: true,
             };
             self.layers.push(started);
@@ -1200,6 +1372,10 @@ impl Engine {
             self.looper_message = Some(String::from("Nothing played, no layer added"));
         } else if change.change == LOOP_LAYER_REMOVED {
             self.forget_layer(layer);
+        } else if change.change == LOOP_LOADED {
+            if let Some((_, loaded)) = self.loading.take() {
+                self.layers = loaded;
+            }
         }
     }
 
@@ -1215,6 +1391,39 @@ impl Engine {
         if layer < self.layers.len() {
             self.layers.remove(layer);
         }
+    }
+
+    // The loop a song file keeps (docs/adr/0038-song-files.md): how many bars
+    // it lasts and its layers, playing or paused. A layer still being
+    // recorded is left out until it stops. A loop opened from a file that
+    // the engine hasn't taken in yet counts as it was sent. None while there
+    // is no loop, or while the first one is counted in or recorded.
+    pub fn loop_to_keep(&mut self) -> Option<(u32, Vec<LoopLayer>)> {
+        if let Some(loading) = &self.loading {
+            return Some(loading.clone());
+        }
+
+        let status = self.looper_status();
+        let has_loop = match status.state {
+            LooperState::Looping => true,
+            LooperState::Layering => true,
+            LooperState::Paused => true,
+            _ => false,
+        };
+        if !has_loop {
+            return None;
+        }
+
+        let mut kept = Vec::new();
+        for layer in self.loop_layers() {
+            if !layer.recording {
+                kept.push(layer.clone());
+            }
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        Some((status.number, kept))
     }
 
     // True from the looper's first press until it is cleared, counting a
@@ -3515,6 +3724,11 @@ mod tests {
         LetGoOfVibratoKey,
         HoldGlideKey,
         LetGoOfGlideKey,
+        // The lane's play and pause for the whole loop, and a layer's number
+        // and whether it plays.
+        PauseLoop,
+        PlayLoop,
+        LayerPlaying(u32, bool),
     }
 
     use Step::*;
@@ -3539,6 +3753,9 @@ mod tests {
             LetGoOfVibratoKey => engine.set_vibrato_key(false),
             HoldGlideKey => engine.set_glide_key(true),
             LetGoOfGlideKey => engine.set_glide_key(false),
+            PauseLoop => engine.pause_loop(),
+            PlayLoop => engine.play_loop(),
+            LayerPlaying(number, playing) => engine.set_layer_playing(number, playing).unwrap(),
         }
     }
 
@@ -5245,11 +5462,13 @@ mod tests {
         let c5_layer = LoopLayer {
             notes: vec![ended(C5, 20_000, 40_000)],
             volume: 30,
+            playing: true,
             recording: false,
         };
         let e4_layer = LoopLayer {
             notes: vec![ended(E4, 50_000, 60_000)],
             volume: FULL_VOLUME,
+            playing: true,
             recording: false,
         };
         assert_eq!(engine.loop_layers().to_vec(), vec![c5_layer, e4_layer]);
@@ -5299,6 +5518,330 @@ mod tests {
         // And turned back up, as loud as played.
         let third = time_around(3);
         assert_within_percent(peak(&wave[third + 20_000..third + 40_000]), held_level(), 2.0);
+    }
+
+    // Play and pause, and loops opened from song files
+    // (docs/adr/0038-song-files.md). Like the looper's tests, most play the
+    // same music through the looper and by hand, and every sample must
+    // match.
+
+    // A layer of `notes`, at `volume` percent, playing or paused.
+    fn loaded_layer(notes: &[LoopNote], volume: u32, playing: bool) -> LoopLayer {
+        LoopLayer {
+            notes: notes.to_vec(),
+            volume,
+            playing,
+            recording: false,
+        }
+    }
+
+    // BASE as a loaded loop's one layer: A4 from 10,000 to 60,000 samples
+    // into a loop of one bar at 120.
+    fn base_loaded() -> Engine {
+        let mut engine = engine_without_snap();
+        let layer = loaded_layer(&[ended(A4, 10_000, 60_000)], FULL_VOLUME, true);
+        engine.open_loop(START_TEMPO, 1, &[layer], VELOCITY).unwrap();
+        engine
+    }
+
+    // BASE played by hand `times` times around, from sample `start` on.
+    fn base_from(start: usize, times: usize) -> Vec<(usize, Step)> {
+        let mut steps = Vec::new();
+        for n in 0..times {
+            steps.extend(moved(&BASE, start + n * BAR_AT_120));
+        }
+        steps
+    }
+
+    #[test]
+    fn a_loaded_loop_waits_silently_then_plays_from_beat_1() {
+        // Played 30,000 samples after it was opened.
+        let start = 30_000;
+        let frames = start + 3 * BAR_AT_120;
+        let mut loaded = base_loaded();
+        let looped_wave = play(&mut loaded, &[(start, PlayLoop)], frames);
+
+        let mut live = Engine::new().unwrap();
+        let live_wave = play(&mut live, &base_from(start, 3), frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(peak(&looped_wave[..start]), 0.0);
+        assert_eq!(loaded.looper_status(), looper(LooperState::Looping, 1, false));
+    }
+
+    #[test]
+    fn a_loaded_loop_is_paused_and_becomes_rust_s_copy() {
+        // Two layers: the second at 40 percent and paused, with its notes out
+        // of order and one past the loop's end. An empty layer is left out.
+        let first = loaded_layer(&[ended(A4, 10_000, 60_000)], FULL_VOLUME, true);
+        let second = loaded_layer(
+            &[ended(E4, 50_000, 60_000), ended(C5, 20_000, 500_000)],
+            40,
+            false,
+        );
+        let empty = loaded_layer(&[], FULL_VOLUME, true);
+        let mut engine = Engine::new().unwrap();
+        engine.open_loop(100, 1, &[first, empty, second], VELOCITY).unwrap();
+
+        // On its way to the engine: busy, and the copy waits for it.
+        assert!(engine.is_looper_busy());
+        assert!(engine.loop_layers().is_empty());
+
+        engine.render(64);
+        assert_eq!(engine.looper_status(), looper(LooperState::Paused, 1, false));
+        assert_eq!(engine.tempo(), 100);
+        // A bar at 100 lasts 115,200 samples.
+        let first = loaded_layer(&[ended(A4, 10_000, 60_000)], FULL_VOLUME, true);
+        let second = loaded_layer(&[ended(C5, 20_000, 115_200), ended(E4, 50_000, 60_000)], 40, false);
+        assert_eq!(engine.loop_layers().to_vec(), vec![first, second]);
+
+        // The tempo stays locked while paused.
+        assert_eq!(engine.set_tempo(140), 100);
+    }
+
+    #[test]
+    fn opening_a_loop_the_engine_refuses_leaves_no_loop() {
+        let mut layers = Vec::new();
+        for _ in 0..=MAX_LAYERS {
+            layers.push(loaded_layer(&[ended(A4, 10_000, 60_000)], FULL_VOLUME, true));
+        }
+        let mut engine = base_loaded();
+        engine.render(64);
+        assert!(engine.open_loop(START_TEMPO, 1, &layers, VELOCITY).is_err());
+        engine.render(64);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+        assert!(engine.loop_layers().is_empty());
+
+        // And opening no loop at all only forgets the one there was.
+        let mut engine = base_loaded();
+        engine.open_loop(START_TEMPO, 1, &[], VELOCITY).unwrap();
+        engine.render(64);
+        assert_eq!(engine.looper_status(), looper(LooperState::Idle, 0, false));
+    }
+
+    #[test]
+    fn right_shift_plays_a_paused_loop_like_play() {
+        let start = 30_000;
+        let frames = start + 2 * BAR_AT_120;
+        let mut played = base_loaded();
+        let played_wave = play(&mut played, &[(start, PlayLoop)], frames);
+        let mut pressed = base_loaded();
+        let pressed_wave = play(&mut pressed, &[(start, PressLooper)], frames);
+        assert_same_samples(&pressed_wave, &played_wave);
+        assert_eq!(pressed.looper_status(), looper(LooperState::Looping, 1, false));
+    }
+
+    #[test]
+    fn pause_stops_every_note_and_play_starts_again_from_beat_1() {
+        // Paused 30,000 samples into the second time around, while A4
+        // sounds, and played again half a bar later.
+        let paused_at = time_around(2) + 30_000;
+        let played_at = paused_at + BAR_AT_120 / 2;
+        let frames = played_at + 2 * BAR_AT_120;
+        let mut looped = base_looped();
+        looped.push((paused_at, PauseLoop));
+        looped.push((played_at, PlayLoop));
+
+        let mut live = base_by_hand(1);
+        live.push((time_around(2) + 10_000, NoteOn(A4)));
+        live.push((paused_at, NoteOff(A4)));
+        live.extend(base_from(played_at, 2));
+
+        let mut looper_engine = engine_without_snap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+    }
+
+    #[test]
+    fn pausing_while_a_layer_records_stops_it_and_keeps_its_notes() {
+        let second = time_around(2);
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.push((second + 20_000, NoteOn(C5)));
+        looped.push((second + 30_000, PauseLoop));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &looped, second + 40_000);
+
+        assert_eq!(engine.looper_status(), looper(LooperState::Paused, 1, false));
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 2);
+        assert!(!layers[1].recording);
+        assert_eq!(layers[1].notes, vec![ended(C5, 20_000, 30_000)]);
+    }
+
+    #[test]
+    fn a_paused_layer_is_silent_while_the_others_play_on() {
+        // C5 is recorded as a layer the second time around and plays from
+        // the third. The first layer, A4, is paused as the third starts,
+        // and played again 30,000 samples into the fourth, while A4 should
+        // be sounding: it starts there and then.
+        let second = time_around(2);
+        let third = time_around(3);
+        let fourth = time_around(4);
+        let c5 = [(20_000, NoteOn(C5)), (40_000, NoteOff(C5))];
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.extend(moved(&c5, second));
+        looped.push((second + 70_000, PressLooper));
+        looped.push((third, LayerPlaying(1, false)));
+        looped.push((fourth + 30_000, LayerPlaying(1, true)));
+
+        let mut live = base_by_hand(2);
+        live.push((second, StartClick));
+        live.push((second + 70_000, StopClick));
+        // Played live while recorded, then by the loop.
+        for n in 2..=5 {
+            live.extend(moved(&c5, time_around(n)));
+        }
+        live.push((fourth + 30_000, NoteOn(A4)));
+        live.push((fourth + 60_000, NoteOff(A4)));
+        live.extend(moved(&BASE, time_around(5)));
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(6));
+        let playing: Vec<bool> = engine.loop_layers().iter().map(|layer| layer.playing).collect();
+        assert_eq!(playing, vec![true, true]);
+    }
+
+    #[test]
+    fn esc_removes_a_layer_while_paused() {
+        let second = time_around(2);
+        let mut looped = base_looped();
+        looped.push((second, PressLooper));
+        looped.push((second + 20_000, NoteOn(C5)));
+        looped.push((second + 30_000, NoteOff(C5)));
+        looped.push((second + 50_000, PauseLoop));
+        looped.push((second + 60_000, RemoveLayer(1)));
+        let mut engine = engine_without_snap();
+        play(&mut engine, &looped, second + 70_000);
+
+        assert_eq!(engine.looper_status(), looper(LooperState::Paused, 1, false));
+        assert_eq!(engine.loop_layers().len(), 1);
+        assert_eq!(engine.loop_layers()[0].notes, vec![ended(C5, 20_000, 30_000)]);
+    }
+
+    #[test]
+    fn pausing_a_layer_lets_go_of_its_note_at_once() {
+        // A4 sounds from 10,000 samples into each time around, and the layer
+        // is paused 30,000 in, the second time around.
+        let paused_at = time_around(2) + 30_000;
+        let mut looped = base_looped();
+        looped.push((paused_at, LayerPlaying(1, false)));
+
+        let mut live = base_by_hand(1);
+        live.push((time_around(2) + 10_000, NoteOn(A4)));
+        live.push((paused_at, NoteOff(A4)));
+
+        let mut engine = assert_layers_play(&looped, &live, time_around(4));
+        assert!(!engine.loop_layers()[0].playing);
+    }
+
+    #[test]
+    fn a_new_loop_plays_even_where_a_paused_layer_was() {
+        // The first loop's layer is paused and the loop cleared, then a new
+        // loop is recorded the same way.
+        let again = time_around(3);
+        let mut looped = base_looped();
+        looped.push((time_around(2), LayerPlaying(1, false)));
+        looped.push((time_around(2) + 90_000, ClearLoop));
+        looped.extend(moved(&base_looped(), again));
+
+        let mut live = base_by_hand(1);
+        live.extend(moved(&base_by_hand(2), again));
+
+        assert_layers_play(&looped, &live, again + time_around(3));
+    }
+
+    // A loop opened with `layers` and taken in, then played 30,000 samples
+    // on, for `frames` frames.
+    fn opened_and_played(layers: &[LoopLayer], frames: usize) -> Vec<f32> {
+        let mut engine = engine_without_snap();
+        engine.open_loop(START_TEMPO, 1, layers, VELOCITY).unwrap();
+        engine.render(64);
+        play(&mut engine, &[(30_000, PlayLoop)], frames)
+    }
+
+    #[test]
+    fn an_opened_loop_plays_each_layer_s_volume_and_pause() {
+        let frames = 30_000 + 2 * BAR_AT_120;
+        let a4 = [ended(A4, 10_000, 60_000)];
+        let c5 = [ended(C5, 20_000, 40_000)];
+
+        // At 40%, as if turned down once opened.
+        let quiet = opened_and_played(&[loaded_layer(&a4, 40, true)], frames);
+        let mut turned = engine_without_snap();
+        turned.open_loop(START_TEMPO, 1, &[loaded_layer(&a4, FULL_VOLUME, true)], VELOCITY).unwrap();
+        turned.render(64);
+        let turned_wave = play(&mut turned, &[(0, Volume(1, 40)), (30_000, PlayLoop)], frames);
+        assert_same_samples(&quiet, &turned_wave);
+
+        // A paused layer is never heard.
+        let both = [loaded_layer(&a4, FULL_VOLUME, true), loaded_layer(&c5, FULL_VOLUME, false)];
+        let with_paused = opened_and_played(&both, frames);
+        let alone = opened_and_played(&[loaded_layer(&a4, FULL_VOLUME, true)], frames);
+        assert_same_samples(&with_paused, &alone);
+    }
+
+    #[test]
+    fn an_opened_loop_starts_at_full_volume_whatever_came_before() {
+        let frames = 30_000 + 2 * BAR_AT_120;
+        let a4 = [ended(A4, 10_000, 60_000)];
+        let mut engine = engine_without_snap();
+        engine.open_loop(START_TEMPO, 1, &[loaded_layer(&a4, 40, true)], VELOCITY).unwrap();
+        engine.render(64);
+        engine.open_loop(START_TEMPO, 1, &[loaded_layer(&a4, FULL_VOLUME, true)], VELOCITY).unwrap();
+        engine.render(64);
+        let reopened = play(&mut engine, &[(30_000, PlayLoop)], frames);
+
+        let mut fresh = engine_without_snap();
+        fresh.open_loop(START_TEMPO, 1, &[loaded_layer(&a4, FULL_VOLUME, true)], VELOCITY).unwrap();
+        fresh.render(64);
+        fresh.render(64);
+        let fresh_wave = play(&mut fresh, &[(30_000, PlayLoop)], frames);
+        assert_same_samples(&reopened, &fresh_wave);
+    }
+
+    #[test]
+    fn a_loop_opened_at_another_tempo_lasts_its_bars_at_that_tempo() {
+        // One bar at 100 bpm lasts 115,200 samples, and at 120, 96,000. A4
+        // ends at 110,000, so it would be cut short if the loop were
+        // measured at 120.
+        let bar_at_100 = 115_200;
+        let start = 30_000;
+        let frames = start + 3 * bar_at_100;
+        let mut engine = engine_without_snap();
+        let layer = loaded_layer(&[ended(A4, 10_000, 110_000)], FULL_VOLUME, true);
+        engine.open_loop(100, 1, &[layer], VELOCITY).unwrap();
+        let looped_wave = play(&mut engine, &[(start, PlayLoop)], frames);
+
+        let long_a4 = [(10_000, NoteOn(A4)), (110_000, NoteOff(A4))];
+        let mut live = Vec::new();
+        for n in 0..3 {
+            live.extend(moved(&long_a4, start + n * bar_at_100));
+        }
+        let mut live_engine = Engine::new().unwrap();
+        let live_wave = play(&mut live_engine, &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+        assert_eq!(engine.tempo(), 100);
+    }
+
+    #[test]
+    fn a_paused_loop_is_kept_once_the_engine_has_taken_it_in() {
+        let mut engine = base_loaded();
+        engine.render(64);
+        engine.loop_layers();
+        let Some((bars, layers)) = engine.loop_to_keep() else {
+            panic!("the paused loop was not kept");
+        };
+        assert_eq!(bars, 1);
+        assert_eq!(layers.len(), 1);
+    }
+
+    #[test]
+    fn opening_no_loop_forgets_the_one_still_loading() {
+        let mut engine = base_loaded();
+        engine.open_loop(START_TEMPO, 0, &[], VELOCITY).unwrap();
+        assert_eq!(engine.loop_to_keep(), None);
     }
 
     fn ended(note: u8, start: u64, end: u64) -> LoopNote {

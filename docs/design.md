@@ -55,14 +55,18 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    its own level and tuning
    ([ADR 0035](adr/0035-oscillators-with-kinds.md)). Then four filter
    types, a width for the square (a pulse) and glide on a held left
-   Option ([ADR 0036](adr/0036-glide.md)).
+   Option ([ADR 0036](adr/0036-glide.md)). Then presets: a song's whole
+   sound saved by name, and a starting sound for new songs
+   ([ADR 0037](adr/0037-presets.md)).
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Guided composing came
    early: the Compose tab already builds a progression with guidance
    ([ADR 0017](adr/0017-guided-compose.md)), which ranks the best next
    chords ([ADR 0034](adr/0034-best-next-chords.md)), and lights the
    song's chords on the same keyboard as it plays back. See
-   [chord guidance](#chord-guidance).
+   [chord guidance](#chord-guidance). Song files came early too: every
+   song saves itself as text as it changes
+   ([ADR 0038](adr/0038-song-files.md)); see [song files](#song-files).
 6. **Mix.** Mixer, effects, sidechain, automation, master limiter, WAV export.
 
 **Finish line:** a full YOASOBI-style instrumental made entirely in Jello and
@@ -482,7 +486,7 @@ and being built.
     smoothed 10%) and connections (none) move nothing. Values outside
     their ranges are ignored by the C API and brought within them by Rust,
     in `modulation.rs`, which also names every shape, speed, source and
-    target for the screen and later song files.
+    target for the screen and song files.
   - The sound panel's LFOs and Connections pages set them through
     `set_lfo` and `set_connection`, and its Notes page sets the vibrato
     key's times through `set_vibrato_key_times`.
@@ -536,15 +540,16 @@ and being built.
     copies start, the 32 voices, 48 kHz, the filter's limits and the click.
     The voice level and the soft clip become each track's volume and the
     master limiter in step 6.
-  - Play plays the open song's profile. Song files keep it from step 5,
-    and so do copying a profile from another song and a profile per track.
+  - Play plays the open song's profile. Song files keep it
+    ([song files](#song-files)); copying a profile from another song and a
+    profile per track come in step 5.
 - **The sound panel** ([ADR 0033](adr/0033-the-sound-panel.md)): in
   Compose, the Sound button opens it over the tape, with pages for the
   oscillators, the notes, the filter, the LFOs and the connections. Every
   change goes to the song's sound profile and its readouts show Rust's
-  answer. Nothing is
-  saved until song files: each launch starts a new song, at 1 copy, A4 at
-  440 Hz, with the filter open. See [Sound panel](#sound-panel).
+  answer. The song saves it ([song files](#song-files)); a new song
+  starts at 1 copy, A4 at 440 Hz, with the filter open, unless a starting
+  sound is marked. See [Sound panel](#sound-panel).
 - **No clicks:** a new song's notes fade in over 5 ms and out over 300 ms,
   and no stage is shorter than 1 ms. A note that
   takes over a busy voice picks up from wherever that voice's wave and
@@ -1252,6 +1257,9 @@ chords and play a melody over them
   3. Snap to beat and its switch. Done, with the lane rebuilt to ADR 0025.
   4. Layers, with Esc removing one layer and a volume knob on each
      ([ADR 0026](adr/0026-layers.md)). Done.
+  5. Play and pause, for song files
+     ([ADR 0038](adr/0038-song-files.md)). Done: see
+     [play and pause](#play-and-pause).
   Each slice adds its own placeholders.
 
 ## Sound
@@ -1314,15 +1322,15 @@ Use our own recordings or licensed sample packs.
   reach Rust, which ignores keys that started nothing.
 - **Starting sound.** `starting_sound = "<name>"` in `settings.toml` in
   Jello's settings folder (on a Mac, `~/Library/Application
-  Support/com.jello.app`). As Jello starts, before the window opens, the
-  song takes that preset; with none marked, or it gone or unreadable, it
-  keeps a new song's sound. If the folders can't be found, Jello still
+  Support/com.jello.app`). Each new song takes that preset as it is made
+  ([song files](#song-files)); with none marked, or it gone or unreadable,
+  it keeps a new song's sound. If the folders can't be found, Jello still
   opens.
 - **Commands.** `preset_list`, `load_preset`, `save_preset`,
   `preset_name_problem` and `mark_starting_preset`; the files themselves in
   `src-tauri/src/presets.rs`. `SoundView.preset` names the lit tile.
-- **Later.** Renaming and removing on the page; song files writing their
-  sound the same way.
+- **Later.** Renaming and removing on the page. Song files write their
+  sound the same way, under `[sound]`.
 - Tests check the round trip, taking a sound setting every part of the
   song's, words in the text, only used connections written, missing, wrong-sort, unknown and out-of-range values, unknown
   connections moving up, the 64 limit, broken text, allowed and refused
@@ -1331,6 +1339,108 @@ Use our own recordings or licensed sample packs.
   mark (one at a time, other settings kept, broken settings), the lit tile
   and its name reaching the screen, and the starting sound reaching the engine, or a new song's when its
   preset is gone, unreadable or unmarked.
+
+## Song files
+
+[ADR 0038](adr/0038-song-files.md): every song is a text file, saved as it
+changes.
+
+- **Files.** `Music/Jello/Songs/<name>.song`, TOML, written by
+  `src-tauri/src/song_file.rs`. Single values first: `key` ("A minor",
+  left out until one is picked), `tempo`, `snap` and `preset` (the preset
+  the sound came from, if any). Then `chords`, one a line, like
+  `{ chord = "Am", held_ms = 1250 }`, named for the key (Db in Db major,
+  C# with no key) and read in either spelling, roots C3 to B3. Then
+  `[loop]` with `bars`, and a `[[loop.layer]]` for each layer, oldest
+  first, with `volume`, `playing` and its `notes`, like
+  `{ note = "E4", start = 0, end = 0.5 }` in beats from the loop's start
+  to a millionth, or "vibrato key" and "glide key" for those keys'
+  presses. Then the sound, a preset's text, under `[sound]`
+  ([presets](#presets)). Saving then reading gives back exactly the same
+  song, and a loop opens on the very samples it was saved on.
+- **Reading.** Like a preset's. Left out or the wrong sort: a new song's
+  value. A chord or note Jello can't read, or one that ends before it
+  starts, is skipped, and so is a layer left with no notes. The tempo is
+  kept from 40 to 240, a volume to 100; the first 8 layers and 4,096 notes
+  are kept. A loop needs bars and a layer with a note. Text that is not
+  TOML can't be read.
+- **Saving.** By looking, not by being told (`src-tauri/src/song_session.rs`):
+  every 250 ms Jello writes the song out as text, and once that text has
+  stayed the same for a second and differs from the one saved last, it is
+  saved. So every change is caught, whatever command made it. A chord or
+  loop note still held, and a layer still being recorded, are left out
+  until let go. The text goes to a hidden `.<name>.song.saving` first,
+  which then takes the song file's place, so a crash never leaves half a
+  song. The song is saved once more as Jello quits. If the engine refused
+  an opened song's loop, the file is kept as it is.
+- **Songs.** A new song is "Untitled 1", or the lowest free number,
+  ignoring case, with no key, chords or loop, a new song's tempo, snap on
+  and the starting sound. Its file is written at once. Opening, making or
+  renaming a song saves the open one first. `last_song` in `settings.toml`
+  remembers the song open, and Jello opens it again as it starts, or a new
+  one if it is gone or can't be read. Names follow a preset's rules, and no
+  two songs share one in any case; a song may change the case of its own.
+- **Opening.** Everything is replaced: Compose takes the key, chords,
+  tempo and sound, and the engine the loop and snap. The preset's tile
+  lights again only if the sound still matches that preset. Audio starts
+  as a song opens, so the engine takes the loop in at once.
+- **The loop in the engine.** `jello_engine_load_loop` takes the loop's
+  notes as samples at the song's tempo through a mailbox of their own
+  (4,096 notes), then one message loads them all, paused, in the audio
+  thread. A loop that doesn't fit, or is out of order or range, is
+  refused whole. Each loaded note carries a velocity
+  (`JelloLoadedNote.velocity`), the laptop's. Rust keeps the loop as
+  loading until the engine says `JELLO_LOOP_LOADED`, and saves from that
+  copy meanwhile.
+- **Locks.** Commands lock the open song, the key map, Compose and the
+  engine, in that order, so two can never wait on each other.
+- **Title and panel.** The top bar reads `JELLO / <SONG NAME>`. Clicking
+  the name opens the Songs panel (`ui/SongsPanel.svelte`) in the tape's
+  place, from any tab, and lights the name; the sound panel and the Songs
+  panel close each other, and another tab closes it. Tiles sorted by name:
+  "+ New song" first, the open song lit, a file that can't be read dimmed.
+  Clicking a song opens it, then the page asks again for the sound and
+  Compose. At the right, the open song's name in a field: Rename, or
+  Return, renames it, and the hint gives Rust's reason a name is refused,
+  or where songs are kept. The panel lists the folder again each time it
+  opens.
+- **Commands.** `song_list`, `open_song`, `make_new_song`, `rename_song`
+  and `song_name_problem`; the files themselves in `src-tauri/src/songs.rs`.
+- **Later.** Removing songs in the panel; songs are removed in the folder
+  for now.
+- Tests check the round trip, words in the text, either spelling, every
+  key and chord name, missing, wrong-sort and out-of-range values, the
+  8-layer and 4,096-note limits, broken text, saving and listing, hidden
+  and other files, names reaching outside the folder, new names, renaming
+  in any case, the last song, saving after a second and again after
+  another change, opening exactly as left, opening saving the open song
+  first, unreadable songs, launching, the lit preset, held chords and
+  layers being recorded left out, a new song forgetting the loop and snap,
+  a refused loop never saved over, and the engine's loading, pausing and
+  playing: an opened loop's volumes, paused layers and tempo heard as
+  saved, full volume whatever came before, a paused loop kept, a paused
+  layer let go at once, and a new loop heard where a paused layer was.
+
+### Play and pause
+
+Each layer's knob has a play and pause button under it, and the lane's
+right end a button for the whole loop, beside Snap.
+
+- A paused layer is silent while the others play on, keeps its volume, and
+  its notes are drawn dim. Played again while the loop plays, the notes
+  that should be sounding start at once, like the snap switch.
+- Pausing the loop stops every note, and a layer being recorded stops
+  first, as the second press would. The loop waits at its start: playing
+  it, or right Shift, starts it from beat 1 on a new bar. While paused the
+  lane says "Paused" and how many bars, the playhead is hidden, and right
+  Shift says "loop paused".
+- An opened loop comes in paused, with each layer playing or not as saved.
+- The tempo stays locked while there is a loop, paused or not.
+- The engine's looper has a `paused` state (`JELLO_LOOPER_PAUSED`), with
+  `jello_engine_pause_loop`, `jello_engine_play_loop` and
+  `jello_engine_set_layer_playing`; Rust's commands are `pause_loop`,
+  `play_loop` and `set_layer_playing`, and each layer in `LooperView` says
+  whether it is `playing`.
 
 ## Vocals (v1.5)
 
@@ -1679,7 +1789,6 @@ Ask the user one at a time, when the step that needs the answer comes up.
 - Design system for screens after the start page. They follow the start
   page's Stage look (ADR 0010); the details are settled screen by screen
   (see [UI design process](#ui-design-process)).
-- Song file format details. Decide at step 5.
 - Where the sampler's recordings come from: free sample libraries whose
   licenses allow releasing the music, or our own recordings. Decide with the
   sampler's design (ADR 0019).

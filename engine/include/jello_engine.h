@@ -154,6 +154,22 @@ void jello_engine_set_layer_volume(JelloEngine* engine, int layer, float volume)
 // those that should be sounding start again. A new engine starts with it on.
 void jello_engine_set_snap(JelloEngine* engine, bool snap);
 
+// Play and pause in the lane (docs/adr/0038-song-files.md). Pausing stops
+// every layer's notes and the loop waits, silent, at its start. A layer
+// being recorded stops first, as the second press would. Playing starts it
+// from beat 1 at once, and Right Shift while paused does the same. Both do
+// nothing unless the loop is playing or paused, as they say. The tempo
+// stays locked while paused.
+void jello_engine_pause_loop(JelloEngine* engine);
+void jello_engine_play_loop(JelloEngine* engine);
+
+// Pauses layer `layer` (counted as above) or plays it again. A paused layer
+// is silent while the others play on, and keeps its volume. Played again
+// while the loop plays, the notes that should be sounding start at once.
+// Each layer starts out playing. A layer that doesn't exist changes nothing,
+// and any other number is ignored.
+void jello_engine_set_layer_playing(JelloEngine* engine, int layer, bool playing);
+
 // The most chords a song can have, and the most notes in each chord.
 enum {
     JELLO_SONG_MAX_CHORDS = 512,
@@ -526,6 +542,8 @@ enum {
     JELLO_LOOPER_LOOPING = 3,
     // Playing the loop and recording a layer over it, with the click on.
     JELLO_LOOPER_LAYERING = 4,
+    // Holding a loop without playing it, until play or Right Shift.
+    JELLO_LOOPER_PAUSED = 5,
 };
 
 typedef struct JelloLooperStatus {
@@ -572,6 +590,9 @@ enum {
     JELLO_LOOP_LAYER_DROPPED = 6,
     // Layer `layer` was removed. The layers after it move up.
     JELLO_LOOP_LAYER_REMOVED = 7,
+    // A loop of `layer` layers was loaded (jello_engine_load_loop), every
+    // layer playing at full volume. The forgotten change comes first.
+    JELLO_LOOP_LOADED = 8,
 };
 
 typedef struct JelloLoopChange {
@@ -627,6 +648,31 @@ typedef struct JelloLoopNote {
 // and never touches the sound, so any thread can call it.
 bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, int count, int bars, int tempo,
                             bool snap, JelloLoopNote* planned);
+
+// One note of a loop opened from a song file, for jello_engine_load_loop.
+typedef struct JelloLoadedNote {
+    // Which layer it belongs to, from 0.
+    int layer;
+    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE or JELLO_GLIDE_KEY_NOTE.
+    int note;
+    // How hard it was hit, 1 to 127.
+    int velocity;
+    // The samples it starts and ends on, counted from the loop's start.
+    uint64_t start;
+    uint64_t end;
+} JelloLoadedNote;
+
+// Opens a loop from a song file (docs/adr/0038-song-files.md): forgets the
+// loop there is, as jello_engine_clear_loop does, and takes `count` notes in
+// `layers` layers, `bars` bars long at the tempo asked for last, paused.
+// The notes come layer by layer, 0 first, each layer's in the order they
+// start, and every layer has at least one. Notes past the loop's end are
+// kept to it. Each layer plays at full volume until told otherwise. Returns
+// false and changes nothing if `layers` is below 1 or above
+// JELLO_LOOP_MAX_LAYERS, `count` is below 1 or above JELLO_LOOP_MAX_NOTES,
+// `bars` is below 1, a note is out of order or out of range, or too many
+// messages are waiting. Call it from the same thread as the functions above.
+bool jello_engine_load_loop(JelloEngine* engine, const JelloLoadedNote* notes, int count, int layers, int bars);
 
 // How many samples the song has played, counted from its first chord's
 // start, as of the last chunk of sound, or -1 when no song is playing. A

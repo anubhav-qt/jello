@@ -24,6 +24,7 @@ struct LoopChange {
         layer_stopped,  // layer `layer` stopped recording
         layer_dropped,  // layer `layer` stopped with no notes, so it is gone
         layer_removed,  // layer `layer` was removed; the layers after it move up
+        loaded,         // a loop of `layer` layers was loaded, after `forgot`
     };
 
     Type type = Type::forgot;
@@ -39,6 +40,19 @@ struct LoopChange {
 // every 50 ms while it is busy, so this many never pile up: it is room for
 // as many notes as a loop holds.
 using LoopChanges = Mailbox<LoopChange, 4096>;
+
+// One note of a loop opened from a song file, and the layer it belongs to.
+struct LoadedNote {
+    int layer;
+    LoopNote note;
+};
+
+// The mailbox that carries a loaded loop's notes from Rust to the audio
+// thread (docs/adr/0038-song-files.md). The events' mailbox has room for
+// fewer, so the notes come this way, and one event then tells the audio
+// thread to take them. It has room for as many notes as a loop holds, set
+// aside when the engine is made.
+using LoadedNotes = Mailbox<LoadedNote, 4096>;
 
 // Records what the player plays and plays it back on the beat
 // (docs/adr/0021-a-looper-on-a-beat.md). A loop is a list of notes, not
@@ -72,6 +86,7 @@ public:
         closing,      // recording on to the next bar line, where it closes
         looping,      // playing the loop over and over, with the click off
         layering,     // playing the loop and recording a layer over it, with the click on
+        paused,       // holding the loop without playing it, waiting at its start
     };
 
     // The looper sends the loop's changes to `changes`.
@@ -83,9 +98,33 @@ public:
     // loop at the nearest bar line. While looping, it starts recording a new
     // layer over the loop at once, unless the loop already has max_layers.
     // While recording a layer, it stops: what was played plays from the next
-    // time around, and a layer with no notes is dropped. While closing, it
-    // does nothing.
+    // time around, and a layer with no notes is dropped. While paused, it
+    // plays the loop, as play does; the conductor starts a new bar for it
+    // first. While closing, it does nothing.
     void press(const Clock& clock, Synth& synth);
+
+    // Pauses the loop on sample `now`: every layer's notes stop, and it waits
+    // at its start (docs/adr/0038-song-files.md). A layer being recorded
+    // stops first, as the press that stops it would. Does nothing unless the
+    // loop plays.
+    void pause(std::uint64_t now, Synth& synth);
+
+    // Plays a paused loop from its start, on sample `now`; the conductor
+    // starts a new bar there for it first. Does nothing unless paused.
+    void play(std::uint64_t now, Synth& synth);
+
+    // Pauses layer `layer` or plays it again, on sample `now`. A paused
+    // layer is silent and keeps its volume. Played again while the loop
+    // plays, the notes that should be sounding start at once. A layer that
+    // doesn't exist changes nothing.
+    void set_layer_playing(int layer, bool playing, std::uint64_t now, Synth& synth);
+
+    // Forgets the loop, as clear does, and takes `count` notes from
+    // `loaded` in `layers` layers, a loop `bars` bars long at `beat`, paused.
+    // The notes come layer by layer, 0 first, each layer's in the order they
+    // start, and every layer has at least one; the C API checks that. Notes
+    // past the loop's end are kept to it.
+    void load(LoadedNotes& loaded, int count, int layers, int bars, BeatLength beat, Synth& synth);
 
     // Stops every layer's notes and forgets the loop, or cancels the
     // count-in or the recording. Live notes play on.
@@ -124,6 +163,11 @@ public:
 
     State state() const;
     bool is_idle() const;
+    bool is_paused() const;
+
+    // True while the looper needs the beat running: from the count-in on,
+    // except while paused.
+    bool needs_beat() const;
 
     // True while the player needs the click: counting in, recording and
     // recording a layer.
@@ -154,6 +198,8 @@ private:
         int slot = 0;
         int next_start = 0;  // the next note to start, in its plan
         int next_end = 0;    // the next note to end, in its plan_ends_
+        // False while it is paused: its notes go by unheard.
+        bool playing = true;
     };
 
     // True while recording the first loop, including on to the bar line
@@ -162,6 +208,9 @@ private:
 
     // True while the loop plays: looping, or recording a layer over it.
     bool is_playing() const;
+
+    // True while there is a loop, playing or paused.
+    bool has_loop() const;
 
     // True if a note played on sample `now` is recorded: while recording,
     // in the count-in's last quarter beat, and while recording a layer.

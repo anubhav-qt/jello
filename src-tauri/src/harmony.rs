@@ -533,6 +533,67 @@ pub fn chord_name(chord: Chord, key: Option<Key>) -> String {
     }
 }
 
+// The lowest root a chord has: C3. Every chord key plays a root from C3 to
+// B3, so a chord's name says which notes it plays (src/key_map.rs).
+pub const LOWEST_ROOT: u8 = 48;
+
+// The pitch a note's name gives, from 0 (C) to 11 (B): a letter, then a
+// sharp (#) or a flat (b) or neither, like "C", "F#" or "Bb". Either name
+// of a black key works. Anything else gives None.
+pub fn pitch_of_name(name: &str) -> Option<u8> {
+    let mut letters = name.chars();
+    let letter = letters.next()?;
+    let mut pitch = None;
+    for index in 0..7 {
+        if LETTERS[index].starts_with(letter) {
+            pitch = Some(LETTER_PITCHES[index]);
+        }
+    }
+    let natural = pitch?;
+
+    let rest: String = letters.collect();
+    if rest.is_empty() {
+        return Some(natural);
+    }
+    if rest == "#" {
+        return Some((natural + 1) % 12);
+    }
+    if rest == "b" {
+        return Some((natural + 11) % 12);
+    }
+    None
+}
+
+// The key a name like "A minor" or "Db major" gives, as key_name writes
+// it, or None. Either name of a black key works.
+pub fn key_of_name(name: &str) -> Option<Key> {
+    let (tonic_name, mode_name) = name.trim().split_once(' ')?;
+    let tonic = pitch_of_name(tonic_name)?;
+    let mode = match mode_name.trim() {
+        "major" => Mode::Major,
+        "minor" => Mode::Minor,
+        _ => return None,
+    };
+    Some(Key { tonic, mode })
+}
+
+// The chord a name like "Am", "Bb" or "F#m" gives, as chord_name writes
+// it, with its root from C3 to B3, or None.
+pub fn chord_of_name(name: &str) -> Option<Chord> {
+    let name = name.trim();
+    let mut root_name = name;
+    let mut quality = Quality::Major;
+    if let Some(before) = name.strip_suffix('m') {
+        root_name = before;
+        quality = Quality::Minor;
+    }
+    let pitch = pitch_of_name(root_name)?;
+    Some(Chord {
+        root: LOWEST_ROOT + pitch,
+        quality,
+    })
+}
+
 // What guidance says about `chord` in `key`, with nothing about what comes
 // next.
 pub fn guide(key: Key, chord: Chord) -> Guide {
@@ -1347,6 +1408,53 @@ mod tests {
                     assert_eq!(note_fit(key, note), Fit::InKey, "{} in {}", note, key_name(key));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_key_s_name_reads_back_as_that_key() {
+        for key in all_keys() {
+            let name = key_name(key);
+            assert_eq!(key_of_name(&name), Some(key), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_chord_s_name_reads_back_with_its_root_from_c3_to_b3() {
+        let mut keys = vec![None];
+        for key in all_keys() {
+            keys.push(Some(key));
+        }
+        for key in keys {
+            for root in LOWEST_ROOT..LOWEST_ROOT + 12 {
+                for quality in [Quality::Major, Quality::Minor] {
+                    let chord = Chord { root, quality };
+                    let name = chord_name(chord, key);
+                    assert_eq!(chord_of_name(&name), Some(chord), "{name} in {key:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn either_name_of_a_black_key_reads_the_same() {
+        assert_eq!(pitch_of_name("C#"), pitch_of_name("Db"));
+        assert_eq!(pitch_of_name("Cb"), Some(11));
+        assert_eq!(pitch_of_name("B#"), Some(0));
+        assert_eq!(key_of_name("Eb minor"), key_of_name("D# minor"));
+        assert_eq!(chord_of_name("Bbm"), chord_of_name("A#m"));
+    }
+
+    #[test]
+    fn names_that_mean_nothing_read_as_none() {
+        for name in ["", "H", "c", "C##", "Cx", "#"] {
+            assert_eq!(pitch_of_name(name), None, "{name:?}");
+        }
+        for name in ["", "A", "A minor7", "Am minor", "H major", "A  "] {
+            assert_eq!(key_of_name(name), None, "{name:?}");
+        }
+        for name in ["", "m", "Amm", "A7", "A minor"] {
+            assert_eq!(chord_of_name(name), None, "{name:?}");
         }
     }
 

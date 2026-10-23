@@ -6,8 +6,9 @@
      keyboard: Play shows the notes held, Compose adds its tape, outlines
      the chord keys and guides the melody keys, and Produce is a placeholder
      for now. Compose also has the sound panel. In every tab, right
-     Shift and a lane under the keyboard show the looper, and messages are
-     typed out in the top bar. -->
+     Shift and a lane under the keyboard show the looper, messages are
+     typed out in the top bar, and the open song's name there opens the
+     Songs panel (docs/adr/0038-song-files.md). -->
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
@@ -21,6 +22,8 @@
   import { keysAcross, noteName, notesOf, type KeyLayout, type Platform } from "./keyboard";
   import { beatsNow, type SoundSender, type SoundView } from "./sound";
   import SoundPanel from "./SoundPanel.svelte";
+  import type { SongSender, SongsView } from "./songs";
+  import SongsPanel from "./SongsPanel.svelte";
   import type { Picked } from "./sound-scales";
   import type { Tab } from "./tabs";
   import TopBar from "./TopBar.svelte";
@@ -34,12 +37,17 @@
     onRenderClick: () => void;
     onSnapClick: () => void;
     onVolumeChange: (layer: number, volume: number) => void;
+    // What the lane's play and pause buttons do, for a layer and for the
+    // whole loop.
+    onLayerPlayingChange: (layer: number, playing: boolean) => void;
+    onLoopPlayingChange: (playing: boolean) => void;
     // What Compose's controls do. `place` is a chord's place in the song.
     onKeyPick: (tonic: number, mode: "major" | "minor") => void;
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
-    // What the sound panel sends to Rust.
+    // What the sound panel and the Songs panel send to Rust.
     soundSender: SoundSender;
+    songSender: SongSender;
   }
 
   let {
@@ -49,10 +57,13 @@
     onRenderClick,
     onSnapClick,
     onVolumeChange,
+    onLayerPlayingChange,
+    onLoopPlayingChange,
     onKeyPick,
     onChordClick,
     onPlayClick,
     soundSender,
+    songSender,
   }: Props = $props();
 
   // How long the page takes to power on, in milliseconds, and how it moves:
@@ -155,8 +166,32 @@
   // The sound panel's value picked for the arrow keys, if any.
   let picked: Picked | null = $state(null);
 
+  // The songs and the one open, or null until Rust has said, and whether
+  // the Songs panel is open. It opens in the tape's place in every tab, and
+  // the sound panel closes for it.
+  let songs: SongsView | null = $state(null);
+  let songsOpen = $state(false);
+
+  let songName = $derived.by(() => {
+    if (songs === null) {
+      return "";
+    }
+    return songs.open;
+  });
+
+  function switchSongsPanel() {
+    songsOpen = !songsOpen;
+    if (songsOpen) {
+      soundPanelOpen = false;
+    }
+    letGo();
+  }
+
   function switchSoundPanel() {
     soundPanelOpen = !soundPanelOpen;
+    if (soundPanelOpen) {
+      songsOpen = false;
+    }
     letGo();
   }
 
@@ -277,6 +312,8 @@
 
   function openTab(newTab: Tab) {
     tab = newTab;
+    // Another tab shows its own screen, so the Songs panel closes.
+    songsOpen = false;
     // The sound panel is Compose's, so what it picked is let go.
     letGo();
     // A tab's screen can move the keyboard, so the lane follows it once
@@ -465,6 +502,10 @@
     composeAt = performance.now();
   }
 
+  export function showSongs(view: SongsView) {
+    songs = view;
+  }
+
   export function showSound(view: SoundView) {
     sound = view;
     soundAt = performance.now();
@@ -526,7 +567,19 @@
     {/if}
   {/snippet}
 
-  <TopBar {tab} onTabClick={openTab} {wave} {onWaveClick} {onRenderClick} message={messageText} {messageShown} {endButtons} />
+  <TopBar
+    {tab}
+    {songName}
+    {songsOpen}
+    onSongClick={switchSongsPanel}
+    onTabClick={openTab}
+    {wave}
+    {onWaveClick}
+    {onRenderClick}
+    message={messageText}
+    {messageShown}
+    {endButtons}
+  />
 
   <main class="screen-body" class:is-composing={tab === "compose"}>
     {#if tab === "play"}
@@ -575,6 +628,10 @@
       </section>
     {/if}
 
+    {#if songsOpen}
+      <SongsPanel {songs} keysAcross={keysAcross(platform)} send={songSender} />
+    {/if}
+
     <!-- The keyboard sits on a dark panel, like the top of a synth. -->
     <div class="stage-panel" bind:this={panel}>
       <Keyboard
@@ -603,6 +660,8 @@
         width={lanePlace.width}
         {onSnapClick}
         {onVolumeChange}
+        {onLayerPlayingChange}
+        {onLoopPlayingChange}
       />
     {/if}
   {/if}

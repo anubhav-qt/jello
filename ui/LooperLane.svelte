@@ -5,13 +5,26 @@
      dots in its note color, low notes at the bottom, and a playhead that
      sweeps across as the loop plays. Up to four boxes sit side by side, and
      from the fifth on four sit on each level. Each box's number has a ring
-     of dots around it, its volume knob. Before the loop, the lane shows the
+     of dots around it, its volume knob, and under the knob a button that
+     pauses the layer or plays it again (docs/adr/0038-song-files.md). A
+     paused layer's notes are drawn dim. Before the loop, the lane shows the
      count-in, and before the first press how to start. Its right end says
-     how long the loop is and holds the snap switch. -->
+     how long the loop is and holds the snap switch, and once there is a
+     loop, a button that pauses the whole loop or plays it from beat 1. -->
 <script lang="ts">
   import { clickThenLetGo } from "./dom";
   import { colorForNote } from "./note-colors";
-  import { BEATS_PER_BAR, barNow, isLoopPlaying, litBeat, loopBeats, type LayerView, type LoopNote, type SoundView } from "./sound";
+  import {
+    BEATS_PER_BAR,
+    barNow,
+    hasLoop,
+    isLoopPlaying,
+    litBeat,
+    loopBeats,
+    type LayerView,
+    type LoopNote,
+    type SoundView,
+  } from "./sound";
 
   interface Props {
     // The sound, the tempo, snap and the looper.
@@ -28,9 +41,14 @@
     // What turning a layer's knob does: `layer` counts from 1, and
     // `volume` is in percent, from 0 to 100.
     onVolumeChange: (layer: number, volume: number) => void;
+    // What a layer's play and pause button does: `layer` counts from 1.
+    onLayerPlayingChange: (layer: number, playing: boolean) => void;
+    // What the whole loop's play and pause button does.
+    onLoopPlayingChange: (playing: boolean) => void;
   }
 
-  let { sound, beats, left, top, width, onSnapClick, onVolumeChange }: Props = $props();
+  let { sound, beats, left, top, width, onSnapClick, onVolumeChange, onLayerPlayingChange, onLoopPlayingChange }: Props =
+    $props();
 
   // While the first loop is recorded its length isn't known yet, so the
   // box is marked out this many bars at a time.
@@ -57,10 +75,10 @@
   let lit = $derived(litBeat(looper, beats));
   let layers = $derived(looper.layers);
 
-  // How many beats each box spans: the loop's length once it plays, and 4
-  // bars at a time while the first loop is recorded.
+  // How many beats each box spans: the loop's length once there is one,
+  // and 4 bars at a time while the first loop is recorded.
   let span = $derived.by(() => {
-    if (isLoopPlaying(looper)) {
+    if (hasLoop(looper)) {
       return loopBeats(looper);
     }
     const marked = BARS_MARKED_OUT * BEATS_PER_BAR;
@@ -134,9 +152,27 @@
     DOTS.push(dot);
   }
 
-  // Notes dim with their layer's volume, but never quite out of sight.
-  function noteOpacity(volume: number): number {
+  // Notes dim with their layer's volume, but never quite out of sight. A
+  // paused layer's notes are dimmer still, whatever its volume.
+  const PAUSED_OPACITY = 0.16;
+  function noteOpacity(volume: number, layer: LayerView): number {
+    if (!layer.playing) {
+      return PAUSED_OPACITY;
+    }
     return 0.25 + 0.75 * (volume / 100);
+  }
+
+  // What layer `number`'s button does: pause it while it plays, and play
+  // it again while paused.
+  function switchLayer(number: number, layer: LayerView) {
+    onLayerPlayingChange(number, !layer.playing);
+  }
+
+  // What the whole loop's button does: pause the loop while it plays, and
+  // play it from beat 1 while paused.
+  let loopPaused = $derived(looperState === "paused");
+  function switchLoop() {
+    onLoopPlayingChange(loopPaused);
   }
 
   // Turns layer `number`'s knob to `volume`, kept from 0 to 100, and tells
@@ -261,8 +297,9 @@
   });
 
   // What the right end says: the tempo until recording starts, then the
-  // bar being recorded, then how long the loop is. While a knob turns, its
-  // layer's volume, and while Esc waits, which layer it removes.
+  // bar being recorded, then how long the loop is, and whether it is
+  // paused. While a knob turns, its layer's volume, and while Esc waits,
+  // which layer it removes.
   let sideLabel = $derived.by(() => {
     if (looper.removing !== null) {
       return "Remove";
@@ -272,6 +309,9 @@
     }
     if (looperState === "recording") {
       return "Bar";
+    }
+    if (loopPaused) {
+      return "Paused";
     }
     if (isLoopPlaying(looper)) {
       return "Loop";
@@ -288,13 +328,27 @@
     if (looperState === "recording") {
       return String(barNow(beats));
     }
-    if (isLoopPlaying(looper)) {
+    if (hasLoop(looper)) {
       if (looper.number === 1) {
         return "1 bar";
       }
       return `${looper.number} bars`;
     }
     return `${sound.tempo} bpm`;
+  });
+
+  // What the play and pause buttons say when hovered.
+  function layerPlayTitle(number: number, layer: LayerView): string {
+    if (layer.playing) {
+      return `Pause layer ${number}`;
+    }
+    return `Play layer ${number}`;
+  }
+  let loopPlayTitle = $derived.by(() => {
+    if (loopPaused) {
+      return "Play the loop from beat 1 (right Shift)";
+    }
+    return "Pause the loop";
   });
 
   // What the snap switch says.
@@ -305,6 +359,18 @@
     return "off";
   });
 </script>
+
+<!-- What a play and pause button shows: two bars while it plays, so a
+     click pauses it, and a triangle while paused, so a click plays it. -->
+{#snippet playOrPause(playing: boolean)}
+  <svg viewBox="0 0 10 10" aria-hidden="true">
+    {#if playing}
+      <path d="M2.5 1.5h1.8v7H2.5zM5.7 1.5h1.8v7H5.7z" />
+    {:else}
+      <path d="M2.5 1.2L8.6 5L2.5 8.8z" />
+    {/if}
+  </svg>
+{/snippet}
 
 <div class="looper-lane" style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
   {#if looperState === "idle"}
@@ -362,6 +428,18 @@
             </svg>
             <span class="ring-number" class:is-quiet={volume === 0}>{number}</span>
           </button>
+          {#if !layer.recording}
+            <button
+              type="button"
+              class="lane-play is-layer"
+              class:is-paused={!layer.playing}
+              data-layer={number}
+              title={layerPlayTitle(number, layer)}
+              onclick={(event) => clickThenLetGo(event, () => switchLayer(number, layer))}
+            >
+              {@render playOrPause(layer.playing)}
+            </button>
+          {/if}
         </span>
         <div
           class="lane-box"
@@ -379,14 +457,16 @@
               style:left={`${across(played.start)}%`}
               style:width={`max(2px, calc(${across(endOf(played) - played.start)}% - 3px))`}
               style:bottom={`${height(played.note, layer.notes)}%`}
-              style:opacity={noteOpacity(volume)}
+              style:opacity={noteOpacity(volume, layer)}
               style:--note={colorForNote(played.note).accent}
             ></span>
           {/each}
           {#each barLines as beat}
             <span class="lane-bar-line" style:left={`${across(beat)}%`}></span>
           {/each}
-          <span class="lane-playhead" class:is-recording={layer.recording} style:left={`${across(beats)}%`}></span>
+          {#if !loopPaused}
+            <span class="lane-playhead" class:is-recording={layer.recording} style:left={`${across(beats)}%`}></span>
+          {/if}
         </div>
       {/each}
     </div>
@@ -397,15 +477,28 @@
       <span class="lane-label">{sideLabel}</span>
       <span class="lane-value">{sideValue}</span>
     </p>
-    <button
-      type="button"
-      class="lane-snap"
-      class:is-off={!sound.snap}
-      title="Snap notes to the nearest half beat"
-      onclick={(event) => clickThenLetGo(event, onSnapClick)}
-    >
-      <span class="lane-snap-label">Snap</span>
-      <span class="lane-snap-value">{snapValue}</span>
-    </button>
+    <div class="lane-side-buttons">
+      {#if hasLoop(looper)}
+        <button
+          type="button"
+          class="lane-play is-loop"
+          class:is-paused={loopPaused}
+          title={loopPlayTitle}
+          onclick={(event) => clickThenLetGo(event, switchLoop)}
+        >
+          {@render playOrPause(!loopPaused)}
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="lane-snap"
+        class:is-off={!sound.snap}
+        title="Snap notes to the nearest half beat"
+        onclick={(event) => clickThenLetGo(event, onSnapClick)}
+      >
+        <span class="lane-snap-label">Snap</span>
+        <span class="lane-snap-value">{snapValue}</span>
+      </button>
+    </div>
   </div>
 </div>

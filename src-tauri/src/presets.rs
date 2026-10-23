@@ -168,9 +168,15 @@ pub fn save(folder: &Path, name: &str, sound: &Sound) -> Result<String, String> 
 // `settings_folder`, or None if no preset is marked or the file can't be
 // read.
 pub fn starting_name(settings_folder: &Path) -> Option<String> {
+    setting(settings_folder, STARTING_SOUND)
+}
+
+// The word setting `setting` holds in the settings file in
+// `settings_folder`, or None if it holds none or the file can't be read.
+pub fn setting(settings_folder: &Path, setting: &str) -> Option<String> {
     let settings = read_settings(settings_folder);
-    match settings.get(STARTING_SOUND) {
-        Some(Value::String(name)) => Some(name.clone()),
+    match settings.get(setting) {
+        Some(Value::String(value)) => Some(value.clone()),
         _ => None,
     }
 }
@@ -179,13 +185,20 @@ pub fn starting_name(settings_folder: &Path) -> Option<String> {
 // the settings file in `settings_folder`, made if it is missing. Any other
 // settings in the file stay as they were.
 pub fn mark_starting(settings_folder: &Path, name: Option<&str>) -> Result<(), String> {
+    set_setting(settings_folder, STARTING_SOUND, name)
+}
+
+// Sets setting `setting` to the word `value`, or with None, takes it out, in
+// the settings file in `settings_folder`, made if it is missing. Any other
+// settings in the file stay as they were.
+pub fn set_setting(settings_folder: &Path, setting: &str, value: Option<&str>) -> Result<(), String> {
     let mut settings = read_settings(settings_folder);
-    match name {
-        Some(name) => {
-            settings.insert(String::from(STARTING_SOUND), Value::String(String::from(name)));
+    match value {
+        Some(value) => {
+            settings.insert(String::from(setting), Value::String(String::from(value)));
         }
         None => {
-            settings.remove(STARTING_SOUND);
+            settings.remove(setting);
         }
     }
 

@@ -17,6 +17,7 @@ import type {
   SoundView,
   Unison,
 } from "./sound";
+import type { SongSender, SongsView } from "./songs";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -38,6 +39,8 @@ interface StageControls {
   isComposing(): boolean;
   // What Compose shows, as Rust answered.
   showCompose(view: ComposeView): void;
+  // The songs and the one open, as Rust answered.
+  showSongs(view: SongsView): void;
 }
 
 // The page, once Rust has said what each key does.
@@ -72,6 +75,12 @@ function keepWatchingLooper(view: SoundView) {
     lookPlanned = false;
     sendInOrder(askForSound);
   }, LOOPER_LOOK_MS);
+}
+
+function showSongs(view: SongsView) {
+  if (screen !== null) {
+    screen.showSongs(view);
+  }
 }
 
 function showStatus(message: string) {
@@ -187,6 +196,30 @@ async function setLayerVolume(layer: number, volume: number) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the volume: ${error}`);
+  }
+}
+
+// A layer's button pauses it or plays it again. `layer` counts from 1.
+async function setLayerPlaying(layer: number, playing: boolean) {
+  try {
+    const view = await invoke<SoundView>("set_layer_playing", { layer, playing });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not switch layer ${layer}: ${error}`);
+  }
+}
+
+// The lane's loop button pauses the whole loop, or plays it from beat 1.
+async function setLoopPlaying(playing: boolean) {
+  let command = "pause_loop";
+  if (playing) {
+    command = "play_loop";
+  }
+  try {
+    const view = await invoke<SoundView>(command);
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not switch the loop: ${error}`);
   }
 }
 
@@ -372,6 +405,60 @@ async function markStartingPreset(name: string | null) {
     await invoke("mark_starting_preset", { name });
   } catch (error) {
     showStatus(`Could not mark the starting sound: ${error}`);
+  }
+}
+
+// The songs in Music/Jello/Songs and the one open
+// (docs/adr/0038-song-files.md).
+async function askForSongs(): Promise<SongsView | null> {
+  try {
+    const view = await invoke<SongsView>("song_list");
+    showSongs(view);
+    return view;
+  } catch (error) {
+    showStatus(`Could not list the songs: ${error}`);
+    return null;
+  }
+}
+
+// Opening or making a song changes everything, so the page asks again for
+// the sound and Compose.
+async function openSong(name: string) {
+  try {
+    const view = await invoke<SongsView>("open_song", { name });
+    showSongs(view);
+  } catch (error) {
+    showStatus(`Could not open ${name}: ${error}`);
+  }
+  await askForSound();
+  await askForCompose();
+}
+
+async function makeNewSong() {
+  try {
+    const view = await invoke<SongsView>("make_new_song");
+    showSongs(view);
+  } catch (error) {
+    showStatus(`Could not make a new song: ${error}`);
+  }
+  await askForSound();
+  await askForCompose();
+}
+
+async function renameSong(name: string) {
+  try {
+    const view = await invoke<SongsView>("rename_song", { name });
+    showSongs(view);
+  } catch (error) {
+    showStatus(`Could not rename the song: ${error}`);
+  }
+}
+
+async function songNameProblem(name: string): Promise<string | null> {
+  try {
+    return await invoke<string | null>("song_name_problem", { name });
+  } catch (error) {
+    return String(error);
   }
 }
 
@@ -621,6 +708,25 @@ const soundSender: SoundSender = {
   markStartingPreset: (name) => markStartingPreset(name),
 };
 
+// What the Songs panel sends, each in order with the keys.
+const songSender: SongSender = {
+  listSongs: () => listSongsInOrder(),
+  openSong: (name) => sendInOrderAndWait(() => openSong(name)),
+  newSong: () => sendInOrderAndWait(makeNewSong),
+  renameSong: (name) => sendInOrderAndWait(() => renameSong(name)),
+  songNameProblem: (name) => songNameProblem(name),
+};
+
+// Lists the songs in order with the keys, and is done with the list.
+function listSongsInOrder(): Promise<SongsView | null> {
+  return new Promise((done) => {
+    sendInOrder(async () => {
+      const view = await askForSongs();
+      done(view);
+    });
+  });
+}
+
 // Asks Rust what each key does, then shows the page.
 async function start() {
   let layout: KeyLayout;
@@ -640,14 +746,20 @@ async function start() {
       onRenderClick: renderWav,
       onSnapClick: () => sendInOrder(switchSnap),
       onVolumeChange: (layer: number, volume: number) => sendInOrder(() => setLayerVolume(layer, volume)),
+      onLayerPlayingChange: (layer: number, playing: boolean) => sendInOrder(() => setLayerPlaying(layer, playing)),
+      onLoopPlayingChange: (playing: boolean) => sendInOrder(() => setLoopPlaying(playing)),
       onKeyPick: (tonic: number, mode: "major" | "minor") => sendInOrder(() => pickKey(tonic, mode)),
       onChordClick: (place: number) => sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),
       soundSender,
+      songSender,
     },
   });
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
+  sendInOrder(async () => {
+    await askForSongs();
+  });
 }
 
 start();

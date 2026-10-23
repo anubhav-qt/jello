@@ -1,5 +1,6 @@
 <!-- The page's top bar, built like GitHub's repository header: a title row
-     with where you are on the left and actions on the right, then a row of
+     with the open song's name on the left, which opens the Songs panel
+     (docs/adr/0038-song-files.md), and actions on the right, then a row of
      tabs: Play, Compose and Produce. Messages for the player are typed out
      after the title, wrapping onto a second line when long. Buttons for a
      tab's own panels, like Compose's Sound, sit at the right end of the
@@ -12,6 +13,11 @@
   interface Props {
     // The tab open now.
     tab: Tab;
+    // The open song's name, or "" until Rust has said, whether the Songs
+    // panel is open, and what clicking the name does.
+    songName: string;
+    songsOpen: boolean;
+    onSongClick: () => void;
     onTabClick: (tab: Tab) => void;
     // The kind new notes' first oscillator plays, like "saw", or "" until
     // Rust has said.
@@ -25,7 +31,19 @@
     endButtons: Snippet;
   }
 
-  let { tab, onTabClick, wave, onWaveClick, onRenderClick, message, messageShown, endButtons }: Props = $props();
+  let {
+    tab,
+    songName,
+    songsOpen,
+    onSongClick,
+    onTabClick,
+    wave,
+    onWaveClick,
+    onRenderClick,
+    message,
+    messageShown,
+    endButtons,
+  }: Props = $props();
 </script>
 
 <header class="topbar">
@@ -34,7 +52,15 @@
       <span class="logo"></span>
       <span class="crumb">Jello</span>
       <span class="crumb-divider">/</span>
-      <span class="crumb is-current">Keyboard</span>
+      <button
+        type="button"
+        class="crumb is-current crumb-song"
+        class:is-open={songsOpen}
+        title="Songs: open, make or rename one"
+        onclick={(event) => clickThenLetGo(event, onSongClick)}
+      >
+        {songName}
+      </button>
     </div>
 
     <!-- The text and cursor sit on one line, so no space comes between them. -->

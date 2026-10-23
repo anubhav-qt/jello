@@ -26,8 +26,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   Step 4: 3 oscillators, kinds, noise, pulse width (0035), filter with 4
   types (0028), unison (0029), envelope, tuning, all per song (0030), 8 LFOs,
   routing list (0031), left Shift vibrato (0032), left Option glide (0036),
-  sound panel (0033, opens on Oscillators), presets in Music/Jello/Sounds
-  with a starting sound (0037).
+  sound panel (0033), presets with a starting sound (0037), song files in
+  Music/Jello that save themselves, Songs panel, play and pause (0038).
   Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
 
 ## Repo layout

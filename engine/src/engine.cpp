@@ -49,6 +49,14 @@ bool is_valid_layer(int layer) {
     return layer < JELLO_LOOP_MAX_LAYERS;
 }
 
+// A loop note's pitch: a note, or a press of the vibrato or glide key.
+bool is_valid_loop_pitch(int note) {
+    if (note < 0) {
+        return false;
+    }
+    return note <= JELLO_GLIDE_KEY_NOTE;
+}
+
 // A layer's volume, from 0 to 1.
 bool is_valid_volume(float volume) {
     if (std::isnan(volume)) {
@@ -357,6 +365,8 @@ int looper_state_number(Looper::State state) {
         return JELLO_LOOPER_LOOPING;
     } else if (state == Looper::State::layering) {
         return JELLO_LOOPER_LAYERING;
+    } else if (state == Looper::State::paused) {
+        return JELLO_LOOPER_PAUSED;
     }
     return JELLO_LOOPER_IDLE;
 }
@@ -377,6 +387,8 @@ int loop_change_number(LoopChange::Type type) {
         return JELLO_LOOP_LAYER_DROPPED;
     } else if (type == LoopChange::Type::layer_removed) {
         return JELLO_LOOP_LAYER_REMOVED;
+    } else if (type == LoopChange::Type::loaded) {
+        return JELLO_LOOP_LOADED;
     }
     return JELLO_LOOP_FORGOT;
 }
@@ -554,6 +566,21 @@ void jello_engine_set_layer_volume(JelloEngine* engine, int layer, float volume)
 
 void jello_engine_set_snap(JelloEngine* engine, bool snap) {
     engine->conductor.set_snap(snap);
+}
+
+void jello_engine_pause_loop(JelloEngine* engine) {
+    engine->conductor.pause_loop();
+}
+
+void jello_engine_play_loop(JelloEngine* engine) {
+    engine->conductor.play_loop();
+}
+
+void jello_engine_set_layer_playing(JelloEngine* engine, int layer, bool playing) {
+    if (!is_valid_layer(layer)) {
+        return;
+    }
+    engine->conductor.set_layer_playing(layer, playing);
 }
 
 bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, int count) {
@@ -798,6 +825,71 @@ bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, in
         planned[i].end = plan[i].end;
     }
     return true;
+}
+
+bool jello_engine_load_loop(JelloEngine* engine, const JelloLoadedNote* notes, int count, int layers, int bars) {
+    if (layers < 1) {
+        return false;
+    }
+    if (layers > JELLO_LOOP_MAX_LAYERS) {
+        return false;
+    }
+    if (count < 1) {
+        return false;
+    }
+    if (count > JELLO_LOOP_MAX_NOTES) {
+        return false;
+    }
+    if (bars < 1) {
+        return false;
+    }
+
+    // Every note is checked before any is sent, so a loop with one odd note
+    // never half loads. The layers come in order with none skipped: each
+    // note's layer is the last one's, or the next.
+    std::vector<LoadedNote> loaded(static_cast<std::size_t>(count));
+    int last_layer = 0;
+    for (int i = 0; i < count; i++) {
+        const JelloLoadedNote& note = notes[i];
+        if (i == 0) {
+            if (note.layer != 0) {
+                return false;
+            }
+        } else if (note.layer == last_layer + 1) {
+            last_layer = note.layer;
+        } else if (note.layer != last_layer) {
+            return false;
+        }
+        if (!is_valid_loop_pitch(note.note)) {
+            return false;
+        }
+        if (!is_valid_velocity(note.velocity)) {
+            return false;
+        }
+        if (note.end < note.start) {
+            return false;
+        }
+        // Within a layer, in the order they start.
+        if (i > 0) {
+            if (notes[i - 1].layer == note.layer) {
+                if (note.start < notes[i - 1].start) {
+                    return false;
+                }
+            }
+        }
+
+        loaded[i].layer = note.layer;
+        loaded[i].note.note = note.note;
+        loaded[i].note.velocity = note.velocity;
+        loaded[i].note.start = note.start;
+        loaded[i].note.end = note.end;
+    }
+    // Every layer has a note.
+    if (last_layer != layers - 1) {
+        return false;
+    }
+
+    return engine->conductor.load_loop(loaded.data(), count, layers, bars);
 }
 
 int64_t jello_engine_song_position(JelloEngine* engine) {

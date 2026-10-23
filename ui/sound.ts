@@ -298,20 +298,21 @@ export interface SoundSender {
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).
 export interface LooperView {
-  // "idle", "counting in", "recording", "looping" or "layering": playing
-  // the loop and recording a layer over it.
+  // "idle", "counting in", "recording", "looping", "layering": playing
+  // the loop and recording a layer over it, or "paused"
+  // (docs/adr/0038-song-files.md).
   state: string;
   // While counting in, the beat (1 to 4). While recording, the bar being
-  // recorded, from 1. While looping or layering, how many bars the loop
-  // lasts.
+  // recorded, from 1. While looping, layering or paused, how many bars the
+  // loop lasts.
   number: number;
   // True from the first press until the loop is cleared.
   busy: boolean;
   // How many beats into the count-in, the recording or the repeat playing
   // now, when Rust answered. Each starts on beat 1 of a bar. 0 when idle.
   beats_in: number;
-  // The loop's layers while recording, looping or layering, oldest first
-  // (docs/adr/0026-layers.md). Empty otherwise.
+  // The loop's layers while recording, looping, layering or paused, oldest
+  // first (docs/adr/0026-layers.md). Empty otherwise.
   layers: LayerView[];
   // While Esc waits for a layer's number, the layer it removes if none
   // comes: the newest, counted from 1. null otherwise.
@@ -329,6 +330,8 @@ export interface LayerView {
   notes: LoopNote[];
   // How loud it plays, in percent, from 0 to 100.
   volume: number;
+  // False while it is paused: silent, with its volume kept.
+  playing: boolean;
   // True while it is being recorded.
   recording: boolean;
 }
@@ -350,6 +353,10 @@ export const BEATS_PER_BAR = 4;
 export function beatsNow(view: SoundView, msSince: number): number {
   const looper = view.looper;
   if (looper.state === "idle") {
+    return 0;
+  }
+  // A paused loop plays again from beat 1.
+  if (looper.state === "paused") {
     return 0;
   }
   const beats = looper.beats_in + (msSince * view.tempo) / 60000;
@@ -382,14 +389,25 @@ export function isRecording(looper: LooperView): boolean {
   return looper.state === "layering";
 }
 
+// True while there is a loop, playing or paused.
+export function hasLoop(looper: LooperView): boolean {
+  if (isLoopPlaying(looper)) {
+    return true;
+  }
+  return looper.state === "paused";
+}
+
 // How many beats the loop lasts.
 export function loopBeats(looper: LooperView): number {
   return Math.max(1, looper.number) * BEATS_PER_BAR;
 }
 
-// Which of the four beat lights is lit, 1 to 4, or 0 when idle.
+// Which of the four beat lights is lit, 1 to 4, or 0 when idle or paused.
 export function litBeat(looper: LooperView, beats: number): number {
   if (looper.state === "idle") {
+    return 0;
+  }
+  if (looper.state === "paused") {
     return 0;
   }
   return Math.floor(beats % BEATS_PER_BAR) + 1;
@@ -418,6 +436,9 @@ export function looperWords(view: SoundView, beats: number): string {
   // The layer being recorded is always the last.
   if (looper.state === "layering") {
     return `rec layer ${looper.layers.length}`;
+  }
+  if (looper.state === "paused") {
+    return "loop paused";
   }
   return `looper, ${view.tempo} bpm`;
 }

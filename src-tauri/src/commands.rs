@@ -316,12 +316,12 @@ fn filter_view_of(sound_profile: &SoundProfile) -> FilterView {
 // What the looper is doing.
 #[derive(Serialize)]
 pub struct LooperView {
-    // "idle", "counting in", "recording", "looping" or "layering": playing
-    // the loop and recording a layer over it.
+    // "idle", "counting in", "recording", "looping", "layering": playing
+    // the loop and recording a layer over it, or "paused".
     state: &'static str,
     // While counting in, the beat (1 to 4). While recording, the bar being
-    // recorded, from 1. While looping or layering, how many bars the loop
-    // lasts.
+    // recorded, from 1. While looping, layering or paused, how many bars
+    // the loop lasts.
     number: u32,
     // True from the first press until the loop is cleared. The UI asks
     // again and again while it is, since the state changes on the beat.
@@ -353,6 +353,8 @@ pub struct LayerView {
     notes: Vec<LoopNoteView>,
     // How loud it plays, in percent, from 0 to 100.
     volume: u32,
+    // False while it is paused (docs/adr/0038-song-files.md).
+    playing: bool,
     // True while it is being recorded.
     recording: bool,
 }
@@ -386,7 +388,7 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
         layer.notes.retain(|note| is_drawn_in_lane(note.note));
     }
     // Once a layer plays, the lane shows each note where the loop plays it.
-    if is_loop_playing(status.state) {
+    if has_loop(status.state) {
         for layer in &mut layers {
             if !layer.recording {
                 layer.notes = engine.plan_loop(&layer.notes, status.number);
@@ -453,6 +455,14 @@ fn is_loop_playing(state: LooperState) -> bool {
     }
 }
 
+// True while there is a loop, playing or paused.
+fn has_loop(state: LooperState) -> bool {
+    if is_loop_playing(state) {
+        return true;
+    }
+    state == LooperState::Paused
+}
+
 // What the screen shows about the looper. `position` is how many samples
 // into the count-in, the recording or the repeat playing now it is. Esc and
 // messages are left for the caller to fill in.
@@ -482,6 +492,7 @@ fn looper_view_of(
         LooperState::Recording => true,
         LooperState::Looping => true,
         LooperState::Layering => true,
+        LooperState::Paused => true,
         _ => false,
     };
     let mut layer_views = Vec::new();
@@ -490,6 +501,7 @@ fn looper_view_of(
             let view = LayerView {
                 notes: note_views_of(&layer.notes, tempo, sample_rate),
                 volume: layer.volume,
+                playing: layer.playing,
                 recording: layer.recording,
             };
             layer_views.push(view);
@@ -676,6 +688,54 @@ pub fn set_layer_volume(
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     engine.set_layer_volume(layer, volume)?;
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// The lane's play and pause for the whole loop
+// (docs/adr/0038-song-files.md): pausing stops every layer's notes, and
+// playing starts the loop again from beat 1. Each returns what the screen
+// shows about the sound. Like `switch_kind`, they open the speakers first.
+#[tauri::command]
+pub fn pause_loop(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.pause_loop();
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+#[tauri::command]
+pub fn play_loop(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.play_loop();
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Pauses layer `layer`, counted from 1, or plays it again, and returns
+// what the screen shows about the sound. The button under each layer's
+// knob does this.
+#[tauri::command]
+pub fn set_layer_playing(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    layer: u32,
+    playing: bool,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    engine.set_layer_playing(layer, playing)?;
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
@@ -1348,6 +1408,13 @@ fn jello_music_folder(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
+// The folder songs are kept in: Songs, in the Jello folder in Music
+// (docs/adr/0038-song-files.md).
+pub fn songs_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Songs"))
+}
+
 // The folder presets are kept in: Sounds, in the Jello folder in Music.
 pub fn sounds_folder(app: &AppHandle) -> Result<PathBuf, String> {
     let jello = jello_music_folder(app)?;
@@ -1683,6 +1750,7 @@ mod tests {
         let expected = serde_json::json!([{
             "notes": [{ "note": 69, "start": 0.5, "end": null }],
             "volume": 100,
+            "playing": true,
             "recording": false,
         }]);
         assert_eq!(json["layers"], expected);
@@ -2014,6 +2082,7 @@ mod tests {
         LoopLayer {
             notes: notes.to_vec(),
             volume: 100,
+            playing: true,
             recording: false,
         }
     }
@@ -2110,6 +2179,27 @@ mod tests {
         let idle = status(LooperState::Idle, 0);
         let view = looper_view_of(idle, false, 0, &layers, 120, SAMPLE_RATE);
         assert!(view.layers.is_empty());
+    }
+
+    #[test]
+    fn a_paused_loop_still_shows_its_layers_and_which_ones_play() {
+        let note = LoopNote {
+            note: A4,
+            start: 12_000,
+            end: Some(36_000),
+        };
+        let playing = layer_of(&[note]);
+        let mut paused = layer_of(&[note]);
+        paused.playing = false;
+        let layers = [playing, paused];
+
+        let view = looper_view_of(status(LooperState::Paused, 2), true, 0, &layers, 120, SAMPLE_RATE);
+        assert_eq!(view.state, "paused");
+        assert_eq!(view.number, 2);
+        assert_eq!(view.layers.len(), 2);
+        assert!(view.layers[0].playing);
+        assert!(!view.layers[1].playing);
+        assert_eq!(view.layers[1].notes[0].start, 0.5);
     }
 
     #[test]

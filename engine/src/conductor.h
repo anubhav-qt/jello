@@ -56,6 +56,15 @@ public:
     // (Looper::set_layer_volume).
     void remove_layer(int layer);
     void set_layer_volume(int layer, float volume);
+    // Play and pause for the whole loop and for each layer (Looper::pause,
+    // play and set_layer_playing).
+    void pause_loop();
+    void play_loop();
+    void set_layer_playing(int layer, bool playing);
+    // Opens a loop from a song file (Looper::load): `count` notes in
+    // `layers` layers, `bars` bars long at the tempo asked for last. Returns
+    // false and sends nothing if either mailbox has no room for all of it.
+    bool load_loop(const LoadedNote* notes, int count, int layers, int bars);
     // The "snap to beat" switch (Looper::set_snap).
     void set_snap(bool snap);
     // The filter's controls (Synth::set_filter), and the filter envelope
@@ -140,6 +149,9 @@ private:
     // The loop's changes, on their way to Rust. The looper sends them, so
     // this must be made before the looper, below.
     LoopChanges loop_changes_;
+
+    // A loaded loop's notes, on their way to the looper.
+    LoadedNotes loaded_notes_;
 
     Synth synth_;
     Clock clock_;
