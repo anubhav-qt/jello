@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -14,10 +14,13 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { Host, jelloTools, toolServer } from "../../src-tauri/agent-host/host.mjs";
+import { attachedBlock, attachedFiles, Host, jelloTools, toolServer, withoutJobLine } from "../../src-tauri/agent-host/host.mjs";
 import { INSTRUCTIONS } from "../../src-tauri/agent-host/instructions.mjs";
 
 const PASSWORD = "secret";
+// A red picture, 8 by 8, as a JPEG in base64.
+const RED_JPEG =
+  "/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAGBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAAgACAMBIgACEQADEQD/2gAMAwEAAhEDEQA/AIsATX9//9k=";
 
 // A tool server like Jello's with one tool, jello_sound. It keeps every
 // call it was asked, and every request's headers.
@@ -262,13 +265,15 @@ test("signing in asks through the panel and opens only web pages", async () => {
     assert.equal(await answer, "typed");
 
     const providers = made.host.providers();
-    assert.equal(providers[0].id, "anthropic");
+    const first = providers.slice(0, 3).map((provider) => provider.id);
+    assert.deepEqual(first, ["anthropic", "openai", "google"]);
+    assert.equal(providers[1].browser, "Sign in with ChatGPT");
   } finally {
     rmSync(made.agentDir, { recursive: true, force: true });
   }
 });
 
-test("chats are saved with their song and jobs, listed, and carried on once opened", async () => {
+test("chats are saved with their song, jobs and memory, listed, and carried on once opened", async () => {
   const tools = await fakeToolServer();
   const made = await fakeHost(await jelloTools(toolServer(tools.url, PASSWORD)));
   const seen = [];
@@ -285,7 +290,7 @@ test("chats are saved with their song and jobs, listed, and carried on once open
         return fauxAssistantMessage([fauxText("Again, slower.")]);
       },
     ]);
-    await made.host.send("Make it darker", "composer", "Prism Drift");
+    await made.host.send("Make it darker", "composer", "Prism Drift", [], "Habits:\n- [1] Rushes bar 3 (2026-10-24)");
     await made.host.send("Teach me the chorus", "tutor", "Other song", ["the player used option 2, Darker, of offer 1"]);
     const path = made.events.find((event) => event.type === "chat").path;
 
@@ -323,8 +328,11 @@ test("chats are saved with their song and jobs, listed, and carried on once open
 
     // Carrying on: the model gets the whole chat, the same job needs no
     // new line, and it stays one file.
-    await made.host.send("Once more", "tutor", "Other song");
+    await made.host.send("Once more", "tutor", "Other song", [], "Goals:\n- [2] Play at 90 (2026-10-24)");
     const sent = JSON.stringify(seen[0]);
+    // The chat keeps the memory it began with, so its start stays cached.
+    assert.ok(sent.includes("Rushes bar 3"));
+    assert.ok(!sent.includes("Play at 90"));
     assert.ok(sent.includes("Make it darker"));
     assert.ok(sent.includes("(Jello: the player used option 2, Darker, of offer 1.)"));
     const said = playerMessages(seen[0]);
@@ -335,6 +343,70 @@ test("chats are saved with their song and jobs, listed, and carried on once open
     tools.server.close();
     rmSync(made.agentDir, { recursive: true, force: true });
   }
+});
+
+test("attached files go with one message, are kept beside the chat and show again", async () => {
+  const made = await fakeHost([]);
+  const seen = [];
+  try {
+    const original = join(made.agentDir, "Score.pdf");
+    writeFileSync(original, "pdf bytes");
+    const attachments = [
+      {
+        name: "Score.pdf",
+        path: original,
+        kind: "pdf",
+        text: "A PDF of 1 pages.\n\nPage 1:\nAllegro",
+        images: [{ data: RED_JPEG, mimeType: "image/jpeg" }],
+      },
+    ];
+    made.faux.setResponses([
+      (context) => {
+        seen.push(context);
+        return fauxAssistantMessage([fauxText("It is in G.")]);
+      },
+      (context) => {
+        seen.push(context);
+        return fauxAssistantMessage([fauxText("Sure.")]);
+      },
+    ]);
+    await made.host.send("What key is this?", "tutor", "Song", [], "", attachments);
+    const path = made.events.find((event) => event.type === "chat").path;
+    const sent = playerMessages(seen[0])[0];
+    const text = JSON.stringify(sent.content);
+    assert.ok(text.includes("[Attached pdf: Score.pdf]"));
+    assert.ok(text.includes("Allegro"));
+    assert.ok(text.includes("What key is this?"));
+    assert.ok(sent.content.some((part) => part.type === "image"));
+    const kept = join(path.replace(/\.jsonl$/, ""), "Score.pdf");
+    assert.ok(existsSync(kept));
+    assert.equal(readFileSync(kept, "utf8"), "pdf bytes");
+
+    // The next message has none.
+    await made.host.send("Thanks", "tutor", "Song");
+    const later = playerMessages(seen[1]);
+    assert.ok(!JSON.stringify(later[later.length - 1]).includes("Attached"));
+
+    await made.host.newChat();
+    await made.host.openChat(path);
+    const [first, second] = made.events[made.events.length - 1].turns;
+    assert.equal(first.said, "What key is this?");
+    assert.deepEqual(first.attachments, [{ kind: "pdf", name: "Score.pdf" }]);
+    assert.deepEqual(second.attachments, []);
+  } finally {
+    rmSync(made.agentDir, { recursive: true, force: true });
+  }
+});
+
+test("a model that can't see pictures is told they were left out", () => {
+  const files = [{ name: "a.png", kind: "image", text: "A picture.", images: [{ data: "x", mimeType: "image/jpeg" }] }];
+  const blind = attachedBlock(files, false);
+  assert.ok(blind.includes("can't see pictures"));
+  assert.ok(!attachedBlock(files, true).includes("can't see pictures"));
+  const said = `${blind}Look at this`;
+  assert.equal(withoutJobLine(said), "Look at this");
+  assert.deepEqual(attachedFiles(said), [{ kind: "image", name: "a.png" }]);
+  assert.deepEqual(attachedFiles("no files"), []);
 });
 
 test("only chat files in the chats folder can be opened", async () => {

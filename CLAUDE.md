@@ -12,8 +12,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
   dependencies with GPL-3.0-compatible licenses (see ADR 0007).
 - Run: `nvm use`, `npm install`, `npm run tauri dev`. Tests: `npm run build`,
-  `npm run test:tutor`, `cargo test` in
-  `src-tauri/`. `tauri dev` does not watch `engine/`: restart it after C++ edits.
+  `npm run test:agent`, `cargo test` in
+  `src-tauri/` (needs cmake for whisper.cpp). `tauri dev` does not watch `engine/`: restart it after C++ edits.
 
 ## Status
 
@@ -29,8 +29,11 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - One agent for every mode (0041), before the sampler. Built in Rust: MCP
   tool server (`tool_server.rs`, `tools.rs`): look, sound, play, looper,
   song, presets, listen (`listening.rs`, `measures.rs`); Undo (`undo.rs`).
-  Agent mode (0043): live steps, cards, saved chats, memory, master-level
-  Tutor, attachments, voice; build order in design.md. `npx pi`, `/login`.
+  Agent mode (0043): build steps 1 to 9 done (live steps, cards, saved
+  chats, theory, practice, memory, skills, attachments, mic, dictation,
+  hum); step 10 asks first. Mic: `engine/src/capture.*`, `mic.rs`; voice:
+  `dictation.rs`, `hum.rs`, `pitch.rs`; files: `attachments.rs`,
+  `audio_file.rs`. First providers: Anthropic, OpenAI, Google.
 
 - Pointer transport and independent layer lengths (0042): Record/Finish,
   exact tempo, timed takes, expression holds and cycle WAV export. Layer

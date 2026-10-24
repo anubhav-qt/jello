@@ -20,9 +20,11 @@ use crate::harmony::{key_name, key_of_name};
 use crate::key_map::KeyMap;
 use crate::layer_notes;
 use crate::listening;
+use crate::memory::{self, Memory};
 use crate::phrases::{self, Phrase, Phrases};
 use crate::practice::{self, Practice};
 use crate::presets;
+use crate::skills;
 use crate::song_file;
 use crate::song_session::{self, OpenSong, song_now, songs_view_of};
 use crate::sound_changes;
@@ -39,6 +41,7 @@ pub struct Studio<'a> {
     pub phrases: &'a Phrases,
     pub offers: &'a Mutex<Offers>,
     pub practice: &'a Mutex<Practice>,
+    pub memory: &'a Mutex<Memory>,
     pub screen: &'a dyn Screen,
 }
 
@@ -105,7 +108,9 @@ impl ToolAnswer {
 }
 
 // The parts jello_look can read.
-const LOOK_PARTS: [&str; 8] = ["sound", "keys", "song", "looper", "compose", "presses", "presets", "songs"];
+const LOOK_PARTS: [&str; 10] = [
+    "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory",
+];
 
 // Every tool, as MCP's tools/list names and describes them.
 pub fn list() -> Value {
@@ -118,7 +123,10 @@ pub fn list() -> Value {
                 looper: what the looper is doing, its layers and their notes in beats, the tempo and \
                 snap. compose: Compose's key, chords, guidance and history. presses: the player's \
                 recent presses. presets: every preset and the starting sound. songs: every song and \
-                the one open. With no parts it reads them all.",
+                the one open. skills: each skill area's level out of 10 (the median of its last 5 \
+                tries), trend and recent points, measured from every practice try. memory: your \
+                notes about the player, and whether you ask before saving one. With no parts it \
+                reads them all.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -389,7 +397,9 @@ pub fn list() -> Value {
             "name": "jello_practice",
             "description": "Sets a piece for the player to practice on the Play tab, with its lane \
                 and the next keys marked on the keyboard, and scores every try in Jello. action \
-                set: piece {name, octave (the keys' octave at the start, -4 to 4), parts: 1 to 4 \
+                set: piece {name, area (the skill its tries count toward: technique|rhythm| \
+                harmony|ear|improvising|pieces; by default the mode's: ear, improvising, or \
+                pieces), octave (the keys' octave at the start, -4 to 4), parts: 1 to 4 \
                 of {name, hand: left|right|jello, notes: [{note | chord | notes, start, hold, \
                 octave}]}, sections: [{name, from_bar, to_bar}]}, and settings. A note is a \
                 melody note (\"E4\"), a chord key's major or minor chord (\"Am\", at the octave \
@@ -416,6 +426,26 @@ pub fn list() -> Value {
                     "action": {"type": "string", "enum": ["set", "settings", "start", "stop", "results", "close"]},
                     "piece": {"type": "object"},
                     "settings": {"type": "object"},
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "jello_memory",
+            "description": "Keeps short notes about the player across chats. action remember: kind \
+                habit|taste|knows|goal|next (something they tend to do, something they like, \
+                something they know, what they want to reach, what to do next time) and text, \
+                one plain sentence. action change: id, text, and kind if it changes. action \
+                forget: id. Notes reach the next chat's instructions; jello_look memory reads them \
+                now. The player sees each note saved and can forget any of them. If they turned \
+                on asking first, Jello asks them before saving.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["remember", "change", "forget"]},
+                    "kind": {"type": "string", "enum": memory::KINDS},
+                    "text": {"type": "string"},
+                    "id": {"type": "integer"},
                 },
                 "required": ["action"],
             },
@@ -464,6 +494,7 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_notes" => write_notes(studio, arguments),
         "jello_theory" => theory::answer(studio, arguments),
         "jello_practice" => practice::answer(studio, arguments),
+        "jello_memory" => memory::answer(studio, arguments),
         _ => Err(format!("Jello has no tool called {name}")),
     };
     match answer {
@@ -514,6 +545,12 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
                 Err(why) => json!(why),
             },
             "songs" => to_json(&songs_view_of(&open_song)),
+            // The memory is locked alone, after the rest.
+            "skills" => {
+                let memory = studio.memory.lock().unwrap();
+                skills::skills_view(memory.folder())
+            }
+            "memory" => studio.memory.lock().unwrap().view(),
             _ => Value::Null,
         };
         state.insert(part, value);
@@ -1069,6 +1106,7 @@ mod tests {
         phrases: Phrases,
         offers: Mutex<Offers>,
         practice: Mutex<Practice>,
+        memory: Mutex<Memory>,
         says_yes: bool,
         asked: Mutex<Vec<String>>,
         shown: Mutex<Vec<(String, bool)>>,
@@ -1102,6 +1140,7 @@ mod tests {
                 phrases: Phrases::default(),
                 offers: Mutex::new(Offers::default()),
                 practice: Mutex::new(Practice::default()),
+                memory: Mutex::new(Memory::default()),
                 says_yes: true,
                 asked: Mutex::new(Vec::new()),
                 shown: Mutex::new(Vec::new()),
@@ -1117,6 +1156,7 @@ mod tests {
                 phrases: &self.phrases,
                 offers: &self.offers,
                 practice: &self.practice,
+                memory: &self.memory,
                 screen: self,
             };
             call(&studio, name, &arguments)
@@ -1569,5 +1609,56 @@ mod tests {
         let closed = test.call("jello_practice", json!({"action": "close"}));
         assert!(!closed.failed);
         assert!(test.practice.lock().unwrap().piece.is_none());
+    }
+
+    #[test]
+    fn memory_notes_are_kept_shown_and_asked_about_when_the_switch_is_on() {
+        let test = TestStudio::new();
+        let saved = test.call("jello_memory", json!({"action": "remember", "kind": "habit", "text": "Rushes bar 3"}));
+        assert!(!saved.failed, "{}", saved.text);
+        assert_eq!(saved.changes, vec!["Remembered a note"]);
+        let card = saved.card.unwrap();
+        assert_eq!(card["kind"], "memory");
+        assert_eq!(card["note"]["id"], 1);
+        assert!(test.asked.lock().unwrap().is_empty());
+
+        let state = json_text(&test.call("jello_look", json!({"parts": ["memory", "skills"]})));
+        assert_eq!(state["memory"]["notes"][0]["text"], "Rushes bar 3");
+        assert_eq!(state["skills"][6]["area"], "writing");
+
+        test.memory.lock().unwrap().ask_first = true;
+        let changed = test.call("jello_memory", json!({"action": "change", "id": 1, "text": "Rushes bar 4"}));
+        assert!(!changed.failed, "{}", changed.text);
+        assert_eq!(test.asked.lock().unwrap().len(), 1);
+        let forgot = test.call("jello_memory", json!({"action": "forget", "id": 1}));
+        assert_eq!(forgot.changes, vec!["Forgot a note"]);
+        assert!(test.call("jello_memory", json!({"action": "forget", "id": 1})).failed);
+        assert!(test.call("jello_memory", json!({"action": "remember", "kind": "mood", "text": "x"})).failed);
+        assert!(test.call("jello_memory", json!({"action": "shout"})).failed);
+    }
+
+    #[test]
+    fn a_note_the_player_says_no_to_is_not_saved() {
+        let mut test = TestStudio::new();
+        test.says_yes = false;
+        test.memory.lock().unwrap().ask_first = true;
+        let answer = test.call("jello_memory", json!({"action": "remember", "kind": "goal", "text": "Play at 90"}));
+        assert!(answer.failed);
+        assert!(answer.text.contains("said no"), "{}", answer.text);
+        assert!(test.memory.lock().unwrap().notes().is_empty());
+    }
+
+    #[test]
+    fn a_piece_names_the_skill_its_tries_count_toward() {
+        let test = TestStudio::new();
+        let notes = json!([{"note": "C4", "start": 0, "hold": 1}]);
+        let piece = json!({"name": "Swing", "area": "rhythm", "parts": [{"name": "Right", "hand": "right", "notes": notes}]});
+        let answer = test.call("jello_practice", json!({"action": "set", "piece": piece}));
+        assert!(!answer.failed, "{}", answer.text);
+        assert_eq!(test.practice.lock().unwrap().piece.as_ref().unwrap().area.as_deref(), Some("rhythm"));
+        let wrong = json!({"name": "Swing", "area": "dancing", "parts": [{"name": "Right", "hand": "right", "notes": notes}]});
+        let refused = test.call("jello_practice", json!({"action": "set", "piece": wrong}));
+        assert!(refused.failed);
+        assert!(refused.text.contains("area is one of"), "{}", refused.text);
     }
 }

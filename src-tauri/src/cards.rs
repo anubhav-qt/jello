@@ -20,6 +20,7 @@ use crate::harmony::{Chord, Key, Quality, chord_name, chord_of_name, guide, key_
 use crate::key_map::KeyMap;
 use crate::layer_notes::{self, WrittenNote};
 use crate::phrases::{self, Phrases};
+use crate::practice::{self, Practice};
 use crate::song_file::{note_name, note_of_name};
 use crate::song_session::OpenSong;
 use crate::sound_changes;
@@ -697,6 +698,62 @@ fn play_choice(studio: &Studio, kind: &str, picked: &Choice) -> Result<(), Strin
 
 // Makes `changes` to the song's sound, and returns the sound before and
 // after.
+// The panel's Practice on a melody choice: makes it the piece practised on
+// the Play tab, for the player's right hand, and tells the agent so with the
+// next message.
+#[tauri::command]
+pub fn practice_agent_option(app: AppHandle, offers: State<'_, Mutex<Offers>>, offer: u64, choice: usize) -> Result<(), String> {
+    let (kind, picked) = offers.lock().unwrap().choice(offer, choice)?;
+    if kind != "melody" {
+        return Err(String::from("only a melody can be practised"));
+    }
+    let piece = practice::piece_of(&practice_piece_of(&picked))?;
+    let tempo = app.state::<Mutex<Composer>>().lock().unwrap().tempo();
+    let view = {
+        let practice = app.state::<Mutex<Practice>>();
+        let mut practice = practice.lock().unwrap();
+        practice::set_piece(&mut practice, piece, &Value::Null, tempo)?;
+        practice.view()
+    };
+    let _ = app.emit("practice", view);
+    let practised = format!("the player set option {}, {}, of offer {offer} to practise", choice + 1, picked.name);
+    offers.lock().unwrap().used.push(practised);
+    Ok(())
+}
+
+// A melody choice as a practice piece: its notes as a right-hand part and
+// any chords, on the chord keys, as a left-hand part.
+fn practice_piece_of(picked: &Choice) -> Value {
+    let mut melody = Vec::new();
+    let mut chords = Vec::new();
+    if let Some(presses) = picked.phrase["presses"].as_array() {
+        for press in presses {
+            let mut note = Map::new();
+            for field in ["note", "chord", "notes", "start", "hold"] {
+                if let Some(value) = press.get(field) {
+                    note.insert(String::from(field), value.clone());
+                }
+            }
+            if press.get("chord").is_some() {
+                chords.push(Value::Object(note));
+            } else {
+                melody.push(Value::Object(note));
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    if !melody.is_empty() {
+        parts.push(json!({"name": "Melody", "hand": "right", "notes": melody}));
+    }
+    if !chords.is_empty() {
+        parts.push(json!({"name": "Chords", "hand": "left", "notes": chords}));
+    }
+    json!({
+        "name": picked.name,
+        "parts": parts,
+    })
+}
+
 fn take_sound_changes(studio: &Studio, changes: &Value) -> Result<(Sound, Sound), String> {
     let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
@@ -882,6 +939,33 @@ mod tests {
         };
         let lines = use_choice(&composer, &engine, "melody", &melody, Instant::now()).unwrap();
         assert_eq!(lines, vec![String::from("New layer 1: 1 notes over 1 bars")]);
+    }
+
+    #[test]
+    fn a_melody_choice_becomes_a_piece_for_both_hands() {
+        let melody = Choice {
+            name: String::from("As sung"),
+            phrase: json!({"unit": "beats", "presses": [
+                {"note": "C4", "start": 0, "hold": 1},
+                {"chord": "Am", "start": 1, "hold": "1/2"},
+            ]}),
+            chords: Vec::new(),
+            notes: Vec::new(),
+            changes: Value::Null,
+        };
+        let piece = practice::piece_of(&practice_piece_of(&melody)).unwrap();
+        assert_eq!(piece.name, "As sung");
+        assert_eq!(piece.parts.len(), 2);
+        assert_eq!(piece.parts[0].name, "Melody");
+        assert_eq!(piece.parts[0].hand, crate::scoring::Hand::Right);
+        assert_eq!(piece.parts[0].notes.len(), 1);
+        assert_eq!(piece.parts[1].name, "Chords");
+        assert_eq!(piece.parts[1].hand, crate::scoring::Hand::Left);
+        assert_eq!(piece.parts[1].notes.len(), 1);
+        let mut practice = Practice::default();
+        practice::set_piece(&mut practice, piece, &Value::Null, 90).unwrap();
+        assert_eq!(practice.settings.tempo, 90);
+        assert!(practice.piece.is_some());
     }
 
     #[test]

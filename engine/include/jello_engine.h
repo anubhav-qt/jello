@@ -684,6 +684,51 @@ int64_t jello_engine_song_position(JelloEngine* engine);
 // How many samples per second the engine makes (48000).
 int jello_engine_sample_rate(JelloEngine* engine);
 
+// The microphone (docs/design.md#voice). Its own device opens only while
+// listening, mono at jello_engine_sample_rate, and what it hears waits in a
+// ring of about 21 seconds until read. If nothing reads for that long, the
+// newest sound is dropped and counted. Call these from the same thread as
+// the functions above, except jello_engine_read_capture,
+// jello_engine_capture_peak and jello_engine_capture_dropped, which one other
+// thread may call while listening.
+
+// Asks the system which mics there are and returns how many. Their numbers
+// count from 0 until the next ask. While listening, it keeps the list it has.
+int jello_engine_list_inputs(JelloEngine* engine);
+
+// Copies mic `index`'s name, from the last jello_engine_list_inputs, into
+// `name`, which holds `length` bytes, cut short if it must, always ending in
+// a 0 byte. Returns false and copies nothing if there is no such mic.
+bool jello_engine_input_name(JelloEngine* engine, int index, char* name, int length);
+
+// The mic number for whichever mic the system picks.
+#define JELLO_DEFAULT_INPUT -1
+
+// Starts listening to mic `input`, a number from jello_engine_list_inputs or
+// JELLO_DEFAULT_INPUT, forgetting anything heard before. Returns true if it
+// listens, or was already. Returns false if there is no such mic, or it
+// can't be opened: none plugged in, or the player said no to Jello using it.
+bool jello_engine_start_capture(JelloEngine* engine, int input);
+
+// Stops listening and closes the mic. What was heard and not read yet can
+// still be read.
+void jello_engine_stop_capture(JelloEngine* engine);
+
+// Takes up to `most` of the oldest samples heard into `out` and returns how
+// many it took.
+int jello_engine_read_capture(JelloEngine* engine, float* out, int most);
+
+// The loudest sample heard, from 0 to about 1, since the last time this was
+// asked, for a level meter.
+float jello_engine_capture_peak(JelloEngine* engine);
+
+// How many samples were dropped since listening started, for want of room.
+uint64_t jello_engine_capture_dropped(JelloEngine* engine);
+
+// For tests, with no mic: puts `frames` samples in as if the mic heard them.
+// Does nothing while listening.
+void jello_engine_feed_capture(JelloEngine* engine, const float* samples, int frames);
+
 // Makes sound without speakers, for writing files. Fills `out` with `frames`
 // frames of stereo, left and right taking turns (left, right, left, ...),
 // so `out` must hold frames * 2 floats. Notes sent before this call take

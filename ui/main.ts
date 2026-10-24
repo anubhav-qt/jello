@@ -51,6 +51,10 @@ interface StageControls {
   showAgentKey(code: string, down: boolean): void;
   // The agent marked keys with a keys card.
   showAgentMarks(keys: { key: string; label: string }[]): void;
+  // Practice was set, changed or closed.
+  showPractice(view: PracticeView): void;
+  // The keys practice marks: the next to press and the ones after it.
+  showPracticeMarks(marks: PracticeMark[]): void;
 }
 
 // The page, once Rust has said what each key does.

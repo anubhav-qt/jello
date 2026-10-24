@@ -1,7 +1,7 @@
 // A safe Rust wrapper around the C++ engine's C API
 // (engine/include/jello_engine.h). The rest of the Rust core only uses this.
 
-use std::ffi::c_int;
+use std::ffi::{CStr, c_char, c_int};
 use std::time::{Duration, Instant};
 
 use crate::modulation::{
@@ -188,7 +188,24 @@ unsafe extern "C" {
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
+    fn jello_engine_list_inputs(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_input_name(engine: *mut JelloEngine, index: c_int, name: *mut c_char, length: c_int) -> bool;
+    fn jello_engine_start_capture(engine: *mut JelloEngine, input: c_int) -> bool;
+    fn jello_engine_stop_capture(engine: *mut JelloEngine);
+    fn jello_engine_read_capture(engine: *mut JelloEngine, out: *mut f32, most: c_int) -> c_int;
+    fn jello_engine_capture_peak(engine: *mut JelloEngine) -> f32;
+    fn jello_engine_capture_dropped(engine: *mut JelloEngine) -> u64;
+    #[cfg(test)]
+    fn jello_engine_feed_capture(engine: *mut JelloEngine, samples: *const f32, frames: c_int);
 }
+
+// `JELLO_DEFAULT_INPUT` in engine/include/jello_engine.h: whichever mic the
+// system picks.
+const DEFAULT_INPUT: c_int = -1;
+// The longest mic name kept, in bytes.
+const INPUT_NAME_BYTES: usize = 256;
+// How many samples heard are taken out of the engine at a time.
+const READ_CHUNK: usize = 4096;
 
 // Every frame of audio is one left sample and one right sample.
 pub const CHANNELS: usize = 2;
@@ -1788,6 +1805,88 @@ impl Engine {
         unsafe { jello_engine_render(self.raw, samples.as_mut_ptr(), frame_count) };
 
         samples
+    }
+
+    // The names of the mics there are now, in the order start_capture
+    // numbers them.
+    pub fn list_inputs(&mut self) -> Vec<String> {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let count = unsafe { jello_engine_list_inputs(self.raw) };
+        let mut names = Vec::new();
+        for index in 0..count {
+            let mut name = [0 as c_char; INPUT_NAME_BYTES];
+            // SAFETY: `raw` points to a live engine until Drop, and `name`
+            // holds INPUT_NAME_BYTES bytes, which the engine ends with a 0.
+            let found = unsafe { jello_engine_input_name(self.raw, index, name.as_mut_ptr(), INPUT_NAME_BYTES as c_int) };
+            if !found {
+                continue;
+            }
+            // SAFETY: the engine wrote a 0-ended name into `name`.
+            let text = unsafe { CStr::from_ptr(name.as_ptr()) };
+            names.push(text.to_string_lossy().into_owned());
+        }
+        names
+    }
+
+    // Starts listening to mic `input`, from list_inputs, or the system's
+    // pick for None, forgetting anything heard before.
+    pub fn start_capture(&mut self, input: Option<usize>) -> Result<(), String> {
+        let mut number = DEFAULT_INPUT;
+        if let Some(input) = input {
+            number = c_int::try_from(input).map_err(|_| String::from("there is no such mic"))?;
+        }
+        // SAFETY: `raw` points to a live engine until Drop.
+        let started = unsafe { jello_engine_start_capture(self.raw, number) };
+        if !started {
+            return Err(String::from(
+                "the mic couldn't be opened: plug one in, or let Jello use it in System Settings, Privacy & Security, Microphone",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn stop_capture(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_stop_capture(self.raw) };
+    }
+
+    // Takes out everything heard and not read yet, oldest first, mono at
+    // sample_rate.
+    pub fn read_capture(&mut self) -> Vec<f32> {
+        let mut heard = Vec::new();
+        let mut chunk = vec![0.0; READ_CHUNK];
+        loop {
+            // SAFETY: `raw` points to a live engine until Drop, and `chunk`
+            // has room for READ_CHUNK samples.
+            let taken = unsafe { jello_engine_read_capture(self.raw, chunk.as_mut_ptr(), READ_CHUNK as c_int) };
+            let taken = taken.max(0) as usize;
+            heard.extend_from_slice(&chunk[..taken]);
+            if taken < READ_CHUNK {
+                return heard;
+            }
+        }
+    }
+
+    // The loudest sample heard since the last ask, from 0 to about 1.
+    pub fn capture_peak(&mut self) -> f32 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_capture_peak(self.raw) }
+    }
+
+    // How many samples heard were dropped for want of room since listening
+    // started.
+    pub fn capture_dropped(&mut self) -> u64 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_capture_dropped(self.raw) }
+    }
+
+    // For tests: puts `samples` in as if the mic heard them.
+    #[cfg(test)]
+    pub fn feed_capture(&mut self, samples: &[f32]) {
+        let frames = c_int::try_from(samples.len()).expect("too many samples to feed at once");
+        // SAFETY: `raw` points to a live engine until Drop, and `samples`
+        // holds `frames` floats.
+        unsafe { jello_engine_feed_capture(self.raw, samples.as_ptr(), frames) };
     }
 }
 
@@ -10587,5 +10686,57 @@ mod tests {
             waves.push(wave);
         }
         assert!(waves[0] == waves[1], "a new engine does not start where the START_ values say");
+    }
+
+    // `CaptureRing::capacity` in engine/src/capture.h.
+    const CAPTURE_ROOM: usize = 1 << 20;
+
+    #[test]
+    fn what_the_mic_hears_comes_out_in_order_with_its_peak() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.read_capture(), Vec::<f32>::new());
+        assert_eq!(engine.capture_peak(), 0.0);
+
+        let mut heard = Vec::new();
+        for place in 0..10_000 {
+            heard.push((place as f32 * 0.01).sin() * 0.5);
+        }
+        heard[1234] = -0.9;
+        engine.feed_capture(&heard[..6000]);
+        engine.feed_capture(&heard[6000..]);
+        assert_eq!(engine.read_capture(), heard);
+        assert_eq!(engine.read_capture(), Vec::<f32>::new());
+        // The loudest, even though it was below 0, and only once.
+        assert_eq!(engine.capture_peak(), 0.9);
+        assert_eq!(engine.capture_peak(), 0.0);
+        assert_eq!(engine.capture_dropped(), 0);
+    }
+
+    #[test]
+    fn a_full_ring_drops_the_newest_and_counts_them() {
+        let mut engine = Engine::new().unwrap();
+        let mut heard = Vec::new();
+        for place in 0..CAPTURE_ROOM + 100 {
+            heard.push((place % 1000) as f32 / 1000.0);
+        }
+        engine.feed_capture(&heard);
+        engine.feed_capture(&[0.25; 50]);
+        assert_eq!(engine.capture_dropped(), 150);
+        let taken = engine.read_capture();
+        assert_eq!(taken.len(), CAPTURE_ROOM);
+        assert!(taken[..] == heard[..CAPTURE_ROOM]);
+
+        // Once read, there is room again, and the counting goes on around
+        // the ring's end.
+        engine.feed_capture(&[0.5; 10]);
+        assert_eq!(engine.read_capture(), vec![0.5; 10]);
+    }
+
+    #[test]
+    fn a_mic_that_is_not_there_is_refused() {
+        let mut engine = Engine::new().unwrap();
+        let count = engine.list_inputs().len();
+        assert!(engine.start_capture(Some(count + 5)).is_err());
+        engine.stop_capture();
     }
 }

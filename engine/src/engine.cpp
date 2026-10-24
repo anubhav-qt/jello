@@ -7,10 +7,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <vector>
 
 #include "miniaudio_settings.h"
+#include "capture.h"
 #include "conductor.h"
 
 namespace {
@@ -400,6 +402,18 @@ struct JelloEngine {
     Conductor conductor{sample_rate};
     ma_device device;
     bool audio_running = false;
+
+    // The microphone: its own device, open only while listening, so the
+    // system's mic light is only on then. Its sound waits in `heard`.
+    ma_device mic;
+    bool capturing = false;
+    CaptureRing heard;
+
+    // The mics found the last time jello_engine_list_inputs asked, and the
+    // context their ids belong to, made the first time it asks.
+    ma_context context;
+    bool has_context = false;
+    std::vector<ma_device_info> inputs;
 };
 
 namespace {
@@ -407,10 +421,19 @@ namespace {
 // miniaudio calls this on the audio thread every few milliseconds, whenever
 // the speakers need more sound. It must never lock, allocate, log or wait.
 void on_audio(ma_device* device, void* output, const void* input, ma_uint32 frames) {
-    (void)input;  // playback only, no microphone
+    (void)input;  // the speakers' device has no microphone
 
     JelloEngine* engine = static_cast<JelloEngine*>(device->pUserData);
     engine->conductor.render(static_cast<float*>(output), static_cast<int>(frames));
+}
+
+// miniaudio calls this on the mic's own audio thread whenever it has heard
+// more. The same rules: never lock, allocate, log or wait.
+void on_mic(ma_device* device, void* output, const void* input, ma_uint32 frames) {
+    (void)output;  // the mic's device has no speakers
+
+    JelloEngine* engine = static_cast<JelloEngine*>(device->pUserData);
+    engine->heard.write(static_cast<const float*>(input), static_cast<int>(frames));
 }
 
 }  // namespace
@@ -426,6 +449,10 @@ void jello_engine_destroy(JelloEngine* engine) {
         return;
     }
     jello_engine_stop_audio(engine);
+    jello_engine_stop_capture(engine);
+    if (engine->has_context) {
+        ma_context_uninit(&engine->context);
+    }
     delete engine;
 }
 
@@ -903,6 +930,116 @@ int64_t jello_engine_song_position(JelloEngine* engine) {
 int jello_engine_sample_rate(JelloEngine* engine) {
     (void)engine;  // every engine runs at the same rate, for now
     return sample_rate;
+}
+
+int jello_engine_list_inputs(JelloEngine* engine) {
+    if (engine->capturing) {
+        return static_cast<int>(engine->inputs.size());
+    }
+    if (!engine->has_context) {
+        if (ma_context_init(nullptr, 0, nullptr, &engine->context) != MA_SUCCESS) {
+            return 0;
+        }
+        engine->has_context = true;
+    }
+
+    ma_device_info* playback = nullptr;
+    ma_uint32 playback_count = 0;
+    ma_device_info* capture = nullptr;
+    ma_uint32 capture_count = 0;
+    engine->inputs.clear();
+    if (ma_context_get_devices(&engine->context, &playback, &playback_count, &capture, &capture_count) != MA_SUCCESS) {
+        return 0;
+    }
+    for (ma_uint32 i = 0; i < capture_count; i++) {
+        engine->inputs.push_back(capture[i]);
+    }
+    return static_cast<int>(engine->inputs.size());
+}
+
+bool jello_engine_input_name(JelloEngine* engine, int index, char* name, int length) {
+    if (!is_within_int(index, 0, static_cast<int>(engine->inputs.size()) - 1)) {
+        return false;
+    }
+    if (length < 1) {
+        return false;
+    }
+    const char* found = engine->inputs[static_cast<std::size_t>(index)].name;
+    std::size_t room = static_cast<std::size_t>(length) - 1;
+    std::size_t size = std::strlen(found);
+    if (size > room) {
+        size = room;
+    }
+    std::memcpy(name, found, size);
+    name[size] = '\0';
+    return true;
+}
+
+bool jello_engine_start_capture(JelloEngine* engine, int input) {
+    if (engine->capturing) {
+        return true;
+    }
+    if (input != JELLO_DEFAULT_INPUT) {
+        if (!is_within_int(input, 0, static_cast<int>(engine->inputs.size()) - 1)) {
+            return false;
+        }
+    }
+
+    // One channel of floats at the engine's rate. If the mic runs at another
+    // rate, or in stereo, miniaudio converts for us.
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.format = ma_format_f32;
+    config.capture.channels = 1;
+    config.sampleRate = sample_rate;
+    config.dataCallback = on_mic;
+    config.pUserData = engine;
+
+    ma_context* context = nullptr;
+    if (input != JELLO_DEFAULT_INPUT) {
+        config.capture.pDeviceID = &engine->inputs[static_cast<std::size_t>(input)].id;
+        context = &engine->context;
+    }
+
+    engine->heard.clear();
+    if (ma_device_init(context, &config, &engine->mic) != MA_SUCCESS) {
+        return false;
+    }
+    if (ma_device_start(&engine->mic) != MA_SUCCESS) {
+        ma_device_uninit(&engine->mic);
+        return false;
+    }
+    engine->capturing = true;
+    return true;
+}
+
+void jello_engine_stop_capture(JelloEngine* engine) {
+    if (!engine->capturing) {
+        return;
+    }
+    ma_device_uninit(&engine->mic);
+    engine->capturing = false;
+}
+
+int jello_engine_read_capture(JelloEngine* engine, float* out, int most) {
+    return engine->heard.read(out, most);
+}
+
+float jello_engine_capture_peak(JelloEngine* engine) {
+    return engine->heard.take_peak();
+}
+
+uint64_t jello_engine_capture_dropped(JelloEngine* engine) {
+    return engine->heard.dropped();
+}
+
+void jello_engine_feed_capture(JelloEngine* engine, const float* samples, int frames) {
+    if (engine->capturing) {
+        return;
+    }
+    if (frames < 0) {
+        return;
+    }
+    engine->heard.write(samples, frames);
 }
 
 void jello_engine_render(JelloEngine* engine, float* out, int frames) {

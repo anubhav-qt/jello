@@ -28,6 +28,7 @@ fn build_engine() {
         .file("../engine/src/snap.cpp")
         .file("../engine/src/song_player.cpp")
         .file("../engine/src/conductor.cpp")
+        .file("../engine/src/capture.cpp")
         .file("../engine/src/miniaudio.cpp")
         .compile("jello_engine");
 

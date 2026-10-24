@@ -3,8 +3,9 @@
 
 #pragma once
 
-// We only use miniaudio to talk to the speakers. Its file decoders, sound
-// generators and mixing engine are switched off: Jello makes its own sound.
+// We only use miniaudio to talk to the speakers and to listen to the mic.
+// Its file decoders, sound generators and mixing engine are switched off:
+// Jello makes its own sound.
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION

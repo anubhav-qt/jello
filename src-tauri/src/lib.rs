@@ -2,22 +2,30 @@
 // commands to call.
 
 mod agent;
+mod attachments;
+mod audio_file;
 mod cards;
 mod commands;
 mod compose;
+mod dictation;
 mod engine;
 mod harmony;
+mod hum;
 mod key_map;
 mod layer_cycles;
 mod layer_notes;
 mod listening;
 mod measures;
+mod memory;
+mod mic;
 mod modulation;
 mod phrases;
+mod pitch;
 mod practice;
 mod practice_run;
 mod presets;
 mod scoring;
+mod skills;
 mod song_file;
 mod song_session;
 mod songs;
@@ -56,6 +64,8 @@ pub fn run() {
     composer.send_all(&mut engine);
 
     tauri::Builder::default()
+        // The paperclip's file picker.
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(engine))
         .manage(agent::AgentHost::default())
         .manage(Mutex::new(tool_server::Questions::default()))
@@ -63,6 +73,10 @@ pub fn run() {
         .manage(Mutex::new(undo::Replies::default()))
         .manage(Mutex::new(cards::Offers::default()))
         .manage(Mutex::new(practice::Practice::default()))
+        .manage(Mutex::new(attachments::Attachments::default()))
+        .manage(Mutex::new(mic::Mic::default()))
+        .manage(Mutex::new(dictation::Dictation::default()))
+        .manage(Mutex::new(hum::Hum::default()))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
         .manage(Mutex::new(composer))
@@ -74,6 +88,9 @@ pub fn run() {
         .setup(|app| {
             let folders = folders_of(app.handle());
             app.manage(Mutex::new(OpenSong::new(folders)));
+            // The agent's notes about the player, from Music/Jello/Memory.
+            let memory = memory::Memory::load(memory::folder_of(app.handle()));
+            app.manage(Mutex::new(memory));
             open_last_song(app.handle());
             // The agent's tools reach the open song, so their server starts
             // once it is kept. Without it Jello still opens, with no agent.
@@ -97,11 +114,25 @@ pub fn run() {
             tool_server::answer_agent,
             cards::play_agent_option,
             cards::use_agent_option,
+            cards::practice_agent_option,
             practice::practice_view,
             practice::start_practice,
             practice::stop_practice,
             practice::practice_settings,
             practice::close_practice,
+            memory::memory_view,
+            memory::forget_memory,
+            memory::set_memory_ask_first,
+            attachments::agent_attach,
+            attachments::agent_unattach,
+            mic::mic_inputs,
+            dictation::dictation_status,
+            dictation::download_dictation_model,
+            dictation::start_dictation,
+            dictation::stop_dictation,
+            hum::start_hum,
+            hum::stop_hum,
+            hum::cancel_hum,
             undo::agent_reply_starts,
             undo::undo_agent_reply,
             commands::play_note,

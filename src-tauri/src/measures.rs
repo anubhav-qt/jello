@@ -250,7 +250,7 @@ fn bands_of(spectrum: &[f32], sample_rate: u32) -> [f32; 3] {
 // worked out once: the turns it multiplies by, and the Hann window that
 // fades each stretch in and out so its edges don't add frequencies of
 // their own.
-struct Fft {
+pub(crate) struct Fft {
     length: usize,
     cosines: Vec<f32>,
     sines: Vec<f32>,
@@ -259,7 +259,7 @@ struct Fft {
 
 impl Fft {
     // `length` must be a power of two.
-    fn new(length: usize) -> Fft {
+    pub(crate) fn new(length: usize) -> Fft {
         let mut cosines = Vec::new();
         let mut sines = Vec::new();
         for k in 0..length / 2 {
@@ -282,7 +282,7 @@ impl Fft {
 
     // The magnitude of each frequency in `samples`, up to `length` of them,
     // from 0 Hz to just under half the sample rate.
-    fn strengths(&self, samples: &[f32]) -> Vec<f32> {
+    pub(crate) fn strengths(&self, samples: &[f32]) -> Vec<f32> {
         let mut real = vec![0.0; self.length];
         let mut imaginary = vec![0.0; self.length];
         for (n, sample) in samples.iter().enumerate() {

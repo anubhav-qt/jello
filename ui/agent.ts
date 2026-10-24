@@ -169,6 +169,58 @@ export interface OptionsCard {
   options: OptionView[];
 }
 
+// A note the agent saved, changed or forgot (src-tauri/src/memory.rs).
+export interface MemoryNote {
+  id: number;
+  kind: "habit" | "taste" | "knows" | "goal" | "next";
+  text: string;
+  chat: string | null;
+  date: string;
+}
+
+export interface MemoryCard {
+  kind: "memory";
+  title: string;
+  action: "remember" | "change" | "forget";
+  note: MemoryNote;
+}
+
+// A skill area's level out of 10 and its trend (src-tauri/src/skills.rs).
+// Writing comes with measured false and nothing else.
+export interface SkillView {
+  area: string;
+  measured: boolean;
+  tries?: number;
+  level?: number | null;
+  trend?: "up" | "down" | "steady" | "new" | null;
+  recent?: number[];
+}
+
+// What the Memory page shows.
+export interface MemoryView {
+  ask_first: boolean;
+  notes: MemoryNote[];
+  skills: SkillView[];
+}
+
+export const NOTE_KINDS: { kind: MemoryNote["kind"]; words: string; one: string }[] = [
+  { kind: "habit", words: "Habits", one: "Habit" },
+  { kind: "taste", words: "Tastes", one: "Taste" },
+  { kind: "knows", words: "Knows", one: "Knows" },
+  { kind: "goal", words: "Goals", one: "Goal" },
+  { kind: "next", words: "Next", one: "Next" },
+];
+
+// A note's kind as one word, like "Habit".
+export function noteKindWord(kind: string): string {
+  for (const each of NOTE_KINDS) {
+    if (each.kind === kind) {
+      return each.one;
+    }
+  }
+  return kind;
+}
+
 export type Card =
   | KeysCard
   | LaneCard
@@ -179,6 +231,7 @@ export type Card =
   | PressesCard
   | ListenCard
   | PracticeCard
+  | MemoryCard
   | OptionsCard;
 
 // Text from the agent, as it arrives.
@@ -197,9 +250,50 @@ export interface Question {
   answer: boolean | null;
 }
 
+// A file that went with a message: its name and kind ("image", "pdf",
+// "video", "audio" or "text").
+export interface AttachedFile {
+  name: string;
+  kind: string;
+}
+
+// A file read and waiting to go with the next message, and what was taken
+// from it, like "3 pages".
+export interface AttachmentCard extends AttachedFile {
+  id: number;
+  taken: string;
+}
+
+const ATTACHMENT_KIND_WORDS: Record<string, string> = {
+  image: "Picture",
+  pdf: "PDF",
+  video: "Video",
+  audio: "Sound",
+  text: "Text",
+  hum: "Hum",
+};
+
+export function attachmentKindWord(kind: string): string {
+  const word = ATTACHMENT_KIND_WORDS[kind];
+  if (word === undefined) {
+    return kind;
+  }
+  return word;
+}
+
+// What the paperclip's picker offers.
+export const ATTACHABLE_ENDINGS = [
+  "png", "jpg", "jpeg", "gif", "webp", "pdf",
+  "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "aiff", "aif", "wma",
+  "mp4", "mov", "m4v", "webm", "mkv", "avi", "wmv",
+  "txt", "md", "csv", "json", "lrc", "abc", "xml",
+];
+
 // What the player said, and the agent's run that answered it.
 export interface Turn {
   said: string;
+  // The files that went with it.
+  attachments: AttachedFile[];
   job: Job;
   // Whether the job changed for this turn, so the panel says "Now Composer".
   jobChanged: boolean;
@@ -234,14 +328,22 @@ export interface ChatView {
 // the events of its run.
 export interface SavedTurn {
   said: string;
+  attachments?: AttachedFile[];
   job: Job | null;
   jobChanged: boolean;
   events: HostEvent[];
 }
 
-export function newTurn(said: string, job: Job, jobChanged: boolean, reply: number | null): Turn {
+export function newTurn(
+  said: string,
+  job: Job,
+  jobChanged: boolean,
+  reply: number | null,
+  attachments: AttachedFile[] = [],
+): Turn {
   return {
     said,
+    attachments,
     job,
     jobChanged,
     reply,
@@ -263,7 +365,7 @@ export function replayedTurn(saved: SavedTurn): Turn {
   if (saved.job !== null) {
     job = saved.job;
   }
-  const turn = newTurn(saved.said, job, saved.jobChanged, null);
+  const turn = newTurn(saved.said, job, saved.jobChanged, null, saved.attachments ?? []);
   turn.replayed = true;
   let stopped = false;
   for (const event of saved.events) {

@@ -1,6 +1,7 @@
 <!-- The choices jello_options offers (docs/design.md#showing-instead-of-telling):
      2 to 4 chords, melodies or sounds, each with Play and Use. Play plays
      it on the keys; Use puts it in the song, and its Undo takes it back.
+     A melody also has Practice, which sets it on the Play tab.
      Rust keeps the choices, so the panel only sends the offer's number and
      the choice's place (src-tauri/src/cards.rs). -->
 <script lang="ts">
@@ -41,6 +42,16 @@
       problem = String(error);
     }
     onSongChanged();
+  }
+
+  // A melody goes to the Play tab to practise.
+  async function practise(choice: number) {
+    problem = "";
+    try {
+      await invoke("practice_agent_option", { offer: card.offer, choice });
+    } catch (error) {
+      problem = String(error);
+    }
   }
 
   async function undo() {
@@ -114,6 +125,11 @@
               class="agent-button-plain"
               disabled={useLocked()}
               onclick={() => use(place)}>Use</button
+            >
+          {/if}
+          {#if card.choice === "melody"}
+            <button type="button" class="agent-button-plain" disabled={working} onclick={() => practise(place)}
+              >Practice</button
             >
           {/if}
         </span>

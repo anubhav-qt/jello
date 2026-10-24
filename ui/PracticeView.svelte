@@ -48,11 +48,15 @@
   let hit: number[] = $state([]);
   let missed: number[] = $state([]);
   let answered = $state(0);
+  // What the running try says it is doing, like "Playing".
+  let livePhase = $state("");
   let problem = $state("");
   let frame = 0;
   const unlisteners: UnlistenFn[] = [];
 
   let running = $derived(view.running === true);
+  // The settings tiles fold into one line, so the lane and results fit.
+  let settingsOpen = $state(false);
   let settings = $derived(view.settings);
   let lane = $derived(view.lane);
   let tries = $derived(view.tries ?? []);
@@ -116,6 +120,11 @@
       }),
     );
     unlisteners.push(
+      await listen<{ phase: string }>("practice-phase", (event) => {
+        livePhase = event.payload.phase;
+      }),
+    );
+    unlisteners.push(
       await listen<{ number: number; coach: boolean }>("practice-try", (event) => {
         onTry(event.payload.number, event.payload.coach);
       }),
@@ -167,6 +176,9 @@
     }
     if (started !== null && started.phase === "answer") {
       return `Your turn: ${answered} played`;
+    }
+    if (livePhase !== "") {
+      return livePhase;
     }
     return view.phase ?? "";
   });
@@ -277,6 +289,35 @@
     return `+${settings.ladder.step} to ${settings.ladder.top}`;
   }
 
+  // The settings in one line, for when the tiles are folded.
+  function settingsWords(): string {
+    if (settings === undefined) {
+      return "";
+    }
+    const words = [MODE_WORDS[settings.mode], `${settings.hands} hands`, `${settings.level}, ${view.window_ms} ms`];
+    words.push(`count in ${settings.count_in}`);
+    words.push(`click ${onOff(settings.click).toLowerCase()}`);
+    if (settings.wait) {
+      words.push("wait");
+    }
+    if (settings.swing !== 50) {
+      words.push(`swing ${settings.swing}%`);
+    }
+    if (settings.section !== null) {
+      words.push(`section ${settings.section}`);
+    }
+    if (settings.loop) {
+      words.push("loop");
+    }
+    if (settings.ladder !== null) {
+      words.push(`ladder ${ladderWords()}`);
+    }
+    if (settings.coach) {
+      words.push("coach");
+    }
+    return words.join(" · ");
+  }
+
   function tallyRows(attempt: PracticeTry): { name: string; tally: Tally }[] {
     const rows: { name: string; tally: Tally }[] = [];
     if (attempt.left !== undefined && attempt.left !== null) {
@@ -317,6 +358,13 @@
       </div>
       <span class="practice-phase" class:is-live={running}>{phaseWords}</span>
       <div class="practice-buttons">
+        <button
+          type="button"
+          class="practice-button"
+          class:is-open={settingsOpen}
+          disabled={running}
+          onclick={() => (settingsOpen = !settingsOpen)}>Settings</button
+        >
         {#if running}
           <button type="button" class="practice-button is-live" onclick={stop}>Stop</button>
         {:else}
@@ -326,62 +374,66 @@
       </div>
     </header>
 
-    <div class="practice-tiles">
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ mode: nextOf(MODES, settings.mode) })}>
-        <span class="practice-tile-name">Mode</span>
-        <span class="practice-tile-value">{MODE_WORDS[settings.mode]}</span>
-      </button>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ hands: nextOf(HANDS, settings.hands) })}>
-        <span class="practice-tile-name">Hands</span>
-        <span class="practice-tile-value">{capitalized(settings.hands)}</span>
-      </button>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ level: nextOf(LEVELS, settings.level as (typeof LEVELS)[number]) })}>
-        <span class="practice-tile-name">Level</span>
-        <span class="practice-tile-value">{capitalized(settings.level)} {view.window_ms} ms</span>
-      </button>
-      <div class="practice-tile">
-        <span class="practice-tile-name">Tempo</span>
-        <span class="practice-tile-value">
-          <button type="button" class="practice-step" disabled={running} onclick={() => change({ tempo: settings.tempo - 5 })}>−</button>
-          {settings.tempo}
-          <button type="button" class="practice-step" disabled={running} onclick={() => change({ tempo: settings.tempo + 5 })}>+</button>
-        </span>
-      </div>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ count_in: (settings.count_in + 1) % 3 })}>
-        <span class="practice-tile-name">Count in</span>
-        <span class="practice-tile-value">{settings.count_in} {settings.count_in === 1 ? "bar" : "bars"}</span>
-      </button>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ click: !settings.click })}>
-        <span class="practice-tile-name">Click</span>
-        <span class="practice-tile-value">{onOff(settings.click)}</span>
-      </button>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ wait: !settings.wait })}>
-        <span class="practice-tile-name">Wait</span>
-        <span class="practice-tile-value">{onOff(settings.wait)}</span>
-      </button>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ swing: nextOf(SWINGS, settings.swing as (typeof SWINGS)[number]) })}>
-        <span class="practice-tile-name">Swing</span>
-        <span class="practice-tile-value">{settings.swing}%</span>
-      </button>
-      {#if view.piece.sections.length > 0}
-        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ section: sectionAfter(settings.section) })}>
-          <span class="practice-tile-name">Section</span>
-          <span class="practice-tile-value">{sectionWords(settings.section)}</span>
+    {#if !settingsOpen || running}
+      <p class="practice-summary">{settingsWords()}</p>
+    {:else}
+      <div class="practice-tiles">
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ mode: nextOf(MODES, settings.mode) })}>
+          <span class="practice-tile-name">Mode</span>
+          <span class="practice-tile-value">{MODE_WORDS[settings.mode]}</span>
         </button>
-      {/if}
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ loop: !settings.loop })}>
-        <span class="practice-tile-name">Loop</span>
-        <span class="practice-tile-value">{onOff(settings.loop)}</span>
-      </button>
-      <div class="practice-tile">
-        <span class="practice-tile-name">Ladder</span>
-        <span class="practice-tile-value">{ladderWords()}</span>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ hands: nextOf(HANDS, settings.hands) })}>
+          <span class="practice-tile-name">Hands</span>
+          <span class="practice-tile-value">{capitalized(settings.hands)}</span>
+        </button>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ level: nextOf(LEVELS, settings.level as (typeof LEVELS)[number]) })}>
+          <span class="practice-tile-name">Level</span>
+          <span class="practice-tile-value">{capitalized(settings.level)} {view.window_ms} ms</span>
+        </button>
+        <div class="practice-tile">
+          <span class="practice-tile-name">Tempo</span>
+          <span class="practice-tile-value">
+            <button type="button" class="practice-step" disabled={running} onclick={() => change({ tempo: settings.tempo - 5 })}>−</button>
+            {settings.tempo}
+            <button type="button" class="practice-step" disabled={running} onclick={() => change({ tempo: settings.tempo + 5 })}>+</button>
+          </span>
+        </div>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ count_in: (settings.count_in + 1) % 3 })}>
+          <span class="practice-tile-name">Count in</span>
+          <span class="practice-tile-value">{settings.count_in} {settings.count_in === 1 ? "bar" : "bars"}</span>
+        </button>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ click: !settings.click })}>
+          <span class="practice-tile-name">Click</span>
+          <span class="practice-tile-value">{onOff(settings.click)}</span>
+        </button>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ wait: !settings.wait })}>
+          <span class="practice-tile-name">Wait</span>
+          <span class="practice-tile-value">{onOff(settings.wait)}</span>
+        </button>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ swing: nextOf(SWINGS, settings.swing as (typeof SWINGS)[number]) })}>
+          <span class="practice-tile-name">Swing</span>
+          <span class="practice-tile-value">{settings.swing}%</span>
+        </button>
+        {#if view.piece.sections.length > 0}
+          <button type="button" class="practice-tile" disabled={running} onclick={() => change({ section: sectionAfter(settings.section) })}>
+            <span class="practice-tile-name">Section</span>
+            <span class="practice-tile-value">{sectionWords(settings.section)}</span>
+          </button>
+        {/if}
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ loop: !settings.loop })}>
+          <span class="practice-tile-name">Loop</span>
+          <span class="practice-tile-value">{onOff(settings.loop)}</span>
+        </button>
+        <div class="practice-tile">
+          <span class="practice-tile-name">Ladder</span>
+          <span class="practice-tile-value">{ladderWords()}</span>
+        </div>
+        <button type="button" class="practice-tile" disabled={running} onclick={() => change({ coach: !settings.coach })}>
+          <span class="practice-tile-name">Coach after every try</span>
+          <span class="practice-tile-value">{onOff(settings.coach)}</span>
+        </button>
       </div>
-      <button type="button" class="practice-tile" disabled={running} onclick={() => change({ coach: !settings.coach })}>
-        <span class="practice-tile-name">Coach after every try</span>
-        <span class="practice-tile-value">{onOff(settings.coach)}</span>
-      </button>
-    </div>
+    {/if}
 
     <div class="practice-lane-box">
       <div class="practice-parts">

@@ -26,6 +26,7 @@ use crate::engine::{Engine, LooperState};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::practice::{self, BEATS_PER_BAR, MOST_PASSES, Piece, Plan, Practice, Settings, Sounding};
 use crate::scoring::{self, Expected, Heard};
+use crate::skills;
 
 // How often the runner looks at the clock, and how often it tells the
 // Play tab.
@@ -417,7 +418,8 @@ impl Runner<'_> {
         }
         let mut backing = Backing::new(plan.jello.clone());
         let end_ms = last_expected_end.max(backing.last_end_ms()) + window;
-        let (mut clock, mut clicking) = self.count_in(&plan, end_ms, hidden);
+        let mut clock = self.count_in(&plan, end_ms, hidden);
+        let mut counting = clock.now_ms() < 0.0;
 
         let mut last_progress = Instant::now();
         let mut heard_count = 0;
@@ -427,10 +429,9 @@ impl Runner<'_> {
                 return None;
             }
             let now_ms = clock.now_ms();
-            if now_ms >= 0.0 && clicking && !self.settings.click {
-                self.engine().stop_click();
-                clicking = false;
-                set_phase(self.app, "Playing");
+            if counting && now_ms >= 0.0 {
+                counting = false;
+                self.end_count_in();
             }
             backing.play_until(&mut self.engine(), now_ms);
             let heard = clock.heard(self.app);
@@ -465,7 +466,7 @@ impl Runner<'_> {
 
     // Starts the count in, and the click with it, and says the try started.
     // Returns the try's clock and whether the click is on.
-    fn count_in(&self, plan: &Plan, end_ms: f64, hidden: bool) -> (Clock, bool) {
+    fn count_in(&self, plan: &Plan, end_ms: f64, hidden: bool) -> Clock {
         let count_in_ms = self.count_in_ms(plan);
         let clicking = self.settings.click || count_in_ms > 0.0;
         // The clock reads Compose's, which is locked before the engine.
@@ -489,7 +490,16 @@ impl Runner<'_> {
                 "tempo": self.tempo,
             }),
         );
-        (clock, clicking)
+        clock
+    }
+
+    // The count in is over: the click stops unless it was asked for all
+    // through, and the try says it is playing.
+    fn end_count_in(&self) {
+        if !self.settings.click {
+            self.engine().stop_click();
+        }
+        set_phase(self.app, "Playing");
     }
 
     fn end_sound(&self, backing: &mut Backing) {
@@ -549,6 +559,11 @@ impl Runner<'_> {
             let Some(key) = practice::key_for(&key_map, &note.pitches) else {
                 continue;
             };
+            // A key played again later keeps its nearest mark.
+            let marked = marks.iter().any(|mark: &Value| mark["key"] == key.as_str());
+            if marked {
+                continue;
+            }
             let state = if group == 0 { "next" } else { "later" };
             marks.push(json!({"key": key, "label": (group + 1).to_string(), "state": state}));
         }
@@ -669,17 +684,17 @@ impl Runner<'_> {
         let window = self.settings.window_ms();
         let mut backing = Backing::new(plan.jello.clone());
         let end_ms = plan.length_ms.max(backing.last_end_ms());
-        let (mut clock, mut clicking) = self.count_in(&plan, end_ms, true);
+        let mut clock = self.count_in(&plan, end_ms, true);
+        let mut counting = clock.now_ms() < 0.0;
         loop {
             if self.stopped() {
                 self.end_sound(&mut backing);
                 return None;
             }
             let now_ms = clock.now_ms();
-            if now_ms >= 0.0 && clicking && !self.settings.click {
-                self.engine().stop_click();
-                clicking = false;
-                set_phase(self.app, "Playing");
+            if counting && now_ms >= 0.0 {
+                counting = false;
+                self.end_count_in();
             }
             backing.play_until(&mut self.engine(), now_ms);
             if now_ms > end_ms {
@@ -812,6 +827,7 @@ pub fn summary_of(number: usize, results: Value, settings: &Settings, piece: &Pi
         "try": number,
         "at": at,
         "piece": piece.name,
+        "area": skills::area_for(piece.area.as_deref(), &settings.mode),
         "mode": settings.mode,
         "wait": settings.wait,
         "tempo": tempo,

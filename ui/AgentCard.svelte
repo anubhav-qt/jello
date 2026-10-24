@@ -1,13 +1,14 @@
 <!-- A card Jello draws in the agent's reply (docs/design.md#showing-instead-of-telling):
      keys marked, a lane of notes, a progression, takes compared, a chart,
-     a sound, the player's presses or a render's meters. Rust checked every
-     field (src-tauri/src/cards.rs). Options have their own card,
-     AgentOptions.svelte. -->
+     a sound, the player's presses, a render's meters, practice set or a
+     note remembered. Rust checked every field (src-tauri/src/cards.rs).
+     Options have their own card, AgentOptions.svelte. -->
 <script lang="ts">
   import {
     envelopePath,
     envelopeSpanMs,
     filterPath,
+    noteKindWord,
     gapLabel,
     laneRange,
     shareOf,
@@ -36,6 +37,12 @@
   // The chart's drawing.
   const CHART_WIDTH = 400;
   const CHART_HEIGHT = 90;
+
+  const MEMORY_WORDS: Record<string, string> = {
+    remember: "Remembered",
+    change: "Changed",
+    forget: "Forgot",
+  };
 
   const FIT_WORDS: Record<string, string> = {
     in_key: "in key",
@@ -350,5 +357,11 @@
       <span><span class="agent-quiet">Tempo</span> {card.view.settings.tempo}</span>
     </div>
     <p class="agent-quiet agent-card-note">On the Play tab</p>
+  {:else if card.kind === "memory"}
+    <p class="agent-memory-card-top">
+      <span>{MEMORY_WORDS[card.action]}</span>
+      <span class="agent-quiet">{noteKindWord(card.note.kind)} {card.note.id}</span>
+    </p>
+    <p class="agent-memory-card-text" class:is-forgotten={card.action === "forget"}>{card.note.text}</p>
   {/if}
 </div>

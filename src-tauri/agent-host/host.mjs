@@ -17,7 +17,7 @@
 // it went through.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -28,14 +28,14 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { INSTRUCTIONS, JOBS, jobLine } from "./instructions.mjs";
+import { JOBS, jobLine, systemPromptWith } from "./instructions.mjs";
 
 // How much of a tool's answer the panel is told. A look at the whole song
 // can be long; the model still gets all of it.
 const MOST_ANSWER_CHARACTERS = 50000;
 
 // Providers shown first when signing in.
-const FIRST_PROVIDERS = ["anthropic", "openai"];
+const FIRST_PROVIDERS = ["anthropic", "openai", "google"];
 
 // The custom entries Jello keeps in a chat's file: how it began, and each
 // job it was switched to.
@@ -211,7 +211,8 @@ function contentText(content) {
   return text;
 }
 
-// What the player said, without the job line Jello put before it.
+// What the player said, without the job line, the used options and the
+// attached files Jello put before it.
 export function withoutJobLine(text) {
   let said = text;
   for (const job of JOBS) {
@@ -226,7 +227,104 @@ export function withoutJobLine(text) {
       said = said.slice(end + 3);
     }
   }
+  if (said.startsWith(ATTACHED_START)) {
+    const end = said.indexOf(ATTACHED_END);
+    if (end !== -1) {
+      said = said.slice(end + ATTACHED_END.length);
+    }
+  }
   return said;
+}
+
+// The files attached to a message: what the model reads about each, put
+// before what the player said between two marks, so a saved chat can show
+// them as files again.
+const ATTACHED_START = "<jello-attachments>\n";
+const ATTACHED_END = "\n</jello-attachments>\n\n";
+const NO_PICTURES =
+  "(The model in use can't see pictures, so the pictures of these files were left out. Say so if they matter.)";
+
+// The block for `attachments` ({name, kind, text}). `seesPictures` says
+// whether the model takes pictures.
+export function attachedBlock(attachments, seesPictures) {
+  const parts = [];
+  for (const attachment of attachments) {
+    parts.push(`[Attached ${attachment.kind}: ${attachment.name}]\n${attachment.text}`);
+  }
+  let hasPictures = false;
+  for (const attachment of attachments) {
+    if ((attachment.images ?? []).length > 0) {
+      hasPictures = true;
+    }
+  }
+  if (hasPictures && !seesPictures) {
+    parts.push(NO_PICTURES);
+  }
+  return `${ATTACHED_START}${parts.join("\n\n")}${ATTACHED_END}`;
+}
+
+// The files a sent message had, as {name, kind}, from its block.
+export function attachedFiles(text) {
+  const files = [];
+  const start = text.indexOf(ATTACHED_START);
+  if (start === -1) {
+    return files;
+  }
+  const end = text.indexOf(ATTACHED_END, start);
+  if (end === -1) {
+    return files;
+  }
+  const block = text.slice(start + ATTACHED_START.length, end);
+  for (const line of block.split("\n")) {
+    if (!line.startsWith("[Attached ") || !line.endsWith("]")) {
+      continue;
+    }
+    const inside = line.slice("[Attached ".length, -1);
+    const colon = inside.indexOf(": ");
+    if (colon === -1) {
+      continue;
+    }
+    files.push({ kind: inside.slice(0, colon), name: inside.slice(colon + 2) });
+  }
+  return files;
+}
+
+// An attachment's pictures, as pi takes them.
+function picturesOf(attachment) {
+  const pictures = [];
+  for (const image of attachment.images ?? []) {
+    pictures.push({ type: "image", data: image.data, mimeType: image.mimeType });
+  }
+  return pictures;
+}
+
+// The largest file kept beside a chat, in bytes: bigger ones stay where
+// they are.
+const LARGEST_KEPT_FILE = 200_000_000;
+
+// Copies each attached file into the folder beside the chat file
+// `chatPath` (its name without .jsonl), so the chat keeps what it was
+// given. A file that can't be copied is left where it is.
+export function keepAttached(chatPath, attachments) {
+  if (attachments.length === 0) {
+    return;
+  }
+  const folder = chatPath.replace(/\.jsonl$/, "");
+  try {
+    mkdirSync(folder, { recursive: true });
+  } catch {
+    return;
+  }
+  for (const attachment of attachments) {
+    try {
+      if (statSync(attachment.path).size > LARGEST_KEPT_FILE) {
+        continue;
+      }
+      copyFileSync(attachment.path, join(folder, basename(attachment.path)));
+    } catch {
+      continue;
+    }
+  }
 }
 
 // The line that tells the agent which options the player used since its
@@ -288,7 +386,8 @@ export function replayedTurns(entries) {
     }
     const message = entry.message;
     if (message.role === "user") {
-      turn = { said: withoutJobLine(contentText(message.content)), job, jobChanged, events: [] };
+      const text = contentText(message.content);
+      turn = { said: withoutJobLine(text), attachments: attachedFiles(text), job, jobChanged, events: [] };
       turns.push(turn);
       jobChanged = false;
     } else if (turn !== null && message.role === "assistant") {
@@ -459,7 +558,14 @@ export class Host {
   async handle(message) {
     if (message.type === "send") {
       // Not waited for, so Stop can come in while it answers.
-      this.send(message.text, message.job, message.song ?? "", message.used ?? []);
+      this.send(
+        message.text,
+        message.job,
+        message.song ?? "",
+        message.used ?? [],
+        message.memory ?? "",
+        message.attachments ?? [],
+      );
       return;
     }
     if (message.type === "chats") {
@@ -501,8 +607,9 @@ export class Host {
     this.tell({ type: "error", message: `The agent host doesn't know "${message.type}"` });
   }
 
-  // The session for the chat in `chat`, pi's session manager.
-  async makeSession(chat) {
+  // The session for the chat in `chat`, pi's session manager, begun with
+  // `memory`, the notes about the player as they were when it began.
+  async makeSession(chat, memory) {
     const { session } = await createAgentSession({
       cwd: this.agentDir,
       agentDir: this.agentDir,
@@ -511,7 +618,7 @@ export class Host {
       thinkingLevel: "medium",
       noTools: "builtin",
       customTools: this.tools,
-      resourceLoader: jelloResources(INSTRUCTIONS),
+      resourceLoader: jelloResources(systemPromptWith(memory)),
       sessionManager: chat,
       settingsManager: SettingsManager.inMemory({}),
     });
@@ -520,16 +627,20 @@ export class Host {
     this.chat = chat;
   }
 
-  // A new chat, saved in chatsDir, begun on the song `song`.
-  async startChat(song) {
+  // A new chat, saved in chatsDir, begun on the song `song` with the
+  // notes `memory`. Both are kept in the chat, so opening it again gives
+  // the same instructions and the cache holds.
+  async startChat(song, memory) {
     const chat = SessionManager.create(this.agentDir, this.chatsDir);
-    chat.appendCustomEntry(CHAT_ENTRY, { song });
-    await this.makeSession(chat);
+    chat.appendCustomEntry(CHAT_ENTRY, { song, memory });
+    await this.makeSession(chat, memory);
   }
 
   // Sends the player's `text` to the chat, as `job`: "tutor", "composer"
-  // or "producer". A new chat begins on the song `song`.
-  async send(text, job, song, used = []) {
+  // or "producer". A new chat begins on the song `song`, with the notes
+  // `memory`. `attachments` are the files attached ({name, path, kind,
+  // text, images}).
+  async send(text, job, song, used = [], memory = "", attachments = []) {
     if (this.answering) {
       this.tell({ type: "error", message: "The agent is still answering. Stop it first." });
       return;
@@ -543,10 +654,21 @@ export class Host {
     this.tell({ type: "run_start" });
     try {
       if (this.session === null) {
-        await this.startChat(song);
+        await this.startChat(song, memory);
         this.tell({ type: "chat", path: this.chat.getSessionFile() });
       }
       let prompt = text;
+      const images = [];
+      if (attachments.length > 0) {
+        const seesPictures = (this.model.input ?? []).includes("image");
+        prompt = `${attachedBlock(attachments, seesPictures)}${prompt}`;
+        if (seesPictures) {
+          for (const attachment of attachments) {
+            images.push(...picturesOf(attachment));
+          }
+        }
+        keepAttached(this.chat.getSessionFile(), attachments);
+      }
       if (used.length > 0) {
         prompt = `${usedLine(used)}\n\n${prompt}`;
       }
@@ -555,7 +677,7 @@ export class Host {
         this.job = job;
         this.chat.appendCustomEntry(JOB_ENTRY, { job });
       }
-      await this.session.prompt(prompt);
+      await this.session.prompt(prompt, { images });
     } catch (error) {
       this.tell({ type: "error", message: String(error.message ?? error) });
     } finally {
@@ -715,12 +837,19 @@ export class Host {
     const chat = SessionManager.open(path, this.chatsDir);
     const entries = chat.getBranch();
     let job = null;
+    let memory = "";
     for (const entry of entries) {
-      if (entry.type === "custom" && entry.customType === JOB_ENTRY) {
+      if (entry.type !== "custom") {
+        continue;
+      }
+      if (entry.customType === JOB_ENTRY) {
         job = entry.data.job;
       }
+      if (entry.customType === CHAT_ENTRY) {
+        memory = String(entry.data.memory ?? "");
+      }
     }
-    await this.makeSession(chat);
+    await this.makeSession(chat, memory);
     this.job = job;
     this.tell({ type: "chat_opened", path, job, turns: replayedTurns(entries) });
   }

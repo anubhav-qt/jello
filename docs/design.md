@@ -1682,7 +1682,11 @@ comes before the sampler, and replaces the Tutor of
   uses pi's SDK to keep the session running, swap the job's instructions,
   and connect to the tool server. The first time the panel opens it shows
   Sign in: pick a provider, then sign in through the browser or paste an
-  API key (`ModelRuntime.login`). pi keeps the login in Jello's settings
+  API key (`ModelRuntime.login`). Three providers come first: Anthropic
+  (Claude Pro or Max sign-in), OpenAI (Sign in with ChatGPT) and Google (an
+  AI Studio API key); the rest sit under More providers. Google's
+  Antigravity sign-in is left out: pi dropped it in 0.71.0 and Google bans
+  accounts that use it from other tools. pi keeps the login in Jello's settings
   folder, readable by the user's account only, apart from a terminal pi
   login; the webview never sees the token. A model picker sits in the
   panel's corner. Development uses the same host with the project's
@@ -1857,23 +1861,37 @@ Beginner to Master, are the Tutor's path, in seven areas.
   before sending:
   - An image goes as it is, scaled to the provider's limit.
   - A PDF goes as each page's picture and its text, up to 20 pages, read
-    with pdfium through `pdfium-render`.
-  - A video goes as about 12 frames plus measures of its sound: tempo, key,
-    loudness, brightness, and the melody's notes when one is clear. Decoded
-    with FFmpeg's LGPL build.
+    with pdfium through `pdfium-render`. The pdfium library is loaded from
+    `pdfium` in Jello's settings folder, `JELLO_PDFIUM`, or the system's.
+  - A video goes as 12 frames plus measures of its sound: tempo, key,
+    loudness, brightness, and the melody's notes when one is clear.
   - An audio file, like a reference track, goes as measures only.
-- Licenses to check in that slice: pdfium (BSD style), `pdfium-render`
-  (MIT or Apache-2.0), FFmpeg LGPL; all fit GPL-3.0.
+  - A text file goes as its words, up to 40,000 characters.
+- FFmpeg decodes video and audio as a separate program (Homebrew's, or
+  `JELLO_FFMPEG` and `JELLO_FFPROBE`), so its GPL build is fine and nothing
+  links to it. Licenses: pdfium (BSD style), `pdfium-render` (MIT or
+  Apache-2.0); all fit GPL-3.0.
+- Up to 8 files wait at once (`attachments.rs`). Sent files are copied into
+  the folder beside the chat, up to 200 MB each.
 
 #### Voice
 
-- **Mic.** The C++ engine opens the input device through miniaudio, as it
-  opens the output. It needs its own small C++ design first. The system
-  asks for the mic the first time.
+- **Mic.** The C++ engine opens the input device through miniaudio, as a
+  second device beside the output, mono at the engine's rate, only while
+  something listens. The mic's audio thread writes into `CaptureRing`
+  (`engine/src/capture.*`): lock-free, one writer and one reader, about 21
+  s of room. When the reader falls that far behind, the newest sound is
+  dropped and counted, since only the reader moves where reading starts.
+  `mic.rs` takes it out every 50 ms, keeps at most 120 s and sends the
+  level to the screen. The system asks for the mic the first time
+  (`Info.plist`); in development macOS asks for the app that started
+  `tauri dev`. The mic is not yet aligned for input latency.
 - **Dictation.** whisper.cpp (MIT) turns speech into words on the computer,
-  through `whisper-rs`. Its model file (about 150 MB) downloads once, after
-  asking. Words appear in the field as they are heard; Return sends. The
-  audio is never sent.
+  through `whisper-rs` (`dictation.rs`), at 16 kHz with a prompt of music
+  words. Its model, `ggml-base.en.bin` (148 MB), downloads once from
+  Hugging Face after asking, through curl, and its SHA-256 is checked. Words
+  appear in the field about every second; Return sends; 60 s at most. The
+  audio is never sent. Building it needs cmake.
 - **Hum.** The modal goes Ready, Count in, Listening, Done. The player picks
   the count in, the click, a set or free tempo and the mic, and sees its
   level. Pitch detection (YIN) runs in Rust beside `measures.rs`; a note is
@@ -1883,6 +1901,12 @@ Beginner to Master, are the Tutor's path, in seven areas.
   audio. The Composer answers with three readings: as sung, on the beat,
   and with chords, each with Play, Use and Practice. The Tutor can take a
   hum too, to learn to play it. The recording saves with the chat.
+- **Hum as built** (`hum.rs`, `pitch.rs`): the count in is 0 to 2 bars at
+  the song's tempo; the click can stop after it. The reading drops the count
+  in, keeps 60 s, saves a 16 kHz WAV and attaches "Hummed tune" with the
+  tempo, a key guess and every note in seconds and in beats. The panel
+  draws the notes in their colors. A melody option's Practice sets it as a
+  practice piece: notes for the right hand, chords for the left.
 
 #### Build order
 
@@ -1890,7 +1914,7 @@ Each step is explained and gets a yes before its code, then is checked in
 the real app.
 
 1. The Node agent host and the panel: pi's SDK session, live steps, Stop,
-   sign-in and the model picker. It replaces 0040's Tutor.
+   sign-in and the model picker. It replaced 0040's Tutor, which is gone.
 2. Saved chats and caching.
 3. Cards: `jello_show`, sound change drawings, `jello_options`,
    `jello_notes`.
@@ -1900,7 +1924,7 @@ the real app.
 6. Memory and skills.
 7. Attachments.
 8. Mic capture (C++ design first) and dictation.
-9. Humming and its three readings.
+9. Humming and its three readings. Steps 1 to 9 are built.
 10. Release grade: roadmap steps 4 to 6, each with its own ADR.
 
 The Producer is designed after these, asking first.

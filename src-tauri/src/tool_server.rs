@@ -23,6 +23,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::compose::Composer;
 use crate::engine::Engine;
 use crate::key_map::KeyMap;
+use crate::memory::Memory;
 use crate::cards::Offers;
 use crate::phrases::{Phrase, Phrases};
 use crate::practice::Practice;
@@ -251,6 +252,7 @@ pub fn with_studio<T>(app: &AppHandle, work: impl FnOnce(&Studio) -> T) -> T {
     let phrases = app.state::<Phrases>();
     let offers = app.state::<Mutex<Offers>>();
     let practice = app.state::<Mutex<Practice>>();
+    let memory = app.state::<Mutex<Memory>>();
     let screen = AppScreen { app };
     let studio = Studio {
         open_song: open_song.inner(),
@@ -260,6 +262,7 @@ pub fn with_studio<T>(app: &AppHandle, work: impl FnOnce(&Studio) -> T) -> T {
         phrases: phrases.inner(),
         offers: offers.inner(),
         practice: practice.inner(),
+        memory: memory.inner(),
         screen: &screen,
     };
     work(&studio)

@@ -4,6 +4,7 @@
   "description": "What the main window's UI is allowed to call",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:allow-open"
   ]
 }

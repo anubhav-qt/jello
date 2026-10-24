@@ -18,8 +18,10 @@ use std::thread;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::attachments::Attachments;
 use crate::cards::Offers;
 use crate::commands;
+use crate::memory::Memory;
 use crate::phrases::Phrases;
 use crate::practice::Practice;
 use crate::song_session::OpenSong;
@@ -165,11 +167,24 @@ fn send(app: &AppHandle, message: Value) -> Result<(), String> {
     if must_start {
         let handle = app.clone();
         let tell = Arc::new(move |event: Value| {
+            note_chat(&handle, &event);
             let _ = handle.emit("agent-host", event);
         });
         *running = Some(start_host(host_command(app)?, tell)?);
     }
     write_line(running.as_mut().unwrap(), &message)
+}
+
+// Keeps which chat is open, so a note saved in it says where it came from.
+fn note_chat(app: &AppHandle, event: &Value) {
+    let kind = event["type"].as_str().unwrap_or("");
+    let memory = app.state::<Mutex<Memory>>();
+    if kind == "chat" || kind == "chat_opened" {
+        memory.lock().unwrap().set_chat(event["path"].as_str());
+    }
+    if kind == "new_chat" || kind == "host_ended" {
+        memory.lock().unwrap().set_chat(None);
+    }
 }
 
 // Sends `message` to the host only if it is running already.
@@ -193,7 +208,8 @@ pub fn agent_status(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String> {
     let text = text.trim();
-    if text.is_empty() {
+    let nothing_attached = app.state::<Mutex<Attachments>>().lock().unwrap().is_empty();
+    if text.is_empty() && nothing_attached {
         return Err(String::from("there is nothing to send"));
     }
     if text.chars().count() > MOST_MESSAGE_CHARACTERS {
@@ -208,7 +224,23 @@ pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String
     // And what happened in practice.
     let practiced = app.state::<Mutex<Practice>>().lock().unwrap().take_unsent();
     used.extend(practiced);
-    send(&app, json!({"type": "send", "text": text, "job": job, "song": song, "used": used}))
+    // The notes about the player, which a new chat begins with.
+    let memory = app.state::<Mutex<Memory>>().lock().unwrap().prompt_text();
+    // And the files attached, which go with this message only.
+    let mut attached = Vec::new();
+    for attachment in app.state::<Mutex<Attachments>>().lock().unwrap().take() {
+        attached.push(attachment.message());
+    }
+    let message = json!({
+        "type": "send",
+        "text": text,
+        "job": job,
+        "song": song,
+        "used": used,
+        "memory": memory,
+        "attachments": attached,
+    });
+    send(&app, message)
 }
 
 // The saved chats, for the Chats page, told as "chats".

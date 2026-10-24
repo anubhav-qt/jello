@@ -7,12 +7,18 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { tick } from "svelte";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { open as openPicker } from "@tauri-apps/plugin-dialog";
+  import { onMount, tick } from "svelte";
   import AgentCard from "./AgentCard.svelte";
+  import AgentMemory from "./AgentMemory.svelte";
   import AgentOptions from "./AgentOptions.svelte";
   import Markdown from "./Markdown.svelte";
+  import { colorForNote } from "./note-colors";
   import {
+    ATTACHABLE_ENDINGS,
     addToTurn,
+    attachmentKindWord,
     cachedPercent,
     changedSomething,
     chatsByDay,
@@ -25,6 +31,7 @@
     thoughtSeconds,
     toolDetail,
     toolTitle,
+    type AttachmentCard,
     type Card,
     type ChatView,
     type HostEvent,
@@ -65,7 +72,7 @@
   }
 
   // How many providers show before "More providers".
-  const FIRST_PROVIDERS_SHOWN = 2;
+  const FIRST_PROVIDERS_SHOWN = 3;
 
   // The models and providers, or null until the host has said.
   let status: Status | null = $state(null);
@@ -85,6 +92,8 @@
   let chats: ChatView[] | null = $state(null);
   let chatSearch = $state("");
   let openChatPath: string | null = $state(null);
+  // The Memory page: open or not.
+  let memoryOpen = $state(false);
   // The thinking rows opened to their text, by turn and step.
   let openThoughts: string[] = $state([]);
   // The job the chat was told last.
@@ -302,6 +311,7 @@
     openChatPath = String(event.path);
     openThoughts = [];
     chatsOpen = false;
+    memoryOpen = false;
     problem = "";
     await tick();
     if (list !== undefined) {
@@ -346,9 +356,473 @@
     }
   }
 
+  // The files waiting to go with the next message, while they're read,
+  // and whether files are being dragged over the window.
+  let waiting: AttachmentCard[] = $state([]);
+  let attaching = $state(false);
+  let dropping = $state(false);
+
+  async function attach(paths: string[]) {
+    if (paths.length === 0) {
+      return;
+    }
+    attaching = true;
+    try {
+      waiting = await invoke<AttachmentCard[]>("agent_attach", { paths });
+      problem = "";
+    } catch (error) {
+      problem = String(error);
+    }
+    attaching = false;
+  }
+
+  // The paperclip: the player picks files.
+  async function pickFiles() {
+    const picked = await openPicker({
+      multiple: true,
+      directory: false,
+      filters: [{ name: "Pictures, PDFs, videos, sound and text", extensions: ATTACHABLE_ENDINGS }],
+    });
+    if (picked === null) {
+      return;
+    }
+    if (Array.isArray(picked)) {
+      await attach(picked);
+    } else {
+      await attach([picked]);
+    }
+  }
+
+  async function unattach(card: AttachmentCard) {
+    try {
+      waiting = await invoke<AttachmentCard[]>("agent_unattach", { id: card.id });
+    } catch (error) {
+      problem = String(error);
+    }
+  }
+
+  // Files dropped on the window while the panel shows go with the next
+  // message.
+  onMount(() => {
+    const stop = getCurrentWebview().onDragDropEvent((event) => {
+      if (!visible) {
+        dropping = false;
+        return;
+      }
+      const kind = event.payload.type;
+      if (kind === "enter" || kind === "over") {
+        dropping = true;
+        return;
+      }
+      dropping = false;
+      if (kind === "drop") {
+        attach(event.payload.paths);
+      }
+    });
+    return () => {
+      stop.then((unlisten) => unlisten());
+    };
+  });
+
+  // Dictation (docs/design.md#voice): the player speaks, and the words heard
+  // so far fill the field after what was typed before: the message, or a
+  // hum's description. "asking" is the first time, before the speech model
+  // is downloaded.
+  type Speech = "off" | "asking" | "downloading" | "listening" | "finishing";
+  type SpeechField = "draft" | "describe";
+  let speech: Speech = $state("off");
+  let speechField: SpeechField = $state("draft");
+  let speechModelMegabytes = $state(148);
+  let downloaded = $state(0);
+  let micLevel = $state(0);
+  let micSeconds = $state(0);
+  // What the field held before speaking began.
+  let typedBefore = "";
+  // Return while listening sends once the last words are in.
+  let sendWhenHeard = false;
+
+  function withSpoken(words: string): string {
+    if (typedBefore === "") {
+      return words;
+    }
+    if (words === "") {
+      return typedBefore;
+    }
+    return `${typedBefore} ${words}`;
+  }
+
+  function fieldText(field: SpeechField): string {
+    if (field === "describe") {
+      return describe;
+    }
+    return draft;
+  }
+
+  function putSpoken(words: string) {
+    const text = withSpoken(words);
+    if (speechField === "describe") {
+      describe = text;
+    } else {
+      draft = text;
+    }
+  }
+
+  // Done only on the button of the field being spoken into.
+  function speakLabel(field: SpeechField): string {
+    if (speech === "listening" && speechField === field) {
+      return "Done";
+    }
+    return "Speak";
+  }
+
+  async function speak(field: SpeechField) {
+    if (speech === "listening") {
+      await finishSpeaking();
+      return;
+    }
+    if (speech !== "off") {
+      return;
+    }
+    speechField = field;
+    try {
+      const status = await invoke<{ ready: boolean; downloading: boolean; megabytes: number }>(
+        "dictation_status",
+      );
+      speechModelMegabytes = status.megabytes;
+      if (status.downloading) {
+        speech = "downloading";
+        return;
+      }
+      if (!status.ready) {
+        speech = "asking";
+        return;
+      }
+      await startListening();
+    } catch (error) {
+      problem = String(error);
+    }
+  }
+
+  async function downloadSpeechModel() {
+    speech = "downloading";
+    downloaded = 0;
+    try {
+      await invoke("download_dictation_model");
+      problem = "";
+      await startListening();
+    } catch (error) {
+      problem = String(error);
+      speech = "off";
+    }
+  }
+
+  async function startListening() {
+    typedBefore = fieldText(speechField).trim();
+    sendWhenHeard = false;
+    micLevel = 0;
+    micSeconds = 0;
+    try {
+      await invoke("start_dictation", { input: chosenMic() });
+      problem = "";
+      speech = "listening";
+    } catch (error) {
+      problem = String(error);
+      speech = "off";
+    }
+  }
+
+  async function finishSpeaking() {
+    if (speech !== "listening") {
+      return;
+    }
+    speech = "finishing";
+    try {
+      const words = await invoke<string>("stop_dictation");
+      putSpoken(words);
+    } catch (error) {
+      problem = String(error);
+    }
+    speech = "off";
+    if (!sendWhenHeard) {
+      return;
+    }
+    sendWhenHeard = false;
+    if (speechField === "describe") {
+      sendHum();
+    } else {
+      send(draft);
+    }
+  }
+
+  $effect(() => {
+    const unlistenWords = listen<{ words: string }>("dictation-words", (event) => {
+      if (speech === "listening") {
+        putSpoken(event.payload.words);
+      }
+    });
+    const unlistenLevel = listen<{ peak: number; seconds: number }>("mic-level", (event) => {
+      micLevel = Math.min(1, event.payload.peak);
+      micSeconds = event.payload.seconds;
+      if (humStep === "listening" && humStarted !== null && humSeconds() >= humStarted.most_seconds) {
+        finishHum();
+      }
+    });
+    const unlistenDownload = listen<{ received: number }>("dictation-download", (event) => {
+      downloaded = event.payload.received;
+    });
+    const unlistenFull = listen("dictation-full", () => {
+      finishSpeaking();
+    });
+    return () => {
+      unlistenWords.then((unlisten) => unlisten());
+      unlistenLevel.then((unlisten) => unlisten());
+      unlistenDownload.then((unlisten) => unlisten());
+      unlistenFull.then((unlisten) => unlisten());
+    };
+  });
+
+  // How loud the mic is, as the meter's width.
+  let levelWidth = $derived(`${Math.round(Math.sqrt(micLevel) * 100)}%`);
+
+  // The mics there are, and the one picked: "" is the system's pick.
+  let mics: string[] = $state([]);
+  let micChoice = $state("");
+
+  function chosenMic(): number | null {
+    if (micChoice === "") {
+      return null;
+    }
+    return Number(micChoice);
+  }
+
+  // Humming (docs/design.md#voice): Ready, Count in, Listening, Done. Jello
+  // reads the notes on this computer, and the reading waits to go with the
+  // next message as an attached file, with the player's description.
+  type HumStep = "off" | "ready" | "counting" | "listening" | "reading" | "done";
+  interface HumNote {
+    note: number;
+    name: string;
+    start: number;
+    hold: number;
+  }
+  interface HumStarted {
+    tempo: number | null;
+    count_in_beats: number;
+    count_in_seconds: number;
+    most_seconds: number;
+  }
+  interface HumRead {
+    card: AttachmentCard;
+    cards: AttachmentCard[];
+    notes: HumNote[];
+    reading: string;
+  }
+  const VIBES = ["happy", "sad", "dreamy", "dark", "bouncy", "calm", "epic"];
+  let humStep: HumStep = $state("off");
+  let humCountIn = $state(1);
+  let humClick = $state(true);
+  let humFree = $state(false);
+  let humStarted: HumStarted | null = $state(null);
+  let humBeat = $state(0);
+  let humRead: HumRead | null = $state(null);
+  let humProblem = $state("");
+  let describe = $state("");
+  let countInTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function openHum() {
+    if (humStep !== "off") {
+      return;
+    }
+    humStep = "ready";
+    humProblem = "";
+    describe = "";
+    try {
+      mics = await invoke<string[]>("mic_inputs");
+    } catch (error) {
+      humProblem = String(error);
+    }
+  }
+
+  async function startHum() {
+    humProblem = "";
+    micLevel = 0;
+    micSeconds = 0;
+    try {
+      humStarted = await invoke<HumStarted>("start_hum", {
+        input: chosenMic(),
+        countInBars: humCountIn,
+        click: humClick,
+        free: humFree,
+      });
+    } catch (error) {
+      humProblem = String(error);
+      return;
+    }
+    if (humStarted.count_in_seconds === 0) {
+      humStep = "listening";
+      return;
+    }
+    humStep = "counting";
+    humBeat = 1;
+    const started = performance.now();
+    countInTimer = setInterval(() => countIn(started), 20);
+  }
+
+  // Counts the beats of the count in, then listens.
+  function countIn(started: number) {
+    if (humStarted === null) {
+      return;
+    }
+    const elapsed = (performance.now() - started) / 1000;
+    if (elapsed >= humStarted.count_in_seconds) {
+      stopCountIn();
+      humStep = "listening";
+      return;
+    }
+    const beatSeconds = humStarted.count_in_seconds / humStarted.count_in_beats;
+    humBeat = Math.floor(elapsed / beatSeconds) + 1;
+  }
+
+  function stopCountIn() {
+    if (countInTimer !== null) {
+      clearInterval(countInTimer);
+      countInTimer = null;
+    }
+  }
+
+  // Seconds hummed, after the count in.
+  function humSeconds(): number {
+    if (humStarted === null) {
+      return 0;
+    }
+    return Math.max(0, micSeconds - humStarted.count_in_seconds);
+  }
+
+  async function finishHum() {
+    if (humStep !== "listening" && humStep !== "counting") {
+      return;
+    }
+    stopCountIn();
+    humStep = "reading";
+    try {
+      humRead = await invoke<HumRead>("stop_hum");
+      waiting = humRead.cards;
+      humStep = "done";
+    } catch (error) {
+      humProblem = String(error);
+      humStep = "ready";
+    }
+  }
+
+  // The hum read, taken off the next message.
+  async function forgetHum() {
+    if (humRead === null) {
+      return;
+    }
+    const card = humRead.card;
+    humRead = null;
+    await unattach(card);
+  }
+
+  async function cancelHum() {
+    stopCountIn();
+    if (humStep === "reading") {
+      return;
+    }
+    if (humStep === "counting" || humStep === "listening") {
+      await invoke("cancel_hum");
+    }
+    await forgetHum();
+    describe = "";
+    humStep = "off";
+  }
+
+  async function humAgain() {
+    await forgetHum();
+    humProblem = "";
+    humStep = "ready";
+  }
+
+  function addVibe(word: string) {
+    const now = describe.trim();
+    if (now === "") {
+      describe = word;
+    } else {
+      describe = `${now}, ${word}`;
+    }
+  }
+
+  // The hum is already waiting with the files; the description is the
+  // message.
+  async function sendHum() {
+    if (humStep !== "done" || working) {
+      return;
+    }
+    const words = describe;
+    humRead = null;
+    describe = "";
+    humStep = "off";
+    await send(words);
+  }
+
+  function onDescribeKey(event: KeyboardEvent) {
+    if (event.code !== "Enter" && event.code !== "NumpadEnter") {
+      return;
+    }
+    event.stopPropagation();
+    if (event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).blur();
+    if (speech === "listening") {
+      sendWhenHeard = true;
+      finishSpeaking();
+      return;
+    }
+    sendHum();
+  }
+
+  // Where each note heard sits on the little roll: across by time, up by
+  // pitch.
+  function rollOf(notes: HumNote[]) {
+    let lowest = 127;
+    let highest = 0;
+    let end = 0;
+    for (const heard of notes) {
+      lowest = Math.min(lowest, heard.note);
+      highest = Math.max(highest, heard.note);
+      end = Math.max(end, heard.start + heard.hold);
+    }
+    const span = Math.max(1, highest - lowest);
+    const drawn = [];
+    for (const heard of notes) {
+      drawn.push({
+        name: heard.name,
+        left: `${(heard.start / end) * 100}%`,
+        width: `${Math.max(0.5, (heard.hold / end) * 100)}%`,
+        bottom: `${((heard.note - lowest) / span) * 100}%`,
+        color: `rgb(${colorForNote(heard.note).accent})`,
+      });
+    }
+    return drawn;
+  }
+
+  function keyGuessOf(reading: string): string {
+    for (const line of reading.split("\n")) {
+      if (line.startsWith("Key guess")) {
+        return line;
+      }
+    }
+    return "";
+  }
+
   async function send(text: string) {
     const said = text.trim();
-    if (working || said === "") {
+    if (working || attaching) {
+      return;
+    }
+    if (said === "" && waiting.length === 0) {
       return;
     }
     // Before the agent acts, Jello keeps the song, so the reply can be
@@ -362,8 +836,13 @@
     const jobChanged = lastJob !== job;
     lastJob = job;
     onSent();
-    turns.push(newTurn(said, job, jobChanged, reply));
+    const attached = [];
+    for (const card of waiting) {
+      attached.push({ name: card.name, kind: card.kind });
+    }
+    turns.push(newTurn(said, job, jobChanged, reply, attached));
     draft = "";
+    waiting = [];
     await tick();
     if (list !== undefined) {
       list.scrollTop = list.scrollHeight;
@@ -399,6 +878,7 @@
     }
     modelsOpen = false;
     chatsOpen = false;
+    memoryOpen = false;
     try {
       await invoke("agent_new_chat");
     } catch (error) {
@@ -452,9 +932,11 @@
     modelsOpen = false;
     if (chatsOpen) {
       chatsOpen = false;
+    memoryOpen = false;
       return;
     }
     chatsOpen = true;
+    memoryOpen = false;
     chatSearch = "";
     try {
       await invoke("agent_chats");
@@ -463,12 +945,19 @@
     }
   }
 
+  function switchMemory() {
+    modelsOpen = false;
+    chatsOpen = false;
+    memoryOpen = !memoryOpen;
+  }
+
   async function openChat(chat: ChatView) {
     if (working) {
       return;
     }
     if (chat.path === openChatPath) {
       chatsOpen = false;
+    memoryOpen = false;
       return;
     }
     try {
@@ -539,6 +1028,11 @@
     }
     event.preventDefault();
     (event.currentTarget as HTMLElement).blur();
+    if (speech === "listening") {
+      sendWhenHeard = true;
+      finishSpeaking();
+      return;
+    }
     send(draft);
   }
 
@@ -595,6 +1089,13 @@
       <button
         type="button"
         class="agent-button-plain"
+        class:is-open={memoryOpen}
+        disabled={status === null || working}
+        onclick={switchMemory}>Memory</button
+      >
+      <button
+        type="button"
+        class="agent-button-plain"
         disabled={working || turns.length === 0}
         onclick={newChat}>New</button
       >
@@ -623,6 +1124,8 @@
   <div class="agent-body" bind:this={list} aria-live="polite">
     {#if status === null && problem === ""}
       <p class="agent-quiet agent-starting">Starting the agent…</p>
+    {:else if memoryOpen && status !== null}
+      <AgentMemory />
     {:else if needsSignIn && status !== null}
       <div class="agent-sign-in">
         <h1>Sign in</h1>
@@ -782,7 +1285,16 @@
         {#if turn.jobChanged && turnPlace > 0}
           <p class="agent-job-line">Now {jobName(turn.job)}</p>
         {/if}
-        <p class="agent-said">{turn.said}</p>
+        {#if turn.attachments.length > 0}
+          <p class="agent-attached">
+            {#each turn.attachments as file, filePlace (filePlace)}
+              <span><b>{attachmentKindWord(file.kind)}</b> {file.name}</span>
+            {/each}
+          </p>
+        {/if}
+        {#if turn.said !== ""}
+          <p class="agent-said">{turn.said}</p>
+        {/if}
         <div class="agent-run">
           {#each turn.steps as step, stepPlace (stepPlace)}
             {#if step.kind === "thinking"}
@@ -901,10 +1413,187 @@
         <span>Stop</span><kbd>esc</kbd>
       </button>
     {/if}
+    {#if waiting.length > 0 || attaching || dropping}
+      <div class="agent-waiting" class:is-dropping={dropping}>
+        {#each waiting as card (card.id)}
+          <div class="agent-waiting-file">
+            <b>{attachmentKindWord(card.kind)}</b>
+            <span class="agent-waiting-name">{card.name}</span>
+            <span class="agent-quiet">{card.taken}</span>
+            <button type="button" class="agent-button-plain" onclick={() => unattach(card)}>Remove</button>
+          </div>
+        {/each}
+        {#if attaching}
+          <p class="agent-quiet">Reading the files…</p>
+        {:else if dropping}
+          <p class="agent-quiet">Drop to attach to your next message</p>
+        {/if}
+      </div>
+    {/if}
+    {#if speech !== "off"}
+      <div class="agent-waiting agent-speech">
+        {#if speech === "asking"}
+          <p>
+            Dictation turns your speech into words on this computer; the sound is never sent. It needs a
+            speech model of {speechModelMegabytes} MB from Hugging Face, downloaded once.
+          </p>
+          <div class="agent-waiting-file">
+            <button type="button" class="agent-button-plain is-lit" onclick={downloadSpeechModel}>Download</button>
+            <button type="button" class="agent-button-plain" onclick={() => (speech = "off")}>Not now</button>
+          </div>
+        {:else if speech === "downloading"}
+          <p class="agent-quiet">
+            Downloading the speech model, {Math.floor(downloaded / 1_000_000)} of {speechModelMegabytes} MB…
+          </p>
+        {:else if speech === "listening"}
+          <div class="agent-waiting-file">
+            <b>Listening</b>
+            <span class="agent-mic-meter"><span style:width={levelWidth}></span></span>
+            <span class="agent-quiet">{micSeconds.toFixed(0)} s</span>
+          </div>
+          <p class="agent-quiet">Speak, then Done, or Return to send.</p>
+        {:else}
+          <p class="agent-quiet">Hearing the last words…</p>
+        {/if}
+      </div>
+    {/if}
+    {#if humStep !== "off"}
+      <div class="agent-waiting agent-hum">
+        {#if humStep === "ready"}
+          <div class="agent-waiting-file">
+            <b>Tempo</b>
+            <button type="button" class="agent-button-plain" class:is-lit={!humFree} onclick={() => (humFree = false)}
+              >The song's</button
+            >
+            <button type="button" class="agent-button-plain" class:is-lit={humFree} onclick={() => (humFree = true)}
+              >Free</button
+            >
+          </div>
+          {#if !humFree}
+            <div class="agent-waiting-file">
+              <b>Count in</b>
+              {#each [0, 1, 2] as bars (bars)}
+                <button
+                  type="button"
+                  class="agent-button-plain"
+                  class:is-lit={humCountIn === bars}
+                  onclick={() => (humCountIn = bars)}>{bars === 1 ? "1 bar" : `${bars} bars`}</button
+                >
+              {/each}
+            </div>
+            <div class="agent-waiting-file">
+              <b>Click</b>
+              <button type="button" class="agent-button-plain" class:is-lit={humClick} onclick={() => (humClick = true)}
+                >On</button
+              >
+              <button
+                type="button"
+                class="agent-button-plain"
+                class:is-lit={!humClick}
+                onclick={() => (humClick = false)}>Off</button
+              >
+            </div>
+          {/if}
+          <div class="agent-waiting-file">
+            <b>Mic</b>
+            <select class="agent-mic-pick" bind:value={micChoice} aria-label="Mic">
+              <option value="">The system's pick</option>
+              {#each mics as name, place (place)}
+                <option value={String(place)}>{name}</option>
+              {/each}
+            </select>
+          </div>
+          {#if humProblem !== ""}
+            <p class="agent-error">{humProblem}</p>
+          {/if}
+          <div class="agent-waiting-file">
+            <button type="button" class="agent-button-plain is-lit" onclick={startHum}>Start</button>
+            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+          </div>
+        {:else if humStep === "counting" && humStarted !== null}
+          <div class="agent-waiting-file">
+            <b>Count in</b>
+            <span class="agent-hum-beat">{humBeat}</span>
+            <span class="agent-quiet">of {humStarted.count_in_beats}, at {humStarted.tempo} BPM</span>
+          </div>
+          <div class="agent-waiting-file">
+            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+          </div>
+        {:else if humStep === "listening"}
+          <div class="agent-waiting-file">
+            <b>Listening</b>
+            <span class="agent-mic-meter"><span style:width={levelWidth}></span></span>
+            <span class="agent-quiet">{humSeconds().toFixed(0)} s</span>
+          </div>
+          <p class="agent-quiet">Hum one note at a time, then Done.</p>
+          <div class="agent-waiting-file">
+            <button type="button" class="agent-button-plain is-lit" onclick={finishHum}>Done</button>
+            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+          </div>
+        {:else if humStep === "reading"}
+          <p class="agent-quiet">Reading the notes…</p>
+        {:else if humRead !== null}
+          <div class="agent-hum-roll" aria-label="The notes heard">
+            {#each rollOf(humRead.notes) as drawn, place (place)}
+              <span
+                title={drawn.name}
+                style:left={drawn.left}
+                style:width={drawn.width}
+                style:bottom={drawn.bottom}
+                style:background={drawn.color}
+              ></span>
+            {/each}
+          </div>
+          <div class="agent-waiting-file">
+            <b>Hum</b>
+            <span class="agent-waiting-name">{humRead.card.taken}</span>
+            <span class="agent-quiet">{keyGuessOf(humRead.reading)}</span>
+          </div>
+          <div class="agent-hum-describe">
+            <textarea
+              bind:value={describe}
+              rows="2"
+              maxlength="2000"
+              placeholder="Describe it"
+              aria-label="Describe the hum"
+              onkeydown={onDescribeKey}
+            ></textarea>
+            <button
+              type="button"
+              class="agent-button-plain"
+              class:is-lit={speech === "listening" && speechField === "describe"}
+              title="Speak instead of typing"
+              disabled={speech === "downloading" || speech === "finishing" || (speech === "listening" && speechField !== "describe")}
+              onclick={() => speak("describe")}>{speakLabel("describe")}</button
+            >
+          </div>
+          <div class="agent-hum-vibes">
+            {#each VIBES as vibe (vibe)}
+              <button type="button" class="agent-button-plain" onclick={() => addVibe(vibe)}>{vibe}</button>
+            {/each}
+          </div>
+          <div class="agent-waiting-file">
+            <button
+              type="button"
+              class="agent-button-plain is-lit"
+              disabled={working || speech === "listening" || speech === "finishing"}
+              onclick={sendHum}>Send</button
+            >
+            <button type="button" class="agent-button-plain" onclick={humAgain}>Hum again</button>
+            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
     <form
       class="agent-field"
       onsubmit={(event) => {
         event.preventDefault();
+        if (speech === "listening") {
+          sendWhenHeard = true;
+          finishSpeaking();
+          return;
+        }
         send(draft);
       }}
     >
@@ -918,9 +1607,32 @@
         onkeydown={onFieldKey}
       ></textarea>
       <button
+        type="button"
+        class="agent-button-plain"
+        title="Attach pictures, PDFs, videos, sound files or text"
+        disabled={attaching || needsSignIn || status === null}
+        onclick={pickFiles}>Attach</button
+      >
+      <button
+        type="button"
+        class="agent-button-plain"
+        class:is-lit={speech === "listening" && speechField === "draft"}
+        title="Speak instead of typing"
+        disabled={needsSignIn || status === null || speech === "downloading" || speech === "finishing" || humStep !== "off"}
+        onclick={() => speak("draft")}>{speakLabel("draft")}</button
+      >
+      <button
+        type="button"
+        class="agent-button-plain"
+        class:is-lit={humStep !== "off"}
+        title="Hum a tune for the agent"
+        disabled={needsSignIn || status === null || speech !== "off" || humStep !== "off"}
+        onclick={openHum}>Hum</button
+      >
+      <button
         type="submit"
         class="agent-button-plain is-lit"
-        disabled={working || draft.trim() === "" || needsSignIn}>Send</button
+        disabled={working || attaching || speech === "finishing" || (draft.trim() === "" && waiting.length === 0) || needsSignIn}>Send</button
       >
     </form>
   </footer>

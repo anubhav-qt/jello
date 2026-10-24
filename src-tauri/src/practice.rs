@@ -22,6 +22,7 @@ use crate::engine::{FASTEST_TEMPO, SLOWEST_TEMPO};
 use crate::harmony::{chord_name, chord_of_name};
 use crate::key_map::KeyMap;
 use crate::scoring::{Expected, Hand};
+use crate::skills;
 use crate::song_file::{note_name, note_of_name};
 use crate::tools::{Studio, ToolAnswer};
 
@@ -57,6 +58,8 @@ pub const LEVELS: [(&str, f64); 6] = [
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Piece {
     pub name: String,
+    // The skill its tries count toward (skills.rs), if not its mode's own.
+    pub area: Option<String>,
     pub octave: i8,
     pub bars: u32,
     pub parts: Vec<Part>,
@@ -446,6 +449,7 @@ pub fn piece_of(fields: &Value) -> Result<Piece, String> {
         Some(name) => name.trim().to_string(),
         None => String::from("Practice"),
     };
+    let area = area_field(fields.get("area"))?;
     let octave = octave_field(fields, "octave", "the piece")?.unwrap_or(0);
     let Some(listed_parts) = fields.get("parts").and_then(Value::as_array) else {
         return Err(String::from("the piece needs parts, a list of 1 to 4"));
@@ -481,11 +485,29 @@ pub fn piece_of(fields: &Value) -> Result<Piece, String> {
     let sections = sections_of(fields.get("sections"), bars)?;
     Ok(Piece {
         name,
+        area,
         octave,
         bars,
         parts,
         sections,
     })
+}
+
+// The piece's area, if it names one: a skill from skills.rs.
+fn area_field(area: Option<&Value>) -> Result<Option<String>, String> {
+    let Some(area) = area else {
+        return Ok(None);
+    };
+    if area.is_null() {
+        return Ok(None);
+    }
+    let Some(area) = area.as_str() else {
+        return Err(format!("area is one of {}", skills::AREAS.join(", ")));
+    };
+    if !skills::AREAS.contains(&area) {
+        return Err(format!("area is one of {}, not {area}", skills::AREAS.join(", ")));
+    }
+    Ok(Some(area.to_string()))
 }
 
 fn part_of(listed: &Value, place: &str, count: &mut usize) -> Result<Part, String> {
@@ -936,27 +958,33 @@ fn set(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
     let piece = piece_of(&arguments["piece"])?;
     let tempo = studio.composer.lock().unwrap().tempo();
     let mut practice = studio.practice.lock().unwrap();
+    let lines = vec![format!("Set the piece {}, {} bars", piece.name, piece.bars)];
+    set_piece(&mut practice, piece, &arguments["settings"], tempo)?;
+    let view = practice.view();
+    drop(practice);
+    studio.screen.show_practice(&view);
+    let card = json!({"kind": "practice", "title": "", "view": short_view(&view)});
+    Ok(ToolAnswer::of(short_view(&view), lines).with_card(card))
+}
+
+// Makes `piece` the one practised, with `changes` to the starting settings
+// at `tempo` (null for none), and forgets the old piece's tries.
+pub fn set_piece(practice: &mut Practice, piece: Piece, changes: &Value, tempo: u32) -> Result<(), String> {
     if practice.is_running() {
         return Err(String::from("a try is playing: stop it first"));
     }
-    let mut settings = Settings::starting(tempo);
-    if !arguments["settings"].is_null() {
-        settings = settings_with(&settings, &arguments["settings"], &piece)?;
-    } else {
-        settings = settings_with(&settings, &json!({}), &piece)?;
+    let starting = Settings::starting(tempo);
+    let mut settings = settings_with(&starting, &json!({}), &piece)?;
+    if !changes.is_null() {
+        settings = settings_with(&starting, changes, &piece)?;
     }
-    let lines = vec![format!("Set the piece {}, {} bars", piece.name, piece.bars)];
     practice.tempo_now = settings.tempo;
     practice.clean_in_row = 0;
     practice.settings = settings;
     practice.piece = Some(piece);
     practice.tries.clear();
     practice.tempo_note = None;
-    let view = practice.view();
-    drop(practice);
-    studio.screen.show_practice(&view);
-    let card = json!({"kind": "practice", "title": "", "view": short_view(&view)});
-    Ok(ToolAnswer::of(short_view(&view), lines).with_card(card))
+    Ok(())
 }
 
 fn change_settings(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
