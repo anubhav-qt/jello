@@ -23,7 +23,7 @@ use crate::harmony::{chord_name, chord_of_name};
 use crate::key_map::KeyMap;
 use crate::scoring::{Expected, Hand};
 use crate::skills;
-use crate::song_file::{note_name, note_of_name};
+use crate::song_file::{note_name, pitch_of_note_name};
 use crate::tools::{Studio, ToolAnswer};
 
 pub const BEATS_PER_BAR: f64 = 4.0;
@@ -563,7 +563,7 @@ fn note_of(listed: &Value, place: &str, index: usize) -> Result<PieceNote, Strin
     let played;
     if let Some(name) = fields.get("note") {
         let name = name.as_str().unwrap_or_default();
-        let Some(note) = note_of_name(name) else {
+        let Some(note) = pitch_of_note_name(name) else {
             return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\""));
         };
         label = note_name(note);
@@ -588,7 +588,7 @@ fn note_of(listed: &Value, place: &str, index: usize) -> Result<PieceNote, Strin
         let mut names = Vec::new();
         for item in listed {
             let name = item.as_str().unwrap_or_default();
-            let Some(note) = note_of_name(name) else {
+            let Some(note) = pitch_of_note_name(name) else {
                 return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\""));
             };
             if !found.contains(&note) {

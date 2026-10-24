@@ -27,6 +27,12 @@ export interface KeyLayout {
   // The keys that run the beat, each with what it does: right Shift runs
   // the looper, Esc clears it, - slows the beat down and = speeds it up.
   beat_keys: Record<string, BeatKey>;
+  // Whether drum mode is on, the key that switches it (right Option, or
+  // right Ctrl on Windows), and in drum mode, each key that hits a drum
+  // with the drum's name, like "KeyF": "snare" (docs/design.md#sampler).
+  drum_mode: boolean;
+  drum_mode_keys: string[];
+  drums: Record<string, string>;
 }
 
 // What a key that runs the beat does.
@@ -59,9 +65,21 @@ export interface KeyRow {
 }
 
 // What a key is for, which decides how it is drawn. A "vibrato" key is held
-// for vibrato, a "glide" key to glide, a "beat" key runs the beat, and an
+// for vibrato, a "glide" key to glide, a "beat" key runs the beat, a
+// "drum" key hits a drum, the "drum mode" key switches drum mode, and an
 // "action" key does something on the open tab, like Compose's Return.
-export type KeyKind = "note" | "chord" | "wave" | "vibrato" | "glide" | "beat" | "action" | "plain" | "blank";
+export type KeyKind =
+  | "note"
+  | "chord"
+  | "wave"
+  | "vibrato"
+  | "glide"
+  | "beat"
+  | "drum"
+  | "drum mode"
+  | "action"
+  | "plain"
+  | "blank";
 
 // The keyboard to draw: a Mac's, or a PC's on Windows.
 export function detectPlatform(): Platform {
@@ -270,6 +288,12 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   }
   if (layout.beat_keys[code] !== undefined) {
     return "beat";
+  }
+  if (layout.drums[code] !== undefined) {
+    return "drum";
+  }
+  if (layout.drum_mode_keys.includes(code)) {
+    return "drum mode";
   }
   return "plain";
 }

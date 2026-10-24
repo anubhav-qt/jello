@@ -209,6 +209,27 @@
   background-color: rgba(var(--accent), 0.12);
 }
 
+/* DRUMS, lit while drum mode is on, with the key that switches it. */
+.stage .topbar-drums {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(var(--accent), 0.75);
+  border-radius: 4px;
+  background-color: rgba(var(--accent), 0.12);
+}
+
+.stage .topbar-drums .action-name {
+  color: rgb(var(--accent));
+}
+
+.stage .topbar-drums-key {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
 /* The agent's button in Compose and Produce, until its panel is built. */
 .stage .action:disabled {
   opacity: 0.4;
@@ -386,15 +407,30 @@
 }
 
 /* Keys that do something other than play: the wave key, the vibrato and
-   glide keys, the beat keys and the open tab's action keys. */
+   glide keys, the beat keys, the drum mode key and the open tab's action
+   keys. Drum keys say their drum the same way. */
 .stage .key[data-kind="wave"] .key-note,
 .stage .key[data-kind="vibrato"] .key-note,
 .stage .key[data-kind="glide"] .key-note,
 .stage .key[data-kind="beat"] .key-note,
+.stage .key[data-kind="drum"] .key-note,
+.stage .key[data-kind="drum mode"] .key-note,
 .stage .key[data-kind="action"] .key-note {
   font-size: calc(var(--u) * 0.15);
   text-transform: uppercase;
   color: var(--text-2);
+}
+
+/* A drum's name can be two words, like "closed hat", and wraps. */
+.stage .key[data-kind="drum"] .key-note {
+  line-height: 1.05;
+  text-align: center;
+  white-space: normal;
+}
+
+/* While drum mode is on, its key is lit in lavender. */
+.stage .key.is-drum-mode .key-note {
+  color: rgb(var(--accent));
 }
 
 /* Right Shift's face (docs/adr/0024-the-looper-s-look.md): four beat

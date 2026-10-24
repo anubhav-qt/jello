@@ -36,7 +36,7 @@ const START_SONG_KEY_TIMES: VibratoKeyTimes = VibratoKeyTimes {
     fall_ms: 250,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SoundProfile {
     // The oscillators new notes play.
     oscillators: [Oscillator; OSCILLATOR_COUNT],
@@ -60,6 +60,9 @@ pub struct SoundProfile {
     // How long each melody note played with the glide key held takes to
     // slide in, in ms (docs/adr/0036-glide.md).
     glide_ms: u32,
+    // The instrument each oscillator plays when its kind is the sample, by
+    // name (docs/design.md#sampler), or None.
+    instruments: [Option<String>; OSCILLATOR_COUNT],
 }
 
 impl SoundProfile {
@@ -85,6 +88,7 @@ impl SoundProfile {
             connections,
             vibrato_key_times: START_SONG_KEY_TIMES,
             glide_ms: START_GLIDE_MS,
+            instruments: [None, None, None],
         }
     }
 
@@ -108,6 +112,9 @@ impl SoundProfile {
         }
         engine.set_vibrato_key_times(self.vibrato_key_times);
         engine.set_glide_time(self.glide_ms);
+        for (index, instrument) in self.instruments.iter().enumerate() {
+            engine.set_instrument(index, instrument.as_deref());
+        }
     }
 
     // Every part of the profile, as plain values: what a sound file writes
@@ -125,6 +132,7 @@ impl SoundProfile {
             connections: self.connections,
             vibrato_key_times: self.vibrato_key_times,
             glide_ms: self.glide_ms,
+            instruments: self.instruments.clone(),
         }
     }
 
@@ -150,6 +158,9 @@ impl SoundProfile {
         }
         self.set_vibrato_key_times(engine, sound.vibrato_key_times);
         self.set_glide_time(engine, sound.glide_ms);
+        for (index, instrument) in sound.instruments.iter().enumerate() {
+            self.set_instrument(engine, index, instrument.as_deref());
+        }
     }
 
     // Moves new notes' first oscillator on to the next kind (sine,
@@ -237,6 +248,17 @@ impl SoundProfile {
     // engine sent it.
     pub fn set_glide_time(&mut self, engine: &mut Engine, glide_ms: u32) {
         self.glide_ms = engine.set_glide_time(glide_ms);
+    }
+
+    // Makes oscillator `index`, from 0, play instrument `name` when its
+    // kind is the sample, or nothing for None, on `engine` too. An index
+    // past the oscillators changes nothing.
+    pub fn set_instrument(&mut self, engine: &mut Engine, index: usize, name: Option<&str>) {
+        if index >= OSCILLATOR_COUNT {
+            return;
+        }
+        self.instruments[index] = name.map(String::from);
+        engine.set_instrument(index, name);
     }
 
     pub fn oscillators(&self) -> &[Oscillator; OSCILLATOR_COUNT] {
@@ -759,7 +781,7 @@ mod tests {
         assert_eq!(profile.glide_time(), GLIDE_LONGEST_MS);
 
         // An oscillator, LFO or connection past the last changes nothing.
-        let before = profile;
+        let before = profile.clone();
         profile.set_oscillator(&mut engine, OSCILLATOR_COUNT, too_far_off);
         profile.set_lfo(&mut engine, LFO_COUNT, too_fast);
         profile.set_connection(&mut engine, CONNECTION_COUNT, too_far);
@@ -796,6 +818,39 @@ mod tests {
             let without = play_a4_without(&odd, part);
             assert!(without != sent_sound, "the profile sounds the same without its {part}");
         }
+    }
+
+    #[test]
+    fn an_instrument_is_kept_and_sent_with_the_profile() {
+        use crate::instruments::testing::{TONE, use_test_folder};
+        use_test_folder();
+        let mut engine = Engine::new().unwrap();
+        let mut profile = SoundProfile::new();
+        let sample = Oscillator {
+            kind: Kind::Sample,
+            ..START_OSCILLATORS[0]
+        };
+        profile.set_oscillator(&mut engine, 0, sample);
+        profile.set_instrument(&mut engine, 0, Some(TONE));
+        assert_eq!(profile.instruments[0].as_deref(), Some(TONE));
+        assert_eq!(profile.sound().instruments[0].as_deref(), Some(TONE));
+
+        // A new engine sent the whole profile plays the same.
+        let mut sent = Engine::new().unwrap();
+        profile.send_all(&mut sent);
+        assert_eq!(sent.instrument(0), (Some(TONE), true));
+        let set_sound = play_a4(&mut engine);
+        let sent_sound = play_a4(&mut sent);
+        assert!(set_sound == sent_sound, "sending the profile did not send its instrument");
+
+        // Taken from a sound, as a preset does, it is set on the engine too,
+        // and an index past the oscillators changes nothing.
+        let mut taken = SoundProfile::new();
+        let mut other = Engine::new().unwrap();
+        taken.take_sound(&mut other, &profile.sound());
+        assert_eq!(other.instrument(0), (Some(TONE), true));
+        taken.set_instrument(&mut other, OSCILLATOR_COUNT, Some(TONE));
+        assert_eq!(taken, profile);
     }
 
     #[test]

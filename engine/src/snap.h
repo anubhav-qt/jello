@@ -4,16 +4,16 @@
 
 #include "clock.h"
 
-// How many pitches a loop holds: MIDI's notes, 0 to 127, and two more,
-// 128 for the vibrato key's presses (Synth::vibrato_key_note) and 129 for
-// the glide key's (Synth::glide_key_note), recorded and played back like a
-// note's.
-constexpr int loop_pitch_count = 130;
+// How many pitches a loop holds: MIDI's notes, 0 to 127, then 128 for the
+// vibrato key's presses (Synth::vibrato_key_note), 129 for the glide key's
+// (Synth::glide_key_note) and 130 to 145 for the drum pads' hits
+// (drum_kit.h), each recorded and played back like a note's.
+constexpr int loop_pitch_count = 146;
 
 // One note of a loop: its pitch, how hard it was hit, and the samples it
 // starts and ends on, counted from the loop's start.
 struct LoopNote {
-    int note;  // 0 to 129
+    int note;  // 0 to 145
     int velocity;
     std::uint64_t start;
     std::uint64_t end;

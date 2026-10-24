@@ -576,6 +576,9 @@ export function toolTitle(step: ToolStep): string {
   if (step.tool === "jello_sound") {
     return "Changed the sound";
   }
+  if (step.tool === "jello_drums") {
+    return "Changed the drums";
+  }
   if (step.tool === "jello_play") {
     if (step.done) {
       return "Played it for you";

@@ -17,7 +17,8 @@
 //   jello-drive combo <cmd|option> <name>  press a modifier and a key
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
 //                                 esc, return, space, tab, delete, rshift
-//                                 for the looper, a to z, 0 to 9)
+//                                 for the looper, roption for drum mode,
+//                                 a to z, 0 to 9)
 //   jello-drive hold <name> <ms>  hold a key down for <ms> milliseconds, the
 //                                 way Compose's chords get their length
 //   jello-drive shot <file.png>   capture the window
@@ -230,6 +231,7 @@ let keyCodes: [String: CGKeyCode] = [
   "tab": 48,
   "delete": 51,
   "rshift": 60,
+  "roption": 61,
   "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
   "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
   "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,

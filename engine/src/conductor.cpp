@@ -241,6 +241,46 @@ void Conductor::set_glide_time(int glide_ms) {
     mailbox_.send(event);
 }
 
+bool Conductor::set_instrument(int index, const SampleSet* set) {
+    Event event{EventType::set_instrument, 0, 0};
+    event.index = index;
+    event.set = set;
+    bool sent = mailbox_.send(event);
+    if (sent) {
+        sample_messages_sent_ += 1;
+    }
+    return sent;
+}
+
+bool Conductor::set_drum_kit(const SampleSet* set) {
+    Event event{EventType::set_drum_kit, 0, 0};
+    event.set = set;
+    bool sent = mailbox_.send(event);
+    if (sent) {
+        sample_messages_sent_ += 1;
+    }
+    return sent;
+}
+
+void Conductor::set_drum_pad(int pad, const DrumPad& settings) {
+    Event event{EventType::set_drum_pad, 0, 0};
+    event.index = pad;
+    event.pad = settings;
+    mailbox_.send(event);
+}
+
+std::uint32_t Conductor::sets_in_use() const {
+    return shown_sets_in_use_.load();
+}
+
+std::uint64_t Conductor::sample_messages_handled() const {
+    return shown_sample_handled_.load();
+}
+
+std::uint64_t Conductor::sample_messages_sent() const {
+    return sample_messages_sent_;
+}
+
 bool Conductor::play_song(const SongChord* chords, int count) {
     // A stop, every chord, then the play.
     std::uint64_t needed = static_cast<std::uint64_t>(count) + 2;
@@ -363,6 +403,7 @@ void Conductor::render(float* out, int frames) {
 
     publish_looper_status();
     publish_song_position();
+    publish_sets_in_use();
 }
 
 void Conductor::take_messages() {
@@ -475,6 +516,14 @@ void Conductor::handle(const Event& event) {
         }
     } else if (event.type == EventType::set_glide_time) {
         synth_.set_glide_time(event.glide_ms);
+    } else if (event.type == EventType::set_instrument) {
+        synth_.set_instrument(event.index, event.set);
+        sample_messages_handled_ += 1;
+    } else if (event.type == EventType::set_drum_kit) {
+        synth_.set_drum_kit(event.set);
+        sample_messages_handled_ += 1;
+    } else if (event.type == EventType::set_drum_pad) {
+        synth_.set_drum_pad(event.index, event.pad);
     } else if (event.type == EventType::stop_song) {
         song_player_.stop(synth_);
         song_messages_handled_ += 1;
@@ -528,6 +577,13 @@ void Conductor::publish_looper_status() {
     shown_position_.store(looper_.position(clock_.now()));
     // Last: see looper_status.
     shown_handled_.store(looper_messages_handled_);
+}
+
+void Conductor::publish_sets_in_use() {
+    shown_sets_in_use_.store(synth_.sets_in_use());
+    // Last: the engine reads the count first, so the sets read after it
+    // are at least as new.
+    shown_sample_handled_.store(sample_messages_handled_);
 }
 
 void Conductor::publish_song_position() {

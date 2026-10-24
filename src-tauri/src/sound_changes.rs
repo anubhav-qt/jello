@@ -7,6 +7,8 @@
 //
 // Oscillators, LFOs and connections are listed with their number, from 1,
 // as the sound panel numbers them. The connections list only those in use.
+// An oscillator's instrument, played when its kind is "sample", is an
+// instrument folder's name or null for none.
 //
 // Unlike a sound file, a change is read strictly: a name or a word Jello
 // does not know, or a value outside its range, is refused, saying what is
@@ -19,7 +21,7 @@ use crate::engine::{
     Engine, FILTER_LONGEST_MS, FILTER_LOWEST_HZ, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT,
     FilterEnvelope, FilterType, GLIDE_LONGEST_MS, Kind, LOUDNESS_LONGEST_MS, LOUDNESS_SHORTEST_MS,
     LoudnessEnvelope, OSCILLATOR_COUNT, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS,
-    OSCILLATOR_MOST_OCTAVES, Oscillator, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT,
+    OSCILLATOR_MOST_OCTAVES, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT,
     TUNING_HIGHEST_HZ, TUNING_LOWEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS, Unison,
 };
 use crate::modulation::{
@@ -27,6 +29,7 @@ use crate::modulation::{
     LFO_LONGEST_MS, LFO_MOST_PRESSES, LFO_MOST_STEPS, LFO_SHORTEST_BEATS, LFO_SLOWEST_HZ, Lfo, LfoShape,
     LfoSpeed, NO_CONNECTION, Source, Target, VIBRATO_KEY_LONGEST_MS, VibratoKeyTimes,
 };
+use crate::instruments;
 use crate::sound_file::Sound;
 use crate::sound_profile::SoundProfile;
 
@@ -46,6 +49,7 @@ pub fn json_of(sound: &Sound) -> Value {
             "half_steps": oscillator.half_steps,
             "cents": oscillator.cents,
             "width": oscillator.width,
+            "instrument": sound.instruments[index],
         }));
     }
 
@@ -156,7 +160,7 @@ pub fn changed(sound: &Sound, changes: &Value) -> Result<Sound, String> {
             "the changes are an object, like {\"filter\": {\"cutoff_hz\": 800}}",
         ));
     };
-    let mut sound = *sound;
+    let mut sound = sound.clone();
     for (name, value) in changes {
         match name.as_str() {
             "tuning_hz" => {
@@ -166,7 +170,7 @@ pub fn changed(sound: &Sound, changes: &Value) -> Result<Sound, String> {
             "glide_ms" => {
                 sound.glide_ms = count_within(value, "glide_ms", 0, GLIDE_LONGEST_MS, " ms")?;
             }
-            "oscillators" => change_oscillators(&mut sound.oscillators, value)?,
+            "oscillators" => change_oscillators(&mut sound, value)?,
             "loudness" => change_loudness(&mut sound.loudness_envelope, value)?,
             "filter" => change_filter(&mut sound, value)?,
             "filter_envelope" => change_filter_envelope(&mut sound.filter_envelope, value)?,
@@ -180,10 +184,10 @@ pub fn changed(sound: &Sound, changes: &Value) -> Result<Sound, String> {
     Ok(sound)
 }
 
-fn change_oscillators(oscillators: &mut [Oscillator; OSCILLATOR_COUNT], value: &Value) -> Result<(), String> {
+fn change_oscillators(sound: &mut Sound, value: &Value) -> Result<(), String> {
     for (index, fields) in numbered(value, "oscillators", OSCILLATOR_COUNT)? {
         let place = format!("oscillator {}", index + 1);
-        let oscillator = &mut oscillators[index];
+        let oscillator = &mut sound.oscillators[index];
         for (name, value) in fields {
             let named = format!("{place} {name}");
             match name.as_str() {
@@ -196,7 +200,11 @@ fn change_oscillators(oscillators: &mut [Oscillator; OSCILLATOR_COUNT], value: &
                 "width" => {
                     oscillator.width = count_within(value, &named, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, "%")?;
                 }
-                _ => return Err(no_such_value(&place, name, "kind, level, octaves, half_steps, cents and width")),
+                "instrument" => sound.instruments[index] = instrument_named(value, &named)?,
+                _ => {
+                    let names = "kind, level, octaves, half_steps, cents, width and instrument";
+                    return Err(no_such_value(&place, name, names));
+                }
             }
         }
     }
@@ -440,7 +448,7 @@ fn number_within(value: &Value, named: &str, lowest: f64, highest: f64, unit: &s
 }
 
 // The same for a whole number from `lowest` to `highest`.
-fn count_within(value: &Value, named: &str, lowest: u32, highest: u32, unit: &str) -> Result<u32, String> {
+pub(crate) fn count_within(value: &Value, named: &str, lowest: u32, highest: u32, unit: &str) -> Result<u32, String> {
     let number = number_within(value, named, f64::from(lowest), f64::from(highest), unit)?;
     if number.fract() != 0.0 {
         return Err(format!("{named} is a whole number, not {number}"));
@@ -449,7 +457,7 @@ fn count_within(value: &Value, named: &str, lowest: u32, highest: u32, unit: &st
 }
 
 // The same for a whole number from -`most` to `most`.
-fn signed_within(value: &Value, named: &str, most: i32, unit: &str) -> Result<i32, String> {
+pub(crate) fn signed_within(value: &Value, named: &str, most: i32, unit: &str) -> Result<i32, String> {
     let most = f64::from(most);
     let number = number_within(value, named, -most, most, unit)?;
     if number.fract() != 0.0 {
@@ -476,6 +484,26 @@ fn word<T>(value: &Value, named: &str, from_name: impl Fn(&str) -> Option<T>, wo
         Some(choice) => Ok(choice),
         None => Err(format!("{named} is one of {choices}, not {text}")),
     }
+}
+
+// The instrument `value` names, which must be one in the Instruments
+// folder, or None for null.
+pub fn instrument_named(value: &Value, named: &str) -> Result<Option<String>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let names = instruments::list();
+    if names.is_empty() {
+        return Err(format!("{named} can't be set: there are no instruments in the Instruments folder yet"));
+    }
+    let choices = names.join(", ");
+    let Some(text) = value.as_str() else {
+        return Err(format!("{named} is one of {choices} or null, not {value}"));
+    };
+    if !names.contains(&String::from(text)) {
+        return Err(format!("{named} is one of {choices} or null, not {text}"));
+    }
+    Ok(Some(String::from(text)))
 }
 
 fn no_such_value(place: &str, name: &str, names: &str) -> String {
@@ -559,6 +587,9 @@ pub fn take_changes(profile: &mut SoundProfile, engine: &mut Engine, before: &So
     for index in 0..OSCILLATOR_COUNT {
         if after.oscillators[index] != before.oscillators[index] {
             profile.set_oscillator(engine, index, after.oscillators[index]);
+        }
+        if after.instruments[index] != before.instruments[index] {
+            profile.set_instrument(engine, index, after.instruments[index].as_deref());
         }
     }
     if after.loudness_envelope != before.loudness_envelope {
@@ -808,7 +839,7 @@ mod tests {
     fn unknown_names_and_words_are_refused_with_what_there_is() {
         let before = new_sound();
         let error = changed(&before, &json!({"oscillators": [{"number": 1, "kind": "banjo"}]})).unwrap_err();
-        assert_eq!(error, "oscillator 1 kind is one of sine, triangle, square, saw, noise, not banjo");
+        assert_eq!(error, "oscillator 1 kind is one of sine, triangle, square, saw, noise, sample, not banjo");
 
         let error = changed(&before, &json!({"reverb": {"size": 3}})).unwrap_err();
         assert!(error.starts_with("the sound has no part called reverb: it has tuning_hz"));

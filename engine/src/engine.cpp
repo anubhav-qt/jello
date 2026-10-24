@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -23,6 +24,14 @@ constexpr int channels = 2;  // stereo
 // MIDI numbers notes from 0 to 127. Middle C is 60.
 bool is_valid_note(int note) {
     return note >= 0 && note <= 127;
+}
+
+// A note a key can play: a note, or a drum pad's.
+bool is_valid_played_note(int note) {
+    if (is_valid_note(note)) {
+        return true;
+    }
+    return is_drum_note(note);
 }
 
 // How hard a key was hit, from 1 to 127. In MIDI a velocity of 0 means
@@ -51,12 +60,13 @@ bool is_valid_layer(int layer) {
     return layer < JELLO_LOOP_MAX_LAYERS;
 }
 
-// A loop note's pitch: a note, or a press of the vibrato or glide key.
+// A loop note's pitch: a note, a press of the vibrato or glide key, or a
+// drum pad's hit.
 bool is_valid_loop_pitch(int note) {
     if (note < 0) {
         return false;
     }
-    return note <= JELLO_GLIDE_KEY_NOTE;
+    return note < loop_pitch_count;
 }
 
 // A layer's volume, from 0 to 1.
@@ -103,7 +113,16 @@ static_assert(JELLO_OSCILLATOR_MOST_HALF_STEPS == oscillator_most_half_steps,
 static_assert(JELLO_OSCILLATOR_MOST_CENTS == static_cast<int>(oscillator_most_cents),
               "the C API and the oscillators tune as many cents");
 static_assert(JELLO_KIND_NOISE == static_cast<int>(Kind::noise), "noise is the same kind");
-static_assert(JELLO_KIND_NOISE + 1 == kind_count, "every kind has a number");
+static_assert(JELLO_KIND_SAMPLE == static_cast<int>(Kind::sample), "the sample is the same kind");
+static_assert(JELLO_KIND_SAMPLE + 1 == kind_count, "every kind has a number");
+
+// The C API and the sampler agree on how many sets there are, and on the
+// drum pads.
+static_assert(JELLO_SAMPLE_SET_MOST == sample_set_most, "the C API and the engine keep as many sets");
+static_assert(JELLO_DRUM_FIRST_NOTE == drum_first_note, "the C API and the drum kit start the pads alike");
+static_assert(JELLO_DRUM_PAD_COUNT == drum_pad_count, "the C API and the drum kit have the same pads");
+static_assert(JELLO_DRUM_MOST_HALF_STEPS == drum_most_half_steps, "the C API and the drum kit tune pads as far");
+static_assert(JELLO_DRUM_MOST_GROUP == drum_most_group, "the C API and the drum kit have the same choke groups");
 static_assert(JELLO_PULSE_NARROWEST_PERCENT == static_cast<int>(oscillator_narrowest_width * 100.0f + 0.5f),
               "the C API and the oscillators have the same narrowest pulse");
 static_assert(JELLO_PULSE_WIDEST_PERCENT == static_cast<int>(oscillator_widest_width * 100.0f + 0.5f),
@@ -414,6 +433,14 @@ struct JelloEngine {
     ma_context context;
     bool has_context = false;
     std::vector<ma_device_info> inputs;
+
+    // The sample sets, by number; empty where there is none. A forgotten
+    // set waits here until the audio thread is done with it: until it has
+    // acted on the message that last sent the set (its count in
+    // `last_sent`) and no longer says it plays it.
+    std::array<std::unique_ptr<SampleSet>, sample_set_most> sets;
+    std::array<bool, sample_set_most> forgotten{};
+    std::array<std::uint64_t, sample_set_most> last_sent{};
 };
 
 namespace {
@@ -434,6 +461,25 @@ void on_mic(ma_device* device, void* output, const void* input, ma_uint32 frames
 
     JelloEngine* engine = static_cast<JelloEngine*>(device->pUserData);
     engine->heard.write(static_cast<const float*>(input), static_cast<int>(frames));
+}
+
+// Set `set`'s number is one the engine keeps and has not forgotten.
+bool is_sendable_set(const JelloEngine* engine, int set) {
+    if (!is_within_int(set, 0, sample_set_most - 1)) {
+        return false;
+    }
+    if (engine->sets[set] == nullptr) {
+        return false;
+    }
+    return !engine->forgotten[set];
+}
+
+// The set to send for number `set`, nullptr for -1.
+const SampleSet* set_to_send(const JelloEngine* engine, int set) {
+    if (set == -1) {
+        return nullptr;
+    }
+    return engine->sets[set].get();
 }
 
 }  // namespace
@@ -492,7 +538,7 @@ void jello_engine_stop_audio(JelloEngine* engine) {
 
 void jello_engine_note_on(JelloEngine* engine, int note, int velocity) {
     // Ignore anything MIDI could never send, so nothing odd reaches the synth.
-    if (!is_valid_note(note)) {
+    if (!is_valid_played_note(note)) {
         return;
     }
     if (!is_valid_velocity(velocity)) {
@@ -502,7 +548,7 @@ void jello_engine_note_on(JelloEngine* engine, int note, int velocity) {
 }
 
 void jello_engine_note_off(JelloEngine* engine, int note) {
-    if (!is_valid_note(note)) {
+    if (!is_valid_played_note(note)) {
         return;
     }
     engine->conductor.note_off(note);
@@ -518,7 +564,7 @@ void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float
     if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
         return;
     }
-    if (!is_within_int(kind, JELLO_KIND_SINE, JELLO_KIND_NOISE)) {
+    if (!is_within_int(kind, JELLO_KIND_SINE, JELLO_KIND_SAMPLE)) {
         return;
     }
     if (!is_within(level, 0.0f, 1.0f)) {
@@ -829,7 +875,7 @@ bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, in
     // thread, not the audio thread, so it may ask for memory.
     std::vector<LoopNote> notes(static_cast<std::size_t>(count));
     for (int i = 0; i < count; i++) {
-        if (!is_valid_note(played[i].note)) {
+        if (!is_valid_loop_pitch(played[i].note)) {
             return false;
         }
         notes[i].note = played[i].note;
@@ -1044,6 +1090,157 @@ void jello_engine_feed_capture(JelloEngine* engine, const float* samples, int fr
 
 void jello_engine_render(JelloEngine* engine, float* out, int frames) {
     engine->conductor.render(out, frames);
+}
+
+int jello_engine_add_sample_set(JelloEngine* engine, const JelloSampleZone* zones, int count) {
+    jello_engine_tidy_sample_sets(engine);
+    if (count < 0) {
+        return -1;
+    }
+    int id = -1;
+    for (int i = 0; i < sample_set_most; i++) {
+        if (engine->sets[i] == nullptr) {
+            id = i;
+            break;
+        }
+    }
+    if (id == -1) {
+        return -1;
+    }
+
+    // Made here, on the calling thread, so it may ask for memory.
+    auto set = std::make_unique<SampleSet>(id);
+    for (int i = 0; i < count; i++) {
+        const JelloSampleZone& given = zones[i];
+        if (!is_within_int(given.lowest_note, 0, 127)) {
+            return -1;
+        }
+        if (!is_within_int(given.highest_note, 0, 127)) {
+            return -1;
+        }
+        if (!is_within_int(given.root_note, 0, 127)) {
+            return -1;
+        }
+        if (!is_within(given.tune_cents, -100.0f, 100.0f)) {
+            return -1;
+        }
+        if (given.loop_start > given.loop_end) {
+            return -1;
+        }
+        SampleZone zone;
+        zone.lowest_note = given.lowest_note;
+        zone.highest_note = given.highest_note;
+        zone.root_note = given.root_note;
+        zone.tune_cents = given.tune_cents;
+        zone.channels = given.channels;
+        zone.frame_count = given.frame_count;
+        zone.loop_start = given.loop_start;
+        zone.loop_end = given.loop_end;
+        if (!set->add_zone(zone, given.frames)) {
+            return -1;
+        }
+    }
+    engine->sets[id] = std::move(set);
+    engine->forgotten[id] = false;
+    engine->last_sent[id] = 0;
+    return id;
+}
+
+void jello_engine_forget_sample_set(JelloEngine* engine, int set) {
+    if (!is_sendable_set(engine, set)) {
+        return;
+    }
+    engine->forgotten[set] = true;
+    jello_engine_tidy_sample_sets(engine);
+}
+
+void jello_engine_tidy_sample_sets(JelloEngine* engine) {
+    // The count first: the sets in use read after it are at least as new.
+    std::uint64_t handled = engine->conductor.sample_messages_handled();
+    std::uint32_t in_use = engine->conductor.sets_in_use();
+    for (int i = 0; i < sample_set_most; i++) {
+        if (engine->sets[i] == nullptr) {
+            continue;
+        }
+        if (!engine->forgotten[i]) {
+            continue;
+        }
+        if (handled < engine->last_sent[i]) {
+            continue;
+        }
+        if ((in_use & (1u << i)) != 0) {
+            continue;
+        }
+        engine->sets[i].reset();
+        engine->forgotten[i] = false;
+    }
+}
+
+int jello_engine_sample_sets_kept(JelloEngine* engine) {
+    int kept = 0;
+    for (const auto& set : engine->sets) {
+        if (set != nullptr) {
+            kept += 1;
+        }
+    }
+    return kept;
+}
+
+bool jello_engine_set_instrument(JelloEngine* engine, int index, int set) {
+    if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
+        return false;
+    }
+    if (set != -1) {
+        if (!is_sendable_set(engine, set)) {
+            return false;
+        }
+    }
+    if (!engine->conductor.set_instrument(index, set_to_send(engine, set))) {
+        return false;
+    }
+    if (set != -1) {
+        engine->last_sent[set] = engine->conductor.sample_messages_sent();
+    }
+    return true;
+}
+
+bool jello_engine_set_drum_kit(JelloEngine* engine, int set) {
+    if (set != -1) {
+        if (!is_sendable_set(engine, set)) {
+            return false;
+        }
+    }
+    if (!engine->conductor.set_drum_kit(set_to_send(engine, set))) {
+        return false;
+    }
+    if (set != -1) {
+        engine->last_sent[set] = engine->conductor.sample_messages_sent();
+    }
+    return true;
+}
+
+void jello_engine_set_drum_pad(JelloEngine* engine, int pad, float level, int half_steps, float pan, int group) {
+    if (!is_within_int(pad, 0, JELLO_DRUM_PAD_COUNT - 1)) {
+        return;
+    }
+    if (!is_within(level, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_within_int(half_steps, -JELLO_DRUM_MOST_HALF_STEPS, JELLO_DRUM_MOST_HALF_STEPS)) {
+        return;
+    }
+    if (!is_within(pan, -1.0f, 1.0f)) {
+        return;
+    }
+    if (!is_within_int(group, 0, JELLO_DRUM_MOST_GROUP)) {
+        return;
+    }
+    DrumPad settings;
+    settings.level = level;
+    settings.half_steps = half_steps;
+    settings.pan = pan;
+    settings.group = group;
+    engine->conductor.set_drum_pad(pad, settings);
 }
 
 }  // extern "C"

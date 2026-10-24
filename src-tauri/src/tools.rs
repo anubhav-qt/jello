@@ -15,8 +15,10 @@ use serde_json::{Value, json};
 use crate::cards::{self, Offers};
 use crate::commands::sound_view_of;
 use crate::compose::Composer;
+use crate::drum_changes;
 use crate::engine::{Engine, FASTEST_TEMPO, FULL_VOLUME, SLOWEST_TEMPO};
 use crate::harmony::{key_name, key_of_name};
+use crate::instruments;
 use crate::key_map::KeyMap;
 use crate::layer_notes;
 use crate::listening;
@@ -108,8 +110,9 @@ impl ToolAnswer {
 }
 
 // The parts jello_look can read.
-const LOOK_PARTS: [&str; 10] = [
-    "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory",
+const LOOK_PARTS: [&str; 12] = [
+    "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory", "drums",
+    "instruments",
 ];
 
 // Every tool, as MCP's tools/list names and describes them.
@@ -125,8 +128,9 @@ pub fn list() -> Value {
                 recent presses. presets: every preset and the starting sound. songs: every song and \
                 the one open. skills: each skill area's level out of 10 (the median of its last 5 \
                 tries), trend and recent points, measured from every practice try. memory: your \
-                notes about the player, and whether you ask before saving one. With no parts it \
-                reads them all.",
+                notes about the player, and whether you ask before saving one. drums: the drum \
+                kit's instrument, whether it is ready, and every pad. instruments: the instruments \
+                in Music/Jello/Instruments, by name. With no parts it reads them all.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -144,8 +148,9 @@ pub fn list() -> Value {
                 changes, with the names jello_look's sound uses. Example: {\"changes\": {\"filter\": \
                 {\"cutoff_hz\": 800}, \"oscillators\": [{\"number\": 2, \"kind\": \"saw\"}]}}. \
                 Oscillators (1 to 3), LFOs (1 to 8) and connections (1 to 64) are named by their \
-                number. A connection with source \"none\" is removed; an empty one needs a source \
-                and a target. A value outside its range, or a name Jello doesn't know, is refused \
+                number. An oscillator of kind \"sample\" plays its instrument, named as jello_look's \
+                instruments lists them, or null for none. A connection with source \"none\" is \
+                removed; an empty one needs a source and a target. A value outside its range, or a name Jello doesn't know, is refused \
                 with what is allowed, and then nothing changes. Answers with what changed and the \
                 whole sound.",
             "inputSchema": {
@@ -154,6 +159,39 @@ pub fn list() -> Value {
                     "changes": {"type": "object"},
                 },
                 "required": ["changes"],
+            },
+        },
+        {
+            "name": "jello_drums",
+            "description": "Changes the song's drums, naming only what changes. kit: the \
+                instrument the drums play, as jello_look's instruments lists them, or null for none. \
+                pads: [{pad, level, half_steps, pan, group}] by pad name (kick, snare, rim, clap, \
+                closed hat, pedal hat, open hat, low tom, mid tom, high tom, crash, crash 2, ride, \
+                ride bell, china, tambourine). level and pan are percent (pan -100 left to 100 \
+                right), half_steps -12 to 12, group 0 (none) to 4: a hit cuts off the pads ringing \
+                in its group, as a closed hat cuts an open one. Hits are one-shots, written with \
+                jello_notes by pad name, like {\"note\": \"kick\", \"start\": 0, \"hold\": 0.25}. \
+                Refused with what is allowed if Jello doesn't know a name or a value is outside its \
+                range, and then nothing changes. Answers with what changed and the drums.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kit": {"type": ["string", "null"]},
+                    "pads": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "pad": {"type": "string"},
+                                "level": {"type": "integer"},
+                                "half_steps": {"type": "integer"},
+                                "pan": {"type": "integer"},
+                                "group": {"type": "integer"},
+                            },
+                            "required": ["pad"],
+                        },
+                    },
+                },
             },
         },
         {
@@ -365,7 +403,8 @@ pub fn list() -> Value {
             "name": "jello_notes",
             "description": "Writes a loop layer's notes directly, at exact times and any pitch, \
                 not only what the keys reach. notes: [{note|chord, start, hold}] in beats from \
-                the layer's start, a chord giving its three notes, at most 2048. layer: the layer \
+                the layer's start, a chord giving its three notes, at most 2048. A note can be a \
+                drum pad's name, like \"kick\" or \"closed hat\", which hits that drum. layer: the layer \
                 to replace, from 1; without it a new layer goes on top (8 at most). bars: how \
                 long the layer lasts, 1 to 64, by default what its notes need, or a replaced \
                 layer's own. volume: percent. With no loop yet, the layer becomes the loop. \
@@ -492,6 +531,7 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_show" => cards::show(studio, arguments),
         "jello_options" => cards::offer(studio, arguments),
         "jello_notes" => write_notes(studio, arguments),
+        "jello_drums" => change_drums(studio, arguments),
         "jello_theory" => theory::answer(studio, arguments),
         "jello_practice" => practice::answer(studio, arguments),
         "jello_memory" => memory::answer(studio, arguments),
@@ -551,6 +591,8 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
                 skills::skills_view(memory.folder())
             }
             "memory" => studio.memory.lock().unwrap().view(),
+            "drums" => drum_changes::json_of(composer.drums(), &engine),
+            "instruments" => json!({ "names": instruments::list() }),
             _ => Value::Null,
         };
         state.insert(part, value);
@@ -615,6 +657,23 @@ fn change_sound(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String
     // The panel draws the change: the sound before, dashed, under the new.
     let card = cards::sound_change_card(&before, &after, &lines);
     Ok(ToolAnswer::of(state, lines).with_card(card))
+}
+
+// jello_drums: the changes in `arguments`, made to the song's drums.
+fn change_drums(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
+    let mut composer = studio.composer.lock().unwrap();
+    let mut engine = studio.engine.lock().unwrap();
+    let before = composer.drums().clone();
+    let wanted = drum_changes::changed(&before, arguments)?;
+    drum_changes::take_changes(&mut composer, &mut engine, &before, &wanted);
+
+    let after = composer.drums().clone();
+    let lines = drum_changes::change_lines(&before, &after);
+    let state = json!({
+        "changed": lines,
+        "drums": drum_changes::json_of(&after, &engine),
+    });
+    Ok(ToolAnswer::of(state, lines))
 }
 
 // jello_play: the phrase in `arguments`, played to its end or until Stop.
@@ -1254,6 +1313,24 @@ mod tests {
         // Not even the resonance, which came first.
         let after = test.composer.lock().unwrap().sound_profile().sound();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn the_drums_change_by_pad_name_and_a_refusal_changes_nothing() {
+        let test = TestStudio::new();
+        let answer = test.call("jello_drums", json!({"pads": [{"pad": "snare", "level": 80, "pan": -30}]}));
+        assert!(!answer.failed, "{}", answer.text);
+        assert_eq!(
+            answer.changes,
+            vec![String::from("Snare level 100 -> 80%"), String::from("Snare pan 0 -> -30%")]
+        );
+        assert_eq!(json_text(&answer)["drums"]["pads"][1]["level"], 80);
+        assert_eq!(test.composer.lock().unwrap().drums().pads[1].pan, -30);
+
+        let answer = test.call("jello_drums", json!({"pads": [{"pad": "kick", "level": 50}, {"pad": "cowbell"}]}));
+        assert!(answer.failed);
+        assert!(answer.text.starts_with("pad is one of kick, snare"), "{}", answer.text);
+        assert_eq!(test.composer.lock().unwrap().drums().pads[0].level, 100);
     }
 
     #[test]

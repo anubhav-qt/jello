@@ -8,9 +8,12 @@ mod cards;
 mod commands;
 mod compose;
 mod dictation;
+mod drum_changes;
+mod drums;
 mod engine;
 mod harmony;
 mod hum;
+mod instruments;
 mod key_map;
 mod layer_cycles;
 mod layer_notes;
@@ -32,6 +35,7 @@ mod songs;
 mod sound_changes;
 mod sound_file;
 mod sound_profile;
+mod starters;
 mod theory;
 mod tool_server;
 mod tools;
@@ -42,7 +46,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
 
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 use compose::Composer;
 use engine::Engine;
@@ -55,6 +59,9 @@ pub fn run() {
     // song open last opens, in setup below, or the first time something
     // plays.
     let mut engine = Engine::new().expect("could not create the sound engine");
+    // Its instruments are read on another thread, so picking one never
+    // holds up the keys (docs/design.md#sampler).
+    engine.load_in_background();
 
     // Compose's key, the chords added to the song so far, where the song
     // played last starts, and the song's tempo and sound profile. Those two
@@ -77,6 +84,7 @@ pub fn run() {
         .manage(Mutex::new(mic::Mic::default()))
         .manage(Mutex::new(dictation::Dictation::default()))
         .manage(Mutex::new(hum::Hum::default()))
+        .manage(Mutex::new(starters::Starters::default()))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
         .manage(Mutex::new(composer))
@@ -88,6 +96,13 @@ pub fn run() {
         .setup(|app| {
             let folders = folders_of(app.handle());
             app.manage(Mutex::new(OpenSong::new(folders)));
+            // Instruments come from Music/Jello/Instruments. Each one read
+            // in the background starts playing once it is ready.
+            if let Ok(folder) = commands::instruments_folder(app.handle()) {
+                instruments::set_folder(folder);
+            }
+            let loaded = app.handle().clone();
+            instruments::on_loaded(move || play_loaded_instruments(&loaded));
             // The agent's notes about the player, from Music/Jello/Memory.
             let memory = memory::Memory::load(memory::folder_of(app.handle()));
             app.manage(Mutex::new(memory));
@@ -140,6 +155,12 @@ pub fn run() {
             commands::release_all_notes,
             commands::switch_kind,
             commands::set_oscillator,
+            commands::set_instrument,
+            commands::set_drum_kit,
+            commands::set_drum_pad,
+            commands::list_instruments,
+            commands::open_instruments_folder,
+            starters::download_starter,
             commands::switch_snap,
             commands::set_layer_volume,
             commands::set_layer_bars,
@@ -222,8 +243,19 @@ fn open_last_song(app: &AppHandle) {
     song_session::open_last_song(&mut open, &mut composer, &mut engine, now);
 }
 
+// Plays each instrument asked for that has just been read, and tells the
+// screen, which shows whether each is ready.
+fn play_loaded_instruments(app: &AppHandle) {
+    let engine = app.state::<Mutex<Engine>>();
+    let mut engine = engine.lock().unwrap();
+    engine.send_loaded_instruments();
+    drop(engine);
+    let _ = app.emit("instruments-changed", ());
+}
+
 // Looks for changes to the song a few times a second, for as long as Jello
-// runs, and saves each once it has settled.
+// runs, and saves each once it has settled. It frees the instruments no
+// note plays any more too.
 fn keep_saving(app: AppHandle) {
     loop {
         thread::sleep(SAVE_CHECK);
@@ -235,6 +267,7 @@ fn keep_saving(app: AppHandle) {
         let composer = composer.lock().unwrap();
         let mut engine = engine.lock().unwrap();
         song_session::save_if_settled(&mut open, &composer, &mut engine, now);
+        engine.tidy_sample_sets();
     }
 }
 

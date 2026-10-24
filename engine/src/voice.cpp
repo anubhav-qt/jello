@@ -54,6 +54,14 @@ constexpr std::uint64_t noise_what = 2 * lfo_count + 1;  // plus the copy's and 
 // A hair before the end of a cycle, where an LFO set to "once" holds.
 constexpr double once_end_nudge = 1e-9;
 
+// The fastest a recording plays, in frames each sample: 3 octaves up. Any
+// faster and its tone is mostly gone anyway.
+constexpr double most_sample_step = 8.0;
+
+// The A4 recordings are tuned from: their root notes are named at 440 Hz,
+// and the song's tuning moves the notes they play instead.
+constexpr double recorded_a4_hz = 440.0;
+
 // A note's pitch in Hz, with A4, note 69, at `a4_hz`. Every 12 notes is an
 // octave, and each octave up doubles the pitch.
 double note_to_frequency(int note, double a4_hz) {
@@ -84,14 +92,26 @@ double one_way(double both_ways) {
 }
 
 // `kind` moved `steps` steps through sine, triangle, square, saw and
-// noise, round and round. Steps are rounded to whole ones.
+// noise, round and round. Steps are rounded to whole ones. A sample stays a
+// sample, since only it has an instrument.
 Kind moved_kind(Kind kind, double steps) {
+    if (kind == Kind::sample) {
+        return kind;
+    }
     int index = static_cast<int>(kind) + static_cast<int>(std::round(steps));
-    index = index % kind_count;
+    index = index % stepped_kind_count;
     if (index < 0) {
-        index += kind_count;
+        index += stepped_kind_count;
     }
     return static_cast<Kind>(index);
+}
+
+// The note `oscillator`'s zone is picked for: the note, moved by the
+// oscillator's whole octaves and half steps, so an oscillator tuned an
+// octave up plays the recording made an octave up.
+int zone_note(int note, const OscillatorSettings& oscillator) {
+    int moved = note + 12 * oscillator.octaves + oscillator.half_steps;
+    return std::clamp(moved, 0, 127);
 }
 
 // A stage `ms` long moved by `octaves` of time: each one doubles it. Kept
@@ -215,6 +235,18 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
         offset_cents_[o] = offset_cents(oscillator);
         levels_[o] = oscillator.level;
         widths_[o] = oscillator.width;
+        sets_[o] = nullptr;
+        zones_[o] = nullptr;
+        if (oscillator.kind == Kind::sample) {
+            start_sample(o, note, oscillator, moved.instruments[o]);
+        } else {
+            // A voice that just played a recording is far into it: a wave
+            // starts from that share of its cycle instead.
+            for (int c = 0; c < unison_most_copies; c++) {
+                double phase = copies_[c].phases[o];
+                copies_[c].phases[o] = phase - std::floor(phase);
+            }
+        }
     }
     hz_ = note_to_frequency(note, moved.a4_hz);
     copy_count_ = moved.unison.copies;
@@ -383,6 +415,37 @@ int Voice::layer() const {
     return layer_;
 }
 
+void Voice::add_sets_in_use(std::uint32_t& sets) const {
+    if (is_free()) {
+        return;
+    }
+    for (int o = 0; o < oscillator_count; o++) {
+        if (sets_[o] != nullptr) {
+            sets |= 1u << sets_[o]->id();
+        }
+    }
+}
+
+void Voice::start_sample(int index, int note, const OscillatorSettings& oscillator, const SampleSet* set) {
+    if (set == nullptr) {
+        return;
+    }
+    const SampleZone* zone = set->zone_for(zone_note(note, oscillator));
+    if (zone == nullptr) {
+        return;
+    }
+    sets_[index] = set;
+    zones_[index] = zone;
+    double cents = zone->tune_cents;
+    root_hz_[index] = note_to_frequency(zone->root_note, recorded_a4_hz) * std::exp2(cents / cents_per_octave);
+
+    // Every copy starts at the recording's start: a note played again
+    // strikes again, unlike a wave, which carries on round its cycle.
+    for (int c = 0; c < unison_most_copies; c++) {
+        copies_[c].phases[index] = 0.0;
+    }
+}
+
 void Voice::render(float* out, int frames, float volume, const FilterTargets& filter) {
     for (int i = 0; i < frames; i++) {
         // A free voice is silent, so there is nothing to add. It stops on
@@ -434,9 +497,13 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
         for (int c = 0; c < copy_count_; c++) {
             Copy& copy = copies_[c];
             for (int o = 0; o < oscillator_count; o++) {
-                copy.phases[o] += copy.phase_steps[o].value;
-                if (copy.phases[o] >= 1.0) {
-                    copy.phases[o] -= 1.0;
+                if (kinds_[o] == Kind::sample) {
+                    move_sample(copy, o);
+                } else {
+                    copy.phases[o] += copy.phase_steps[o].value;
+                    if (copy.phases[o] >= 1.0) {
+                        copy.phases[o] -= 1.0;
+                    }
                 }
                 copy.phase_steps[o].next();
                 if (kinds_[o] == Kind::noise) {
@@ -600,8 +667,15 @@ void Voice::head_for(const Moves& moves, int samples, std::uint64_t sample) {
         for (int o = 0; o < oscillator_count; o++) {
             double cents_here = copy_cents + oscillator_cents[o];
             double hz = hz_ * std::exp2(cents_here / cents_per_octave);
-            hz = std::min(hz, highest_hz);
-            copy.phase_steps[o].head_to(hz / sample_rate_, samples);
+            if (zones_[o] != nullptr) {
+                // A recording plays faster for a higher note, by how far
+                // the note is from where it was recorded.
+                double step = std::min(hz / root_hz_[o], most_sample_step);
+                copy.phase_steps[o].head_to(step, samples);
+            } else {
+                hz = std::min(hz, highest_hz);
+                copy.phase_steps[o].head_to(hz / sample_rate_, samples);
+            }
         }
 
         // Below 0 is toward the left speaker, above 0 toward the right. Each
@@ -656,30 +730,55 @@ void Voice::head_for(const Moves& moves, int samples, std::uint64_t sample) {
     }
 }
 
-double Voice::oscillator_height(const Copy& copy, int index) const {
-    Kind kind = kinds_[index];
-    if (kind == Kind::noise) {
-        return copy.noises[index].height() * noise_trim;
+void Voice::move_sample(Copy& copy, int index) {
+    const SampleZone* zone = zones_[index];
+    if (zone == nullptr) {
+        return;
     }
-    Wave wave = wave_of(kind);
-    double width = oscillator_widths_[index].value;
-    return wave_height(wave, copy.phases[index], copy.phase_steps[index].value, width) * wave_trim(wave);
+    copy.phases[index] = move_through(*zone, copy.phases[index], copy.phase_steps[index].value);
+}
+
+Stereo Voice::oscillator_height(const Copy& copy, int index) const {
+    Stereo height;
+    Kind kind = kinds_[index];
+    if (kind == Kind::sample) {
+        // No instrument, or none for this note: silent.
+        const SampleZone* zone = zones_[index];
+        if (zone == nullptr) {
+            return height;
+        }
+        return read_zone(*zone, copy.phases[index]);
+    }
+    double mono = 0.0;
+    if (kind == Kind::noise) {
+        mono = copy.noises[index].height() * noise_trim;
+    } else {
+        Wave wave = wave_of(kind);
+        double width = oscillator_widths_[index].value;
+        mono = wave_height(wave, copy.phases[index], copy.phase_steps[index].value, width) * wave_trim(wave);
+    }
+    height.left = mono;
+    height.right = mono;
+    return height;
 }
 
 Stereo Voice::height_now() const {
     Stereo sum;
     for (int i = 0; i < copy_count_; i++) {
         const Copy& copy = copies_[i];
-        double height = 0.0;
+        double left = 0.0;
+        double right = 0.0;
         for (int o = 0; o < oscillator_count; o++) {
             // A silent oscillator adds nothing, so it is skipped.
             double level = oscillator_levels_[o].value;
             if (level > 0.0) {
-                height += oscillator_height(copy, o) * level;
+                Stereo height = oscillator_height(copy, o);
+                left += height.left * level;
+                right += height.right * level;
             }
         }
-        sum.left += height * copy.left.value;
-        sum.right += height * copy.right.value;
+        sum.left += left * copy.left.value;
+        sum.right += right * copy.right.value;
     }
     sum.left *= copy_scale_;
     sum.right *= copy_scale_;

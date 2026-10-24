@@ -389,6 +389,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "claxon"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1686,6 +1692,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "cc",
+ "claxon",
  "getrandom 0.3.4",
  "hound",
  "image",
@@ -2392,7 +2399,7 @@ dependencies = [
  "image",
  "itertools 0.15.0",
  "js-sys",
- "libloading 0.7.4",
+ "libloading 0.8.9",
  "log",
  "maybe-owned",
  "once_cell",

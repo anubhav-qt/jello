@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::drums::{DRUM_FIRST_NOTE, PAD_NAMES, pad_named};
 use crate::harmony::{Chord, Quality, chord_name};
 
 // Laptop keys can't feel how hard they are hit, so every note they play uses
@@ -127,6 +128,47 @@ pub(crate) const GLIDE_KEY: &str = "AltLeft";
 #[cfg(target_os = "windows")]
 pub(crate) const GLIDE_KEY: &str = "AltRight";
 
+// The key that switches drum mode on and off (docs/design.md#sampler):
+// right Option on Mac, right Control on Windows, where right Alt glides.
+#[cfg(not(target_os = "windows"))]
+pub(crate) const DRUM_MODE_KEY: &str = "AltRight";
+#[cfg(target_os = "windows")]
+pub(crate) const DRUM_MODE_KEY: &str = "ControlRight";
+
+// In drum mode the letter keys and Space hit drums, by pad name, laid out
+// for two hands: kicks under the thumbs and the index fingers' lower
+// keys, snares under the index fingers, hats under the middle, ring and
+// little fingers, rims and claps in the middle, toms and cymbals on the top
+// row. The keys that run the beat, the looper and the sound keep working.
+const DRUM_KEYS: [(&str, &str); 26] = [
+    ("Space", "kick"),
+    ("KeyV", "kick"),
+    ("KeyN", "kick"),
+    ("KeyF", "snare"),
+    ("KeyJ", "snare"),
+    ("KeyD", "closed hat"),
+    ("KeyK", "closed hat"),
+    ("KeyS", "open hat"),
+    ("KeyL", "open hat"),
+    ("KeyA", "pedal hat"),
+    ("Semicolon", "pedal hat"),
+    ("KeyG", "rim"),
+    ("KeyH", "rim"),
+    ("KeyT", "clap"),
+    ("KeyY", "clap"),
+    ("KeyE", "high tom"),
+    ("KeyR", "mid tom"),
+    ("KeyU", "mid tom"),
+    ("KeyI", "low tom"),
+    ("KeyQ", "crash"),
+    ("KeyP", "crash 2"),
+    ("KeyW", "ride"),
+    ("KeyO", "ride"),
+    ("BracketLeft", "ride bell"),
+    ("KeyZ", "china"),
+    ("Slash", "tambourine"),
+];
+
 // The keys that run the beat and the looper
 // (docs/adr/0021-a-looper-on-a-beat.md). Right Shift counts in, records and
 // closes the loop, then starts and stops layers, and Esc removes a layer
@@ -170,6 +212,10 @@ enum KeyRole {
     Vibrato,
     // Holds the glide key.
     Glide,
+    // Hits this drum pad, from 0.
+    Drum(usize),
+    // Switches drum mode on or off.
+    DrumMode,
     // Moves new notes on to the next wave.
     Wave,
     // Runs the looper.
@@ -193,6 +239,11 @@ pub enum KeyAction {
     HoldVibratoKey,
     // Holds the glide key until the key is let go.
     HoldGlideKey,
+    // Hits this drum pad, from 0. The hit plays out whole however long the
+    // key is held, but the looper keeps how long it was.
+    HitDrum(usize),
+    // Drum mode just went on or off: the key map has switched already.
+    SwitchDrumMode,
     // Moves new notes on to the next wave.
     SwitchWave,
     // Counts in, records or closes the loop, or starts or stops a layer,
@@ -213,6 +264,9 @@ pub struct KeyMap {
     octave: i8,
     // What each key does. A key that isn't in here does nothing.
     layout: HashMap<String, KeyRole>,
+    // What each key does in drum mode, and whether it is on.
+    drum_layout: HashMap<String, KeyRole>,
+    drum_mode: bool,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
 }
@@ -243,6 +297,11 @@ pub struct LayoutForUi {
     // The keys that run the beat and the looper, each with what it does:
     // "looper", "clear", "slower" or "faster".
     beat_keys: HashMap<String, &'static str>,
+    // Whether drum mode is on, the key that switches it, and in drum mode,
+    // each key that hits a drum with the drum's name.
+    drum_mode: bool,
+    drum_mode_keys: Vec<String>,
+    drums: HashMap<String, &'static str>,
 }
 
 impl KeyMap {
@@ -262,10 +321,30 @@ impl KeyMap {
         layout.insert(String::from(CLEAR_KEY), KeyRole::RemoveLayer);
         layout.insert(String::from(SLOWER_KEY), KeyRole::Slower);
         layout.insert(String::from(FASTER_KEY), KeyRole::Faster);
+        layout.insert(String::from(DRUM_MODE_KEY), KeyRole::DrumMode);
+
+        // Drum mode keeps every key that is not a note or a chord.
+        let mut drum_layout = HashMap::new();
+        for (key, role) in &layout {
+            match role {
+                KeyRole::Note(_) => {}
+                KeyRole::Chord(_) => {}
+                _ => {
+                    drum_layout.insert(key.clone(), *role);
+                }
+            }
+        }
+        for (key, name) in DRUM_KEYS {
+            if let Some(pad) = pad_named(name) {
+                drum_layout.insert(String::from(key), KeyRole::Drum(pad));
+            }
+        }
 
         KeyMap {
             octave: 0,
             layout,
+            drum_layout,
+            drum_mode: false,
             held: HashMap::new(),
         }
     }
@@ -293,9 +372,18 @@ impl KeyMap {
         self.octave
     }
 
+    // What each key does right now: in drum mode, the drum layout.
+    fn roles(&self) -> &HashMap<String, KeyRole> {
+        if self.drum_mode {
+            &self.drum_layout
+        } else {
+            &self.layout
+        }
+    }
+
     // Whether `key` does anything at all.
     pub fn knows(&self, key: &str) -> bool {
-        self.layout.contains_key(key)
+        self.roles().contains_key(key)
     }
 
     // What pressing `key` should do, or None for nothing.
@@ -307,7 +395,7 @@ impl KeyMap {
         }
 
         // A key that isn't in the layout does nothing.
-        let role = match self.layout.get(key) {
+        let role = match self.roles().get(key) {
             Some(role) => *role,
             None => return None,
         };
@@ -333,6 +421,17 @@ impl KeyMap {
             KeyRole::Glide => {
                 self.held.insert(String::from(key), Vec::new());
                 Some(KeyAction::HoldGlideKey)
+            }
+            // Held with its pad's note, so letting go of it ends the note
+            // the looper records.
+            KeyRole::Drum(pad) => {
+                let note = DRUM_FIRST_NOTE + pad as u8;
+                self.held.insert(String::from(key), vec![note]);
+                Some(KeyAction::HitDrum(pad))
+            }
+            KeyRole::DrumMode => {
+                self.drum_mode = !self.drum_mode;
+                Some(KeyAction::SwitchDrumMode)
             }
             KeyRole::Wave => Some(KeyAction::SwitchWave),
             KeyRole::Looper => Some(KeyAction::PressLooper),
@@ -367,7 +466,7 @@ impl KeyMap {
         if !self.held.contains_key(key) {
             return false;
         }
-        self.layout.get(key) == Some(&KeyRole::Vibrato)
+        self.roles().get(key) == Some(&KeyRole::Vibrato)
     }
 
     // Whether `key` is held down holding the glide key, so letting go of it
@@ -376,7 +475,7 @@ impl KeyMap {
         if !self.held.contains_key(key) {
             return false;
         }
-        self.layout.get(key) == Some(&KeyRole::Glide)
+        self.roles().get(key) == Some(&KeyRole::Glide)
     }
 
     // Whether any held key is playing `note`.
@@ -424,7 +523,9 @@ impl KeyMap {
         let mut vibrato_keys = Vec::new();
         let mut glide_keys = Vec::new();
         let mut beat_keys = HashMap::new();
-        for (key, role) in &self.layout {
+        let mut drum_mode_keys = Vec::new();
+        let mut drums = HashMap::new();
+        for (key, role) in self.roles() {
             match role {
                 KeyRole::Note(note) => {
                     notes.insert(key.clone(), *note);
@@ -437,6 +538,12 @@ impl KeyMap {
                 }
                 KeyRole::Glide => {
                     glide_keys.push(key.clone());
+                }
+                KeyRole::Drum(pad) => {
+                    drums.insert(key.clone(), PAD_NAMES[*pad]);
+                }
+                KeyRole::DrumMode => {
+                    drum_mode_keys.push(key.clone());
                 }
                 KeyRole::Wave => {
                     wave_keys.push(key.clone());
@@ -470,6 +577,9 @@ impl KeyMap {
             vibrato_keys,
             glide_keys,
             beat_keys,
+            drum_mode: self.drum_mode,
+            drum_mode_keys,
+            drums,
         }
     }
 }
@@ -687,13 +797,62 @@ mod tests {
             "MetaLeft",
         ];
         for key in keys {
+            // Right Control switches drum mode on Windows.
+            if key == DRUM_MODE_KEY {
+                continue;
+            }
             assert_eq!(key_map.press(key), None, "key {key}");
         }
 
         // The layout holds the 24 chords, the 24 notes, the vibrato key, the
-        // glide key, the wave key and the 4 beat and looper keys, and
-        // nothing else.
-        assert_eq!(key_map.layout.len(), 55);
+        // glide key, the wave key, the 4 beat and looper keys and the drum
+        // mode key, and nothing else.
+        assert_eq!(key_map.layout.len(), 56);
+    }
+
+    #[test]
+    fn drum_mode_turns_the_letters_into_drums_and_back() {
+        let mut key_map = KeyMap::new();
+        assert!(!key_map.drum_mode);
+        assert_eq!(key_map.press(DRUM_MODE_KEY), Some(KeyAction::SwitchDrumMode));
+        key_map.release(DRUM_MODE_KEY);
+        assert!(key_map.drum_mode);
+
+        // Space and the index fingers' keys hit drums, held with the pad's
+        // note so letting go ends it.
+        assert_eq!(key_map.press("Space"), Some(KeyAction::HitDrum(0)));
+        assert_eq!(key_map.release("Space"), vec![DRUM_FIRST_NOTE]);
+        assert_eq!(key_map.press("KeyF"), Some(KeyAction::HitDrum(1)));
+        assert_eq!(key_map.press("KeyD"), Some(KeyAction::HitDrum(4)));
+        assert_eq!(key_map.press("KeyS"), Some(KeyAction::HitDrum(6)));
+
+        // The beat, looper and sound keys still work; the number row's
+        // chords and notes don't.
+        assert_eq!(key_map.press("ShiftRight"), Some(KeyAction::PressLooper));
+        assert_eq!(key_map.press("Minus"), Some(KeyAction::SlowDown));
+        assert_eq!(key_map.press("ShiftLeft"), Some(KeyAction::HoldVibratoKey));
+        assert_eq!(key_map.press("Digit1"), None);
+        assert_eq!(key_map.press("Digit7"), None);
+
+        // The keys show each drum's name.
+        let layout = key_map.layout_for_ui();
+        assert!(layout.drum_mode);
+        assert_eq!(layout.drums.get("KeyJ"), Some(&"snare"));
+        assert_eq!(layout.drums.get("Slash"), Some(&"tambourine"));
+        assert!(layout.notes.is_empty());
+        assert!(layout.chords.is_empty());
+
+        // Every pad is on a key.
+        for name in PAD_NAMES {
+            let on_a_key = layout.drums.values().any(|drum| *drum == name);
+            assert!(on_a_key, "no key hits {name}");
+        }
+
+        // Pressed again, the keys play notes and chords again.
+        key_map.press(DRUM_MODE_KEY);
+        assert!(!key_map.drum_mode);
+        assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
+        assert!(key_map.layout_for_ui().drums.is_empty());
     }
 
     #[test]

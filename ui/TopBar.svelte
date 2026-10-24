@@ -6,7 +6,8 @@
      Render WAV buttons sit on the right of the title row, one width, and the
      agent's button at the right end of the tabs, named for its job in the
      open tab: Tutor, Composer or Producer, the same width in every tab
-     (docs/adr/0041-one-agent-for-every-mode.md). -->
+     (docs/adr/0041-one-agent-for-every-mode.md). While drum mode is on,
+     DRUMS is lit before them (docs/design.md#sampler). -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { clickThenLetGo } from "./dom";
@@ -30,6 +31,9 @@
     // Whether the agent's panel is open, and what its button does.
     agentOpen: boolean;
     onAgentClick: () => void;
+    // Whether the letters hit drums, and the key that switches them back.
+    drumMode: boolean;
+    drumModeKey: string;
   }
 
   let {
@@ -44,6 +48,8 @@
     endButtons,
     agentOpen,
     onAgentClick,
+    drumMode,
+    drumModeKey,
   }: Props = $props();
 
   // The agent's name in each tab.
@@ -83,6 +89,12 @@
     </p>
 
     <div class="actions">
+      {#if drumMode}
+        <span class="topbar-drums" title="The letters hit drums. {drumModeKey} switches them back to notes.">
+          <span class="action-name">Drums</span>
+          <span class="topbar-drums-key">{drumModeKey}</span>
+        </span>
+      {/if}
       {@render endButtons()}
       <button
         type="button"

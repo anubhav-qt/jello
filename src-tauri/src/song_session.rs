@@ -120,6 +120,7 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
         chords: composer.held_chords(),
         looped: loop_now(engine),
         sound: composer.sound_profile().sound(),
+        drums: composer.drums().clone(),
     }
 }
 
@@ -524,6 +525,7 @@ mod tests {
                 layers: vec![first, second],
             }),
             sound,
+            drums: crate::drums::Drums::new(),
         }
     }
 

@@ -21,7 +21,7 @@ use crate::key_map::KeyMap;
 use crate::layer_notes::{self, WrittenNote};
 use crate::phrases::{self, Phrases};
 use crate::practice::{self, Practice};
-use crate::song_file::{note_name, note_of_name};
+use crate::song_file::{note_name, pitch_of_note_name};
 use crate::song_session::OpenSong;
 use crate::sound_changes;
 use crate::sound_file::Sound;
@@ -171,7 +171,7 @@ fn lane_card(studio: &Studio, card: &Map<String, Value>) -> Result<Value, String
 fn pitches_named(fields: &Map<String, Value>, place: &str) -> Result<(String, Vec<u8>), String> {
     if let Some(name) = fields.get("note") {
         let name = name.as_str().unwrap_or_default();
-        let Some(note) = note_of_name(name) else {
+        let Some(note) = pitch_of_note_name(name) else {
             return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\""));
         };
         return Ok((note_name(note), vec![note]));

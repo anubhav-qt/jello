@@ -31,7 +31,12 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   song, presets, listen (`listening.rs`, `measures.rs`); Undo (`undo.rs`).
   Agent mode (0043): build steps 1 to 9 done (live steps, cards, saved
   chats, theory, practice, memory, skills, attachments, mic, dictation,
-  hum); step 10 asks first. Mic: `engine/src/capture.*`, `mic.rs`; voice:
+  hum); step 10 asks first.
+- Sampler (0044): sample kind plays Music/Jello/Instruments (SFZ subset or
+  named WAV/FLAC, `instruments.rs`, `engine/src/sample_set.*`); drum kit
+  (`drums.rs`, `engine/src/drum_kit.*`) on notes 130 to 145, right Option
+  (right Ctrl Windows) toggles drum mode. Starters download only on click
+  (`starters.rs`). Agent: `jello_drums`. Todos in design.md#sampler. Mic: `engine/src/capture.*`, `mic.rs`; voice:
   `dictation.rs`, `hum.rs`, `pitch.rs`; files: `attachments.rs`,
   `audio_file.rs`. First providers: Anthropic, OpenAI, Google.
 

@@ -133,7 +133,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    types, a width for the square (a pulse) and glide on a held left
    Option ([ADR 0036](adr/0036-glide.md)). Then presets: a song's whole
    sound saved by name, and a starting sound for new songs
-   ([ADR 0037](adr/0037-presets.md)).
+   ([ADR 0037](adr/0037-presets.md)). Then the sampler: a sample kind
+   that plays recorded instruments, and a drum kit on the letters in drum
+   mode ([ADR 0044](adr/0044-the-sampler.md), [Sampler](#sampler)).
 5. **Arrange.** Tracks, sequencer, piano roll, recording from the keyboard,
    tempo and key changes, the text song format. Guided composing came
    early: the Compose tab already builds a progression with guidance
@@ -868,6 +870,75 @@ jumping.
   the glide, chords never gliding, notes jumping as before without the key,
   the routing list moving the time, letting go of everything, odd times,
   and a loop playing its own glide key back.
+
+### Sampler
+
+[ADR 0044](adr/0044-the-sampler.md): recordings played as an oscillator's
+sixth kind, and a drum kit beside the synth.
+
+- **Instruments.** Folders in Music/Jello/Instruments, each one
+  instrument: an SFZ file, or WAV and FLAC files named by note (C4.wav,
+  F#2.flac) or by drum (kick.wav, closed hat.wav). Of SFZ Jello reads
+  regions, groups, masters, globals, control's default_path and offsets,
+  #include, keys, pitch_keycenter, tune, transpose, volume, amplitude and
+  loops. It keeps only the layer for velocity 80, the first round robin
+  and attack triggers. An SFZ drum kit's notes are matched to pads by the
+  General MIDI drum map. Rust (`instruments.rs`) reads every recording on
+  a background thread, turns it into 48 kHz, cuts one-shots at 15 seconds
+  with a fade, and makes each instrument as loud as the others. Every
+  engine shares the one read.
+- **Loading.** Picking an instrument never holds up the keys: until it is
+  ready the oscillator stays silent and the screen says "loading". Once
+  read, the live engine gets it (`send_loaded_instruments`) and the screen
+  hears `instruments-changed`. One that can't be read says why, and
+  picking it again tries again. Instruments no oscillator or kit uses are
+  freed as the song saves. The engine keeps up to 32 sets.
+- **Sample kind.** Plays its instrument's zone for the note through the
+  whole voice: tuning, filter, envelopes, LFOs, unison, glide and vibrato,
+  layered with waves on the other oscillators. A held note loops where the
+  recording says; otherwise it plays to its end. The song file keeps each
+  oscillator's `instrument` by name.
+- **Drums.** A kit with 16 voices of its own, so drums and chords play
+  together. Pads: kick, snare, rim, clap, closed hat, pedal hat, open hat,
+  low tom, mid tom, high tom, crash, crash 2, ride, ride bell, china and
+  tambourine. Each has a level, a tuning of -12 to 12 half steps, a pan and
+  a choke group (0 none, 1 to 4); a hit cuts off the others sounding in its
+  group, and a new song puts the hats in one. Hits play once to their end
+  whatever the key does. They are notes 130 to 145, after the vibrato and
+  glide keys, so the looper records and snaps them, and song files write
+  them by pad name, with the kit and pads under `[drums]`.
+- **Drum mode.** Right Option (right Ctrl on Windows) switches the letters
+  and Space to drums and back; DRUMS shows in the top bar and each key
+  shows its drum. Kicks: Space, V, N. Snares: F, J. Closed hats: D, K.
+  Open hats: S, L. Pedal hats: A, ;. Rims: G, H. Claps: T, Y. Toms: E high,
+  R and U mid, I low. Q crash, P crash 2, W and O ride, [ ride bell, Z
+  china, / tambourine. The other keys (vibrato, glide, looper, arrows)
+  keep working.
+- **Starters.** Nothing comes with Jello. The sound panel offers two free
+  starters, each fetched only by its own Download button, which says its
+  size: Salamander Grand Piano (742 MB, CC BY 3.0, Alexander Holm) on a
+  sample oscillator and AVL Black Pearl (14 MB, CC BY-SA 3.0, Glen
+  MacArthur) on the Drums page. `starters.rs` fetches with curl, checks the
+  size, unpacks with tar (both come with macOS and Windows) and keeps the
+  folder holding the SFZ file with its license.
+- **Screens.** A sample oscillator shows its instrument in the drawing's
+  place; clicking it lists the instruments over that oscillator, with
+  None, the starters and Open Instruments folder, until one is picked. The
+  Drums page has the kit's list, the 16 pads and the open pad's level, half
+  steps, pan and group.
+- **Agent.** `jello_sound` takes `"kind": "sample"` and an `instrument`;
+  `jello_drums` picks the kit and sets pads by name; `jello_notes` writes
+  drums by pad name; `jello_look` reads "drums" and "instruments". The
+  agent never downloads: the player clicks.
+- **Todo.** Velocity layers (keys have no velocity, so an accent or level
+  pick), round robin, slicing loops, recording from the mic, and the
+  memory doubling: Rust and C++ each keep a copy of every recording.
+- Tests check SFZ and named-file reading, other rates, stereo, FLAC and
+  loops, the voice playing a sample at pitch, tuned and layered with
+  waves, one-shots, choke groups, drums with notes, the looper recording
+  hits, freeing unused instruments, drum mode's keys, song files keeping
+  drums by name and the kit and pads within their ranges, the agent's
+  drum changes and refusals, and unpacking a starter.
 
 ## Input
 
@@ -1639,6 +1710,7 @@ comes before the sampler, and replaces the Tutor of
   | `jello_looper` | Records, stops, pauses, plays, snap, tempo, each layer's volume and pause, clears a layer |
   | `jello_song` | Key, adding, moving and removing chords, play and stop, open, make and rename songs |
   | `jello_presets` | Lists, loads and saves presets, marks the starting sound |
+  | `jello_drums` | Picks the drum kit and sets each pad ([sampler](#sampler)) |
   | `jello_practice` | Sets an exercise that Jello highlights and checks |
   | `jello_listen` | Renders silently and measures it |
 
@@ -1836,7 +1908,8 @@ Beginner to Master, are the Tutor's path, in seven areas.
 - **Release grade needs the engine to grow.** Each piece is a roadmap step
   with its own ADR and an approved C++ design, and each gives the Composer
   a tool:
-  1. Drums and sampled instruments (step 4, the sampler).
+  1. Drums and sampled instruments (step 4, the sampler): built, with
+     `jello_drums` ([ADR 0044](adr/0044-the-sampler.md)).
   2. Tracks and arrangement (step 5): several instruments with sounds of
      their own, sections like verse and chorus, and automation (values
      that move over the song). Tools like `jello_tracks`, `jello_arrange`.
@@ -2194,6 +2267,3 @@ Ask the user one at a time, when the step that needs the answer comes up.
 - Design system for screens after the start page. They follow the start
   page's Stage look (ADR 0010); the details are settled screen by screen
   (see [UI design process](#ui-design-process)).
-- Where the sampler's recordings come from: free sample libraries whose
-  licenses allow releasing the music, or our own recordings. Decide with the
-  sampler's design (ADR 0019).

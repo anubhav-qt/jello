@@ -1,9 +1,11 @@
 <!-- The sound panel's Oscillators page (docs/design.md#sound-panel): the
      three oscillators every note plays, side by side
      (docs/adr/0035-oscillators-with-kinds.md). Each has a drawing of what it
-     plays, its five kind tiles, its level and a square's width
-     (docs/design.md#pulse-width), and its tuning. All of them start with
-     the next key pressed. -->
+     plays, its six kind tiles, its level and a square's width
+     (docs/design.md#pulse-width), and its tuning. A sample shows its
+     instrument in the drawing's place (docs/design.md#sampler): clicking
+     it lists the instruments over the oscillator until one is picked. All
+     of them start with the next key pressed. -->
 <script lang="ts">
   import {
     evenScale,
@@ -28,6 +30,7 @@
   } from "./sound";
   import { clickThenLetGo } from "./dom";
   import SoundHandle from "./SoundHandle.svelte";
+  import SoundInstruments from "./SoundInstruments.svelte";
   import SoundValue from "./SoundValue.svelte";
 
   interface Props {
@@ -105,6 +108,29 @@
   }
 
   const SETTINGS = [settingsOf(0), settingsOf(1), settingsOf(2)];
+
+  // The oscillator whose instruments are listed, from 0, or null.
+  let choosing: number | null = $state(null);
+
+  function chooseInstrument(index: number, name: string | null) {
+    send.setInstrument(index, name);
+    choosing = null;
+  }
+
+  // What a sample's button says: its instrument, and whether it is ready.
+  function instrumentWords(oscillator: OscillatorView): string {
+    const instrument = oscillator.instrument;
+    if (instrument.name === null) {
+      return "No instrument";
+    }
+    if (instrument.state === "loading") {
+      return `${instrument.name}, loading`;
+    }
+    if (instrument.state === "failed") {
+      return `${instrument.name}, can't be read`;
+    }
+    return instrument.name;
+  }
 
   // The drawing, 280 by 40, as wide for its height as the box it fills:
   // the oscillator's wave around a middle line, as tall as its level. Right
@@ -242,71 +268,104 @@
     <div class="sound-module">
       <div class="sound-module-top">
         <span class="sound-label">Oscillator {index + 1}</span>
-        <span class="sound-hint">
-          {oscillator.kind}
-          {#if index === 0}
-            <span class="sound-key-chip">F12</span>
-          {/if}
-        </span>
-      </div>
-      <div class="sound-drawing" class:is-silent={oscillator.level === 0}>
-        <svg viewBox="0 0 {WIDTH} {HEIGHT}" preserveAspectRatio="xMidYMid meet">
-          <path class="sound-lit-soft is-faint" d="M{LEFT} {MIDDLE_Y} L {RIGHT} {MIDDLE_Y}" />
-          <path class="sound-lit is-fine" d={paths[index]} />
-          <SoundHandle
-            x={RIGHT + 10}
-            y={levelY(oscillator.level)}
-            ringed={isPicked(picked, settings.level.id)}
-            onGrab={() => onPick(pickedOf(settings.level))}
-            onMove={(_x, y) => settings.level.set(levelAt(y))}
-          />
-          {#if oscillator.kind === "square"}
-            <SoundHandle
-              x={fallX(oscillator)}
-              y={MIDDLE_Y}
-              ringed={isPicked(picked, settings.width.id)}
-              onGrab={() => onPick(pickedOf(settings.width))}
-              onMove={(x) => settings.width.set(widthAt(oscillator, x))}
-            />
-          {/if}
-        </svg>
-      </div>
-      <div class="sound-kinds">
-        {#each KINDS as kind (kind.name)}
+        {#if choosing === index}
           <button
             type="button"
-            class="sound-shape"
-            class:is-chosen={oscillator.kind === kind.name}
-            title={kind.name}
-            onclick={(event) => clickThenLetGo(event, () => sendOscillator(index, { kind: kind.name }))}
+            class="sound-hint sound-hint-button"
+            onclick={(event) => clickThenLetGo(event, () => (choosing = null))}
           >
-            <svg class="sound-glyph" viewBox="0 0 20 12"><path d={kind.glyph} /></svg>
+            Close the list
           </button>
-        {/each}
+        {:else}
+          <span class="sound-hint">
+            {oscillator.kind}
+            {#if index === 0}
+              <span class="sound-key-chip">F12</span>
+            {/if}
+          </span>
+        {/if}
       </div>
-      <div class="sound-fields" style:grid-template-columns="1fr 1fr">
-        <SoundValue setting={settings.level} dots={11} {picked} {onPick} />
-        <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
-      </div>
-      <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr">
-        <SoundValue
-          setting={settings.octaves}
-          dots={7}
-          {picked}
-          {onPick}
-          bipolar
-          dim={tuningDoesNothing(oscillator)}
-        />
-        <SoundValue
-          setting={settings.halfSteps}
-          dots={13}
-          {picked}
-          {onPick}
-          bipolar
-          dim={tuningDoesNothing(oscillator)}
-        />
-        <SoundValue setting={settings.cents} dots={11} {picked} {onPick} bipolar dim={tuningDoesNothing(oscillator)} />
-      </div>
+      {#if choosing === index}
+        <div class="sound-instrument-list">
+          <SoundInstruments
+            chosen={oscillator.instrument}
+            onChoose={(name) => chooseInstrument(index, name)}
+            drums={false}
+            {send}
+          />
+        </div>
+      {:else}
+        {#if oscillator.kind === "sample"}
+          <button
+            type="button"
+            class="sound-drawing sound-instrument-pick"
+            class:is-silent={oscillator.level === 0}
+            onclick={(event) => clickThenLetGo(event, () => (choosing = index))}
+          >
+            <span class="sound-instrument-name">{instrumentWords(oscillator)}</span>
+            <span class="sound-instrument-more">pick</span>
+          </button>
+        {:else}
+          <div class="sound-drawing" class:is-silent={oscillator.level === 0}>
+            <svg viewBox="0 0 {WIDTH} {HEIGHT}" preserveAspectRatio="xMidYMid meet">
+              <path class="sound-lit-soft is-faint" d="M{LEFT} {MIDDLE_Y} L {RIGHT} {MIDDLE_Y}" />
+              <path class="sound-lit is-fine" d={paths[index]} />
+              <SoundHandle
+                x={RIGHT + 10}
+                y={levelY(oscillator.level)}
+                ringed={isPicked(picked, settings.level.id)}
+                onGrab={() => onPick(pickedOf(settings.level))}
+                onMove={(_x, y) => settings.level.set(levelAt(y))}
+              />
+              {#if oscillator.kind === "square"}
+                <SoundHandle
+                  x={fallX(oscillator)}
+                  y={MIDDLE_Y}
+                  ringed={isPicked(picked, settings.width.id)}
+                  onGrab={() => onPick(pickedOf(settings.width))}
+                  onMove={(x) => settings.width.set(widthAt(oscillator, x))}
+                />
+              {/if}
+            </svg>
+          </div>
+        {/if}
+        <div class="sound-kinds">
+          {#each KINDS as kind (kind.name)}
+            <button
+              type="button"
+              class="sound-shape"
+              class:is-chosen={oscillator.kind === kind.name}
+              title={kind.name}
+              onclick={(event) => clickThenLetGo(event, () => sendOscillator(index, { kind: kind.name }))}
+            >
+              <svg class="sound-glyph" viewBox="0 0 20 12"><path d={kind.glyph} /></svg>
+            </button>
+          {/each}
+        </div>
+        <div class="sound-fields" style:grid-template-columns="1fr 1fr">
+          <SoundValue setting={settings.level} dots={11} {picked} {onPick} />
+          <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
+        </div>
+        <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr">
+          <SoundValue
+            setting={settings.octaves}
+            dots={7}
+            {picked}
+            {onPick}
+            bipolar
+            dim={tuningDoesNothing(oscillator)}
+          />
+          <SoundValue
+            setting={settings.halfSteps}
+            dots={13}
+            {picked}
+            {onPick}
+            bipolar
+            dim={tuningDoesNothing(oscillator)}
+          />
+          <SoundValue setting={settings.cents} dots={11} {picked} {onPick} bipolar dim={tuningDoesNothing(oscillator)} />
+        </div>
+      {/if}
     </div>
   {/each}
 </div>

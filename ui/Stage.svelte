@@ -225,6 +225,14 @@
   let picked: Picked | null = $state(null);
   let soundModifierHeld = $state(false);
 
+  // The drum mode key's name as printed, for the top bar's DRUMS.
+  let drumModeKeyName = $derived.by(() => {
+    if (platform === "mac") {
+      return "Right ⌥";
+    }
+    return "Right Ctrl";
+  });
+
   // The songs and the one open, or null until Rust has said, and whether
   // the Songs panel is open. It opens in the tape's place in every tab, and
   // the sound panel closes for it.
@@ -710,6 +718,8 @@
     onAgentClick={() => {
       agentOpen = !agentOpen;
     }}
+    drumMode={layout.drum_mode}
+    drumModeKey={drumModeKeyName}
   />
 
   <main

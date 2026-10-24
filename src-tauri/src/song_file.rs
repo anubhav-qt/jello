@@ -15,19 +15,22 @@
 //   with no notes.
 // - A loop keeps its first 8 layers and its first 4096 notes.
 // - The tempo is kept from 40 to 240 and a layer's volume to 100.
+// - A pad Jello doesn't know is skipped, and a pad's values are kept
+//   within their ranges.
 // Text that is not TOML at all can't be read.
 
 use toml::{Table, Value};
 
+use crate::drums::{DrumPad, Drums, PAD_NAMES, pad_named, pad_of_note};
 use crate::engine::{
-    FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO,
+    FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, drum_note,
     VIBRATO_KEY_NOTE,
 };
 use crate::presets::name_problem;
 use crate::harmony::{Chord, Key, chord_name, chord_of_name, key_name, key_of_name, pitch_of_name};
 use crate::sound_file::{
-    Sound, group, groups, number_in, read_count, read_flag, read_word, sound_of_table, start_group, write_flag,
-    write_number, write_sound, write_word,
+    Sound, group, groups, number_in, read_count, read_flag, read_signed, read_word, sound_of_table, start_group,
+    write_flag, write_name, write_number, write_sound, write_word,
 };
 use crate::sound_profile::SoundProfile;
 
@@ -64,6 +67,8 @@ pub struct Song {
     // None for a song with no loop.
     pub looped: Option<SongLoop>,
     pub sound: Sound,
+    // The drum kit's instrument and how each pad sounds.
+    pub drums: Drums,
 }
 
 // A chord of the song and how long it was held.
@@ -93,7 +98,8 @@ pub struct SongLayer {
 }
 
 // One note of the loop, in beats from the loop's start. Its pitch is 0 to
-// 127, or VIBRATO_KEY_NOTE or GLIDE_KEY_NOTE for a press of those keys.
+// 127, VIBRATO_KEY_NOTE or GLIDE_KEY_NOTE for a press of those keys, or a
+// drum pad's note for a hit (src/drums.rs).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BeatNote {
     pub note: u8,
@@ -118,9 +124,12 @@ pub fn samples_of(beats: f64, tempo: u32, sample_rate: u32) -> u64 {
     samples as u64
 }
 
-// A note's name, like "C4" for middle C or "F#3", or the word for a press
-// of the vibrato or glide key.
+// A note's name, like "C4" for middle C or "F#3", the word for a press
+// of the vibrato or glide key, or a drum's name, like "kick".
 pub fn note_name(note: u8) -> String {
+    if let Some(pad) = pad_of_note(note) {
+        return String::from(PAD_NAMES[pad]);
+    }
     if note == VIBRATO_KEY_NOTE {
         return String::from(VIBRATO_KEY_WORD);
     }
@@ -141,6 +150,9 @@ pub fn note_of_name(name: &str) -> Option<u8> {
     }
     if name == GLIDE_KEY_WORD {
         return Some(GLIDE_KEY_NOTE);
+    }
+    if let Some(pad) = pad_named(name) {
+        return Some(drum_note(pad));
     }
 
     // The octave starts at its first digit, or at a minus sign: C-1 is the
@@ -176,6 +188,17 @@ pub fn note_of_name(name: &str) -> Option<u8> {
         return None;
     }
     Some(note as u8)
+}
+
+// The pitch a note name gives, from 0 to 127, as note_of_name reads it, or
+// None for anything else: a drum or a press of the vibrato or glide key.
+// Lanes, cards and practice take only these.
+pub fn pitch_of_note_name(name: &str) -> Option<u8> {
+    let note = note_of_name(name)?;
+    if note > 127 {
+        return None;
+    }
+    Some(note)
 }
 
 // `song` as text. Every value is written.
@@ -217,7 +240,51 @@ pub fn text_of(song: &Song) -> String {
     }
 
     write_sound(&mut text, &song.sound, "sound");
+    write_drums(&mut text, &song.drums);
     text
+}
+
+// The drums: the kit's instrument, if one is picked, then one pad a line.
+fn write_drums(text: &mut String, drums: &Drums) {
+    start_group(text, "[drums]");
+    if let Some(kit) = &drums.kit {
+        write_name(text, "kit", kit);
+    }
+    text.push_str("pads = [\n");
+    for (pad, settings) in drums.pads.iter().enumerate() {
+        let name = PAD_NAMES[pad];
+        text.push_str(&format!(
+            "  {{ pad = \"{name}\", level = {}, half_steps = {}, pan = {}, group = {} }},\n",
+            settings.level, settings.half_steps, settings.pan, settings.group
+        ));
+    }
+    text.push_str("]\n");
+}
+
+// The drums `table`, a song file's [drums], describes, starting from a new
+// song's.
+fn read_drums(table: &Table) -> Drums {
+    let mut drums = Drums::new();
+    if let Some(kit) = read_word(table, "kit") {
+        drums.kit = Some(String::from(kit));
+    }
+    for item in items(table, "pads") {
+        let Some(name) = read_word(item, "pad") else {
+            continue;
+        };
+        let Some(pad) = pad_named(name) else {
+            continue;
+        };
+        let missing = drums.pads[pad];
+        let settings = DrumPad {
+            level: read_count(item, "level", missing.level),
+            half_steps: read_signed(item, "half_steps", missing.half_steps),
+            pan: read_signed(item, "pan", missing.pan),
+            group: read_count(item, "group", missing.group),
+        };
+        drums.pads[pad] = settings.within_ranges();
+    }
+    drums
 }
 
 fn write_loop(text: &mut String, looped: &SongLoop) {
@@ -299,6 +366,11 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
         None => new_song.sound(),
     };
 
+    let drums = match group(&table, "drums") {
+        Some(drums_table) => read_drums(drums_table),
+        None => Drums::new(),
+    };
+
     Ok(Song {
         key,
         tempo,
@@ -307,6 +379,7 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
         chords,
         looped,
         sound,
+        drums,
     })
 }
 
@@ -423,6 +496,7 @@ fn beat_in(item: &Table, name: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
+    use crate::drums::{DRUM_MOST_GROUP, DRUM_MOST_HALF_STEPS};
     use crate::engine::{Kind, SLOWEST_TEMPO};
     use crate::harmony::{Mode, Quality};
 
@@ -450,6 +524,17 @@ mod tests {
         sound.tuning_hz = 432.5;
         sound.oscillators[0].kind = Kind::Saw;
         sound.filter.cutoff_hz = 1234.5;
+        sound.oscillators[1].kind = Kind::Sample;
+        sound.instruments[1] = Some(String::from("The \"Big\" \\ piano"));
+
+        let mut drums = Drums::new();
+        drums.kit = Some(String::from("Black Pearl"));
+        drums.pads[1] = DrumPad {
+            level: 70,
+            half_steps: -2,
+            pan: 30,
+            group: 2,
+        };
 
         let first = SongLayer {
             bars: 0,
@@ -458,6 +543,8 @@ mod tests {
             notes: vec![
                 note(64, 0.0, 0.5),
                 note(VIBRATO_KEY_NOTE, 1.0, 2.0),
+                note(drum_note(0), 1.0, 1.1),
+                note(drum_note(4), 1.5, 1.6),
                 note(67, 5.237396, 5.75),
             ],
         };
@@ -494,6 +581,7 @@ mod tests {
                 layers: vec![first, second],
             }),
             sound,
+            drums,
         }
     }
 
@@ -530,6 +618,44 @@ mod tests {
         assert!(text.contains("[sound]\ntuning_hz = 432.5\n"));
         assert!(text.contains("[[sound.oscillators]]\nkind = \"saw\"\n"));
         assert!(text.contains("[sound.filter]\n"));
+        assert!(text.contains("kind = \"sample\"\ninstrument = 'The \"Big\" \\ piano'\n"));
+        assert!(text.contains("  { note = \"kick\", start = 1, end = 1.1 },\n"));
+        assert!(text.contains("  { note = \"closed hat\", start = 1.5, end = 1.6 },\n"));
+        assert!(text.contains("[drums]\nkit = \"Black Pearl\"\npads = [\n"));
+        assert!(text.contains("  { pad = \"snare\", level = 70, half_steps = -2, pan = 30, group = 2 },\n"));
+        assert!(text.contains("  { pad = \"open hat\", level = 100, half_steps = 0, pan = 0, group = 1 },\n"));
+    }
+
+    #[test]
+    fn drums_are_read_by_pad_name_within_their_ranges() {
+        let text = r#"
+[drums]
+kit = "Kit"
+pads = [
+  { pad = "Closed_Hat", level = 50, group = 0 },
+  { pad = "cowbell", level = 10 },
+  { pad = "ride", level = 900, half_steps = -40, pan = 300, group = 9 },
+  { level = 20 },
+]
+"#;
+        let song = read(text);
+        let mut expected = Drums::new();
+        expected.kit = Some(String::from("Kit"));
+        expected.pads[4].level = 50;
+        expected.pads[4].group = 0;
+        expected.pads[12] = DrumPad {
+            level: 100,
+            half_steps: -DRUM_MOST_HALF_STEPS,
+            pan: 100,
+            group: DRUM_MOST_GROUP,
+        };
+        assert_eq!(song.drums, expected);
+
+        // A song with no [drums] has a new song's, and hits read by name.
+        assert_eq!(read("").drums, Drums::new());
+        let hits = "[loop]\nbars = 1\n[[loop.layer]]\nnotes = [{ note = \"snare\", start = 0, end = 0.1 }, { note = \"cowbell\", start = 1, end = 2 }]\n";
+        let looped = read(hits).looped.unwrap();
+        assert_eq!(looped.layers[0].notes, vec![note(drum_note(1), 0.0, 0.1)]);
     }
 
     #[test]
@@ -568,9 +694,13 @@ mod tests {
         assert_eq!(note_name(VIBRATO_KEY_NOTE), "vibrato key");
         assert_eq!(note_name(GLIDE_KEY_NOTE), "glide key");
 
-        for pitch in 0..=GLIDE_KEY_NOTE {
+        assert_eq!(note_name(drum_note(0)), "kick");
+        assert_eq!(note_name(drum_note(15)), "tambourine");
+
+        for pitch in 0..=GLIDE_KEY_NOTE + 16 {
             assert_eq!(note_of_name(&note_name(pitch)), Some(pitch));
         }
+        assert_eq!(note_of_name("open_hat"), Some(drum_note(6)));
         assert_eq!(note_of_name("Bb3"), Some(58));
         assert_eq!(note_of_name("Cb4"), Some(59));
         assert_eq!(note_of_name("B#3"), Some(60));
@@ -592,6 +722,7 @@ mod tests {
             chords: Vec::new(),
             looped: None,
             sound: SoundProfile::new().sound(),
+            drums: crate::drums::Drums::new(),
         };
         assert_eq!(song, new_song);
 

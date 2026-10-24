@@ -198,6 +198,7 @@ mod tests {
             chords: Vec::new(),
             looped: None,
             sound: SoundProfile::new().sound(),
+            drums: crate::drums::Drums::new(),
         };
         text_of(&song)
     }

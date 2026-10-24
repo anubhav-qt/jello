@@ -26,7 +26,7 @@ constexpr float most_octaves_of_speed = 14.0f;
 
 // The most steps a connection can move an oscillator's kind or the filter's
 // type either way: through all of them.
-constexpr float most_kind_steps = static_cast<float>(kind_count - 1);
+constexpr float most_kind_steps = static_cast<float>(stepped_kind_count - 1);
 constexpr float most_filter_type_steps = static_cast<float>(filter_type_count - 1);
 
 // The most a connection can move a square's width either way: from the

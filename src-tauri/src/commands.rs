@@ -12,8 +12,11 @@ use crate::compose::{ComposeView, Composer};
 use crate::engine::{
     BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
     LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison, VIBRATO_KEY_NOTE,
+    drum_note,
 };
+use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
+use crate::instruments::{self, Status};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
@@ -21,6 +24,7 @@ use crate::modulation::{
 };
 use crate::presets::{self, PresetView};
 use crate::sound_profile::SoundProfile;
+use crate::starters::{StarterView, Starters, starter_views};
 use crate::wav::write_wav;
 
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
@@ -61,13 +65,89 @@ pub struct SoundView {
     // The preset the song sounds exactly like, whose tile is lit, or None
     // (null for the UI) (docs/adr/0037-presets.md).
     preset: Option<String>,
+    // The song's drum kit and pads (docs/design.md#sampler).
+    drums: DrumsView,
+}
+
+// Where an instrument is, as the screen shows it: "none" when none is
+// picked, "ready", "loading", or "failed" with why.
+#[derive(Serialize)]
+pub struct InstrumentView {
+    name: Option<String>,
+    state: &'static str,
+    problem: Option<String>,
+}
+
+pub(crate) fn instrument_view_of(name: Option<&str>, playing: bool) -> InstrumentView {
+    let mut view = InstrumentView {
+        name: name.map(String::from),
+        state: "none",
+        problem: None,
+    };
+    let Some(name) = name else {
+        return view;
+    };
+    if playing {
+        view.state = "ready";
+        return view;
+    }
+    match instruments::status(name) {
+        Status::Failed(why) => {
+            view.state = "failed";
+            view.problem = Some(why);
+        }
+        _ => {
+            view.state = "loading";
+        }
+    }
+    view
+}
+
+// The drums as the screen shows them: the kit's instrument and every pad,
+// in pad order, by name.
+#[derive(Serialize)]
+pub struct DrumsView {
+    kit: InstrumentView,
+    pads: Vec<PadView>,
+}
+
+#[derive(Serialize)]
+pub struct PadView {
+    name: &'static str,
+    // In percent.
+    level: u32,
+    half_steps: i32,
+    // In percent, from -100 (left) to 100 (right).
+    pan: i32,
+    // From 0 (none) to DRUM_MOST_GROUP.
+    group: u32,
+}
+
+fn drums_view_of(engine: &Engine, composer: &Composer) -> DrumsView {
+    let (kit, playing) = engine.drum_kit();
+    let mut pads = Vec::new();
+    for (pad, settings) in composer.drums().pads.iter().enumerate() {
+        pads.push(PadView {
+            name: PAD_NAMES[pad],
+            level: settings.level,
+            half_steps: settings.half_steps,
+            pan: settings.pan,
+            group: settings.group,
+        });
+    }
+    DrumsView {
+        kit: instrument_view_of(kit, playing),
+        pads,
+    }
 }
 
 // One oscillator, as the screen shows it. Its kind is named: "sine",
-// "triangle", "square", "saw" or "noise".
+// "triangle", "square", "saw", "noise" or "sample".
 #[derive(Serialize)]
 pub struct OscillatorView {
     kind: &'static str,
+    // The instrument it plays as a sample.
+    instrument: InstrumentView,
     // In percent.
     level: u32,
     octaves: i32,
@@ -78,9 +158,10 @@ pub struct OscillatorView {
     width: u32,
 }
 
-fn oscillator_view_of(oscillator: &Oscillator) -> OscillatorView {
+fn oscillator_view_of(oscillator: &Oscillator, instrument: InstrumentView) -> OscillatorView {
     OscillatorView {
         kind: oscillator.kind.name(),
+        instrument,
         level: oscillator.level,
         octaves: oscillator.octaves,
         half_steps: oscillator.half_steps,
@@ -406,8 +487,10 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
     looper.message = engine.take_looper_message();
 
     let mut oscillators = Vec::new();
-    for oscillator in sound_profile.oscillators() {
-        oscillators.push(oscillator_view_of(oscillator));
+    for (index, oscillator) in sound_profile.oscillators().iter().enumerate() {
+        let (name, playing) = engine.instrument(index);
+        let instrument = instrument_view_of(name, playing);
+        oscillators.push(oscillator_view_of(oscillator, instrument));
     }
     let mut lfos = Vec::new();
     for lfo in sound_profile.lfos() {
@@ -436,6 +519,7 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
         },
         glide_ms: sound_profile.glide_time(),
         preset: composer.lit_preset().map(String::from),
+        drums: drums_view_of(engine, composer),
     }
 }
 
@@ -653,6 +737,124 @@ pub fn set_oscillator(
     engine.start_audio()?;
     composer.sound_profile_mut().set_oscillator(&mut engine, index, oscillator);
     Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Makes the song's oscillator `index`, from 0 to 2, play instrument
+// `name` from the Instruments folder when its kind is the sample, or
+// nothing for None (docs/design.md#sampler). The Notes page's instrument
+// picker sends it. An instrument not read yet loads in the background and
+// plays once it is ready. Returns what the screen shows about the sound.
+#[tauri::command]
+pub fn set_instrument(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    index: usize,
+    name: Option<String>,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    if index >= OSCILLATOR_COUNT {
+        return Err(format!("there is no oscillator {}", index + 1));
+    }
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_instrument(&mut engine, index, name.as_deref());
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Makes the song's drums play instrument `name`, or nothing for None. The
+// Drums page sends it. Returns what the screen shows about the sound.
+#[tauri::command]
+pub fn set_drum_kit(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    name: Option<String>,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.set_drum_kit(&mut engine, name.as_deref());
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Sets how the song's pad `pad`, from 0, sounds from the next hit on: its
+// level and pan in percent, its tuning in half steps and its choke group.
+// Values outside their ranges are brought within them. The Drums page
+// sends it, naming the arguments in camelCase, like `halfSteps`. Fails on
+// a pad past the last.
+#[tauri::command]
+pub fn set_drum_pad(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    pad: usize,
+    level: u32,
+    half_steps: i32,
+    pan: i32,
+    group: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    if pad >= DRUM_PAD_COUNT {
+        return Err(format!("there is no pad {}", pad + 1));
+    }
+    let settings = DrumPad {
+        level,
+        half_steps,
+        pan,
+        group,
+    };
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    composer.set_drum_pad(&mut engine, pad, settings);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// What the instrument pickers show: the Instruments folder, the
+// instruments in it by name, and the starter instruments Jello can fetch.
+#[derive(Serialize)]
+pub struct InstrumentsView {
+    folder: Option<String>,
+    names: Vec<String>,
+    starters: Vec<StarterView>,
+}
+
+#[tauri::command]
+pub fn list_instruments(starters: State<'_, Mutex<Starters>>) -> InstrumentsView {
+    let folder = instruments::folder();
+    let starters = starters.lock().unwrap();
+    let mut shown_folder = None;
+    if let Some(folder) = &folder {
+        shown_folder = Some(folder.to_string_lossy().to_string());
+    }
+    InstrumentsView {
+        folder: shown_folder,
+        names: instruments::list(),
+        starters: starter_views(folder.as_deref(), &starters),
+    }
+}
+
+// Opens the Instruments folder in Finder or Explorer, making it first, so
+// the player can drop instruments in.
+#[tauri::command]
+pub fn open_instruments_folder() -> Result<(), String> {
+    let Some(folder) = instruments::folder() else {
+        return Err(String::from("the Instruments folder can't be found"));
+    };
+    fs::create_dir_all(&folder).map_err(|error| format!("the Instruments folder couldn't be made: {error}"))?;
+    open_in_file_browser(&folder)
+}
+
+// Shows `folder` in Finder on macOS or Explorer on Windows.
+fn open_in_file_browser(folder: &Path) -> Result<(), String> {
+    let mut program = "open";
+    if cfg!(target_os = "windows") {
+        program = "explorer";
+    }
+    let opened = std::process::Command::new(program).arg(folder).spawn();
+    match opened {
+        Ok(_) => Ok(()),
+        Err(error) => Err(format!("the folder couldn't be opened: {error}")),
+    }
 }
 
 fn kind_named(name: &str) -> Result<Kind, String> {
@@ -1149,6 +1351,11 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HoldGlideKey => {
             engine.set_glide_key(true);
         }
+        KeyAction::HitDrum(pad) => {
+            engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
+        }
+        // The key map has switched already, and the keys show it.
+        KeyAction::SwitchDrumMode => {}
         KeyAction::SwitchWave => {
             composer.sound_profile_mut().switch_first_kind(engine);
         }
@@ -1455,6 +1662,13 @@ fn jello_music_folder(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn songs_folder(app: &AppHandle) -> Result<PathBuf, String> {
     let jello = jello_music_folder(app)?;
     Ok(jello.join("Songs"))
+}
+
+// The folder instruments are read from: Instruments, in the Jello folder
+// in Music (docs/design.md#sampler).
+pub fn instruments_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Instruments"))
 }
 
 // The folder presets are kept in: Sounds, in the Jello folder in Music.

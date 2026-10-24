@@ -13,17 +13,22 @@
 constexpr int oscillator_count = 3;
 
 // What an oscillator plays. The first four are the waves (wave.h), in the
-// same order; later kinds, like wavetables, come after noise.
+// same order; later kinds, like wavetables, come after the sample.
 enum class Kind {
     sine,
     triangle,
     square,
     saw,
-    noise,  // a new random height every sample: every pitch at once, a hiss
+    noise,   // a new random height every sample: every pitch at once, a hiss
+    sample,  // a sampled instrument's recording (docs/design.md#sampler)
 };
 
-// How many kinds there are, for stepping through them.
-constexpr int kind_count = 5;
+// How many kinds there are.
+constexpr int kind_count = 6;
+
+// How many kinds the routing list steps through: the waves and noise. A
+// sample needs its instrument, so it is only ever picked, never stepped to.
+constexpr int stepped_kind_count = 5;
 
 // How far an oscillator can be tuned from the note, either way: in whole
 // octaves, then whole half steps, then cents (hundredths of a half step).
@@ -61,5 +66,5 @@ std::array<OscillatorSettings, oscillator_count> start_oscillators();
 // How far `oscillator` is tuned from the note, in cents.
 double offset_cents(const OscillatorSettings& oscillator);
 
-// The wave `kind` plays. Only for the four waves, not noise.
+// The wave `kind` plays. Only for the four waves, not noise or a sample.
 Wave wave_of(Kind kind);

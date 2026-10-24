@@ -22,7 +22,7 @@ use crate::song_file::{note_name, note_of_name, samples_of};
 pub const LAYER_MOST_BARS: u32 = 64;
 pub const LAYER_MOST_NOTES: usize = 2048;
 
-// A note to write: its pitch, from 0 to 127, and when it starts and ends,
+// A note to write: its pitch, from 0 to 127, or a drum pad's note, and when it starts and ends,
 // in beats from the layer's start.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrittenNote {
@@ -71,7 +71,7 @@ fn pitches_of(fields: &Map<String, Value>, place: &str) -> Result<Vec<u8>, Strin
     if let Some(name) = fields.get("note") {
         let name = name.as_str().unwrap_or_default();
         let Some(note) = note_of_name(name) else {
-            return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\""));
+            return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\", or a drum, like \"kick\""));
         };
         return Ok(vec![note]);
     }

@@ -4,11 +4,13 @@
 #include <atomic>
 #include <cstdint>
 
+#include "drum_kit.h"
 #include "envelope.h"
 #include "filter.h"
 #include "lfo.h"
 #include "oscillator.h"
 #include "routing.h"
+#include "sample_set.h"
 #include "song_player.h"
 #include "unison.h"
 
@@ -45,6 +47,9 @@ enum class EventType {
     set_vibrato_key_times,
     set_glide_key,
     set_glide_time,
+    set_instrument,
+    set_drum_kit,
+    set_drum_pad,
 };
 
 // One message for the audio thread.
@@ -114,6 +119,13 @@ struct Event {
     int rise_ms = 0;
     int fall_ms = 0;
     int glide_ms = 0;
+
+    // A sample set, or nullptr for none; only for set_instrument, which
+    // says which oscillator in `index`, and set_drum_kit. A pad's settings;
+    // only for set_drum_pad, which says which pad in `index`. The other
+    // messages can leave them out too.
+    const SampleSet* set = nullptr;
+    DrumPad pad{};
 };
 
 // Carries messages from one thread to another without locks

@@ -37,8 +37,9 @@ void jello_engine_stop_audio(JelloEngine* engine);
 // every 10 ms). If 1024 messages are already waiting, new ones are dropped
 // (docs/adr/0009-how-notes-become-sound.md).
 
-// Starts `note` (0 to 127, middle C is 60) at `velocity`, how hard the key was
-// hit (1 to 127). A note or velocity outside those ranges is ignored.
+// Starts `note` (0 to 127, middle C is 60, or a drum pad's from
+// JELLO_DRUM_FIRST_NOTE) at `velocity`, how hard the key was hit (1 to
+// 127). A note or velocity outside those ranges is ignored.
 void jello_engine_note_on(JelloEngine* engine, int note, int velocity);
 
 // Lets go of `note`, so it fades out. A note outside 0 to 127 is ignored.
@@ -59,14 +60,16 @@ enum {
     JELLO_OSCILLATOR_MOST_CENTS = 100,
 };
 
-// What an oscillator can play: the four waves, and noise, a new random
-// height every sample, which has no pitch.
+// What an oscillator can play: the four waves, noise, a new random height
+// every sample, which has no pitch, and a sampled instrument's recordings,
+// set with jello_engine_set_instrument (silent until one is).
 enum {
     JELLO_KIND_SINE = 0,
     JELLO_KIND_TRIANGLE = 1,
     JELLO_KIND_SQUARE = 2,
     JELLO_KIND_SAW = 3,
     JELLO_KIND_NOISE = 4,
+    JELLO_KIND_SAMPLE = 5,
 };
 
 // How much of each cycle a square can spend up (docs/design.md#pulse-width),
@@ -602,8 +605,8 @@ typedef struct JelloLoopChange {
     int layer;
     // Which note of the layer. For JELLO_LOOP_KEPT, how many notes it keeps.
     int index;
-    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE or JELLO_GLIDE_KEY_NOTE;
-    // only for JELLO_LOOP_STARTED.
+    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE, JELLO_GLIDE_KEY_NOTE or
+    // a drum pad's; only for JELLO_LOOP_STARTED.
     int note;
     // Counted from the loop's start.
     uint64_t sample;
@@ -628,7 +631,8 @@ enum {
 
 // One note of a loop, for jello_engine_plan_loop.
 typedef struct JelloLoopNote {
-    // Its pitch, 0 to 127.
+    // Its pitch, 0 to 127, or one of the vibrato key's, the glide key's
+    // and the drum pads' after.
     int note;
     // The samples it starts and ends on, counted from the loop's start.
     uint64_t start;
@@ -653,7 +657,8 @@ bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, in
 typedef struct JelloLoadedNote {
     // Which layer it belongs to, from 0.
     int layer;
-    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE or JELLO_GLIDE_KEY_NOTE.
+    // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE, JELLO_GLIDE_KEY_NOTE or
+    // a drum pad's.
     int note;
     // How hard it was hit, 1 to 127.
     int velocity;
@@ -728,6 +733,82 @@ uint64_t jello_engine_capture_dropped(JelloEngine* engine);
 // For tests, with no mic: puts `frames` samples in as if the mic heard them.
 // Does nothing while listening.
 void jello_engine_feed_capture(JelloEngine* engine, const float* samples, int frames);
+
+// Sampled instruments and the drum kit (docs/design.md#sampler).
+//
+// A sample set is one instrument's recordings: zones, each a recording
+// played for a range of notes. The engine keeps its own copy of the
+// recordings, so the caller can let go of theirs once the set is added.
+
+// The most sample sets an engine keeps at once.
+enum {
+    JELLO_SAMPLE_SET_MOST = 32,
+};
+
+// One zone of a sample set.
+typedef struct JelloSampleZone {
+    // The notes it plays, 0 to 127; for a drum kit, the pads it plays, 0
+    // to JELLO_DRUM_PAD_COUNT - 1, one pad to a zone.
+    int lowest_note;
+    int highest_note;
+    // The note it was recorded at, and how far off that it is, in cents.
+    int root_note;
+    float tune_cents;
+    // 1 (mono) or 2 (stereo, left and right taking turns), at 48,000
+    // frames a second.
+    int channels;
+    const float* frames;
+    uint64_t frame_count;
+    // Where its loop starts and ends, in frames; a zone whose loop ends
+    // where it starts plays once, to its end.
+    uint64_t loop_start;
+    uint64_t loop_end;
+} JelloSampleZone;
+
+// Makes a sample set from `count` zones, copying their recordings, and
+// returns its number, or -1 if a zone is odd or the engine already keeps
+// JELLO_SAMPLE_SET_MOST sets.
+int jello_engine_add_sample_set(JelloEngine* engine, const JelloSampleZone* zones, int count);
+
+// Lets go of set `set`: it can no longer be sent anywhere, and its memory
+// is freed once nothing plays it any more, on a later call to one of these
+// functions or when the engine is destroyed.
+void jello_engine_forget_sample_set(JelloEngine* engine, int set);
+
+// Frees the memory of every forgotten set nothing plays any more.
+void jello_engine_tidy_sample_sets(JelloEngine* engine);
+
+// How many sets the engine still keeps, forgotten ones not yet freed too,
+// for tests.
+int jello_engine_sample_sets_kept(JelloEngine* engine);
+
+// Makes notes sent after this play oscillator `index`'s JELLO_KIND_SAMPLE
+// from set `set`, or from nothing for -1. Returns false, changing nothing,
+// for an odd index, a set that is not kept or is forgotten, or a full
+// mailbox.
+bool jello_engine_set_instrument(JelloEngine* engine, int index, int set);
+
+// Makes drum hits after this play set `set`, its zones one per pad, or
+// nothing for -1. Returns false as jello_engine_set_instrument does.
+bool jello_engine_set_drum_kit(JelloEngine* engine, int set);
+
+// The drum pads, played with jello_engine_note_on as the notes from
+// JELLO_DRUM_FIRST_NOTE, each one shot to the end of its recording; the
+// looper records them like notes. The most a pad is tuned either way, in
+// half steps, and the choke groups there are, from 1.
+enum {
+    JELLO_DRUM_FIRST_NOTE = 130,
+    JELLO_DRUM_PAD_COUNT = 16,
+    JELLO_DRUM_MOST_HALF_STEPS = 12,
+    JELLO_DRUM_MOST_GROUP = 4,
+};
+
+// Makes hits on pad `pad` after this sound at `level`, from 0 (silent) to 1,
+// tuned `half_steps`, at `pan`, from -1 (left) to 1 (right), in choke group
+// `group`, from 0 (none) to JELLO_DRUM_MOST_GROUP: a hit cuts off every
+// other sounding in its group. Anything out of range is ignored. A new
+// engine's pads are all at level 1, untuned, in the middle, in no group.
+void jello_engine_set_drum_pad(JelloEngine* engine, int pad, float level, int half_steps, float pan, int group);
 
 // Makes sound without speakers, for writing files. Fills `out` with `frames`
 // frames of stereo, left and right taking turns (left, right, left, ...),

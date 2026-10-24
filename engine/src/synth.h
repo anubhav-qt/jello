@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "drum_kit.h"
 #include "filter.h"
 #include "lfo.h"
 #include "oscillator.h"
@@ -35,9 +36,11 @@ public:
     // source, so the loop's C and a C played live never cut each other off.
 
     // Starts `note` on a voice. For live notes and the song; the loop plays
-    // its notes by layer, below.
+    // its notes by layer, below. A drum note hits its pad on the drum kit
+    // instead (drum_kit.h).
     void note_on(int note, int velocity, Source source);
-    // Lets go of `note`, so it fades out.
+    // Lets go of `note`, so it fades out. A drum plays to its end anyway,
+    // so letting go of one does nothing.
     void note_off(int note, Source source);
     // Lets go of every note `source` plays, every layer's for the loop.
     void all_notes_off(Source source);
@@ -79,6 +82,20 @@ public:
     // `oscillator` says (docs/adr/0035-oscillators-with-kinds.md). Notes
     // started before it keep theirs.
     void set_oscillator(int index, const OscillatorSettings& oscillator);
+
+    // Notes started after this play `set` on oscillator `index`, from 0,
+    // while it is a sample (docs/design.md#sampler), or nothing for
+    // nullptr. Notes started before keep theirs.
+    void set_instrument(int index, const SampleSet* set);
+
+    // The drum kit's recordings, and pad `pad`'s settings
+    // (DrumKit::set_kit and set_pad).
+    void set_drum_kit(const SampleSet* set);
+    void set_drum_pad(int pad, const DrumPad& settings);
+
+    // The bit of every sample set new notes, notes waiting or sounding,
+    // and the drum kit still play, so the engine knows which it can free.
+    std::uint32_t sets_in_use() const;
 
     // Moves the filter's cutoff and resonance (docs/adr/0028-a-low-pass-filter.md).
     // Every note hears it, even those already sounding, each gliding there
@@ -279,4 +296,7 @@ private:
 
     // Every player's melody.
     std::array<Melody, player_count> melodies_{};
+
+    // The drums, beside the voices.
+    DrumKit drums_;
 };

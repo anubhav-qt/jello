@@ -52,6 +52,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0041](0041-one-agent-for-every-mode.md) | One agent for every mode | Accepted; extended by 0043 |
 | [0042](0042-independent-layer-lengths.md) | Independent layer lengths and pointer recording | Accepted |
 | [0043](0043-the-agent-mode.md) | The agent mode | Accepted |
+| [0044](0044-the-sampler.md) | The sampler | Accepted |
 
 ## Template
 

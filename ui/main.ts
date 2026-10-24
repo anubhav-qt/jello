@@ -10,9 +10,11 @@ import { detectPlatform, type KeyLayout } from "./keyboard";
 import type {
   ConnectionView,
   FilterEnvelope,
+  InstrumentsView,
   LfoView,
   LoudnessEnvelope,
   Oscillator,
+  PadView,
   PresetView,
   SoundSender,
   SoundView,
@@ -162,6 +164,27 @@ async function pressKey(key: string) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not play: ${error}`);
+  }
+  if (drumModeKeys.includes(key)) {
+    await askForLayout();
+  }
+}
+
+// The keys that switch drum mode on and off, as Rust said last. Switching
+// changes what the letters do, so the page asks for the keys again.
+let drumModeKeys: string[] = [];
+
+function showLayout(layout: KeyLayout) {
+  drumModeKeys = layout.drum_mode_keys;
+  screen?.showLayout(layout);
+}
+
+async function askForLayout() {
+  try {
+    const layout = await invoke<KeyLayout>("key_layout");
+    showLayout(layout);
+  } catch (error) {
+    showStatus(`Could not get the keys: ${error}`);
   }
 }
 
@@ -458,6 +481,72 @@ async function markStartingPreset(name: string | null) {
   }
 }
 
+// It picks the instrument oscillator `index`, from 0, plays as a sample
+// (docs/design.md#sampler).
+async function setInstrument(index: number, name: string | null) {
+  try {
+    const view = await invoke<SoundView>("set_instrument", { index, name });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not pick the instrument: ${error}`);
+  }
+}
+
+// The Drums page picks the kit...
+async function setDrumKit(name: string | null) {
+  try {
+    const view = await invoke<SoundView>("set_drum_kit", { name });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not pick the drum kit: ${error}`);
+  }
+}
+
+// ...and sets pad `pad`, from 0.
+async function setDrumPad(pad: number, settings: PadView) {
+  try {
+    const view = await invoke<SoundView>("set_drum_pad", {
+      pad,
+      level: settings.level,
+      halfSteps: settings.half_steps,
+      pan: settings.pan,
+      group: settings.group,
+    });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the ${settings.name}: ${error}`);
+  }
+}
+
+// The instruments in Music/Jello/Instruments, and the starters.
+async function listInstruments(): Promise<InstrumentsView | null> {
+  try {
+    return await invoke<InstrumentsView>("list_instruments");
+  } catch (error) {
+    showStatus(`Could not list the instruments: ${error}`);
+    return null;
+  }
+}
+
+async function openInstrumentsFolder() {
+  try {
+    await invoke("open_instruments_folder");
+  } catch (error) {
+    showStatus(`Could not open the Instruments folder: ${error}`);
+  }
+}
+
+// Fetches starter `name`. It takes a while, so it is not sent in order
+// with the keys, which keep playing.
+async function downloadStarter(name: string) {
+  try {
+    await invoke("download_starter", { name });
+    showStatus(`${name} is in the Instruments folder`);
+  } catch (error) {
+    showStatus(`Could not download ${name}: ${error}`);
+  }
+}
+
 // The songs in Music/Jello/Songs and the one open
 // (docs/adr/0038-song-files.md).
 async function askForSongs(): Promise<SongsView | null> {
@@ -669,7 +758,7 @@ const soundModifier = detectPlatform() === "mac" ? "MetaLeft" : "AltLeft";
 async function shiftOctave(steps: number) {
   try {
     const layout = await invoke<KeyLayout>("shift_octave", { steps });
-    screen?.showLayout(layout);
+    showLayout(layout);
     await askForCompose();
   } catch (error) {
     showStatus(`Could not shift the octave: ${error}`);
@@ -836,6 +925,12 @@ const soundSender: SoundSender = {
   savePreset: (name) => sendInOrderAndWait(() => savePreset(name)),
   presetNameProblem: (name) => presetNameProblem(name),
   markStartingPreset: (name) => markStartingPreset(name),
+  setInstrument: (index, name) => sendInOrder(() => setInstrument(index, name)),
+  setDrumKit: (name) => sendInOrder(() => setDrumKit(name)),
+  setDrumPad: (pad, settings) => sendInOrder(() => setDrumPad(pad, settings)),
+  listInstruments: () => listInstruments(),
+  openInstrumentsFolder: () => openInstrumentsFolder(),
+  downloadStarter: (name) => downloadStarter(name),
 };
 
 // What the Songs panel sends, each in order with the keys.
@@ -865,14 +960,7 @@ function redrawAfterAgent() {
   sendInOrder(async () => {
     await askForSongs();
   });
-  sendInOrder(async () => {
-    try {
-      const layout = await invoke<KeyLayout>("key_layout");
-      screen?.showLayout(layout);
-    } catch (error) {
-      showStatus(`Could not get the keys: ${error}`);
-    }
-  });
+  sendInOrder(askForLayout);
   sendInOrder(async () => {
     try {
       const practice = await invoke<PracticeView>("practice_view");
@@ -902,6 +990,14 @@ function hearTheAgent() {
   });
 }
 
+// An instrument finished loading, or one came or went in the folder: the
+// sound says again whether each is ready (src-tauri/src/lib.rs).
+function hearTheInstruments() {
+  listen("instruments-changed", () => {
+    sendInOrder(askForSound);
+  });
+}
+
 // Asks Rust what each key does, then shows the page.
 async function start() {
   let layout: KeyLayout;
@@ -911,6 +1007,7 @@ async function start() {
     page.append(makeElement("p", "start-error", `Could not start: ${error}`));
     return;
   }
+  drumModeKeys = layout.drum_mode_keys;
 
   screen = mount(Stage, {
     target: page,
@@ -958,6 +1055,7 @@ async function start() {
     },
   });
   hearTheAgent();
+  hearTheInstruments();
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
   sendInOrder(async () => {

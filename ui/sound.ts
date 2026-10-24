@@ -30,6 +30,73 @@ export interface SoundView {
   // The preset the song sounds exactly like, whose tile is lit, or null
   // (docs/adr/0037-presets.md).
   preset: string | null;
+  // The song's drum kit and its pads (docs/design.md#sampler).
+  drums: DrumsView;
+}
+
+// Where an instrument is (`InstrumentView` in src-tauri/src/commands.rs):
+// "none" when none is picked, "ready", "loading", or "failed" with why.
+export interface InstrumentView {
+  name: string | null;
+  state: string;
+  problem: string | null;
+}
+
+// The song's drums (`DrumsView` in src-tauri/src/commands.rs): the kit,
+// and its DRUM_PAD_COUNT pads in order.
+export interface DrumsView {
+  kit: InstrumentView;
+  pads: PadView[];
+}
+
+// One drum pad, like the snare.
+export interface PadView {
+  name: string;
+  // In percent.
+  level: number;
+  // How far it is tuned, from minus to plus DRUM_MOST_HALF_STEPS.
+  half_steps: number;
+  // In percent, from -100 (left) to 100 (right).
+  pan: number;
+  // Hitting a pad stops the others in its group, like the closed hat
+  // stopping the open hat. 0 is no group.
+  group: number;
+}
+
+// How many pads a kit has, how far each can be tuned either way, and the
+// highest group (`DRUM_` in src-tauri/src/drums.rs).
+export const DRUM_PAD_COUNT = 16;
+export const DRUM_MOST_HALF_STEPS = 12;
+export const DRUM_MOST_GROUP = 4;
+
+// The instruments in Music/Jello/Instruments and the starters Jello can
+// fetch (`InstrumentsView` in src-tauri/src/commands.rs).
+export interface InstrumentsView {
+  // The folder, or null if it can't be found.
+  folder: string | null;
+  names: string[];
+  starters: StarterView[];
+}
+
+// A starter instrument (`StarterView` in src-tauri/src/starters.rs).
+export interface StarterView {
+  name: string;
+  megabytes: number;
+  // Whether it plays drums, for the Drums page, or notes.
+  drums: boolean;
+  license: string;
+  credit: string;
+  // True once it is in the folder.
+  fetched: boolean;
+  downloading: boolean;
+}
+
+// How far a starter's download has got, as Rust tells it
+// ("starter-download" in src-tauri/src/starters.rs).
+export interface StarterProgress {
+  name: string;
+  received: number;
+  total: number;
 }
 
 // One preset in Music/Jello/Sounds (`PresetView` in
@@ -44,7 +111,7 @@ export interface PresetView {
 
 // One oscillator (`OscillatorView` in src-tauri/src/commands.rs).
 export interface OscillatorView {
-  // "sine", "triangle", "square", "saw" or "noise".
+  // "sine", "triangle", "square", "saw", "noise" or "sample".
   kind: string;
   // In percent: at 0 it is silent.
   level: number;
@@ -57,6 +124,8 @@ export interface OscillatorView {
   // PULSE_NARROWEST_PERCENT to PULSE_WIDEST_PERCENT. Only a square uses it
   // (docs/design.md#pulse-width).
   width: number;
+  // The instrument a sample plays (docs/design.md#sampler).
+  instrument: InstrumentView;
 }
 
 // An oscillator as the sound panel sends it (`set_oscillator` in
@@ -294,6 +363,19 @@ export interface SoundSender {
   presetNameProblem(name: string): Promise<string | null>;
   // Marks preset `name` as the starting sound, or with null, unmarks it.
   markStartingPreset(name: string | null): Promise<void>;
+  // Picks instrument `name` for oscillator `index`, from 0, or with null,
+  // none (docs/design.md#sampler).
+  setInstrument(index: number, name: string | null): void;
+  // Picks instrument `name` as the drum kit, or with null, none.
+  setDrumKit(name: string | null): void;
+  // Sets pad `pad`, from 0, from the next hit on.
+  setDrumPad(pad: number, settings: PadView): void;
+  // The instruments, as Rust lists them now.
+  listInstruments(): Promise<InstrumentsView | null>;
+  openInstrumentsFolder(): void;
+  // Fetches starter `name` into the folder. Done once it is kept, or once
+  // it failed and the top bar says why.
+  downloadStarter(name: string): Promise<void>;
 }
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).

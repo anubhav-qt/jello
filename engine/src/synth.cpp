@@ -1,20 +1,36 @@
 #include "synth.h"
 
+#include "snap.h"
+
 #include <algorithm>
 
 // Every layer slot is a player of its own, after live play and the song.
 static_assert(player_count == first_layer_player + Synth::layer_count, "every layer slot has a player");
 
+// The drum kit hears every layer's volume.
+static_assert(Synth::layer_count == 8, "the drum kit takes 8 layer volumes");
+
+// The drum pads come right after the glide key's note.
+static_assert(drum_first_note == Synth::glide_key_note + 1, "the drum pads follow the glide key");
+static_assert(loop_pitch_count == drum_first_note + drum_pad_count, "a loop holds every drum pad");
+
 Synth::Synth(int sample_rate)
-    : voices_(voice_count, Voice(sample_rate)), routing_(sample_rate) {
+    : voices_(voice_count, Voice(sample_rate)), routing_(sample_rate), drums_(sample_rate) {
     layer_volumes_.fill(1.0f);
 }
 
 void Synth::note_on(int note, int velocity, Source source) {
+    if (is_drum_note(note)) {
+        drums_.hit(note - drum_first_note, velocity, source, 0);
+        return;
+    }
     start_note(note, velocity, source, 0);
 }
 
 void Synth::note_off(int note, Source source) {
+    if (is_drum_note(note)) {
+        return;
+    }
     let_go(note, source, 0);
 }
 
@@ -50,6 +66,10 @@ void Synth::loop_note_on(int note, int velocity, int layer) {
         melodies_[player].glide_key = true;
         return;
     }
+    if (is_drum_note(note)) {
+        drums_.hit(note - drum_first_note, velocity, Source::loop, layer);
+        return;
+    }
     start_note(note, velocity, Source::loop, layer);
 }
 
@@ -61,6 +81,9 @@ void Synth::loop_note_off(int note, int layer) {
     }
     if (note == glide_key_note) {
         melodies_[player].glide_key = false;
+        return;
+    }
+    if (is_drum_note(note)) {
         return;
     }
     let_go(note, Source::loop, layer);
@@ -401,6 +424,39 @@ void Synth::set_oscillator(int index, const OscillatorSettings& oscillator) {
     note_sound_.oscillators[index] = oscillator;
 }
 
+void Synth::set_instrument(int index, const SampleSet* set) {
+    note_sound_.instruments[index] = set;
+}
+
+void Synth::set_drum_kit(const SampleSet* set) {
+    drums_.set_kit(set);
+}
+
+void Synth::set_drum_pad(int pad, const DrumPad& settings) {
+    drums_.set_pad(pad, settings);
+}
+
+std::uint32_t Synth::sets_in_use() const {
+    std::uint32_t sets = 0;
+    for (const SampleSet* set : note_sound_.instruments) {
+        if (set != nullptr) {
+            sets |= 1u << set->id();
+        }
+    }
+    for (int w = 0; w < waiting_count_; w++) {
+        for (const SampleSet* set : waiting_[w].sound.instruments) {
+            if (set != nullptr) {
+                sets |= 1u << set->id();
+            }
+        }
+    }
+    for (const Voice& voice : voices_) {
+        voice.add_sets_in_use(sets);
+    }
+    drums_.add_sets_in_use(sets);
+    return sets;
+}
+
 void Synth::set_filter(const FilterSettings& settings) {
     filter_settings_ = settings;
     update_filter_targets();
@@ -475,6 +531,7 @@ void Synth::render(float* out, int frames) {
         for (Voice& voice : voices_) {
             voice.render(out + 2 * done, count, volume_for(voice), filter_targets_);
         }
+        drums_.render(out + 2 * done, count, layer_volumes_);
         done += count;
         now_ += count;
     }

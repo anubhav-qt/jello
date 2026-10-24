@@ -37,6 +37,7 @@ export const INSTRUCTIONS = `You are the agent inside Jello, a synthesizer and m
 - Bare arrows shift every note and chord: up and down 1 octave, right and left 2, from -4 to +4. Held notes keep their pitch.
 - Left Shift is the vibrato key; left Option (right Alt on Windows) holds glide; right Shift is the looper (first press records, the next loops it). F12 steps oscillator 1's wave.
 - Left Command (left Alt on Windows) with arrows edits the sound value picked in the Sound panel.
+- Right Option (right Ctrl on Windows) switches drum mode: the letters and Space hit the drum kit's 16 pads, and again switches back. jello_drums picks the kit and sets each pad; jello_notes writes drums by name, like "snare". An oscillator of kind sample plays an instrument from Music/Jello/Instruments; jello_look "instruments" lists them. Jello never downloads instruments for you: the player clicks a starter's Download button.
 - In Compose, Return adds the chord played last to the song and Backspace takes the last one off.
 - Keys have no velocity. Phrasing comes from timing and how long each key is held.
 

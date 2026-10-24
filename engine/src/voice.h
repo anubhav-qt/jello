@@ -9,6 +9,7 @@
 #include "noise.h"
 #include "oscillator.h"
 #include "routing.h"
+#include "sample_set.h"
 #include "stereo.h"
 #include "unison.h"
 
@@ -42,6 +43,9 @@ constexpr int glide_longest_ms = 10000;
 struct NoteSound {
     // The oscillators every note plays (docs/adr/0035-oscillators-with-kinds.md).
     std::array<OscillatorSettings, oscillator_count> oscillators = start_oscillators();
+    // The instrument each one plays when it is a sample, or nullptr for
+    // none, which is silent (docs/design.md#sampler).
+    std::array<const SampleSet*, oscillator_count> instruments{};
     LoudnessEnvelopeSettings loudness_envelope{};
     FilterEnvelopeSettings filter_envelope{};
     // How much the filter's cutoff follows the note, from 0 to 1. At 1, it
@@ -148,6 +152,10 @@ public:
     // For a loop's note, its layer's slot.
     int layer() const;
 
+    // Sets the bit of every sample set the voice still plays, while it
+    // sounds.
+    void add_sets_in_use(std::uint32_t& sets) const;
+
     // Adds `frames` frames of sound to `out`, stereo (left, right, left, ...).
     // It adds instead of overwriting, so many voices can share one buffer.
     // The voice plays at `volume`, from 0 to 1. When that changes, it eases
@@ -178,6 +186,8 @@ private:
     struct Copy {
         // Where each oscillator is in one cycle, from 0 to 1, and how far
         // that moves each sample.
+        // A sample oscillator's phase is where it is in its recording, in
+        // frames instead, and its step how many frames it moves.
         std::array<double, oscillator_count> phases{};
         std::array<Line, oscillator_count> phase_steps{};
         // Each oscillator's own noise, so no two copies or oscillators hiss
@@ -238,9 +248,18 @@ private:
     // end.
     double glide_cents_at(std::uint64_t sample) const;
 
-    // How high oscillator `index` of `copy` is right now, trimmed so every
-    // kind is equally loud, before its level.
-    double oscillator_height(const Copy& copy, int index) const;
+    // How high oscillator `index` of `copy` is right now on each side,
+    // trimmed so every kind is equally loud, before its level. Only a
+    // stereo recording differs between the sides.
+    Stereo oscillator_height(const Copy& copy, int index) const;
+
+    // Picks oscillator `index`'s zone in `set` for `note` and starts every
+    // copy at the start of its recording. With no set or zone it is silent.
+    void start_sample(int index, int note, const OscillatorSettings& oscillator, const SampleSet* set);
+
+    // Moves sample oscillator `index` of `copy` on by its step, round its
+    // loop or up to its end.
+    void move_sample(Copy& copy, int index);
 
     // The copies' heights at their current phases, each the sum of its
     // oscillators at their levels, added up on each side.
@@ -263,6 +282,13 @@ private:
 
     // The kinds this voice's note started with, one for each oscillator.
     std::array<Kind, oscillator_count> kinds_{};
+
+    // For a sample oscillator: its instrument, the zone that plays the
+    // note, or nullptr for silence, and the pitch it sounds at as recorded,
+    // in Hz.
+    std::array<const SampleSet*, oscillator_count> sets_{};
+    std::array<const SampleZone*, oscillator_count> zones_{};
+    std::array<double, oscillator_count> root_hz_{};
 
     // What the note started with, which the live moves are added to: its
     // pitch in Hz, how far each oscillator is tuned from it in cents, its

@@ -2,7 +2,11 @@
 // (engine/include/jello_engine.h). The rest of the Rust core only uses this.
 
 use std::ffi::{CStr, c_char, c_int};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::drums::{DRUM_FIRST_NOTE, DRUM_PAD_COUNT, DrumPad, gm_notes_of};
+use crate::instruments::{self, Instrument, Zone};
 
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_FASTEST_HZ, LFO_LONGEST_BEATS, LFO_LONGEST_DELAY_BEATS,
@@ -100,6 +104,23 @@ struct RawLfo {
     once: bool,
 }
 
+// `JelloSampleZone` in engine/include/jello_engine.h.
+#[repr(C)]
+struct RawSampleZone {
+    lowest_note: c_int,
+    highest_note: c_int,
+    root_note: c_int,
+    tune_cents: f32,
+    channels: c_int,
+    frames: *const f32,
+    frame_count: u64,
+    loop_start: u64,
+    loop_end: u64,
+}
+
+// What jello_engine_add_sample_set returns when it makes no set.
+const NO_SET: c_int = -1;
+
 // `JelloConnection` in engine/include/jello_engine.h.
 #[repr(C)]
 struct RawConnection {
@@ -186,6 +207,21 @@ unsafe extern "C" {
     fn jello_engine_set_glide_key(engine: *mut JelloEngine, held: bool);
     fn jello_engine_set_glide_time(engine: *mut JelloEngine, glide_ms: c_int);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
+    fn jello_engine_add_sample_set(engine: *mut JelloEngine, zones: *const RawSampleZone, count: c_int) -> c_int;
+    fn jello_engine_forget_sample_set(engine: *mut JelloEngine, set: c_int);
+    fn jello_engine_tidy_sample_sets(engine: *mut JelloEngine);
+    #[cfg(test)]
+    fn jello_engine_sample_sets_kept(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_set_instrument(engine: *mut JelloEngine, index: c_int, set: c_int) -> bool;
+    fn jello_engine_set_drum_kit(engine: *mut JelloEngine, set: c_int) -> bool;
+    fn jello_engine_set_drum_pad(
+        engine: *mut JelloEngine,
+        pad: c_int,
+        level: f32,
+        half_steps: c_int,
+        pan: f32,
+        group: c_int,
+    );
     fn jello_engine_sample_rate(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_render(engine: *mut JelloEngine, out: *mut f32, frames: c_int);
     fn jello_engine_list_inputs(engine: *mut JelloEngine) -> c_int;
@@ -564,13 +600,17 @@ pub enum Kind {
     Square,
     Saw,
     Noise,
+    // A sampled instrument's recordings (docs/design.md#sampler): which one
+    // is the sound profile's to say.
+    Sample,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Sine, Kind::Triangle, Kind::Square, Kind::Saw, Kind::Noise];
+    pub const ALL: [Kind; 6] = [Kind::Sine, Kind::Triangle, Kind::Square, Kind::Saw, Kind::Noise, Kind::Sample];
 
     // The kind after this one: sine, triangle, square, saw, noise, then sine
-    // again.
+    // again. A sample is left for the sine too: stepping never lands on a
+    // sample, which needs an instrument picked.
     pub fn next(self) -> Kind {
         match self {
             Kind::Sine => Kind::Triangle,
@@ -578,6 +618,7 @@ impl Kind {
             Kind::Square => Kind::Saw,
             Kind::Saw => Kind::Noise,
             Kind::Noise => Kind::Sine,
+            Kind::Sample => Kind::Sine,
         }
     }
 
@@ -589,6 +630,7 @@ impl Kind {
             Kind::Square => "square",
             Kind::Saw => "saw",
             Kind::Noise => "noise",
+            Kind::Sample => "sample",
         }
     }
 
@@ -611,6 +653,7 @@ impl Kind {
             Kind::Square => 2,
             Kind::Saw => 3,
             Kind::Noise => 4,
+            Kind::Sample => 5,
         }
     }
 }
@@ -816,6 +859,26 @@ pub struct Engine {
     // lasts, kept until the engine says it has taken it in. Then its layers
     // become Rust's copy.
     loading: Option<(u32, Vec<LoopLayer>)>,
+    // The instrument each oscillator's samples play and the drum kit's, by
+    // name, as last asked for, and the engine's sample sets they play now:
+    // none while an instrument is still loading or can't be read.
+    instruments: [Option<String>; OSCILLATOR_COUNT],
+    drum_kit: Option<String>,
+    playing_sets: [Option<c_int>; OSCILLATOR_COUNT],
+    kit_set: Option<c_int>,
+    // Every set the engine keeps for this engine, with the instrument it
+    // came from and whether it was made as a drum kit.
+    sets: Vec<SentSet>,
+    // True for the live engine, which reads instruments on another thread
+    // so a key is never kept waiting; false for a render, which waits.
+    loads_in_background: bool,
+}
+
+// A sample set the C++ engine keeps, made from `instrument`.
+struct SentSet {
+    instrument: Arc<Instrument>,
+    as_kit: bool,
+    id: c_int,
 }
 
 // The C++ engine can be used from any thread, one call at a time. The app
@@ -840,8 +903,21 @@ impl Engine {
             looper_message: None,
             esc_pressed_at: None,
             loading: None,
+            instruments: [None, None, None],
+            drum_kit: None,
+            playing_sets: [None; OSCILLATOR_COUNT],
+            kit_set: None,
+            sets: Vec::new(),
+            loads_in_background: false,
         };
         Ok(engine)
+    }
+
+    // Makes this engine read instruments on another thread from now on,
+    // playing them once they are read (instruments::load_in_background).
+    // The app's live engine does this.
+    pub fn load_in_background(&mut self) {
+        self.loads_in_background = true;
     }
 
     // Opens the default speakers. Does nothing if they are already open.
@@ -909,6 +985,181 @@ impl Engine {
             )
         };
         oscillator
+    }
+
+    // Makes notes sent after this play instrument `name`, from the
+    // Instruments folder, on oscillator `index`'s samples, or nothing for
+    // None. An instrument still loading plays once it is read; one that
+    // can't be read plays nothing. An index past OSCILLATOR_COUNT is
+    // ignored.
+    pub fn set_instrument(&mut self, index: usize, name: Option<&str>) {
+        if index >= OSCILLATOR_COUNT {
+            return;
+        }
+        if let Some(name) = name {
+            instruments::try_again(name);
+        }
+        self.instruments[index] = name.map(String::from);
+        self.send_instrument(index);
+        self.forget_unused_sets();
+    }
+
+    // Makes drum hits after this play instrument `name`'s drums, or
+    // nothing for None, read as set_instrument reads.
+    pub fn set_drum_kit(&mut self, name: Option<&str>) {
+        if let Some(name) = name {
+            instruments::try_again(name);
+        }
+        self.drum_kit = name.map(String::from);
+        self.send_drum_kit();
+        self.forget_unused_sets();
+    }
+
+    // Plays every instrument asked for that is read by now. The app calls
+    // this once one has finished loading in the background.
+    pub fn send_loaded_instruments(&mut self) {
+        for index in 0..OSCILLATOR_COUNT {
+            if self.playing_sets[index].is_none() {
+                self.send_instrument(index);
+            }
+        }
+        if self.kit_set.is_none() {
+            self.send_drum_kit();
+        }
+        self.forget_unused_sets();
+    }
+
+    // The instrument oscillator `index` plays, and whether it is playing
+    // yet.
+    pub fn instrument(&self, index: usize) -> (Option<&str>, bool) {
+        let name = self.instruments[index].as_deref();
+        (name, self.playing_sets[index].is_some())
+    }
+
+    // The drum kit's instrument, and whether it is playing yet.
+    pub fn drum_kit(&self) -> (Option<&str>, bool) {
+        (self.drum_kit.as_deref(), self.kit_set.is_some())
+    }
+
+    // Makes hits on pad `pad`, from 0, after this sound as `settings` says
+    // (`jello_engine_set_drum_pad`). Values outside their ranges are
+    // brought within them, and a pad past DRUM_PAD_COUNT is ignored.
+    // Returns the pad's settings as sent.
+    pub fn set_drum_pad(&mut self, pad: usize, settings: DrumPad) -> DrumPad {
+        let settings = settings.within_ranges();
+        if pad >= DRUM_PAD_COUNT {
+            return settings;
+        }
+        let level = share_of(settings.level) as f32;
+        let pan = settings.pan as f32 / 100.0;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe {
+            jello_engine_set_drum_pad(
+                self.raw,
+                pad as c_int,
+                level,
+                settings.half_steps as c_int,
+                pan,
+                settings.group as c_int,
+            )
+        };
+        settings
+    }
+
+    // Sends oscillator `index`'s instrument, if it is read.
+    fn send_instrument(&mut self, index: usize) {
+        let wanted = self.instruments[index].clone();
+        let set = self.set_for(wanted.as_deref(), false);
+        // SAFETY: `raw` points to a live engine until Drop.
+        let sent = unsafe { jello_engine_set_instrument(self.raw, index as c_int, set.unwrap_or(NO_SET)) };
+        if sent {
+            self.playing_sets[index] = set;
+        }
+    }
+
+    // Sends the drum kit's instrument, if it is read.
+    fn send_drum_kit(&mut self) {
+        let wanted = self.drum_kit.clone();
+        let set = self.set_for(wanted.as_deref(), true);
+        // SAFETY: `raw` points to a live engine until Drop.
+        let sent = unsafe { jello_engine_set_drum_kit(self.raw, set.unwrap_or(NO_SET)) };
+        if sent {
+            self.kit_set = set;
+        }
+    }
+
+    // The engine's set for instrument `name`, made now if it has none yet,
+    // or None for no name or an instrument not read.
+    fn set_for(&mut self, name: Option<&str>, as_kit: bool) -> Option<c_int> {
+        let name = name?;
+        let instrument = if self.loads_in_background {
+            instruments::load_in_background(name)?
+        } else {
+            instruments::load(name).ok()?
+        };
+        for sent in &self.sets {
+            if Arc::ptr_eq(&sent.instrument, &instrument) && sent.as_kit == as_kit {
+                return Some(sent.id);
+            }
+        }
+
+        let mut raw_zones = Vec::new();
+        if as_kit {
+            for (pad, zone) in kit_zones(&instrument) {
+                raw_zones.push(raw_zone_of(zone, pad, pad, pad));
+            }
+        } else {
+            for zone in &instrument.zones {
+                raw_zones.push(raw_zone_of(zone, zone.lowest, zone.highest, zone.root));
+            }
+        }
+        // SAFETY: `raw` points to a live engine until Drop, and every zone
+        // points at frames that live until the call returns; the engine
+        // keeps a copy.
+        let id = unsafe { jello_engine_add_sample_set(self.raw, raw_zones.as_ptr(), raw_zones.len() as c_int) };
+        if id == NO_SET {
+            return None;
+        }
+        self.sets.push(SentSet { instrument, as_kit, id });
+        Some(id)
+    }
+
+    // Lets the engine free every set nothing asks for now.
+    fn forget_unused_sets(&mut self) {
+        let mut kept = Vec::new();
+        for sent in self.sets.drain(..) {
+            let mut used = self.kit_set == Some(sent.id);
+            for playing in self.playing_sets {
+                if playing == Some(sent.id) {
+                    used = true;
+                }
+            }
+            if used {
+                kept.push(sent);
+            } else {
+                // SAFETY: `raw` points to a live engine until Drop.
+                unsafe { jello_engine_forget_sample_set(self.raw, sent.id) };
+            }
+        }
+        self.sets = kept;
+        self.tidy_sample_sets();
+    }
+
+    // Frees the memory of every instrument the engine no longer plays. The
+    // app does this every so often, since a note ringing on keeps its
+    // instrument after it is changed.
+    pub fn tidy_sample_sets(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_tidy_sample_sets(self.raw) };
+        instruments::let_go_of_unused();
+    }
+
+    // How many sample sets the C++ engine still keeps, for tests.
+    #[cfg(test)]
+    pub fn sample_sets_kept(&mut self) -> usize {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let kept = unsafe { jello_engine_sample_sets_kept(self.raw) };
+        kept as usize
     }
 
     // Makes notes sent after this play `kind` on the first oscillator, at
@@ -1888,6 +2139,43 @@ impl Engine {
         // holds `frames` floats.
         unsafe { jello_engine_feed_capture(self.raw, samples.as_ptr(), frames) };
     }
+}
+
+// `zone` for the C API, playing notes `lowest` to `highest` and recorded at
+// `root`. It points at the zone's frames, so it lives no longer than it.
+fn raw_zone_of(zone: &Zone, lowest: u8, highest: u8, root: u8) -> RawSampleZone {
+    RawSampleZone {
+        lowest_note: c_int::from(lowest),
+        highest_note: c_int::from(highest),
+        root_note: c_int::from(root),
+        tune_cents: zone.tune_cents,
+        channels: c_int::from(zone.channels),
+        frames: zone.frames.as_ptr(),
+        frame_count: zone.frame_count(),
+        loop_start: zone.loop_start,
+        loop_end: zone.loop_end,
+    }
+}
+
+// `instrument`'s drums as a kit: for each pad it has, the pad's number and
+// the recording made for the first of its General MIDI notes the
+// instrument plays (drums::gm_notes_of).
+fn kit_zones(instrument: &Instrument) -> Vec<(u8, &Zone)> {
+    let mut zones = Vec::new();
+    for pad in 0..DRUM_PAD_COUNT {
+        for note in gm_notes_of(pad) {
+            if let Some(zone) = instrument.exact_zone(*note) {
+                zones.push((pad as u8, zone));
+                break;
+            }
+        }
+    }
+    zones
+}
+
+// Pad `pad`'s note, as the engine and the looper number it.
+pub fn drum_note(pad: usize) -> u8 {
+    DRUM_FIRST_NOTE + pad as u8
 }
 
 impl Drop for Engine {
@@ -10738,5 +11026,280 @@ mod tests {
         let count = engine.list_inputs().len();
         assert!(engine.start_capture(Some(count + 5)).is_err());
         engine.stop_capture();
+    }
+
+    // The sampler (docs/design.md#sampler), played from the test
+    // instruments: "Test tone", a sine recorded at C4 and C5, and "Test
+    // kit", a kick, a closed hat and an open hat.
+
+    use crate::drums::pad_named;
+    use crate::instruments::testing::{KIT, OPEN_HAT_FRAMES, TONE, use_test_folder};
+
+    const D4_HZ: f64 = 293.6648;
+
+    // An engine whose first oscillator plays "Test tone".
+    fn tone_engine() -> Engine {
+        use_test_folder();
+        let mut engine = Engine::new().unwrap();
+        engine.set_first_kind(Kind::Sample);
+        engine.set_instrument(0, Some(TONE));
+        engine
+    }
+
+    // An engine whose drums play "Test kit".
+    fn kit_engine() -> Engine {
+        use_test_folder();
+        let mut engine = Engine::new().unwrap();
+        engine.set_drum_kit(Some(KIT));
+        engine
+    }
+
+    fn pad(name: &str) -> u8 {
+        drum_note(pad_named(name).unwrap())
+    }
+
+    #[test]
+    fn a_sample_plays_the_nearest_recording_at_the_note_s_pitch() {
+        for (note, hz) in [(MIDDLE_C, MIDDLE_C_HZ), (62, D4_HZ), (E4, E4_HZ), (C5, C5_HZ), (A4, A4_HZ)] {
+            let mut engine = tone_engine();
+            engine.note_on(note, VELOCITY);
+            render_left(&mut engine, 50);
+            let wave = render_left(&mut engine, 400);
+            assert_note(&engine, &wave, hz);
+            assert!(peak(&wave) > 0.1, "note {note} is too quiet");
+        }
+    }
+
+    #[test]
+    fn a_sample_oscillator_s_tuning_picks_the_recording_and_moves_its_pitch() {
+        let mut engine = tone_engine();
+        let up_an_octave = Oscillator {
+            kind: Kind::Sample,
+            octaves: 1,
+            ..START_OSCILLATORS[0]
+        };
+        engine.set_oscillator(0, up_an_octave);
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 50);
+        let wave = render_left(&mut engine, 400);
+        assert_note(&engine, &wave, C5_HZ);
+    }
+
+    #[test]
+    fn a_recording_that_ends_goes_silent_while_its_key_is_held() {
+        let mut engine = tone_engine();
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 1100);
+        let after = render_left(&mut engine, 200);
+        assert_eq!(peak(&after), 0.0);
+    }
+
+    #[test]
+    fn a_sample_with_no_instrument_or_a_missing_one_is_silent() {
+        use_test_folder();
+        let mut engine = Engine::new().unwrap();
+        engine.set_first_kind(Kind::Sample);
+        engine.note_on(MIDDLE_C, VELOCITY);
+        assert_eq!(peak(&render_left(&mut engine, 200)), 0.0);
+
+        engine.set_instrument(0, Some("Not an instrument"));
+        assert_eq!(engine.instrument(0), (Some("Not an instrument"), false));
+        engine.note_on(E4, VELOCITY);
+        assert_eq!(peak(&render_left(&mut engine, 200)), 0.0);
+    }
+
+    #[test]
+    fn a_wave_still_plays_after_a_sample_on_the_same_voice() {
+        let mut engine = tone_engine();
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 300);
+        engine.note_off(MIDDLE_C);
+        render_left(&mut engine, 500);
+        engine.set_first_kind(Kind::Sine);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_pitch(&engine, &wave, A4_HZ);
+
+        // Exactly as loud as the sine on an engine that never played one.
+        let mut fresh = Engine::new().unwrap();
+        fresh.set_first_kind(Kind::Sine);
+        let fresh_wave = hold(&mut fresh, A4, VELOCITY);
+        assert_within_percent(peak(&wave), peak(&fresh_wave), 0.1);
+    }
+
+    #[test]
+    fn a_drum_hit_plays_once_to_its_end_whatever_the_key_does() {
+        let mut engine = kit_engine();
+        engine.note_on(pad("kick"), VELOCITY);
+        let hit = render_left(&mut engine, 100);
+        assert!(peak(&hit) > 0.1);
+        // Held on, it has ended.
+        assert_eq!(peak(&render_left(&mut engine, 100)), 0.0);
+
+        // Let go at once, it still plays to its end.
+        engine.note_on(pad("kick"), VELOCITY);
+        engine.note_off(pad("kick"));
+        let again = render_left(&mut engine, 100);
+        assert!((peak(&again) - peak(&hit)).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_pad_with_no_recording_and_a_kit_with_none_are_silent() {
+        let mut engine = kit_engine();
+        engine.note_on(pad("ride"), VELOCITY);
+        assert_eq!(peak(&render_left(&mut engine, 100)), 0.0);
+
+        engine.set_drum_kit(None);
+        engine.note_on(pad("kick"), VELOCITY);
+        assert_eq!(peak(&render_left(&mut engine, 100)), 0.0);
+    }
+
+    #[test]
+    fn closing_the_hat_chokes_an_open_one_in_its_group() {
+        let hat_group = DrumPad {
+            level: 100,
+            half_steps: 0,
+            pan: 0,
+            group: 1,
+        };
+        for choked in [false, true] {
+            let mut engine = kit_engine();
+            if choked {
+                engine.set_drum_pad(pad_named("closed hat").unwrap(), hat_group);
+                engine.set_drum_pad(pad_named("open hat").unwrap(), hat_group);
+            }
+            engine.note_on(pad("open hat"), VELOCITY);
+            render_left(&mut engine, 50);
+            engine.note_on(pad("closed hat"), VELOCITY);
+            // The closed hat lasts 100 ms; the open one rings on long after.
+            render_left(&mut engine, 150);
+            let later = render_left(&mut engine, 100);
+            if choked {
+                assert_eq!(peak(&later), 0.0);
+            } else {
+                assert!(peak(&later) > 0.1);
+            }
+        }
+        assert!(OPEN_HAT_FRAMES > 48000 * 3 / 10);
+    }
+
+    #[test]
+    fn a_pad_s_level_pan_and_tuning_are_heard() {
+        let mut plain = kit_engine();
+        plain.note_on(pad("kick"), VELOCITY);
+        let plain_wave = plain.render(4800);
+
+        let mut moved = kit_engine();
+        let quiet_left_up = DrumPad {
+            level: 50,
+            half_steps: 12,
+            pan: -100,
+            group: 0,
+        };
+        moved.set_drum_pad(0, quiet_left_up);
+        moved.note_on(pad("kick"), VELOCITY);
+        let moved_wave = moved.render(4800);
+
+        let mut plain_left = Vec::new();
+        let mut moved_left = Vec::new();
+        let mut moved_right = Vec::new();
+        for frame in 0..4800 {
+            plain_left.push(plain_wave[frame * CHANNELS]);
+            moved_left.push(moved_wave[frame * CHANNELS]);
+            moved_right.push(moved_wave[frame * CHANNELS + 1]);
+        }
+        // All the way left: nothing on the right, and the square-root pan
+        // makes the left side louder by the square root of 2.
+        assert_eq!(peak(&moved_right), 0.0);
+        let expected = peak(&plain_left) * 0.5 * 2f32.sqrt();
+        assert_within_percent(peak(&moved_left), expected, 2.0);
+        // An octave up, the 100 ms kick lasts only 50 ms.
+        assert!(peak(&moved_left[2500..]) == 0.0);
+        assert!(peak(&plain_left[2500..4700]) > 0.0);
+    }
+
+    #[test]
+    fn drums_and_notes_play_together() {
+        let mut engine = tone_engine();
+        engine.set_drum_kit(Some(KIT));
+        engine.note_on(pad("kick"), VELOCITY);
+        let kick = peak(&render_left(&mut engine, 100));
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 50);
+        let wave = render_left(&mut engine, 400);
+        assert!(kick > 0.1);
+        assert_note(&engine, &wave, MIDDLE_C_HZ);
+    }
+
+    #[test]
+    fn the_looper_records_drum_hits_as_notes_and_plays_them_back() {
+        let mut engine = kit_engine();
+        engine.set_snap(false);
+        engine.press_looper();
+        render_frames_left(&mut engine, RECORDING_STARTS + 1000, usize::MAX);
+        engine.note_on(pad("kick"), VELOCITY);
+        render_frames_left(&mut engine, 2000, usize::MAX);
+        engine.note_off(pad("kick"));
+        render_frames_left(&mut engine, BAR_AT_120 - 3000 - 10, usize::MAX);
+        engine.press_looper();
+        render_frames_left(&mut engine, 2000, usize::MAX);
+
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].notes.len(), 1);
+        assert_eq!(layers[0].notes[0].note, pad("kick"));
+
+        // Around again, the kick plays where it was hit.
+        let around = render_frames_left(&mut engine, BAR_AT_120, usize::MAX);
+        assert!(peak(&around) > 0.1);
+    }
+
+    #[test]
+    fn an_instrument_no_longer_played_is_freed_once_nothing_rings_on() {
+        let mut engine = tone_engine();
+        assert_eq!(engine.sample_sets_kept(), 1);
+        // The same instrument on two oscillators is one set; as a kit it is
+        // another.
+        let second = Oscillator {
+            kind: Kind::Sample,
+            ..START_OSCILLATORS[0]
+        };
+        engine.set_oscillator(1, second);
+        engine.set_instrument(1, Some(TONE));
+        assert_eq!(engine.sample_sets_kept(), 1);
+        engine.set_drum_kit(Some(KIT));
+        assert_eq!(engine.sample_sets_kept(), 2);
+
+        // A note still rings on the tone after it is changed, so it is kept.
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 20);
+        engine.set_instrument(0, None);
+        engine.set_instrument(1, None);
+        render_left(&mut engine, 20);
+        engine.tidy_sample_sets();
+        assert_eq!(engine.sample_sets_kept(), 2);
+
+        // Once it has rung out, it goes.
+        engine.note_off(MIDDLE_C);
+        render_left(&mut engine, 1000);
+        engine.tidy_sample_sets();
+        assert_eq!(engine.sample_sets_kept(), 1);
+        assert_eq!(engine.drum_kit(), (Some(KIT), true));
+    }
+
+    #[test]
+    fn drum_pads_out_of_range_are_brought_within_them_or_ignored() {
+        let mut engine = kit_engine();
+        let wild = DrumPad {
+            level: 900,
+            half_steps: 99,
+            pan: -500,
+            group: 50,
+        };
+        let sent = engine.set_drum_pad(0, wild);
+        assert_eq!(sent, wild.within_ranges());
+        let past = engine.set_drum_pad(DRUM_PAD_COUNT, wild);
+        assert_eq!(past, wild.within_ranges());
+        engine.note_on(pad("kick"), VELOCITY);
+        assert!(peak(&render_left(&mut engine, 30)) > 0.0);
     }
 }

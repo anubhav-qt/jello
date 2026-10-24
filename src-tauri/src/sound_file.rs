@@ -31,7 +31,7 @@ use crate::sound_profile::SoundProfile;
 // Every part of a sound profile, as plain values. A sound read from text
 // may still have values outside their ranges until
 // `SoundProfile::take_sound` sends it through the engine.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Sound {
     pub oscillators: [Oscillator; OSCILLATOR_COUNT],
     pub loudness_envelope: LoudnessEnvelope,
@@ -44,6 +44,9 @@ pub struct Sound {
     pub connections: [Connection; CONNECTION_COUNT],
     pub vibrato_key_times: VibratoKeyTimes,
     pub glide_ms: u32,
+    // The instrument each oscillator plays when its kind is the sample, by
+    // its folder's name in the Instruments folder (docs/design.md#sampler).
+    pub instruments: [Option<String>; OSCILLATOR_COUNT],
 }
 
 // The first line of every sound file, for whoever opens one.
@@ -73,9 +76,12 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
     write_number(text, "tuning_hz", sound.tuning_hz);
     write_number(text, "glide_ms", sound.glide_ms);
 
-    for oscillator in &sound.oscillators {
+    for (oscillator, instrument) in sound.oscillators.iter().zip(&sound.instruments) {
         start_group(text, &heading(under, "[[oscillators]]"));
         write_word(text, "kind", oscillator.kind.name());
+        if let Some(instrument) = instrument {
+            write_name(text, "instrument", instrument);
+        }
         write_number(text, "level", oscillator.level);
         write_number(text, "octaves", oscillator.octaves);
         write_number(text, "half_steps", oscillator.half_steps);
@@ -202,6 +208,16 @@ pub fn write_word(text: &mut String, name: &str, word: &str) {
     text.push_str("\"\n");
 }
 
+// A name someone picked, like `instrument = "Grand piano"`, with any quote
+// or backslash in it escaped as TOML wants.
+pub fn write_name(text: &mut String, name: &str, picked: &str) {
+    let quoted = Value::String(String::from(picked)).to_string();
+    text.push_str(name);
+    text.push_str(" = ");
+    text.push_str(&quoted);
+    text.push('\n');
+}
+
 pub fn write_flag(text: &mut String, name: &str, flag: bool) {
     write_number(text, name, flag);
 }
@@ -224,8 +240,14 @@ pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Sound {
     sound.glide_ms = read_count(&table, "glide_ms", sound.glide_ms);
 
     let oscillators = groups(&table, "oscillators");
-    for (oscillator, group) in sound.oscillators.iter_mut().zip(oscillators) {
-        *oscillator = read_oscillator(group, *oscillator);
+    for (index, group) in oscillators.into_iter().enumerate() {
+        if index >= OSCILLATOR_COUNT {
+            break;
+        }
+        sound.oscillators[index] = read_oscillator(group, sound.oscillators[index]);
+        if let Some(instrument) = read_word(group, "instrument") {
+            sound.instruments[index] = Some(String::from(instrument));
+        }
     }
 
     if let Some(group) = group(&table, "loudness") {
@@ -417,7 +439,7 @@ pub fn read_count(group: &Table, name: &str, missing: u32) -> u32 {
 }
 
 // Like a count, but it can go below 0.
-fn read_signed(group: &Table, name: &str, missing: i32) -> i32 {
+pub fn read_signed(group: &Table, name: &str, missing: i32) -> i32 {
     let number = read_f64(group, name, missing as f64);
     if number.is_nan() {
         return missing;

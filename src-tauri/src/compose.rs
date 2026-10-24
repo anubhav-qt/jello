@@ -13,6 +13,7 @@ use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, 
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::song_file::{HeldChord, Song};
 use crate::sound_file::Sound;
+use crate::drums::{DRUM_PAD_COUNT, DrumPad, Drums};
 use crate::sound_profile::SoundProfile;
 
 // How much slowing down or speeding up changes the song's tempo.
@@ -50,6 +51,9 @@ pub struct Composer {
     // While the song still sounds exactly like that, the Presets page
     // lights the preset's tile. None until a preset is loaded or saved.
     preset: Option<(String, SoundProfile)>,
+    // The drum kit's instrument and how each pad sounds (src/drums.rs). They
+    // belong to the song, not to its sound, so no preset holds them.
+    drums: Drums,
 }
 
 // A press as practice reads it.
@@ -212,6 +216,7 @@ impl Composer {
             tempo: START_TEMPO,
             sound_profile: SoundProfile::new(),
             preset: None,
+            drums: Drums::new(),
         }
     }
 
@@ -235,6 +240,8 @@ impl Composer {
         }
         composer.tempo = engine.tempo();
         composer.sound_profile.take_sound(engine, &song.sound);
+        composer.drums = song.drums.clone();
+        composer.send_drums(engine);
         composer
     }
 
@@ -263,7 +270,7 @@ impl Composer {
     // does this.
     pub fn remember_preset_if_same(&mut self, name: &str, sound: &Sound) {
         if self.sound_profile.sound() == *sound {
-            self.preset = Some((String::from(name), self.sound_profile));
+            self.preset = Some((String::from(name), self.sound_profile.clone()));
         }
     }
 
@@ -273,6 +280,37 @@ impl Composer {
     pub fn send_all(&self, engine: &mut Engine) {
         engine.set_tempo(self.tempo);
         self.sound_profile.send_all(engine);
+        self.send_drums(engine);
+    }
+
+    // Sends the song's drum kit and every pad to `engine`. Every pad is
+    // within its ranges already: reading a song file and setting a pad
+    // both see to that.
+    fn send_drums(&self, engine: &mut Engine) {
+        engine.set_drum_kit(self.drums.kit.as_deref());
+        for (pad, settings) in self.drums.pads.iter().enumerate() {
+            engine.set_drum_pad(pad, *settings);
+        }
+    }
+
+    pub fn drums(&self) -> &Drums {
+        &self.drums
+    }
+
+    // Makes the song's drums play instrument `name`, or nothing for None,
+    // on `engine` too.
+    pub fn set_drum_kit(&mut self, engine: &mut Engine, name: Option<&str>) {
+        self.drums.kit = name.map(String::from);
+        engine.set_drum_kit(name);
+    }
+
+    // Sets how pad `pad`, from 0, sounds, on `engine` too, kept as the
+    // engine sent it. A pad past the last changes nothing.
+    pub fn set_drum_pad(&mut self, engine: &mut Engine, pad: usize, settings: DrumPad) {
+        if pad >= DRUM_PAD_COUNT {
+            return;
+        }
+        self.drums.pads[pad] = engine.set_drum_pad(pad, settings);
     }
 
     // Plays the song at `tempo` beats per minute from the next beat on, on
@@ -319,12 +357,12 @@ impl Composer {
     // remembers it as the preset the song sounds like.
     pub fn take_preset(&mut self, engine: &mut Engine, name: &str, sound: &Sound) {
         self.sound_profile.take_sound(engine, sound);
-        self.preset = Some((String::from(name), self.sound_profile));
+        self.preset = Some((String::from(name), self.sound_profile.clone()));
     }
 
     // Remembers that the song's sound was just saved as preset `name`.
     pub fn saved_as_preset(&mut self, name: &str) {
-        self.preset = Some((String::from(name), self.sound_profile));
+        self.preset = Some((String::from(name), self.sound_profile.clone()));
     }
 
     // The preset the song sounds exactly like, or None once its sound has

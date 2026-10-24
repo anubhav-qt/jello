@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 use crate::commands::{press_key_on, release_key_on};
 use crate::harmony::chord_of_name;
 use crate::key_map::KeyMap;
-use crate::song_file::{note_name, note_of_name};
+use crate::song_file::{note_name, pitch_of_note_name};
 use crate::tools::Studio;
 
 // The longest a phrase can last, and the most presses it can hold.
@@ -171,7 +171,7 @@ pub(crate) fn key_of_press(fields: &Map<String, Value>, key_map: &KeyMap, place:
 
     if let Some(name) = fields.get("note") {
         let name = name.as_str().unwrap_or_default();
-        let Some(note) = note_of_name(name) else {
+        let Some(note) = pitch_of_note_name(name) else {
             return Err(format!("{place}: {name} is not a note, like \"C4\" or \"F#3\""));
         };
         for (key, played) in key_map.note_keys() {

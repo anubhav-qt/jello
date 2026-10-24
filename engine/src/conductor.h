@@ -92,6 +92,21 @@ public:
     // (Synth::set_glide_time).
     void set_glide_key(bool held);
     void set_glide_time(int glide_ms);
+    // Oscillator `index`'s instrument (Synth::set_instrument), the drum
+    // kit's recordings (Synth::set_drum_kit) and pad `pad`'s settings
+    // (Synth::set_drum_pad). The first two return false and send nothing if
+    // the mailbox is full, so the sender knows the set is not on its way.
+    bool set_instrument(int index, const SampleSet* set);
+    bool set_drum_kit(const SampleSet* set);
+    void set_drum_pad(int pad, const DrumPad& settings);
+
+    // Which sample sets the audio thread still plays, one bit each, and how
+    // many of the instrument and kit messages it has acted on. A set is
+    // free to go once it is not in use and every message sent with it has
+    // been acted on. Only the thread that sends the messages may ask.
+    std::uint32_t sets_in_use() const;
+    std::uint64_t sample_messages_handled() const;
+    std::uint64_t sample_messages_sent() const;
 
     // What the looper is doing. Only the thread that sends the messages may
     // ask.
@@ -143,6 +158,7 @@ private:
     // played, at the end of each chunk.
     void publish_looper_status();
     void publish_song_position();
+    void publish_sets_in_use();
 
     EventMailbox mailbox_;
 
@@ -188,4 +204,12 @@ private:
     // for where it is, so it can never be read half updated.
     std::atomic<std::uint64_t> shown_song_position_{SongPlayer::not_playing};
     std::atomic<std::uint64_t> shown_song_handled_{0};
+
+    // The same for the sample sets: how many instrument and kit messages
+    // got into the mailbox, how many the audio thread has acted on, and
+    // what it last told about the sets it plays.
+    std::uint64_t sample_messages_sent_ = 0;
+    std::uint64_t sample_messages_handled_ = 0;
+    std::atomic<std::uint32_t> shown_sets_in_use_{0};
+    std::atomic<std::uint64_t> shown_sample_handled_{0};
 };

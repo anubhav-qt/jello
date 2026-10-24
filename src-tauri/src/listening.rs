@@ -398,6 +398,7 @@ mod tests {
                 }],
             }),
             sound: SoundProfile::new().sound(),
+            drums: crate::drums::Drums::new(),
         }
     }
 

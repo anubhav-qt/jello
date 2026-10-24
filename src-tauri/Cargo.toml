@@ -21,6 +21,7 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hound = "3"
+claxon = "0.4"
 toml = "1"
 tiny_http = "0.12"
 getrandom = "0.3"
@@ -32,6 +33,13 @@ whisper-rs = "0.16.0"
 sha2 = "0.10.9"
 
 # whisper.cpp is far too slow to use unoptimized, even while developing.
+# Reading an instrument's recordings is slow unoptimized.
+[profile.dev.package.claxon]
+opt-level = 3
+
+[profile.dev.package.hound]
+opt-level = 3
+
 [profile.dev.package.whisper-rs-sys]
 opt-level = 3
 debug = false

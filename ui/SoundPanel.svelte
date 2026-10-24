@@ -1,8 +1,8 @@
 <!-- The sound panel (docs/adr/0033-the-sound-panel.md): the song's sound,
      set while the keyboard keeps playing. It opens in Compose's tape's
-     place, as wide as the keyboard's panel, on one of six pages:
-     Oscillators, Notes, Filter, LFOs, Connections and Presets
-     (docs/adr/0037-presets.md). A note at the top right says when
+     place, as wide as the keyboard's panel, on one of seven pages:
+     Oscillators, Notes, Filter, LFOs, Connections, Drums
+     (docs/design.md#sampler) and Presets (docs/adr/0037-presets.md). A note at the top right says when
      changes are heard. While a value is picked, it says which, and what the
      arrow keys do to it. Clicking empty space in the panel lets go. -->
 <script lang="ts">
@@ -10,6 +10,7 @@
   import type { SoundSender, SoundView } from "./sound";
   import { clickThenLetGo } from "./dom";
   import SoundConnections from "./SoundConnections.svelte";
+  import SoundDrums from "./SoundDrums.svelte";
   import SoundFilter from "./SoundFilter.svelte";
   import SoundLfos from "./SoundLfos.svelte";
   import SoundNotes from "./SoundNotes.svelte";
@@ -46,6 +47,7 @@
     | "filter"
     | "lfos"
     | "connections"
+    | "drums"
     | "presets";
 
   const PAGES: { page: Page; name: string; note: string }[] = [
@@ -73,6 +75,11 @@
       page: "connections",
       name: "Connections",
       note: "Changes here move notes already sounding",
+    },
+    {
+      page: "drums",
+      name: "Drums",
+      note: "Changes start with the next hit",
     },
     {
       page: "presets",
@@ -173,6 +180,8 @@
       <SoundLfos {sound} {picked} {onPick} {onLetGo} {send} />
     {:else if page === "connections"}
       <SoundConnections {sound} {picked} {onPick} {onLetGo} {send} />
+    {:else if page === "drums"}
+      <SoundDrums {sound} {picked} {onPick} {onLetGo} {send} />
     {:else}
       <SoundPresets {sound} {send} />
     {/if}

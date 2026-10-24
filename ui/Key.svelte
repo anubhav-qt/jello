@@ -1,5 +1,5 @@
-<!-- One key: what is printed on it, and the note, chord or wave it plays,
-     or what it does to the beat. -->
+<!-- One key: what is printed on it, and the note, chord, wave or drum it
+     plays, or what it does to the beat. -->
 <script lang="ts">
   import type { BestNext, ChordGuide, Fit, SongKeys } from "./compose";
   import { colorForNote, NOTE_COLORS } from "./note-colors";
@@ -252,6 +252,7 @@
   class:is-stepping={isStepping}
   class:is-song-now={isSongNow}
   class:is-song-next={songFill !== undefined}
+  class:is-drum-mode={kind === "drum mode" && layout.drum_mode}
   style:--w={spec.width}
   style:--song-fill={songFill}
   data-code={spec.code}
@@ -315,6 +316,12 @@
   {/if}
   {#if kind === "glide"}
     <span class="key-note">glide</span>
+  {/if}
+  {#if kind === "drum"}
+    <span class="key-note">{layout.drums[spec.code]}</span>
+  {/if}
+  {#if kind === "drum mode"}
+    <span class="key-note">drums</span>
   {/if}
   {#if isLooper}
     <LooperFace {sound} beats={looperBeats} />
