@@ -1,18 +1,33 @@
 // The Rust core of Jello. It owns the C++ sound engine and gives the UI named
 // commands to call.
 
+mod agent;
+mod cards;
 mod commands;
 mod compose;
 mod engine;
 mod harmony;
 mod key_map;
+mod layer_cycles;
+mod layer_notes;
+mod listening;
+mod measures;
 mod modulation;
+mod phrases;
+mod practice;
+mod practice_run;
 mod presets;
+mod scoring;
 mod song_file;
 mod song_session;
 mod songs;
+mod sound_changes;
 mod sound_file;
 mod sound_profile;
+mod theory;
+mod tool_server;
+mod tools;
+mod undo;
 mod wav;
 
 use std::sync::Mutex;
@@ -42,6 +57,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(Mutex::new(engine))
+        .manage(agent::AgentHost::default())
+        .manage(Mutex::new(tool_server::Questions::default()))
+        .manage(phrases::Phrases::default())
+        .manage(Mutex::new(undo::Replies::default()))
+        .manage(Mutex::new(cards::Offers::default()))
+        .manage(Mutex::new(practice::Practice::default()))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
         .manage(Mutex::new(composer))
@@ -54,11 +75,35 @@ pub fn run() {
             let folders = folders_of(app.handle());
             app.manage(Mutex::new(OpenSong::new(folders)));
             open_last_song(app.handle());
+            // The agent's tools reach the open song, so their server starts
+            // once it is kept. Without it Jello still opens, with no agent.
+            let tool_server = tool_server::start(app.handle()).ok();
+            app.manage(tool_server);
             let handle = app.handle().clone();
             thread::spawn(move || keep_saving(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent::agent_status,
+            agent::agent_say,
+            agent::stop_agent,
+            agent::agent_new_chat,
+            agent::agent_chats,
+            agent::agent_open_chat,
+            agent::agent_pick_model,
+            agent::agent_sign_in,
+            agent::agent_sign_in_answer,
+            agent::agent_cancel_sign_in,
+            tool_server::answer_agent,
+            cards::play_agent_option,
+            cards::use_agent_option,
+            practice::practice_view,
+            practice::start_practice,
+            practice::stop_practice,
+            practice::practice_settings,
+            practice::close_practice,
+            undo::agent_reply_starts,
+            undo::undo_agent_reply,
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,
@@ -66,6 +111,9 @@ pub fn run() {
             commands::set_oscillator,
             commands::switch_snap,
             commands::set_layer_volume,
+            commands::set_layer_bars,
+            commands::set_tempo,
+            commands::export_loop_wav,
             commands::pause_loop,
             commands::play_loop,
             commands::set_layer_playing,
@@ -93,6 +141,8 @@ pub fn run() {
             commands::release_key,
             commands::sound_view,
             commands::key_layout,
+            commands::shift_octave,
+            commands::edit_composition,
             commands::compose_view,
             commands::pick_key,
             commands::add_last_chord,
@@ -112,16 +162,18 @@ pub fn run() {
         });
 }
 
-// Where songs, presets and settings are kept, or None if one of them can't
-// be found.
+// Where songs, presets, settings and renders are kept, or None if one of
+// them can't be found.
 fn folders_of(app: &AppHandle) -> Option<Folders> {
     let songs = commands::songs_folder(app).ok()?;
     let sounds = commands::sounds_folder(app).ok()?;
     let settings = commands::settings_folder(app).ok()?;
+    let renders = commands::renders_folder(app).ok()?;
     Some(Folders {
         songs,
         sounds,
         settings,
+        renders,
     })
 }
 

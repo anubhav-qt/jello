@@ -14,9 +14,10 @@
 //   jello-drive tree [depth]      list what is on the page (buttons, text)
 //   jello-drive press <text>      press the first button whose name has <text>
 //   jello-drive click <x> <y>     click at a point in the window
+//   jello-drive combo <cmd|option> <name>  press a modifier and a key
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
-//                                 esc, return, space, tab, delete, a to z,
-//                                 0 to 9)
+//                                 esc, return, space, tab, delete, rshift
+//                                 for the looper, a to z, 0 to 9)
 //   jello-drive hold <name> <ms>  hold a key down for <ms> milliseconds, the
 //                                 way Compose's chords get their length
 //   jello-drive shot <file.png>   capture the window
@@ -228,6 +229,7 @@ let keyCodes: [String: CGKeyCode] = [
   "space": 49,
   "tab": 48,
   "delete": 51,
+  "rshift": 60,
   "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
   "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
   "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
@@ -242,6 +244,30 @@ func pressKey(_ code: CGKeyCode, holdMs: UInt32 = 60) {
   down.post(tap: .cghidEventTap)
   usleep(holdMs * 1000)
   let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)!
+  up.post(tap: .cghidEventTap)
+  usleep(60_000)
+}
+
+// Modifier shortcuts send both the left modifier event and its flags, like
+// a real keyboard, so the webview can distinguish left and right Command.
+func pressCombo(_ modifier: String, _ code: CGKeyCode) {
+  let source = CGEventSource(stateID: .hidSystemState)
+  let modifierCode: CGKeyCode = modifier == "cmd" ? 55 : 58
+  let flags: CGEventFlags = modifier == "cmd" ? .maskCommand : .maskAlternate
+  let down = CGEvent(keyboardEventSource: source, virtualKey: modifierCode, keyDown: true)!
+  down.type = .flagsChanged
+  down.flags = flags
+  down.post(tap: .cghidEventTap)
+  usleep(60_000)
+  for pressed in [true, false] {
+    let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: pressed)!
+    event.flags = flags
+    event.post(tap: .cghidEventTap)
+    usleep(60_000)
+  }
+  let up = CGEvent(keyboardEventSource: source, virtualKey: modifierCode, keyDown: false)!
+  up.type = .flagsChanged
+  up.flags = []
   up.post(tap: .cghidEventTap)
   usleep(60_000)
 }
@@ -313,6 +339,14 @@ if command == "info" {
   let y = jello.bounds.minY + CGFloat(Double(arguments[2]) ?? 0)
   click(at: CGPoint(x: x, y: y))
   print("clicked \(Int(x)),\(Int(y)) on screen")
+} else if command == "combo" {
+  if arguments.count != 3 || !["cmd", "option"].contains(arguments[1]) {
+    fail("usage: jello-drive combo <cmd|option> <name>")
+  }
+  guard let code = keyCodes[arguments[2]] else { fail("unknown key") }
+  requireFront(jello)
+  pressCombo(arguments[1], code)
+  print("pressed \(arguments[1])+\(arguments[2])")
 } else if command == "key" {
   if arguments.count < 2 {
     fail("usage: jello-drive key <name> [count]")

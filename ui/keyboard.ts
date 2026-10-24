@@ -13,6 +13,7 @@ export interface LayoutChord {
 
 // What each key does, as Rust's `key_layout` command answers.
 export interface KeyLayout {
+  octave: number;
   // Each key that plays one note, with its note: "KeyM" plays 60.
   notes: Record<string, number>;
   // Each key that plays a chord, with its chord: "KeyX" plays Cm.
@@ -21,7 +22,7 @@ export interface KeyLayout {
   wave_keys: string[];
   // The keys held for vibrato: left Shift.
   vibrato_keys: string[];
-  // The keys held to glide: left Option, or left Alt on Windows.
+  // The keys held to glide: left Option, or right Alt on Windows.
   glide_keys: string[];
   // The keys that run the beat, each with what it does: right Shift runs
   // the looper, Esc clears it, - slows the beat down and = speeds it up.

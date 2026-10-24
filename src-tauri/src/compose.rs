@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
-use crate::harmony::{Chord, Fit, Guide, Key, Mode, all_keys, chord_name, guide_after, key_name, note_fit};
+use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, chord_name, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::song_file::{HeldChord, Song};
 use crate::sound_file::Sound;
@@ -26,6 +26,12 @@ pub struct Composer {
     // The chords added so far, in order, each as it was played. Trying a
     // chord doesn't add it: only asking to add it does.
     progression: Vec<PlayedChord>,
+    history: Vec<PlayedChord>,
+    selected_history: Option<usize>,
+    last_note: Option<u8>,
+    performance: Vec<PerformanceEvent>,
+    session_started: Instant,
+    performance_id: u64,
     // Where in the song the chords played last start, so the playhead can
     // tell which chord is playing.
     playing_from: usize,
@@ -44,6 +50,24 @@ pub struct Composer {
     // While the song still sounds exactly like that, the Presets page
     // lights the preset's tile. None until a preset is loaded or saved.
     preset: Option<(String, SoundProfile)>,
+}
+
+// A press as practice reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeardPress {
+    pub id: u64,
+    pub notes: Vec<u8>,
+    pub pressed_ms: u64,
+    pub held_ms: Option<u64>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PerformanceEvent {
+    id: u64,
+    key: String,
+    notes: Vec<u8>,
+    pressed_ms: u64,
+    held_ms: Option<u64>,
 }
 
 // A chord as it was played: by which key, when, and for how long. The player
@@ -157,6 +181,14 @@ pub struct ComposeView {
     // For each melody key, whether its note is in the key or outside it.
     // Empty until a key is picked.
     melody: HashMap<String, Fit>,
+    history: Vec<ChordInSong>,
+    selected_history: Option<usize>,
+    reference: Option<ChordInSong>,
+    live_guide: HashMap<String, Guide>,
+    compatible: HashMap<String, String>,
+    melody_next: HashMap<String, BestNext>,
+    last_note: Option<u8>,
+    performance: Vec<PerformanceEvent>,
     // Where the song is playing, or None while it isn't.
     playing: Option<Playhead>,
 }
@@ -169,6 +201,12 @@ impl Composer {
             key: None,
             tried: None,
             progression: Vec::new(),
+            history: Vec::new(),
+            selected_history: None,
+            last_note: None,
+            performance: Vec::new(),
+            session_started: Instant::now(),
+            performance_id: 0,
             playing_from: 0,
             playing_until: 0,
             tempo: START_TEMPO,
@@ -241,7 +279,7 @@ impl Composer {
     // `engine` too. The song keeps the tempo the engine plays, which is the
     // one it had for a tempo outside SLOWEST_TEMPO to FASTEST_TEMPO, or while
     // the looper is busy.
-    fn set_tempo(&mut self, engine: &mut Engine, tempo: u32) {
+    pub fn set_tempo(&mut self, engine: &mut Engine, tempo: u32) {
         self.tempo = engine.set_tempo(tempo);
     }
 
@@ -310,12 +348,16 @@ impl Composer {
     // `key` went down at `now` and plays `chord`, so it is the chord tried
     // last.
     pub fn chord_pressed(&mut self, key: &str, chord: Chord, now: Instant) {
-        self.tried = Some(PlayedChord {
+        self.record_press(key, chord.notes().to_vec(), now);
+        self.selected_history = None;
+        let played = PlayedChord {
             chord,
             key: String::from(key),
             pressed_at: now,
             held_for: None,
-        });
+        };
+        self.history.push(played.clone());
+        self.tried = Some(played);
     }
 
     // `key` was let go at `now`, so the chords it is still holding end there:
@@ -323,12 +365,13 @@ impl Composer {
     // A key can't be pressed again while it is held, so they all come from
     // the same press.
     pub fn key_released(&mut self, key: &str, now: Instant) {
+        self.finish_events(Some(key), now);
         if let Some(tried) = &mut self.tried {
             if tried.key == key {
                 tried.let_go(now);
             }
         }
-        for played in &mut self.progression {
+        for played in self.history.iter_mut().chain(self.progression.iter_mut()) {
             if played.key == key {
                 played.let_go(now);
             }
@@ -337,10 +380,11 @@ impl Composer {
 
     // Every key was let go at once at `now`, so every chord still held ends.
     pub fn all_released(&mut self, now: Instant) {
+        self.finish_events(None, now);
         if let Some(tried) = &mut self.tried {
             tried.let_go(now);
         }
-        for played in &mut self.progression {
+        for played in self.history.iter_mut().chain(self.progression.iter_mut()) {
             played.let_go(now);
         }
     }
@@ -353,6 +397,109 @@ impl Composer {
         if let Some(tried) = &self.tried {
             self.progression.push(tried.clone());
         }
+    }
+
+    // Adds `chord`, held for `held_ms`, to the end of the song, as if it
+    // was played at `now`. The agent's chord options add theirs this way.
+    pub fn add_chord(&mut self, chord: Chord, held_ms: u64, now: Instant) {
+        let played = PlayedChord {
+            chord,
+            key: String::new(),
+            pressed_at: now,
+            held_for: Some(Duration::from_millis(held_ms)),
+        };
+        self.progression.push(played);
+    }
+
+    // The player's presses from press `first_id` on, oldest first, with
+    // their notes, when they went down in ms since Compose started, and how
+    // long they were held, or None while they still are. Practice reads
+    // them as they come (src/practice.rs).
+    pub fn presses_from(&self, first_id: u64) -> Vec<HeardPress> {
+        let mut presses = Vec::new();
+        for event in &self.performance {
+            if event.id < first_id {
+                continue;
+            }
+            presses.push(HeardPress {
+                id: event.id,
+                notes: event.notes.clone(),
+                pressed_ms: event.pressed_ms,
+                held_ms: event.held_ms,
+            });
+        }
+        presses
+    }
+
+    // The number the next press will get.
+    pub fn next_press_id(&self) -> u64 {
+        self.performance_id + 1
+    }
+
+    // `at` in ms since Compose started, as presses count their times.
+    pub fn session_ms(&self, at: Instant) -> u64 {
+        at.saturating_duration_since(self.session_started).as_millis() as u64
+    }
+
+    pub fn note_pressed(&mut self, key: &str, note: u8, now: Instant) {
+        self.last_note = Some(note);
+        self.record_press(key, vec![note], now);
+    }
+
+    fn record_press(&mut self, key: &str, notes: Vec<u8>, now: Instant) {
+        if self.performance.len() == 256 { self.performance.remove(0); }
+        self.performance_id += 1;
+        self.performance.push(PerformanceEvent {
+            id: self.performance_id,
+            key: String::from(key),
+            notes,
+            pressed_ms: now.saturating_duration_since(self.session_started).as_millis() as u64,
+            held_ms: None,
+        });
+    }
+
+    fn finish_events(&mut self, key: Option<&str>, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.session_started).as_millis() as u64;
+        for event in &mut self.performance {
+            if event.held_ms.is_none() && key.is_none_or(|code| code == event.key) {
+                event.held_ms = Some(elapsed.saturating_sub(event.pressed_ms));
+            }
+        }
+    }
+
+    // Selection changes the reference, never the song. Adding is explicit.
+    pub fn edit(&mut self, action: &str, place: usize) -> Result<(), String> {
+        match action {
+            "follow_live" => self.selected_history = None,
+            "select_history" | "add_history" => {
+                let chord = self.history.get(place).ok_or("No such tried chord")?;
+                if action == "add_history" {
+                    self.progression.push(chord.clone());
+                } else {
+                    self.selected_history = Some(place);
+                }
+            }
+            "remove" | "left" | "right" => {
+                if place >= self.progression.len() {
+                    return Err(String::from("No such song chord"));
+                }
+                match action {
+                    "remove" => { self.progression.remove(place); }
+                    "left" if place > 0 => self.progression.swap(place, place - 1),
+                    "right" if place + 1 < self.progression.len() => self.progression.swap(place, place + 1),
+                    _ => {}
+                }
+            }
+            _ => return Err(String::from("Unknown composition action")),
+        }
+        Ok(())
+    }
+
+    fn reference(&self) -> Option<&PlayedChord> {
+        if let Some(place) = self.selected_history {
+            return self.history.get(place);
+        }
+        self.tried.as_ref().or(self.progression.last())
     }
 
     // Takes the last chord off the end. Does nothing if there are none.
@@ -418,7 +565,65 @@ impl Composer {
             }
         }
 
+        let reference = self.reference();
+        let mut live_guide = HashMap::new();
+        let mut compatible = HashMap::new();
+        let mut melody_next = HashMap::new();
+        // A played chord can guide exploration even before choosing a song key.
+        let context_key = self.key.or_else(|| reference.map(|played| Key {
+            tonic: played.chord.pitch(),
+            mode: match played.chord.quality {
+                Quality::Major => Mode::Major,
+                Quality::Minor => Mode::Minor,
+            },
+        }));
+        if let Some(key) = context_key {
+            if let Some(reference) = reference {
+                let chord = reference.chord;
+                for (code, candidate) in key_map.chord_keys() {
+                    let guide = guide_after(key, Some(chord), candidate);
+                    let common = candidate.notes().iter().filter(|note| {
+                        chord.notes().iter().any(|held| held % 12 == *note % 12)
+                    }).count();
+                    if common > 0 && guide.fit != Fit::Outside && candidate != chord {
+                        compatible.insert(code.clone(), format!("Shares {common} chord tones with {}", chord_name(chord, self.key)));
+                    }
+                    live_guide.insert(code, guide);
+                }
+            }
+            if let Some(previous) = self.last_note {
+                let mut candidates = Vec::new();
+                for (code, note) in key_map.note_keys() {
+                    let distance = note.abs_diff(previous);
+                    if distance == 0 || distance > 7 || note_fit(key, note) == Fit::Outside {
+                        continue;
+                    }
+                    let chord_tone = reference.is_some_and(|played| {
+                        played.chord.notes().iter().any(|held| held % 12 == note % 12)
+                    });
+                    // Small scale steps come first; nearby chord tones also make steady targets.
+                    let mut score = u16::from(distance) * 2;
+                    if chord_tone { score = score.saturating_sub(3); }
+                    candidates.push((score, distance, note, code, chord_tone));
+                }
+                candidates.sort();
+                for (rank, (_, distance, _, code, chord_tone)) in candidates.into_iter().take(3).enumerate() {
+                    let mut why = format!("{distance} half steps from the last note, in the key");
+                    if chord_tone { why.push_str(" and in the reference chord"); }
+                    melody_next.insert(code, BestNext { rank: (rank + 1) as u8, why });
+                }
+            }
+        }
+
         ComposeView {
+            history: self.history.iter().map(|chord| self.chord_in_song(chord, now)).collect(),
+            selected_history: self.selected_history,
+            reference: reference.map(|chord| self.chord_in_song(chord, now)),
+            live_guide,
+            compatible,
+            melody_next,
+            last_note: self.last_note,
+            performance: self.performance.clone(),
             keys,
             key: picked,
             progression,
@@ -1073,7 +1278,7 @@ mod tests {
         let mut player = Player::new();
         player.composer.pick_key(C_MAJOR);
         let view = player.view(0);
-        assert_eq!(view.melody.len(), 20);
+        assert_eq!(view.melody.len(), 24);
 
         // M plays C4 and N plays G#3. In C major, C is in the key and G#
         // is outside. In A minor, G# is the raised note below home, so it
@@ -1387,4 +1592,71 @@ mod tests {
         assert_eq!(json["holding"]["held_ms"], 100);
         assert_eq!(json["holding"]["still_held"], true);
     }
+    #[test]
+    fn live_guidance_tracks_playing_without_changing_the_saved_song_guidance() {
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+        player.tap("KeyC", 0, 500);
+        let first = player.view(500);
+        player.tap("KeyG", 600, 900);
+        let second = player.view(900);
+        assert_eq!(first.guide, second.guide);
+        assert_ne!(first.live_guide, second.live_guide);
+        assert_eq!(second.reference.unwrap().name, "G");
+        assert!(second.progression.is_empty());
+        assert_eq!(second.history.len(), 2);
+    }
+
+    #[test]
+    fn history_selection_addition_and_reordering_preserve_the_original_timing() {
+        let mut player = Player::new();
+        player.tap("KeyC", 0, 500);
+        player.tap("KeyG", 600, 900);
+        player.composer.edit("select_history", 0).unwrap();
+        assert_eq!(player.view(1000).reference.unwrap().name, "C");
+        player.composer.edit("add_history", 1).unwrap();
+        player.composer.edit("add_history", 0).unwrap();
+        player.composer.edit("left", 1).unwrap();
+        let view = player.view(1000);
+        assert_eq!(view.progression[0].name, "C");
+        assert_eq!(view.progression[0].held_ms, 500);
+        assert_eq!(view.progression[1].held_ms, 300);
+        player.tap("KeyF", 1100, 1200);
+        assert_eq!(player.view(1200).selected_history, None);
+        assert!(player.composer.edit("remove", 99).is_err());
+    }
+
+    #[test]
+    fn every_melody_press_refreshes_nearby_next_notes() {
+        let mut player = Player::new();
+        player.composer.pick_key(C_MAJOR);
+        player.tap("KeyM", 0, 100);
+        let first = player.view(100);
+        assert_eq!(first.melody_next.len(), 3);
+        assert!(!first.melody_next.contains_key("KeyM"));
+        player.tap("Digit8", 200, 300);
+        let second = player.view(300);
+        assert_eq!(second.last_note, Some(67));
+        assert_ne!(first.melody_next, second.melody_next);
+        for code in second.melody_next.keys() {
+            assert_eq!(second.melody[code], Fit::InKey);
+        }
+    }
+
+    #[test]
+    fn tutor_events_measure_actual_pitches_and_lengths_across_octave_changes() {
+        let mut player = Player::new();
+        player.press("KeyM", 100);
+        player.key_map.shift_octave(1);
+        player.release("KeyM", 500);
+        player.press("KeyM", 600);
+        player.composer.all_released(player.start + Duration::from_millis(900));
+        let view = player.view(900);
+        assert_eq!(view.performance[0].notes, [60]);
+        assert_eq!(view.performance[0].held_ms, Some(400));
+        assert_eq!(view.performance[1].notes, [72]);
+        assert_eq!(view.performance[1].held_ms, Some(300));
+        assert!(view.performance[1].id > view.performance[0].id);
+    }
+
 }

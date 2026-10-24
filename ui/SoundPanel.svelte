@@ -24,22 +24,61 @@
     // The value picked for the arrow keys, if any, what picks one, and
     // what lets go.
     picked: Picked | null;
+    adjustModifier: string;
     onPick: (picked: Picked) => void;
     onLetGo: () => void;
     send: SoundSender;
   }
 
-  let { sound, keysAcross, picked, onPick, onLetGo, send }: Props = $props();
+  let {
+    sound,
+    keysAcross,
+    picked,
+    adjustModifier,
+    onPick,
+    onLetGo,
+    send,
+  }: Props = $props();
 
-  type Page = "oscillators" | "notes" | "filter" | "lfos" | "connections" | "presets";
+  type Page =
+    | "oscillators"
+    | "notes"
+    | "filter"
+    | "lfos"
+    | "connections"
+    | "presets";
 
   const PAGES: { page: Page; name: string; note: string }[] = [
-    { page: "oscillators", name: "Oscillators", note: "Changes start with the next key you press" },
-    { page: "notes", name: "Notes", note: "Changes start with the next key you press" },
-    { page: "filter", name: "Filter", note: "Cutoff and resonance move notes already sounding" },
-    { page: "lfos", name: "LFOs", note: "Changes here move notes already sounding" },
-    { page: "connections", name: "Connections", note: "Changes here move notes already sounding" },
-    { page: "presets", name: "Presets", note: "Loading one changes the song's sound" },
+    {
+      page: "oscillators",
+      name: "Oscillators",
+      note: "Changes start with the next key you press",
+    },
+    {
+      page: "notes",
+      name: "Notes",
+      note: "Changes start with the next key you press",
+    },
+    {
+      page: "filter",
+      name: "Filter",
+      note: "Cutoff and resonance move notes already sounding",
+    },
+    {
+      page: "lfos",
+      name: "LFOs",
+      note: "Changes here move notes already sounding",
+    },
+    {
+      page: "connections",
+      name: "Connections",
+      note: "Changes here move notes already sounding",
+    },
+    {
+      page: "presets",
+      name: "Presets",
+      note: "Loading one changes the song's sound",
+    },
   ];
 
   // The page shown. It opens on the oscillators.
@@ -71,7 +110,11 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<section class="sound-panel" style:--keys-across={keysAcross} onpointerdown={letGoOutside}>
+<section
+  class="sound-panel"
+  style:--keys-across={keysAcross}
+  onpointerdown={letGoOutside}
+>
   <div class="sound-panel-top">
     <span class="sound-panel-title">Sound</span>
     {#each PAGES as each (each.page)}
@@ -91,28 +134,47 @@
       <!-- The picked value's name, then the arrow keys and what they do. -->
       <span class="sound-pick-hint">
         <span class="sound-picked-name">{picked.name}</span>
-        <i class="sound-arrow"><svg viewBox="0 0 10 10"><path d="M8 5 H2 M4.5 2.5 L2 5 L4.5 7.5" /></svg></i>
-        <i class="sound-arrow"><svg viewBox="0 0 10 10"><path d="M2 5 H8 M5.5 2.5 L8 5 L5.5 7.5" /></svg></i>
+        <span class="sound-shortcut">{adjustModifier} +</span>
+        <i class="sound-arrow"
+          ><svg viewBox="0 0 10 10"
+            ><path d="M8 5 H2 M4.5 2.5 L2 5 L4.5 7.5" /></svg
+          ></i
+        >
+        <i class="sound-arrow"
+          ><svg viewBox="0 0 10 10"
+            ><path d="M2 5 H8 M5.5 2.5 L8 5 L5.5 7.5" /></svg
+          ></i
+        >
         <span class="sound-arrow-words">step</span>
         <i class="sound-arrow-gap"></i>
-        <i class="sound-arrow"><svg viewBox="0 0 10 10"><path d="M5 8 V2 M2.5 4.5 L5 2 L7.5 4.5" /></svg></i>
-        <i class="sound-arrow"><svg viewBox="0 0 10 10"><path d="M5 2 V8 M2.5 5.5 L5 8 L7.5 5.5" /></svg></i>
+        <i class="sound-arrow"
+          ><svg viewBox="0 0 10 10"
+            ><path d="M5 8 V2 M2.5 4.5 L5 2 L7.5 4.5" /></svg
+          ></i
+        >
+        <i class="sound-arrow"
+          ><svg viewBox="0 0 10 10"
+            ><path d="M5 2 V8 M2.5 5.5 L5 8 L7.5 5.5" /></svg
+          ></i
+        >
         <span class="sound-arrow-words">ten steps</span>
       </span>
     {/if}
   </div>
 
-  {#if page === "oscillators"}
-    <SoundOscillators {sound} {picked} {onPick} {send} />
-  {:else if page === "notes"}
-    <SoundNotes {sound} {picked} {onPick} {send} />
-  {:else if page === "filter"}
-    <SoundFilter {sound} {picked} {onPick} {send} />
-  {:else if page === "lfos"}
-    <SoundLfos {sound} {picked} {onPick} {onLetGo} {send} />
-  {:else if page === "connections"}
-    <SoundConnections {sound} {picked} {onPick} {onLetGo} {send} />
-  {:else}
-    <SoundPresets {sound} {send} />
-  {/if}
+  <div class="sound-panel-content">
+    {#if page === "oscillators"}
+      <SoundOscillators {sound} {picked} {onPick} {send} />
+    {:else if page === "notes"}
+      <SoundNotes {sound} {picked} {onPick} {send} />
+    {:else if page === "filter"}
+      <SoundFilter {sound} {picked} {onPick} {send} />
+    {:else if page === "lfos"}
+      <SoundLfos {sound} {picked} {onPick} {onLetGo} {send} />
+    {:else if page === "connections"}
+      <SoundConnections {sound} {picked} {onPick} {onLetGo} {send} />
+    {:else}
+      <SoundPresets {sound} {send} />
+    {/if}
+  </div>
 </section>

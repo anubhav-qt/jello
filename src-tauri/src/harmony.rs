@@ -92,15 +92,15 @@ pub struct BestNext {
 }
 
 // The seven letters, and the pitch each one has with no sharp or flat.
-const LETTERS: [&str; 7] = ["C", "D", "E", "F", "G", "A", "B"];
-const LETTER_PITCHES: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
+pub(crate) const LETTERS: [&str; 7] = ["C", "D", "E", "F", "G", "A", "B"];
+pub(crate) const LETTER_PITCHES: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
 
 // Names for the 12 pitches, from C up. Each black key has two: the sharp of
 // the letter below it, or the flat of the letter above it.
-const SHARP_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const FLAT_NAMES: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+pub(crate) const SHARP_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+pub(crate) const FLAT_NAMES: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 // The names chord charts use most, for when there is no key to follow.
-const COMMON_NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+pub(crate) const COMMON_NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
 // The same for minor chords, but G#m, not Abm: songs in E major and B major
 // play it, and they write it with a sharp.
 const COMMON_MINOR_NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"];

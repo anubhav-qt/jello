@@ -1,13 +1,10 @@
 // The Stage lights: one color per note letter, shared across octaves.
-// CSS and the canvas use the same RGB triples so keys and beams match.
+// CSS and the scripts use the same RGB triples so every light matches.
 export interface NoteColor {
   accent: string;
   glow: string;
   core: string;
 }
-
-// The background grid and canvas beams use the same spacing in page pixels.
-export const DOT_CELL = 12;
 
 export const NOTE_COLORS: Record<string, NoteColor> = {
   C: { accent: "191, 165, 255", glow: "219, 203, 255", core: "245, 239, 255" },

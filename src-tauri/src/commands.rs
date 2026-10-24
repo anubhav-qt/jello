@@ -347,6 +347,7 @@ pub struct LooperView {
 // One layer of the loop.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct LayerView {
+    bars: u32,
     // Its notes. While it is recorded, as played, in the order they
     // started. Once it plays, where each time around plays them, in the
     // order they start.
@@ -370,7 +371,7 @@ pub struct LoopNoteView {
 
 // What the screen shows about the sound at `now`, with the song in
 // `composer`. Esc's half second may be up, so that comes first.
-fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> SoundView {
+pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> SoundView {
     engine.finish_esc_wait(now);
 
     let sound_profile = composer.sound_profile();
@@ -391,7 +392,11 @@ fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Instant) -> Soun
     if has_loop(status.state) {
         for layer in &mut layers {
             if !layer.recording {
-                layer.notes = engine.plan_loop(&layer.notes, status.number);
+                let mut bars = layer.bars;
+                if bars == 0 {
+                    bars = status.number;
+                }
+                layer.notes = engine.plan_loop(&layer.notes, bars);
             }
         }
     }
@@ -499,6 +504,7 @@ fn looper_view_of(
     if shows_layers {
         for layer in layers {
             let view = LayerView {
+                bars: layer.bars,
                 notes: note_views_of(&layer.notes, tempo, sample_rate),
                 volume: layer.volume,
                 playing: layer.playing,
@@ -1091,20 +1097,23 @@ pub fn press_key(
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
 
-    // A key that picks a layer for Esc plays nothing. Esc only waits once a
-    // loop has layers, so the speakers are already open.
-    if picks_layer(&mut engine, &key, now) {
-        return Ok(sound_view_of(&mut engine, &composer, now));
-    }
-
-    // Like `switch_kind`, every key that does something opens the speakers
-    // first: before they open, nothing empties the engine's mailbox.
-    if let Some(action) = key_down(&mut key_map, &mut composer, &key, now) {
-        engine.start_audio()?;
-        take_key_action(&mut engine, &mut composer, action, now);
-    }
-
+    // Like `switch_kind`, it opens the speakers first: before they open,
+    // nothing empties the engine's mailbox.
+    engine.start_audio()?;
+    press_key_on(&mut key_map, &mut composer, &mut engine, &key, now);
     Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// What `key` going down at `now` does, for the player's keys and the
+// agent's phrases alike. The speakers must be open already.
+pub(crate) fn press_key_on(key_map: &mut KeyMap, composer: &mut Composer, engine: &mut Engine, key: &str, now: Instant) {
+    // A key that picks a layer for Esc plays nothing.
+    if picks_layer(engine, key, now) {
+        return;
+    }
+    if let Some(action) = key_down(key_map, composer, key, now) {
+        take_key_action(engine, composer, action, now);
+    }
 }
 
 // While Esc waits, 1 to 8 pick a layer for it to remove instead of playing
@@ -1171,11 +1180,16 @@ pub fn release_key(
     let mut key_map = key_map.lock().unwrap();
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    release_key_on(&mut key_map, &mut composer, &mut engine, &key, now);
+}
 
+// What `key` coming up at `now` does, for the player's keys and the agent's
+// phrases alike.
+pub(crate) fn release_key_on(key_map: &mut KeyMap, composer: &mut Composer, engine: &mut Engine, key: &str, now: Instant) {
     // Forget the key first, whether or not the speakers are open.
-    let lets_go_of_vibrato_key = key_map.holds_vibrato_key(&key);
-    let lets_go_of_glide_key = key_map.holds_glide_key(&key);
-    let notes = key_up(&mut key_map, &mut composer, &key, now);
+    let lets_go_of_vibrato_key = key_map.holds_vibrato_key(key);
+    let lets_go_of_glide_key = key_map.holds_glide_key(key);
+    let notes = key_up(key_map, composer, key, now);
 
     // Same reason as in `release_note`.
     if !engine.is_audio_running() {
@@ -1204,8 +1218,10 @@ pub(crate) fn key_down(key_map: &mut KeyMap, composer: &mut Composer, key: &str,
     };
     // Compose times every chord, so a chord added to the song keeps how long
     // it was held.
-    if let KeyAction::PlayChord(chord) = action {
-        composer.chord_pressed(key, chord, now);
+    match action {
+        KeyAction::PlayChord(chord) => composer.chord_pressed(key, chord, now),
+        KeyAction::PlayNote(note) => composer.note_pressed(key, note, now),
+        _ => {}
     }
     Some(action)
 }
@@ -1243,6 +1259,32 @@ pub fn sound_view(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<
 pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>) -> LayoutForUi {
     let key_map = key_map.lock().unwrap();
     key_map.layout_for_ui()
+}
+
+#[tauri::command]
+pub fn shift_octave(key_map: State<'_, Mutex<KeyMap>>, steps: i8) -> LayoutForUi {
+    let mut key_map = key_map.lock().unwrap();
+    key_map.shift_octave(steps);
+    key_map.layout_for_ui()
+}
+
+#[tauri::command]
+pub fn edit_composition(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    action: String,
+    place: usize,
+) -> Result<ComposeView, String> {
+    let now = Instant::now();
+    let key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    composer.edit(&action, place)?;
+    if matches!(action.as_str(), "add_history" | "remove" | "left" | "right") {
+        engine.stop_song();
+    }
+    Ok(composer.view(&key_map, engine.song_place(), now))
 }
 
 // Compose's commands. Each answers with everything Compose shows, so the UI
@@ -1421,6 +1463,27 @@ pub fn sounds_folder(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(jello.join("Sounds"))
 }
 
+// The folder the agent's renders are kept in: Renders, in the Jello folder
+// in Music.
+pub fn renders_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Renders"))
+}
+
+// The folder the agent's chats are kept in: Chats, in the Jello folder in
+// Music.
+pub fn chats_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Chats"))
+}
+
+// The folder the agent's memory and the practice results are kept in:
+// Memory, in the Jello folder in Music.
+pub fn memory_folder(app: &AppHandle) -> Result<PathBuf, String> {
+    let jello = jello_music_folder(app)?;
+    Ok(jello.join("Memory"))
+}
+
 // Jello's own settings folder, where its settings file is kept.
 pub fn settings_folder(app: &AppHandle) -> Result<PathBuf, String> {
     match app.path().app_config_dir() {
@@ -1562,12 +1625,12 @@ mod tests {
     }
 
     #[test]
-    fn backslash_switches_the_song_s_first_kind() {
+    fn f12_switches_the_song_s_first_kind() {
         // A new song starts on the triangle, so the switch lands on the
         // square, and the engine plays it.
         let mut engine = Engine::new().unwrap();
         let mut composer = Composer::new();
-        press(&mut engine, &mut composer, "Backslash");
+        press(&mut engine, &mut composer, "F12");
         assert_eq!(composer.sound_profile().oscillators()[0].kind, Kind::Square);
 
         let mut square = Engine::new().unwrap();
@@ -1748,6 +1811,7 @@ mod tests {
         view.message = Some(String::from("There is no layer 7"));
         let json = serde_json::to_value(view).unwrap();
         let expected = serde_json::json!([{
+            "bars": 0,
             "notes": [{ "note": 69, "start": 0.5, "end": null }],
             "volume": 100,
             "playing": true,
@@ -1795,7 +1859,7 @@ mod tests {
         for engine in [&mut held, &mut up] {
             composer.send_all(engine);
         }
-        press(&mut held, &mut composer, "AltLeft");
+        press(&mut held, &mut composer, crate::key_map::GLIDE_KEY);
         for engine in [&mut held, &mut up] {
             press(engine, &mut composer, "KeyM");
             engine.render(4800);
@@ -2080,6 +2144,7 @@ mod tests {
     // A layer played back at full volume, with `notes`.
     fn layer_of(notes: &[LoopNote]) -> LoopLayer {
         LoopLayer {
+            bars: 0,
             notes: notes.to_vec(),
             volume: 100,
             playing: true,
@@ -2533,4 +2598,46 @@ mod tests {
         assert_eq!(view.looper.layers[1].notes, vec![snapped]);
         assert!(!view.looper.layers[1].recording);
     }
+}
+
+// Pointer controls use the same song tempo and engine as laptop keys.
+#[tauri::command]
+pub fn set_tempo(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>, tempo: u32) -> Result<SoundView, String> {
+    if !(40..=240).contains(&tempo) {
+        return Err(String::from("tempo must be 40 to 240 BPM"));
+    }
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    if engine.is_looper_busy() {
+        return Err(String::from("clear the loop before changing tempo"));
+    }
+    engine.start_audio()?;
+    composer.set_tempo(&mut engine, tempo);
+    Ok(sound_view_of(&mut engine, &composer, Instant::now()))
+}
+
+#[tauri::command]
+pub fn set_layer_bars(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>, layer: u32, bars: u32) -> Result<SoundView, String> {
+    let composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.set_layer_bars(layer, bars)?;
+    Ok(sound_view_of(&mut engine, &composer, Instant::now()))
+}
+
+#[tauri::command]
+pub fn export_loop_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
+    let song = {
+        let composer = composer.lock().unwrap();
+        let mut engine = engine.lock().unwrap();
+        crate::song_session::song_now(&composer, &mut engine)
+    };
+    if song.looped.is_none() {
+        return Err(String::from("record a loop first"));
+    }
+    let folder = renders_folder(&app)?;
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let path = folder.join(format!("Jello-loop-{stamp}.wav"));
+    crate::listening::export_loop(&song, &path)?;
+    Ok(path.display().to_string())
 }

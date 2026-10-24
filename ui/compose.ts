@@ -70,7 +70,23 @@ export interface SongKeys {
   share: number;
 }
 
+export interface PerformanceEvent {
+  id: number;
+  key: string;
+  notes: number[];
+  pressed_ms: number;
+  held_ms: number | null;
+}
+
 export interface ComposeView {
+  performance: PerformanceEvent[];
+  history: ChordInSong[];
+  selected_history: number | null;
+  reference: ChordInSong | null;
+  live_guide: Record<string, ChordGuide>;
+  compatible: Record<string, string>;
+  melody_next: Record<string, BestNext>;
+  last_note: number | null;
   // Every key there is to pick: the 12 major keys, then the 12 minor keys.
   keys: KeyChoice[];
   // The key picked, or null before one is.
@@ -102,7 +118,11 @@ export function lengthSince(chord: ChordInSong, sinceAnswer: number): number {
 
 // How far the song is through the chord playing, from 0 at its start to 1
 // at its end, `sinceAnswer` milliseconds after Rust said where it was.
-export function playingShare(playing: Playhead, progression: ChordInSong[], sinceAnswer: number): number {
+export function playingShare(
+  playing: Playhead,
+  progression: ChordInSong[],
+  sinceAnswer: number,
+): number {
   const chord = progression[playing.chord];
   const length = lengthSince(chord, sinceAnswer);
   if (length === 0) {
@@ -114,7 +134,10 @@ export function playingShare(playing: Playhead, progression: ChordInSong[], sinc
 
 // While the song plays, the chord keys the keyboard lights, `sinceAnswer`
 // milliseconds after Rust said where it was. Null while it isn't playing.
-export function songKeysOf(view: ComposeView, sinceAnswer: number): SongKeys | null {
+export function songKeysOf(
+  view: ComposeView,
+  sinceAnswer: number,
+): SongKeys | null {
   if (view.playing === null) {
     return null;
   }

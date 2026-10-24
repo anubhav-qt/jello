@@ -245,7 +245,7 @@
         <span class="sound-hint">
           {oscillator.kind}
           {#if index === 0}
-            <span class="sound-key-chip">\</span>
+            <span class="sound-key-chip">F12</span>
           {/if}
         </span>
       </div>

@@ -2,6 +2,7 @@
 // (ui/Stage.svelte). Keys play the synth: Rust decides what each key does.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { mount } from "svelte";
 import type { ComposeView } from "./compose";
 import { findElement, makeElement } from "./dom";
@@ -18,6 +19,7 @@ import type {
   Unison,
 } from "./sound";
 import type { SongSender, SongsView } from "./songs";
+import type { PracticeMark, PracticeView } from "./practice";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -26,6 +28,9 @@ const page = findElement<HTMLElement>("#app");
 interface StageControls {
   // A key went down or came back up. `code` is its place, like "KeyQ".
   keyDown(code: string): void;
+  showLayout(layout: KeyLayout): void;
+  closePanel(): boolean;
+  showSoundModifier(held: boolean): void;
   keyUp(code: string): void;
   // Every key came up at once.
   releaseAll(): void;
@@ -37,10 +42,15 @@ interface StageControls {
   stepPicked(steps: number): void;
   // Whether the Compose tab is open.
   isComposing(): boolean;
+  wantsPerformance(): boolean;
   // What Compose shows, as Rust answered.
   showCompose(view: ComposeView): void;
   // The songs and the one open, as Rust answered.
   showSongs(view: SongsView): void;
+  // The agent pressed or let go of a key, playing a phrase.
+  showAgentKey(code: string, down: boolean): void;
+  // The agent marked keys with a keys card.
+  showAgentMarks(keys: { key: string; label: string }[]): void;
 }
 
 // The page, once Rust has said what each key does.
@@ -167,17 +177,6 @@ async function releaseAllNotes() {
   }
 }
 
-// The top bar's wave button does what the \ key does: it steps the first
-// oscillator's kind.
-async function switchKind() {
-  try {
-    const view = await invoke<SoundView>("switch_kind");
-    showSound(view);
-  } catch (error) {
-    showStatus(`Could not switch the kind: ${error}`);
-  }
-}
-
 // The lane's snap switch turns snap on or off.
 async function switchSnap() {
   try {
@@ -202,7 +201,10 @@ async function setLayerVolume(layer: number, volume: number) {
 // A layer's button pauses it or plays it again. `layer` counts from 1.
 async function setLayerPlaying(layer: number, playing: boolean) {
   try {
-    const view = await invoke<SoundView>("set_layer_playing", { layer, playing });
+    const view = await invoke<SoundView>("set_layer_playing", {
+      layer,
+      playing,
+    });
     showSound(view);
   } catch (error) {
     showStatus(`Could not switch layer ${layer}: ${error}`);
@@ -220,6 +222,36 @@ async function setLoopPlaying(playing: boolean) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not switch the loop: ${error}`);
+  }
+}
+
+// The pointer transport follows the same ordered path as Right Shift.
+async function recordLoop() {
+  try {
+    const current = await invoke<SoundView>("sound_view");
+    if (current.looper.state === "paused") {
+      await setLoopPlaying(true);
+    }
+    await pressKey("ShiftRight");
+    await releaseKey("ShiftRight");
+  } catch (error) {
+    showStatus(`Could not record: ${error}`);
+  }
+}
+
+async function setTempo(tempo: number) {
+  try {
+    showSound(await invoke<SoundView>("set_tempo", { tempo }));
+  } catch (error) {
+    showStatus(`Could not set tempo: ${error}`);
+  }
+}
+
+async function setLayerBars(layer: number, bars: number) {
+  try {
+    showSound(await invoke<SoundView>("set_layer_bars", { layer, bars }));
+  } catch (error) {
+    showStatus(`Could not set layer length: ${error}`);
   }
 }
 
@@ -260,9 +292,17 @@ async function setLoudnessEnvelope(envelope: LoudnessEnvelope) {
 // It moves the filter. `filterType` is "low-pass", "high-pass", "band-pass"
 // or "notch", `cutoffHz` is middle C's cutoff, and `resonance` is in
 // percent, from 0 to 100.
-async function setFilter(filterType: string, cutoffHz: number, resonance: number) {
+async function setFilter(
+  filterType: string,
+  cutoffHz: number,
+  resonance: number,
+) {
   try {
-    const view = await invoke<SoundView>("set_filter", { filterType, cutoffHz, resonance });
+    const view = await invoke<SoundView>("set_filter", {
+      filterType,
+      cutoffHz,
+      resonance,
+    });
     showSound(view);
   } catch (error) {
     showStatus(`Could not move the filter: ${error}`);
@@ -324,7 +364,10 @@ async function setUnison(unison: Unison) {
 // let go, in ms.
 async function setVibratoKeyTimes(riseMs: number, fallMs: number) {
   try {
-    const view = await invoke<SoundView>("set_vibrato_key_times", { riseMs, fallMs });
+    const view = await invoke<SoundView>("set_vibrato_key_times", {
+      riseMs,
+      fallMs,
+    });
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the vibrato key: ${error}`);
@@ -355,7 +398,10 @@ async function setLfo(index: number, lfo: LfoView) {
 // And it sets connection `index` of the routing list, from 0.
 async function setConnection(index: number, connection: ConnectionView) {
   try {
-    const view = await invoke<SoundView>("set_connection", { index, connection });
+    const view = await invoke<SoundView>("set_connection", {
+      index,
+      connection,
+    });
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the connection: ${error}`);
@@ -554,15 +600,14 @@ function askForComposeAfterLetGo() {
   if (screen === null) {
     return;
   }
-  if (!screen.isComposing()) {
+  if (!screen.wantsPerformance()) {
     return;
   }
   sendInOrder(askForCompose);
 }
 
-// The arrow keys step the value picked in the sound panel: left and right
-// one step, down and up ten (docs/design.md#sound-panel). They have no other
-// job, so they play nothing and never reach Rust.
+// With left Command (left Alt on Windows), arrows edit the picked sound
+// value. Bare arrows shift every note and chord by whole octaves.
 const ARROW_STEPS: Record<string, number> = {
   ArrowLeft: -1,
   ArrowRight: 1,
@@ -597,14 +642,71 @@ function isTyping(event: KeyboardEvent): boolean {
 // While typing in a text field, keys go to the field and play nothing.
 // Esc and Return only leave the field, so keys play again.
 function typeInField(event: KeyboardEvent) {
-  if (event.code === "Escape" || event.code === "Enter" || event.code === "NumpadEnter") {
+  if (
+    event.code === "Escape" ||
+    event.code === "Enter" ||
+    event.code === "NumpadEnter"
+  ) {
     event.preventDefault();
     const field = event.target as HTMLElement;
     field.blur();
   }
 }
 
+const octaveSteps: Record<string, number> = {
+  ArrowUp: 1,
+  ArrowDown: -1,
+  ArrowRight: 2,
+  ArrowLeft: -2,
+};
+let soundModifierHeld = false;
+const soundModifier = detectPlatform() === "mac" ? "MetaLeft" : "AltLeft";
+
+async function shiftOctave(steps: number) {
+  try {
+    const layout = await invoke<KeyLayout>("shift_octave", { steps });
+    screen?.showLayout(layout);
+    await askForCompose();
+  } catch (error) {
+    showStatus(`Could not shift the octave: ${error}`);
+  }
+}
+
+async function editComposition(action: string, place: number) {
+  try {
+    showCompose(
+      await invoke<ComposeView>("edit_composition", { action, place }),
+    );
+  } catch (error) {
+    showStatus(`Could not edit the song: ${error}`);
+  }
+}
+
 window.addEventListener("keydown", (event) => {
+  if (event.code === soundModifier) {
+    soundModifierHeld = true;
+    if (soundModifier === "AltLeft" && !isTyping(event)) {
+      event.preventDefault();
+    }
+    screen?.showSoundModifier(true);
+    return;
+  }
+  if (
+    soundModifierHeld &&
+    ARROW_STEPS[event.code] !== undefined &&
+    !isTyping(event)
+  ) {
+    event.preventDefault();
+    stepWithArrow(event.code, ARROW_STEPS[event.code], event.repeat);
+    return;
+  }
+  if (event.code === "Escape" && screen?.closePanel()) {
+    event.preventDefault();
+    if (event.target instanceof HTMLElement) {
+      event.target.blur();
+    }
+    return;
+  }
   // While Cmd is held, the key is a shortcut like Cmd+Q: it plays nothing
   // and is left alone. Every note is let go too, because on a Mac a key let
   // go while Cmd is held may never say so, and its note would stay stuck
@@ -629,9 +731,12 @@ window.addEventListener("keydown", (event) => {
   // `event.code` is the key's place on the keyboard, like "KeyQ", whatever is
   // printed on it.
   const key = event.code;
-  const steps = ARROW_STEPS[key];
-  if (steps !== undefined) {
-    stepWithArrow(key, steps, event.repeat);
+  const octaves = octaveSteps[key];
+  if (octaves !== undefined) {
+    if (!event.repeat) {
+      screen?.keyDown(key);
+      sendInOrder(() => shiftOctave(octaves));
+    }
     return;
   }
 
@@ -657,6 +762,9 @@ function sendComposeKey(key: string) {
     return;
   }
   if (!screen.isComposing()) {
+    if (screen.wantsPerformance()) {
+      sendInOrder(askForCompose);
+    }
     return;
   }
   if (key === "Enter") {
@@ -672,6 +780,15 @@ function sendComposeKey(key: string) {
 // ignores keys that did not start a note.
 window.addEventListener("keyup", (event) => {
   const key = event.code;
+  if (key === soundModifier) {
+    soundModifierHeld = false;
+    screen?.showSoundModifier(false);
+    // macOS can omit other key-up events while Command is held. Keep
+    // notes sounding during sound edits, then clear any missed releases.
+    if (soundModifier === "MetaLeft") {
+      letGoOfEverything();
+    }
+  }
   if (screen !== null) {
     screen.keyUp(key);
   }
@@ -685,22 +802,31 @@ window.addEventListener("keyup", (event) => {
 // If the window loses focus (say, Cmd+Tab), let-gos may never reach it, so
 // let go of every key right away.
 window.addEventListener("blur", () => {
+  soundModifierHeld = false;
+  screen?.showSoundModifier(false);
   letGoOfEverything();
 });
 
 // What the sound panel sends, each in order with the keys.
 const soundSender: SoundSender = {
-  setOscillator: (index, oscillator) => sendInOrder(() => setOscillator(index, oscillator)),
-  setLoudnessEnvelope: (envelope) => sendInOrder(() => setLoudnessEnvelope(envelope)),
-  setFilter: (filterType, cutoffHz, resonance) => sendInOrder(() => setFilter(filterType, cutoffHz, resonance)),
-  setFilterEnvelope: (envelope) => sendInOrder(() => setFilterEnvelope(envelope)),
-  setKeyTracking: (keyTracking) => sendInOrder(() => setKeyTracking(keyTracking)),
+  setOscillator: (index, oscillator) =>
+    sendInOrder(() => setOscillator(index, oscillator)),
+  setLoudnessEnvelope: (envelope) =>
+    sendInOrder(() => setLoudnessEnvelope(envelope)),
+  setFilter: (filterType, cutoffHz, resonance) =>
+    sendInOrder(() => setFilter(filterType, cutoffHz, resonance)),
+  setFilterEnvelope: (envelope) =>
+    sendInOrder(() => setFilterEnvelope(envelope)),
+  setKeyTracking: (keyTracking) =>
+    sendInOrder(() => setKeyTracking(keyTracking)),
   setUnison: (unison) => sendInOrder(() => setUnison(unison)),
   setTuning: (a4Hz) => sendInOrder(() => setTuning(a4Hz)),
-  setVibratoKeyTimes: (riseMs, fallMs) => sendInOrder(() => setVibratoKeyTimes(riseMs, fallMs)),
+  setVibratoKeyTimes: (riseMs, fallMs) =>
+    sendInOrder(() => setVibratoKeyTimes(riseMs, fallMs)),
   setGlideTime: (glideMs) => sendInOrder(() => setGlideTime(glideMs)),
   setLfo: (index, lfo) => sendInOrder(() => setLfo(index, lfo)),
-  setConnection: (index, connection) => sendInOrder(() => setConnection(index, connection)),
+  setConnection: (index, connection) =>
+    sendInOrder(() => setConnection(index, connection)),
   listPresets: () => listPresets(),
   loadPreset: (name) => sendInOrder(() => loadPreset(name)),
   savePreset: (name) => sendInOrderAndWait(() => savePreset(name)),
@@ -727,6 +853,51 @@ function listSongsInOrder(): Promise<SongsView | null> {
   });
 }
 
+// The agent changed something, or its Undo put the song back: the page
+// asks Rust again for everything it shows.
+function redrawAfterAgent() {
+  sendInOrder(askForSound);
+  sendInOrder(askForCompose);
+  sendInOrder(async () => {
+    await askForSongs();
+  });
+  sendInOrder(async () => {
+    try {
+      const layout = await invoke<KeyLayout>("key_layout");
+      screen?.showLayout(layout);
+    } catch (error) {
+      showStatus(`Could not get the keys: ${error}`);
+    }
+  });
+  sendInOrder(async () => {
+    try {
+      const practice = await invoke<PracticeView>("practice_view");
+      screen?.showPractice(practice);
+    } catch {
+      // Practice shows once the Tutor sets a piece.
+    }
+  });
+}
+
+// The agent's tools tell the page as they act (src-tauri/src/tool_server.rs).
+function hearTheAgent() {
+  listen<{ key: string; down: boolean }>("agent-key", (event) => {
+    screen?.showAgentKey(event.payload.key, event.payload.down);
+  });
+  listen<{ keys: { key: string; label: string }[] }>("agent-marks", (event) => {
+    screen?.showAgentMarks(event.payload.keys);
+  });
+  listen("agent-acted", () => {
+    redrawAfterAgent();
+  });
+  listen<PracticeView>("practice", (event) => {
+    screen?.showPractice(event.payload);
+  });
+  listen<{ marks: PracticeMark[] }>("practice-marks", (event) => {
+    screen?.showPracticeMarks(event.payload.marks);
+  });
+}
+
 // Asks Rust what each key does, then shows the page.
 async function start() {
   let layout: KeyLayout;
@@ -742,19 +913,47 @@ async function start() {
     props: {
       platform: detectPlatform(),
       layout,
-      onWaveClick: () => sendInOrder(switchKind),
       onRenderClick: renderWav,
       onSnapClick: () => sendInOrder(switchSnap),
-      onVolumeChange: (layer: number, volume: number) => sendInOrder(() => setLayerVolume(layer, volume)),
-      onLayerPlayingChange: (layer: number, playing: boolean) => sendInOrder(() => setLayerPlaying(layer, playing)),
-      onLoopPlayingChange: (playing: boolean) => sendInOrder(() => setLoopPlaying(playing)),
-      onKeyPick: (tonic: number, mode: "major" | "minor") => sendInOrder(() => pickKey(tonic, mode)),
-      onChordClick: (place: number) => sendInOrder(() => playChordInSong(place)),
+      onRecordClick: () => sendInOrder(recordLoop),
+      onExpressionChange: (key: string, held: boolean) => {
+        if (held) {
+          screen?.keyDown(key);
+          sendInOrder(() => pressKey(key));
+        } else {
+          screen?.keyUp(key);
+          sendInOrder(() => releaseKey(key));
+        }
+      },
+      onExportLoop: () => sendInOrder(async () => {
+        try {
+          const path = await invoke<string>("export_loop_wav");
+          showStatus(`Saved ${path}`);
+        } catch (error) {
+          showStatus(`Could not export loop: ${error}`);
+        }
+      }),
+      onTempoChange: (tempo: number) => sendInOrder(() => setTempo(tempo)),
+      onLayerBarsChange: (layer: number, bars: number) => sendInOrder(() => setLayerBars(layer, bars)),
+      onVolumeChange: (layer: number, volume: number) =>
+        sendInOrder(() => setLayerVolume(layer, volume)),
+      onLayerPlayingChange: (layer: number, playing: boolean) =>
+        sendInOrder(() => setLayerPlaying(layer, playing)),
+      onLoopPlayingChange: (playing: boolean) =>
+        sendInOrder(() => setLoopPlaying(playing)),
+      onKeyPick: (tonic: number, mode: "major" | "minor") =>
+        sendInOrder(() => pickKey(tonic, mode)),
+      onChordClick: (place: number) =>
+        sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),
+      onComposeEdit: (action: string, place: number) =>
+        sendInOrder(() => editComposition(action, place)),
       soundSender,
       songSender,
+      onSongChanged: redrawAfterAgent,
     },
   });
+  hearTheAgent();
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
   sendInOrder(async () => {

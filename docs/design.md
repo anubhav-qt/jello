@@ -4,6 +4,82 @@ This is the living design for Jello. Decisions that are settled also have an
 ADR in [adr/](adr/README.md). When this file and an ADR disagree, the ADR wins
 and this file should be fixed.
 
+## Current workspace and tutor (2026-10-23)
+
+[0039](adr/0039-fullscreen-guided-workspace.md) supersedes the older fixed,
+centered layout descriptions below. Panels fill the available workspace;
+the compact keyboard and looper remain visible beneath it. Sound and Render
+WAV share the top action row, one width, in every mode; there is no separate
+Wave button: Sound shows oscillator 1's kind (like "triangle") in lavender
+after its name, and F12 steps it. The agent's button at the right end of the
+tabs is named for its job, Tutor in Play, Composer in Compose and Producer
+in Produce, one width in every tab; only Play's opens a panel until the
+agent's panel is built, so it is dimmed in the other two. Escape dismisses
+Sound or Songs before reaching the looper. Panel frames stay fixed, with
+overflow scrolling inside their content areas and no visible scrollbars.
+Tutor's header and input stay in place while messages scroll independently
+of Practice. Sound tabs and Compose's progression stay in place too.
+
+- Notes: 24 distinct melody pitches, G#3 through G5 at octave zero. Quote,
+  left/right brackets and backslash complete the range. The 24 chord keys
+  retain the left-hand layout. F12 changes the first oscillator's wave.
+- Bare arrows transpose every mapped note and chord for future presses:
+  up +1, down -1, right +2, left -2 octaves, with whole-layout limits -4 to +4.
+  Repeats are ignored for octave changes. Shift persists after the arrow is
+  released. Held notes and existing recordings retain their original pitch.
+  Shifted chord roots are stored as optional `root_note` in song files;
+  older files remain readable. Left Shift is still vibrato. Glide uses left
+  Option on Mac and right Alt on Windows.
+- Sound editing: click a value, then use left Command + arrows (left Alt on
+  Windows). Left/right edit by one step; up/down by ten, including repeats.
+  Bare arrows always transpose, even with a sound value picked. Pointer
+  controls remain available. Typing fields retain their cursor arrow keys.
+- Compose preserves the key-fit outlines and saved-song next-chord squares.
+  Numbered keys show live next chords after every chord played, or after an
+  explicit history selection. Dots show compatible chords sharing tones;
+  the guidance columns explain these suggestions. Playing another chord
+  returns to live following. Holding chords still fills their melody notes.
+- Every melody press refreshes three nearby in-key targets, favoring short
+  steps and nearby reference-chord tones. Suggestions are possibilities,
+  never blocked notes. Key fit and held-chord highlighting remain visible.
+- Tried chords keep their original press lengths in session history. Select
+  a try as the reference or explicitly add it to the progression. Select a
+  progression block to hear it, move it left/right, or remove it. Return
+  still appends the last played chord; Backspace removes the last song chord.
+  History and lessons reset on app restart; only chosen song content saves.
+
+[0040](adr/0040-play-tutor-on-pi.md) brings a pi-backed Tutor into Play. Open
+Tutor in the mode row. The agent has `jello_context` and `jello_exercise` tools:
+context includes the current map, song guidance, tempo and last 256 performance
+presses with measured timestamps and held lengths. An exercise has 1 to 16
+validated playable keys with their actual notes. Jello highlights the current
+step, counts ordered exact pitch matches and other presses, and sends these
+observations when the user asks for feedback. A changed octave is detected.
+The tutor uses model-authored explanations and tasks; pitch measurement is
+local and deterministic. It does not listen to audio or edit songs yet.
+Tutor replies and exercise descriptions render Markdown paragraphs, emphasis,
+lists, code and tables through Marked and DOMPurify. Only text-formatting HTML
+and safe link attributes survive sanitization; model HTML cannot add controls,
+images, styles or scripts. New replies scroll the message area to the end.
+
+Development: `nvm use`, `npm ci`, `npx pi`, then `/login` to connect a model.
+Tutor uses the pi model configured there, with optional model and executable
+fields under Model connection. No credential is entered into the webview.
+Packaged apps currently require Node 22.19+ and globally installed
+`@earendil-works/pi-coding-agent@1.4.0`, or an explicit pi executable/CLI JS
+path. `JELLO_NODE` can select Node when the app's PATH differs from a terminal.
+Requests run away from the audio mutex, accept cancellation, and time out
+at two minutes. Missing login or runtime produces an explicit error.
+Codex OAuth and a real GPT-6.1 Sol lesson with observation and exercise tool
+calls have been verified locally. Future work: bundle the runtime and provider
+sign-in, extend the harness to song editing/render/listen tools, and check
+teaching quality over complete practice sessions.
+
+Checks: `npm run build`, `npm run test:tutor`, and `cargo test` in `src-tauri`.
+Native macOS checks use `tools/build/jello-drive`; its `combo cmd up` command
+also tests modifier shortcuts. Windows native shortcut behavior still needs
+a Windows run; CI compiles and tests the shared mapping and tutor tools.
+
 ## Vision
 
 The dream: release a track that sounds incredible, and when someone asks
@@ -1043,6 +1119,16 @@ at one loudness, since typing keys have no velocity.
 
 ## Looper
 
+Pointer recording and independent layer lengths extend this design in
+[ADR 0042](adr/0042-independent-layer-lengths.md). The transport offers
+record/finish, a free or fixed capture duration, exact tempo, vibrato and
+glide holds, and export of one common cycle as WAV (up to 60 seconds).
+Each lane has an editable length of 1 to 64 bars. Changing it restarts
+playback. Original patterns stay in song files; `layer_cycles.rs` expands
+only playback onto their common cycle, within the existing 4096-note limit.
+Older files without layer lengths retain their shared-cycle behavior.
+
+
 Right Shift records what the player plays and repeats it, so they can loop
 chords and play a melody over them
 ([ADR 0021](adr/0021-a-looper-on-a-beat.md)). It works in every tab.
@@ -1175,17 +1261,17 @@ chords and play a melody over them
   (`ui/LooperLane.svelte`).
   - Right Shift says what the looper is doing. Four beat lights: the beat
     now is lit, and during the count-in the beats already counted stay half
-    lit. Beside them, a short state: "looper, 120 bpm", "count-in 3", "rec
-    bar 2", "loop 2 bars" or "rec layer 2", with a red square while
-    recording. A 3 px bar along the key's bottom edge fills as the loop
+    lit. Beside them, a short state: "looper", "count 3", "rec 2",
+    "2 bars", "layer 2" or "paused", with a red square while recording. A 3 px bar along the key's bottom edge fills as the loop
     goes round: red while recording and lavender while looping. While the
     first loop is recorded its length isn't known yet, so the bar fills
     once per bar. The bar never crosses the key's text.
-  - A lane under the keyboard draws the loop. It is as wide as the
-    keyboard's panel, like Compose's tape, and as tall as the room under
-    the keyboard less 10 px above and below: 52 px in the 1100x720 window.
-    - Ready: one dashed box across the lane saying "Right Shift records a
-      loop", and the tempo at the right end.
+  - A lane under the keyboard draws the loop. It is as wide as the keys
+    themselves, and as tall as the room under the keyboard less 10 px above
+    and below: 52 px in the 1100x720 window.
+    - Ready: no lane at all. Nothing shows under the keyboard, not even
+      snap or the tempo, until the first press of Right Shift (since
+      2026-10-23).
     - Count-in: a big 1 2 3 4 spread across the box, lit one per beat.
     - Recording: the box is dashed and marked out in 4 bars, and fills
       red up to the playhead. The bar being recorded shows at the right
@@ -1213,8 +1299,8 @@ chords and play a melody over them
     - While Esc waits, every knob's number lights, the box that goes turns
       dashed red, and the right end says "Remove layer 3".
     - The snap switch sits at the right end, under the loop's length,
-      styled like the Wave button: "Snap", then "on" in lavender or "off"
-      in grey.
+      styled like the Sound button's wave: "Snap", then "on" in lavender
+      or "off" in grey.
       It is always shown, so snap can be set before recording, and a click
       changes a playing loop at once. A key for it may come later.
   - Messages are typed out in the top bar, after the title, with the
@@ -1461,6 +1547,8 @@ we have rights to).
 
 ## Learning mode (v2)
 
+The Tutor takes this mode over ([the agent mode](#the-agent-mode)).
+
 Falling notes on screen, colored by hand, with the keys lighting up.
 
 | Level | Two-hand skill | Example material |
@@ -1510,10 +1598,9 @@ Falling notes on screen, colored by hand, with the keys lighting up.
   PDE's Seelie is. It helps compose along the way, and turns the user's
   trial-and-error sketch (key, progression, loops) into the final song as
   code: write, render a draft, listen, fix, render the final.
-- How the harness reaches models is decided when it is built: CLIProxyAPI
-  on the user's subscriptions (as in the user's other projects), or the
-  user's API key in the OS keychain. A local model on the GPU is a later
-  option. Whether a model can hear renders needs a test first.
+- How the harness reaches models: pi's own sign-in, inside the agent panel
+  (see [the agent harness](#the-agent-harness)). A local model on the GPU
+  is a later option. Whether a model can hear renders needs a test first.
 - **Todo: the harness gives each song its starting sound.** Every sound
   setting is the song's own ([ADR 0030](adr/0030-a-sound-profile-per-song.md)),
   so the harness can help set them as a song begins:
@@ -1525,6 +1612,298 @@ Falling notes on screen, colored by hand, with the keys lighting up.
     The harness plays it back a few different ways, each its own reading
     of what was meant, so the user can pick the closest and say what to
     change, by voice, until it is what they were trying to make.
+
+### The agent harness
+
+[ADR 0041](adr/0041-one-agent-for-every-mode.md), accepted 2026-10-23. It
+comes before the sampler, and replaces the Tutor of
+[ADR 0040](adr/0040-play-tutor-on-pi.md).
+
+- **One agent, three jobs.** Tutor in Play, Composer in Compose, Producer
+  in Produce. The tools and the conversation are the same in every mode;
+  only the instructions change. Switching tabs keeps the conversation and
+  adds a line like "Now Composer". The conversation lasts for the session.
+- **One tool server in Rust.** It runs the same code as the UI's commands,
+  so a new command reaches the agent too. It listens on this machine only,
+  behind a private password made at launch, and has no shell or file tools.
+  Outside agents like Claude can connect to the same server later.
+- **Tools grouped by area.** Each answers with the fresh state of its area.
+  A refused value says why and what is allowed, like "cutoff is 20 to
+  20000 Hz".
+
+  | Tool | Does |
+  |---|---|
+  | `jello_look` | Reads any parts: sound, keys, song, looper, Compose, recent presses, presets, songs |
+  | `jello_sound` | Changes any sound values, naming only what changes; Jello fills in the rest |
+  | `jello_play` | Plays a timed phrase of key presses |
+  | `jello_looper` | Records, stops, pauses, plays, snap, tempo, each layer's volume and pause, clears a layer |
+  | `jello_song` | Key, adding, moving and removing chords, play and stop, open, make and rename songs |
+  | `jello_presets` | Lists, loads and saves presets, marks the starting sound |
+  | `jello_practice` | Sets an exercise that Jello highlights and checks |
+  | `jello_listen` | Renders silently and measures it |
+
+  Arrange and Mix add one or two tools each, like `jello_tracks` and
+  `jello_mix`.
+- **Playing.** A phrase is a list of presses, each with a start and a hold,
+  in beats (following the song's tempo) or milliseconds. Each press names a
+  key ("KeyC") or a note ("E4"); for a note Jello finds the key that plays
+  it at the current octave, or says there is none. Rust presses and lets go
+  on time through the same path as the player's keys, so keys light, the
+  looper records, and Compose and the recent presses follow. Left Shift and
+  left Option work like any key. A phrase lasts at most 60 seconds, one at
+  a time; the tool answers when it ends, with what was played and what the
+  looper caught. The player's keys keep working meanwhile. Escape or the
+  panel's Stop ends a phrase and lets go of everything it holds.
+- **Acting freely, with Undo.** The agent changes anything the player can
+  without asking. It asks in the panel only to save over an existing preset
+  or to change the starting sound. Before each reply, Jello keeps the whole
+  song as its file text; that reply's Undo puts it back, and the song saves.
+  The last 20 replies keep their copies for the session. Undo also takes back
+  the player's own changes made during that reply. Every tool call shows as
+  a line under its reply, like "Filter cutoff 1200 -> 800 Hz".
+- **Listening by measuring.** `jello_listen` builds a second engine without
+  speakers (`Engine::new()` without `start_audio()`) holding the song's
+  sound, chords and loop, and renders the loop, the chords or a phrase it is
+  thinking of playing. It answers, for the whole render and beat by beat,
+  with loudness in dB, peak and whether the soft clip was reached,
+  brightness in Hz, the share of lows, mids and highs, the left and right
+  width, and silences or notes ringing on. It can also save the render as
+  a WAV in Music/Jello/Renders. Live sound is never touched. No new C++.
+- **The panel.** One panel docked as a column on the right of the workspace
+  in every mode; Play's readout, Compose's tape, Sound and Songs stay to its
+  left, the keyboard and looper below. The button at the right end of the
+  tabs opens it and shows the job's name, one width in every tab. Top to bottom: Tutor's practice
+  card when set, the messages in Markdown, each reply's change lines and
+  Undo, Stop while it works or plays, and the text field. Return sends;
+  Escape leaves the field. Escape closes the panel after Sound and Songs,
+  before it can remove a loop layer.
+- **Shipping and sign-in.** Jello carries its own Node 22 and pi 1.4.0 (both
+  MIT) on macOS and Windows, about 100 MB installed. A small Node agent host
+  uses pi's SDK to keep the session running, swap the job's instructions,
+  and connect to the tool server. The first time the panel opens it shows
+  Sign in: pick a provider, then sign in through the browser or paste an
+  API key (`ModelRuntime.login`). pi keeps the login in Jello's settings
+  folder, readable by the user's account only, apart from a terminal pi
+  login; the webview never sees the token. A model picker sits in the
+  panel's corner. Development uses the same host with the project's
+  `node_modules`.
+- **Built so far (2026-10-23):** the tool server in `src-tauri/src/tool_server.rs`
+  (MCP over streamable HTTP at `127.0.0.1:<free port>/mcp`, a bearer
+  password, no Origin header allowed), and `jello_look`, `jello_sound`,
+  `jello_play`, `jello_looper`, `jello_song` and `jello_presets` in
+  `tools.rs`, `phrases.rs` and `sound_changes.rs`. The UI hears
+  `agent-acted` (a tool's change lines), `agent-asks` (a question, answered
+  with `answer_agent`) and `agent-key` (a phrase's key down or up); Stop
+  and Escape call `stop_agent`. `pi mcp list` connects and lists the tools.
+- **Undo, built:** `undo.rs`. The panel calls `agent_reply_starts` as the
+  player sends a message and gets the reply's number; `undo_agent_reply`
+  with that number puts the song back (`song_session::put_back_song`),
+  saves it, and answers with the replies still undoable. Undoing a reply
+  takes back every later one too, and is refused while a phrase plays. A
+  song made or renamed during the reply stays in the Songs folder; Undo
+  reopens the song that was open before it. Presets and the starting
+  sound are not part of the song, so Undo leaves them.
+- **Listening, built:** `jello_listen` in `listening.rs`, measures in
+  `measures.rs`. It renders the loop once through, the song's chords or a
+  phrase, the last two optionally over the loop, then rings out in 50 ms
+  steps until silent (at most 10 s). A phrase plays on a copy of the keys,
+  where the wave, looper and tempo keys do nothing. Brightness is the
+  spectral centroid from a 2048-point FFT with a Hann window; the bands
+  split at 250 Hz and 4000 Hz; width is the side's share of the power;
+  silences are stretches of 0.2 s or more below -60 dB. Renders save to
+  Music/Jello/Renders and never over an existing one. The answer is plain
+  JSON; nothing live changes, so the UI isn't told.
+- **Later:** real listening, once a test shows a model can hear a WAV;
+  a picture of the sound over time. Saved chats, memory and the rest of
+  the mode are in [the agent mode](#the-agent-mode).
+
+### The agent mode
+
+[ADR 0043](adr/0043-the-agent-mode.md), accepted 2026-10-24. It builds on
+the harness above. The mockups are a canvas of eight boards
+([claude.ai](https://claude.ai/artifact/KsFj5fjmTrKsbMSkqxv8AF)): the Tutor
+working, practice, asking for a sound, the Composer's options, chats and
+memory, attachments and dictation, the hum modal and three readings of a
+hum. Every board keeps the whole keyboard, the bar above it at the keys'
+width (Record, bars, tempo, Click, octave dots, Vibrato, Glide, a level
+meter, Export WAV) and the looper lane. Text on buttons is white; lavender
+marks only what is selected, open or live.
+
+#### Watching it work
+
+- The Node agent host passes on pi's events as they happen, one JSON line
+  each, and Rust sends them to the panel as `agent-step`. The panel draws
+  every step as a row, live; there is no one-line status.
+- Each tool draws itself. Looking at presses shows them as a strip with the
+  gaps marked ("+120 ms gap"). A sound change shows the old drawing dashed
+  under the new one, with old and new values. Playing shows the phrase on
+  a lane with a playhead, and the keys light on the real keyboard. Listening
+  shows the meters. Setting practice shows the exercise's tiles. Saving a
+  memory shows its note.
+- Thinking shows as one row, "Thought for 2 s", which opens to the text.
+- Marks on the keyboard say who plays what: the agent's presses (lavender,
+  numbered, now), the player's next key (outlined), the ones after it
+  (dim numbers) and the ones done.
+- Stop, or Escape, ends the run and any phrase it plays.
+
+#### Showing instead of telling
+
+- A reply is mostly Jello's own screens, with one or two short sentences
+  beside them. Markdown stays for longer explanations the player asks for.
+- `jello_show` puts a card in the reply. Its kinds: keys (marks on the real
+  keyboard), lane (notes over beats, in one or more parts), progression
+  (chords with their numbers in the key), compare (takes or options side by
+  side with their measures), chart (a skill or measure over time) and sound
+  (a sound's drawing). Jello checks every card's fields and refuses a wrong
+  one like any value.
+- `jello_options` offers 2 to 4 choices, of chords, a melody or a sound.
+  Each gets Play and Use; Use puts it in the song, with Undo.
+
+#### Chats, caching and memory
+
+- **Chats.** pi saves every chat as a JSONL session, with `sessionDir` set
+  to Music/Jello/Chats. Attachments and hums go in a folder beside the
+  chat. Each chat knows the song it began on and the jobs it went through.
+  The Chats page lists them by day with search, a letter for each job and
+  the song's name; opening one carries on where it stopped.
+- **Caching.** pi's `cacheRetention: "long"` where the provider has it. The
+  start of the prompt never changes inside a chat: the tools, then all
+  three jobs' instructions together, then the memory as it was when the
+  chat began. Switching tabs adds a message naming the job instead of
+  changing the instructions, so the cache holds. The panel shows how much
+  of the last request came from the cache.
+- **Memory.** `jello_memory` remembers, changes and forgets notes. A note
+  is a habit, a taste, something the player knows, a goal or what to do
+  next, with the chat it came from and its date. Notes are saved in
+  Music/Jello/Memory/notes.json. The agent saves them on its own; a switch
+  on the Memory page makes it ask first. The player can forget any note.
+  New notes reach the next chat, which keeps the cache.
+- **Skills are measured, not guessed.** Rust keeps every practice try's
+  result in Music/Jello/Memory/practice.jsonl and works out each skill's
+  level (ten dots) and its trend. The agent reads them with `jello_look`
+  (`skills` and `memory`).
+
+#### The Tutor, to mastery
+
+The Tutor takes over [Learning mode](#learning-mode-v2): its levels, from
+Beginner to Master, are the Tutor's path, in seven areas.
+
+| Area | Up to master | Jello measures |
+|---|---|---|
+| Technique | Even runs, holds, legato and staccato (smooth or short, set by how long a key is held, since keys have no velocity), trills, grace notes, octave moves with the arrows inside a phrase | Timing offset and spread, hold accuracy, evenness |
+| Rhythm | Subdivisions, triplets, swing (long-short eighths), syncopation, polyrhythms (two pulses at once, like 3 against 2), odd meters like 7/8 | Offset per beat and per hand, swing ratio |
+| Harmony | Inversions, voicings, sevenths and ninths (a chord key plus melody keys, or melody keys alone), secondary dominants (a chord borrowed to lead hard into the next), borrowed chords, changing key | Right notes held together, voice leading (how far each note moves to the next chord) |
+| Ear | Intervals, chord qualities, progressions and melodies that Jello plays and the player plays back | Right notes, tries needed |
+| Improvising | Over a loop: chord tones on strong beats, scales and modes, motifs, call and response | Chord tones on strong beats, notes in key, rhythmic variety, motif repeats |
+| Pieces | Long two-handed pieces in sections, up to full hand independence where the layout fits | Per section and per hand, the together window |
+| Writing | Reading and writing progressions and melodies, with the Composer | |
+
+- **`jello_theory`** answers music theory exactly, from Rust, growing out
+  of `harmony.rs`: the chord any notes make, chords as numbers in a key,
+  scales and modes and their notes, intervals, how far each voice moves
+  between two chords, and which keys play something at the current octave.
+  The model asks it instead of counting half steps itself.
+- **`jello_practice`** sets a piece. A piece has parts (left hand, right
+  hand, or Jello's own accompaniment), each a list of notes or chord keys
+  with a start in beats (fractions like 1/3 for triplets), a hold and an
+  optional octave move before it; named sections; up to 64 bars and 2048
+  notes. Settings: tempo, swing, count in, click, wait mode (it waits for
+  the right notes), loop a section, a tempo ladder (faster by a step after
+  a few clean tries), and hands separate (Jello plays the other part).
+  Besides playing along: ear (Jello plays, the player answers), improvise
+  (a loop plays and the rules are checked) and from memory (the lane hides
+  after one listen).
+- **Scoring in Rust.** Each press is matched to the nearest note of its
+  part inside a window: hit, missed or extra, how many ms early or late,
+  and how much of the hold was held. Each try sums these up, with the
+  together window for notes both hands play at once. The window is the
+  difficulty: about 150 ms at Beginner, 40 ms at Master. With "Coach after
+  every try" on, each try goes to the agent by itself.
+- **The keyboard's limits.** 24 melody notes and 24 chord keys of three
+  notes. Long pieces use octave moves as steps; the Tutor picks or arranges
+  pieces that fit and draws what it changed (dashed notes moved an octave).
+  Richer left-hand chords need layer keys (an open question).
+
+#### The Composer, to release grade
+
+- **Now.** Progressions, melodies, loop layers and the whole sound profile.
+  `jello_options` for choices, and `jello_notes` writes a layer's notes
+  directly, at exact times and any pitch, not only what the keys reach.
+- **Release grade needs the engine to grow.** Each piece is a roadmap step
+  with its own ADR and an approved C++ design, and each gives the Composer
+  a tool:
+  1. Drums and sampled instruments (step 4, the sampler).
+  2. Tracks and arrangement (step 5): several instruments with sounds of
+     their own, sections like verse and chorus, and automation (values
+     that move over the song). Tools like `jello_tracks`, `jello_arrange`.
+  3. Effects and the mix (step 6): EQ, compression, reverb, delay, chorus,
+     saturation, sends, sidechain and a master limiter. A tool like
+     `jello_mix`.
+  4. Listening grows with them: loudness in LUFS (the loudness streaming
+     services measure), true peak, each track's spectrum, masking (two
+     parts fighting over the same frequencies) and a comparison with a
+     reference track the player attaches.
+- **The way to a finished song.** Talk or hum, choose among options, build
+  the arrangement section by section, render, measure, fix, until the
+  measures meet the targets (like -14 LUFS, no clipping, bands close to the
+  reference). Then the player listens and decides.
+- Until steps 4 to 6 exist, the Composer is only as good as one synth and
+  the looper allow.
+
+#### Attachments
+
+- The paperclip, or a drop on the panel. pi sends only text and images, so
+  Jello turns each file into those first and shows a card of what it took
+  before sending:
+  - An image goes as it is, scaled to the provider's limit.
+  - A PDF goes as each page's picture and its text, up to 20 pages, read
+    with pdfium through `pdfium-render`.
+  - A video goes as about 12 frames plus measures of its sound: tempo, key,
+    loudness, brightness, and the melody's notes when one is clear. Decoded
+    with FFmpeg's LGPL build.
+  - An audio file, like a reference track, goes as measures only.
+- Licenses to check in that slice: pdfium (BSD style), `pdfium-render`
+  (MIT or Apache-2.0), FFmpeg LGPL; all fit GPL-3.0.
+
+#### Voice
+
+- **Mic.** The C++ engine opens the input device through miniaudio, as it
+  opens the output. It needs its own small C++ design first. The system
+  asks for the mic the first time.
+- **Dictation.** whisper.cpp (MIT) turns speech into words on the computer,
+  through `whisper-rs`. Its model file (about 150 MB) downloads once, after
+  asking. Words appear in the field as they are heard; Return sends. The
+  audio is never sent.
+- **Hum.** The modal goes Ready, Count in, Listening, Done. The player picks
+  the count in, the click, a set or free tempo and the mic, and sees its
+  level. Pitch detection (YIN) runs in Rust beside `measures.rs`; a note is
+  a stretch of steady pitch, and the tempo and key are estimated. Below:
+  "Describe it", with its own dictate button, and vibe buttons. Send gives
+  the agent the notes, their times, the estimates and the words, never the
+  audio. The Composer answers with three readings: as sung, on the beat,
+  and with chords, each with Play, Use and Practice. The Tutor can take a
+  hum too, to learn to play it. The recording saves with the chat.
+
+#### Build order
+
+Each step is explained and gets a yes before its code, then is checked in
+the real app.
+
+1. The Node agent host and the panel: pi's SDK session, live steps, Stop,
+   sign-in and the model picker. It replaces 0040's Tutor.
+2. Saved chats and caching.
+3. Cards: `jello_show`, sound change drawings, `jello_options`,
+   `jello_notes`.
+4. `jello_theory`.
+5. `jello_practice`: pieces, scoring, the practice screen, coaching after
+   every try.
+6. Memory and skills.
+7. Attachments.
+8. Mic capture (C++ design first) and dictation.
+9. Humming and its three readings.
+10. Release grade: roadmap steps 4 to 6, each with its own ADR.
+
+The Producer is designed after these, asking first.
 
 ## Performance and system check
 
@@ -1566,12 +1945,14 @@ machine.
 The user is very particular about UI, so UI is its own long, iterative track,
 not a side task of each feature.
 
-Stage uses dark tiles, the 12-pixel dot grid and one permanent color for
+Stage uses dark tiles on a plain dark page and one permanent color for
 each note letter ([ADR 0014](adr/0014-one-color-per-note-family.md)):
 C lavender (#BFA5FF), D peach (#FFBC9A), E mint (#8BE6C2), F butter (#F5DD8C),
 G pink (#FF91C4), A ice blue (#A9D8F5), and B pearl (#EAE4DB). Sharps share
-their note letter's color across octaves. Chord keys and beams use the
-root's color; the readout colors each note. The dev toggle, alternative
+their note letter's color across octaves. Chord keys use the root's
+color; the readout colors each note. Since 2026-10-23 the page has no dot
+grid, notes send no beams up it, and the keyboard sits on no box or status
+line, so the space beside the keys stays free for more things later. The dev toggle, alternative
 themes and saved theme selection are removed. Development and packaged
 builds use the same colors, with no palette name shown in the app.
 
@@ -1662,8 +2043,8 @@ room above and below, and it still fits at 1000x640.
 panel. The mockups were approved one decision and one page at a time
 (2026-10-22).
 
-- **Where.** Compose only. A Sound button at the right end of the tabs (a
-  small wave and "Sound", lavender while open) opens it in the tape's
+- **Where.** A Sound button in the top action row (a small wave, "Sound"
+  and oscillator 1's kind, lavender while open) opens it in the tape's
   place: 16 px under the tabs, as wide as the keyboard's panel and 320 px
   tall at fullscreen. The keyboard and the looper's lane stay in view, and
   every key keeps playing. Page tabs along its top: Oscillators, Notes,
@@ -1687,7 +2068,7 @@ panel. The mockups were approved one decision and one page at a time
   beats (1/16 to 128). Clicking empty panel space, another page or the
   Sound button lets go. The arrows play nothing and never reach Rust; Esc
   keeps its looper job.
-- **Look.** The keyboard's dark panel, dotted lines between its parts, Doto
+- **Look.** A dark panel, dotted lines between its parts, Doto
   labels and square corners. Drawings are dotted white lines on a faint
   grid of dots, with square handles. Drawings, numbers and lit dots are
   white; lavender marks only the open page, the picked value and chosen

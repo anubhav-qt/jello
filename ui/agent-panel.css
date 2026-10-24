@@ -1,0 +1,859 @@
+/* The agent's panel (ui/AgentPanel.svelte), docked on the right in every
+   tab. Labels and values in Doto, text in Open Sans, lavender only for
+   what is live or picked, and white text on every button. */
+
+/* With the panel open, the workspace and the keys share the row with it,
+   so a key is sized from what is left of the window. */
+.screen.stage:has(.screen-body.has-agent) {
+  --u: clamp(
+    30px,
+    min(calc((100vw - 72px - var(--agent-width)) / 15), calc((100vh - 300px) / 10)),
+    54px
+  );
+}
+.screen {
+  --agent-width: 440px;
+}
+.screen-body,
+.screen-body.is-composing {
+  flex-direction: row;
+}
+.screen-left {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-panel {
+  flex: none;
+  width: var(--agent-width);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border: 1px solid rgba(var(--ink), 0.09);
+  border-radius: 5px;
+  color: var(--text);
+  overflow: hidden;
+}
+.agent-panel.is-hidden {
+  display: none;
+}
+
+.agent-top {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.22) 1px, transparent 1.5px);
+  background-size: 6px 3px;
+  background-repeat: repeat-x;
+  background-position: bottom left;
+}
+.agent-top h2 {
+  margin: 0;
+  font:
+    800 16px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-top-buttons {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Plain square buttons: a thin edge, white text. Lit ones are lavender
+   around the text, never in it. */
+.agent-button-plain {
+  padding: 5px 10px;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 3px;
+  background: transparent;
+  color: #fff;
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.agent-button-plain:hover {
+  border-color: rgba(var(--accent), 0.75);
+}
+.agent-button-plain:disabled {
+  opacity: 0.35;
+}
+.agent-button-plain:disabled:hover {
+  border-color: rgba(var(--ink), 0.2);
+}
+.agent-button-plain.is-lit,
+.agent-button-plain.is-open {
+  border-color: rgba(var(--accent), 0.75);
+  background: rgba(var(--accent), 0.12);
+}
+.agent-model-button {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-models {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 2px);
+  right: 14px;
+  width: 280px;
+  max-height: 360px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--key-bg);
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 3px;
+  box-shadow: var(--panel-shadow);
+}
+.agent-models button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #fff;
+  font: 12px "Open Sans", sans-serif;
+  text-align: left;
+}
+.agent-models button:hover {
+  background: rgba(var(--ink), 0.05);
+}
+.agent-models button.is-picked {
+  background: rgba(var(--accent), 0.12);
+}
+.agent-models .agent-models-more {
+  margin-top: 4px;
+  color: var(--text-2);
+}
+
+.agent-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.agent-quiet {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.agent-starting {
+  margin: 16px 0;
+}
+.agent-error {
+  margin: 6px 0;
+  color: rgb(var(--rec));
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-empty,
+.agent-sign-in {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.agent-empty h1,
+.agent-sign-in h1 {
+  margin: 14px 0 4px;
+  font:
+    900 28px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-sign-in p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.agent-provider {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.16) 1px, transparent 1.5px);
+  background-size: 6px 3px;
+  background-repeat: repeat-x;
+  background-position: bottom left;
+}
+.agent-provider-name {
+  font-size: 13px;
+}
+.agent-provider-ways {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.agent-sign-in .agent-sign-in-name {
+  font:
+    800 13px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: #fff;
+}
+.agent-sign-in .agent-code {
+  font:
+    900 26px Doto,
+    monospace;
+  letter-spacing: 2px;
+  color: #fff;
+}
+.agent-sign-in .agent-url {
+  font: 10px monospace;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.agent-sign-in-form {
+  width: 100%;
+  display: flex;
+  gap: 6px;
+}
+
+/* The Chats page: a search, then the chats by day. Each row has a letter
+   for each job it went through, its first message, its song and time. */
+.agent-chats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-chats h1 {
+  margin: 14px 0 8px;
+  font:
+    900 28px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-chat-search {
+  margin-bottom: 6px;
+  padding: 7px 8px;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.03);
+  color: var(--text);
+  font: 12px "Open Sans", sans-serif;
+}
+.agent-chat-search:focus {
+  outline: 1px solid rgba(var(--accent), 0.7);
+}
+.agent-chat-day {
+  margin: 12px 0 4px;
+  font:
+    800 11px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.agent-chat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.agent-chat:hover {
+  background: rgba(var(--ink), 0.05);
+}
+.agent-chat.is-picked {
+  border-color: rgba(var(--accent), 0.75);
+  background: rgba(var(--accent), 0.12);
+}
+.agent-chat-jobs {
+  flex: none;
+  display: flex;
+  gap: 3px;
+  min-width: 30px;
+  font:
+    800 12px Doto,
+    monospace;
+  color: #fff;
+}
+.agent-chat-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.agent-chat-song {
+  flex: none;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+/* A turn: what the player said, then the run's steps. */
+.agent-job-line {
+  margin: 16px 0 6px;
+  font:
+    800 11px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: center;
+}
+.agent-said {
+  margin: 12px 0 8px auto;
+  width: fit-content;
+  max-width: 85%;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.04);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-run {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One step: a dot, its title in Doto, what it did, how long it took. The
+   dot is lavender and pulses while the step runs. */
+.agent-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 24px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.agent-dot {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(var(--ink), 0.55);
+}
+.agent-step.is-live .agent-dot {
+  background: rgb(var(--accent));
+  box-shadow: 0 0 8px rgba(var(--accent), 0.8);
+  animation: agent-pulse 900ms ease-in-out infinite alternate;
+}
+.agent-step.is-failed .agent-dot {
+  background: rgb(var(--rec));
+}
+@keyframes agent-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+.agent-step-title {
+  flex: none;
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: #fff;
+}
+.agent-step.is-live .agent-step-title {
+  color: rgb(var(--accent));
+}
+.agent-step-detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.agent-step-time {
+  flex: none;
+  font:
+    700 11px Doto,
+    monospace;
+  color: var(--text-3);
+}
+.agent-thought {
+  cursor: pointer;
+}
+.agent-thought-text {
+  margin: 0 0 6px 14px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(var(--ink), 0.12);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap;
+}
+.agent-changes {
+  margin: 0 0 4px 14px;
+  padding: 0;
+  list-style: none;
+}
+.agent-changes li {
+  font:
+    700 12px Doto,
+    monospace;
+  color: #fff;
+  line-height: 1.6;
+}
+.agent-step-why {
+  margin-left: 14px;
+}
+.agent-text .tutor-markdown {
+  color: var(--text);
+  font-size: 13px;
+}
+.agent-question {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid rgba(var(--accent), 0.5);
+  border-radius: 3px;
+}
+.agent-question p {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.agent-run-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 28px;
+  margin-bottom: 4px;
+  padding-bottom: 10px;
+  background-image: radial-gradient(circle, rgba(var(--ink), 0.12) 1px, transparent 1.5px);
+  background-size: 6px 3px;
+  background-repeat: repeat-x;
+  background-position: bottom left;
+}
+
+/* Stop, then the field to type in. */
+.agent-bottom {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+}
+.agent-stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 32px;
+  border: 1px solid rgba(var(--accent), 0.75);
+  border-radius: 3px;
+  background: rgba(var(--accent), 0.12);
+  color: #fff;
+  font:
+    800 14px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-stop kbd {
+  font: 10px monospace;
+  color: var(--text-2);
+}
+.agent-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.agent-field textarea,
+.agent-sign-in-form input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  padding: 8px;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.03);
+  color: var(--text);
+  font: 12px / 1.5 "Open Sans", sans-serif;
+}
+.agent-field textarea:focus,
+.agent-sign-in-form input:focus {
+  outline: 1px solid rgba(var(--accent), 0.7);
+}
+.agent-field textarea:disabled {
+  opacity: 0.4;
+}
+
+/* A key the agent holds, playing a phrase: lit like a held key, with a
+   lavender ring so it reads as the agent's. */
+.stage .key.is-agent {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 1px;
+}
+
+/* A key a keys card marks: a lavender number in its corner, until the
+   player next writes to the agent. */
+.stage .key.is-marked {
+  outline: 1px solid rgba(var(--accent), 0.85);
+  outline-offset: 1px;
+}
+.stage .key-agent-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgb(var(--accent));
+  color: #15121c;
+  font:
+    800 10px / 14px Doto,
+    monospace;
+  text-align: center;
+}
+
+/* The cards Jello draws in a reply (ui/AgentCard.svelte). Drawings and
+   values are white; lavender only for what plays or is picked. */
+.agent-card {
+  margin: 4px 0 8px 14px;
+  padding: 10px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.02);
+}
+.agent-card .agent-card {
+  margin: 6px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.agent-card-title {
+  margin: 0 0 8px;
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: #fff;
+}
+.agent-card-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+.agent-card-keys,
+.agent-presses,
+.agent-progression {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.agent-mark-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.agent-mark {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgb(var(--accent));
+  color: #15121c;
+  font:
+    800 11px / 16px Doto,
+    monospace;
+  text-align: center;
+}
+
+/* A lane: notes over beats, with bar lines stronger than beat lines. */
+.agent-lane-parts {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.agent-lane {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 180px;
+  background: rgba(var(--ink), 0.03);
+}
+.agent-lane line {
+  stroke: rgba(var(--ink), 0.08);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.agent-lane line.is-bar {
+  stroke: rgba(var(--ink), 0.22);
+}
+.agent-lane rect.is-second {
+  opacity: 0.7;
+}
+.agent-lane .agent-lane-playhead {
+  stroke: rgb(var(--accent));
+  stroke-width: 2;
+}
+.agent-lane-beats,
+.agent-chart-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font:
+    700 10px Doto,
+    monospace;
+}
+
+/* A progression: a tile per chord, its numeral above its name. */
+.agent-chord {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 48px;
+  padding: 6px 8px;
+  border: 1px solid rgba(var(--ink), 0.14);
+  border-radius: 3px;
+  font-size: 10px;
+}
+.agent-chord[data-fit="outside"] {
+  border-style: dashed;
+}
+.agent-chord-numeral {
+  font:
+    800 14px Doto,
+    monospace;
+  color: #fff;
+}
+.agent-chord-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Compared takes, side by side. */
+.agent-compare {
+  display: grid;
+  grid-template-columns: repeat(var(--columns), 1fr);
+  gap: 10px;
+}
+.agent-compare-item h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.agent-compare-measure {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.agent-compare-value {
+  font:
+    700 12px Doto,
+    monospace;
+  color: #fff;
+}
+
+.agent-chart {
+  display: block;
+  width: 100%;
+  height: 90px;
+  background: rgba(var(--ink), 0.03);
+}
+.agent-chart polyline {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* A sound: its loudness and filter drawn, the sound before dashed. */
+.agent-sketch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+.agent-sketch figure {
+  margin: 0;
+}
+.agent-sketch svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: rgba(var(--ink), 0.03);
+  overflow: visible;
+}
+.agent-sketch path {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.agent-sketch path.agent-sketch-before {
+  stroke: rgba(var(--ink), 0.45);
+  stroke-dasharray: 3 3;
+}
+.agent-sketch figcaption {
+  margin-top: 3px;
+  font:
+    700 10px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.agent-sketch-oscillators {
+  grid-column: 1 / -1;
+}
+
+/* Meters: a name, a bar and its value. */
+.agent-meter-row {
+  display: grid;
+  grid-template-columns: 82px 1fr 92px;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  font-size: 11px;
+}
+.agent-meter-name {
+  font:
+    700 10px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.agent-meter-bar {
+  display: flex;
+  height: 6px;
+  background: rgba(var(--ink), 0.08);
+}
+.agent-meter-bar span {
+  background: #fff;
+}
+.agent-bands span:nth-child(2) {
+  background: rgba(var(--ink), 0.6);
+}
+.agent-bands span:nth-child(3) {
+  background: rgba(var(--ink), 0.3);
+}
+.agent-meter-row.is-over .agent-meter-bar span {
+  background: rgb(var(--rec));
+}
+.agent-meter-value {
+  font:
+    700 11px Doto,
+    monospace;
+  color: #fff;
+  text-align: right;
+}
+.agent-beats {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 32px;
+  margin-top: 8px;
+}
+.agent-beats span {
+  flex: 1;
+  background: rgba(var(--ink), 0.5);
+}
+
+/* Presses as a strip, with the gaps between them marked. */
+.agent-press {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 3px 6px;
+  border-left: 2px solid rgb(var(--accent));
+  background: rgba(var(--ink), 0.04);
+  font-size: 10px;
+}
+.agent-press-name {
+  font:
+    800 12px Doto,
+    monospace;
+  color: #fff;
+}
+.agent-press-gap {
+  font:
+    700 10px Doto,
+    monospace;
+  color: var(--text-2);
+}
+
+/* Options: each with Play and Use; the one used is picked. */
+.agent-option {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(var(--ink), 0.08);
+}
+.agent-option:last-of-type {
+  border-bottom: 0;
+}
+.agent-option.is-picked {
+  margin: 0 -10px;
+  padding: 8px 10px;
+  background: rgba(var(--accent), 0.08);
+}
+.agent-option-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.agent-option-name {
+  font-size: 13px;
+}
+.agent-option-buttons {
+  display: flex;
+  gap: 6px;
+}
+.agent-option-melody {
+  margin: 0;
+  font:
+    700 12px Doto,
+    monospace;
+  color: #fff;
+}
+
+/* A practice card: the piece's settings, as the Play tab's tiles show them. */
+.agent-practice-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 6px 0;
+  font:
+    700 11px Doto,
+    monospace;
+  color: #fff;
+}

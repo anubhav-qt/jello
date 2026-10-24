@@ -1,17 +1,30 @@
 <!-- One key: what is printed on it, and the note, chord or wave it plays,
      or what it does to the beat. -->
 <script lang="ts">
-  import type { ChordGuide, Fit, SongKeys } from "./compose";
+  import type { BestNext, ChordGuide, Fit, SongKeys } from "./compose";
   import { colorForNote, NOTE_COLORS } from "./note-colors";
-  import { kindOf, noteName, notesOf, type KeyLayout, type KeySpec } from "./keyboard";
+  import {
+    kindOf,
+    noteName,
+    notesOf,
+    type KeyLayout,
+    type KeySpec,
+  } from "./keyboard";
   import LooperFace from "./LooperFace.svelte";
+  import type { PracticeMark } from "./practice";
   import { clearLabel, type SoundView } from "./sound";
 
   interface Props {
     spec: KeySpec;
     layout: KeyLayout;
-    // Whether the key is held down right now.
+    // Whether the key is held down right now, and whether by the agent,
+    // playing a phrase.
     held: boolean;
+    byAgent: boolean;
+    // The agent's mark on the key, from a keys card, or undefined.
+    mark: string | undefined;
+    // Practice's mark on the key, which hides the agent's, or undefined.
+    practiceMark: PracticeMark | undefined;
     // The sound, the tempo and the looper, or null until Rust has said.
     sound: SoundView | null;
     // How many beats into what the looper is doing it is now, for right
@@ -19,6 +32,9 @@
     looperBeats: number;
     // Compose's guidance for each chord key. Empty outside Compose.
     guide: Record<string, ChordGuide>;
+    liveGuide: Record<string, ChordGuide>;
+    compatible: Record<string, string>;
+    melodyNext: Record<string, BestNext>;
     // Compose's guidance for each melody key. Empty outside Compose.
     melody: Record<string, Fit>;
     // The notes of the chords held now, as pitches from 0 (C) to 11 (B).
@@ -33,7 +49,25 @@
     stepping: boolean;
   }
 
-  let { spec, layout, held, sound, looperBeats, guide, melody, chordNotes, song, actions, stepping }: Props = $props();
+  let {
+    spec,
+    layout,
+    held,
+    byAgent,
+    mark,
+    practiceMark,
+    sound,
+    looperBeats,
+    guide,
+    liveGuide,
+    compatible,
+    melodyNext,
+    melody,
+    chordNotes,
+    song,
+    actions,
+    stepping,
+  }: Props = $props();
 
   const ARROW_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 
@@ -45,6 +79,9 @@
   });
 
   let action = $derived(actions[spec.code]);
+  let liveNext = $derived(liveGuide[spec.code]?.next);
+  let noteNext = $derived(melodyNext[spec.code]);
+  let worksWith = $derived(compatible[spec.code]);
   let kind = $derived.by(() => {
     if (action !== undefined) {
       return "action";
@@ -206,6 +243,9 @@
   class="key"
   class:is-half={spec.half === true}
   class:is-held={held}
+  class:is-agent={byAgent}
+  class:is-marked={mark !== undefined && practiceMark === undefined}
+  class:is-practice-next={practiceMark?.state === "next"}
   class:is-outside={isOutside}
   class:is-chord-note={isChordNote}
   class:is-looper={isLooper}
@@ -219,22 +259,46 @@
   data-note={note}
   data-fit={fit}
   data-best={bestRank}
+  data-live-next={liveNext?.rank}
+  data-melody-next={noteNext?.rank}
+  class:is-compatible={worksWith !== undefined}
+  title={[chordGuide?.why, worksWith, liveNext?.why, noteNext?.why]
+    .filter(Boolean)
+    .join(". ")}
   style:--accent={color.accent}
   style:--accent-core={color.core}
 >
   {#if spec.symbol !== undefined}
     <span class="key-symbol">{spec.symbol}</span>
   {/if}
+  {#if practiceMark !== undefined}
+    {#if practiceMark.state === "later"}
+      <span class="key-practice-mark">{practiceMark.label}</span>
+    {/if}
+  {:else if mark !== undefined}
+    <span class="key-agent-mark">{mark}</span>
+  {/if}
   <!-- Words like "shift" are printed smaller than single letters. -->
-  <span class="key-label" class:is-word={spec.label.length > 1}>{spec.label}</span>
+  <span class="key-label" class:is-word={spec.label.length > 1}
+    >{spec.label}</span
+  >
 
   {#if kind === "note"}
     <!-- The note's name in two parts, so the octave can be drawn smaller.
          They sit on one line, so no space comes between them. -->
-    <span class="key-note"><span class="key-pitch">{name.pitch}</span><span class="key-octave">{name.octave}</span></span>
+    <span class="key-note"
+      ><span class="key-pitch">{name.pitch}</span><span class="key-octave"
+        >{name.octave}</span
+      ></span
+    >
   {/if}
   {#if kind === "chord"}
     <span class="key-note">{chordName}</span>
+  {/if}
+  {#if liveNext !== undefined && liveNext !== null}
+    <span class="key-live-rank">{liveNext.rank}</span>
+  {:else if noteNext !== undefined}
+    <span class="key-live-rank">{noteNext.rank}</span>
   {/if}
   {#if bestRank !== undefined}
     <span class="key-best">

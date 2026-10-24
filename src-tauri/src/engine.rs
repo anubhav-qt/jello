@@ -128,10 +128,8 @@ unsafe extern "C" {
         cents: f32,
         width: f32,
     );
-    // Only the tests start and stop the click for now.
-    #[cfg(test)]
+    // Practice's click (src/practice.rs).
     fn jello_engine_start_click(engine: *mut JelloEngine);
-    #[cfg(test)]
     fn jello_engine_stop_click(engine: *mut JelloEngine);
     fn jello_engine_set_tempo(engine: *mut JelloEngine, tempo: c_int);
     fn jello_engine_press_looper(engine: *mut JelloEngine);
@@ -742,6 +740,8 @@ pub struct LoopNote {
 // first layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoopLayer {
+    // Zero inherits the common loop; otherwise this layer repeats every bars.
+    pub bars: u32,
     // Its notes as played, in the order they started.
     pub notes: Vec<LoopNote>,
     // How loud it plays, in percent, from 0 to FULL_VOLUME.
@@ -906,18 +906,16 @@ impl Engine {
         self.set_oscillator(0, oscillator);
     }
 
-    // The click on its own, without the looper. Only the tests use it for
-    // now; a metronome key can later.
+    // The click on its own, without the looper, for practice's count in
+    // and beat.
 
     // Starts the click on beat 1 of a bar. Does nothing if it is already on.
-    #[cfg(test)]
     pub fn start_click(&mut self) {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_start_click(self.raw) };
     }
 
     // Stops the click. A tick already sounding rings out.
-    #[cfg(test)]
     pub fn stop_click(&mut self) {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_stop_click(self.raw) };
@@ -991,6 +989,49 @@ impl Engine {
     // Fails, leaving no loop, if the engine refuses the notes or has no room
     // for them.
     pub fn open_loop(&mut self, tempo: u32, bars: u32, layers: &[LoopLayer], velocity: u8) -> Result<(), String> {
+        let (cycle_bars, expanded) = crate::layer_cycles::expand(bars, layers, tempo, self.sample_rate())?;
+        self.open_expanded_loop(tempo, cycle_bars, &expanded, velocity)?;
+        if self.loading.is_some() && layers.iter().any(|layer| layer.bars > 0) {
+            let mut originals = layers.to_vec();
+            originals.retain(|layer| !layer.notes.is_empty());
+            for layer in &mut originals {
+                layer.recording = false;
+                layer.volume = layer.volume.min(FULL_VOLUME);
+            }
+            self.loading = Some((cycle_bars, originals));
+        }
+        Ok(())
+    }
+
+    // Rebuilds playback on a common cycle, while keeping each original pattern.
+    pub fn set_layer_bars(&mut self, number: u32, bars: u32) -> Result<(), String> {
+        if !(1..=64).contains(&bars) {
+            return Err(String::from("a layer must be 1 to 64 bars"));
+        }
+        let was_playing = matches!(self.looper_status().state, LooperState::Looping);
+        let Some((common, mut layers)) = self.loop_to_keep() else {
+            return Err(String::from("record a loop first"));
+        };
+        if number == 0 || number as usize > layers.len() {
+            return Err(String::from("there is no layer with that number"));
+        }
+        if matches!(self.looper_status().state, LooperState::Layering) {
+            return Err(String::from("finish recording before changing layer lengths"));
+        }
+        for layer in &mut layers {
+            if layer.bars == 0 {
+                layer.bars = common;
+            }
+        }
+        layers[number as usize - 1].bars = bars;
+        self.open_loop(self.tempo, common, &layers, crate::key_map::LAPTOP_VELOCITY)?;
+        if was_playing {
+            self.play_loop();
+        }
+        Ok(())
+    }
+
+    fn open_expanded_loop(&mut self, tempo: u32, bars: u32, layers: &[LoopLayer], velocity: u8) -> Result<(), String> {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_clear_loop(self.raw) };
         self.loading = None;
@@ -1049,6 +1090,7 @@ impl Engine {
                 });
             }
             copy.push(LoopLayer {
+                bars: 0,
                 notes,
                 volume: layer.volume.min(FULL_VOLUME),
                 playing: layer.playing,
@@ -1339,6 +1381,7 @@ impl Engine {
             self.layers.clear();
         } else if change.change == LOOP_LAYER_STARTED {
             let started = LoopLayer {
+                bars: 0,
                 notes: Vec::new(),
                 volume: FULL_VOLUME,
                 playing: true,
@@ -5460,12 +5503,14 @@ mod tests {
         play(&mut engine, &steps, time_around(4));
 
         let c5_layer = LoopLayer {
+            bars: 0,
             notes: vec![ended(C5, 20_000, 40_000)],
             volume: 30,
             playing: true,
             recording: false,
         };
         let e4_layer = LoopLayer {
+            bars: 0,
             notes: vec![ended(E4, 50_000, 60_000)],
             volume: FULL_VOLUME,
             playing: true,
@@ -5528,6 +5573,7 @@ mod tests {
     // A layer of `notes`, at `volume` percent, playing or paused.
     fn loaded_layer(notes: &[LoopNote], volume: u32, playing: bool) -> LoopLayer {
         LoopLayer {
+            bars: 0,
             notes: notes.to_vec(),
             volume,
             playing,

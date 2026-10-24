@@ -1,6 +1,6 @@
 # 0018: AI harness on a fork of pi
 
-- Status: Accepted
+- Status: Superseded in part by [0040](0040-play-tutor-on-pi.md)
 - Date: 2026-10-20
 
 The in-app AI harness is built on pi (earendil-works/pi, MIT, which fits

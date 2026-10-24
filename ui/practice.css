@@ -1,0 +1,267 @@
+/* Practice on the Play tab (ui/PracticeView.svelte). Values are white;
+   lavender only for what plays now. */
+
+.practice {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 4px 12px;
+}
+
+.practice-top {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.practice-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.practice-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.practice-quiet {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.practice-phase {
+  font:
+    800 15px Doto,
+    monospace;
+  color: var(--text);
+}
+.practice-phase.is-live {
+  color: rgb(var(--accent));
+}
+.practice-buttons {
+  display: flex;
+  gap: 8px;
+}
+.practice-button {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 14px;
+  border: 1px solid rgba(var(--ink), 0.25);
+  border-radius: 3px;
+  background: transparent;
+  color: #fff;
+}
+.practice-button.is-live {
+  border-color: rgb(var(--accent));
+}
+.practice-button:disabled {
+  opacity: 0.35;
+}
+
+.practice-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 6px;
+}
+.practice-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 7px 9px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.02);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.practice-tile:hover:not(:disabled) {
+  border-color: rgba(var(--ink), 0.3);
+}
+.practice-tile:disabled {
+  opacity: 0.5;
+}
+.practice-tile-name {
+  font-size: 10px;
+  color: var(--text-2);
+}
+.practice-tile-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font:
+    800 13px Doto,
+    monospace;
+  color: #fff;
+}
+.practice-step {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 2px;
+  background: transparent;
+  color: #fff;
+  font: 600 12px / 16px sans-serif;
+}
+
+.practice-lane-box {
+  flex: none;
+}
+.practice-parts {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text);
+}
+.practice-parts .is-jello {
+  color: var(--text-2);
+}
+.practice-lane {
+  display: block;
+  width: 100%;
+  height: 150px;
+  background: rgba(var(--ink), 0.03);
+}
+.practice-lane line {
+  stroke: rgba(var(--ink), 0.08);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.practice-lane line.is-bar {
+  stroke: rgba(var(--ink), 0.24);
+}
+.practice-lane rect.is-jello {
+  opacity: 0.3;
+}
+.practice-lane rect.is-hit {
+  opacity: 0.25;
+}
+.practice-lane rect.is-missed {
+  fill: transparent !important;
+  stroke: rgb(var(--rec));
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+.practice-lane .practice-playhead {
+  stroke: rgb(var(--accent));
+  stroke-width: 2;
+}
+.practice-octave {
+  fill: var(--text-2);
+  font: 700 9px Doto, monospace;
+}
+.practice-beats {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font:
+    700 10px Doto,
+    monospace;
+  color: var(--text-2);
+}
+.practice-hidden {
+  margin: 0;
+  padding: 56px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-2);
+  background: rgba(var(--ink), 0.03);
+}
+.practice-problem {
+  margin: 0;
+  font-size: 12px;
+  color: rgb(var(--rec));
+}
+
+.practice-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.practice-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.practice-big {
+  font:
+    900 34px Doto,
+    monospace;
+  color: #fff;
+}
+.practice-measures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0;
+}
+.practice-measures div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.practice-measures dt {
+  font-size: 10px;
+  color: var(--text-2);
+}
+.practice-measures dd {
+  margin: 0;
+  font:
+    800 13px Doto,
+    monospace;
+  color: #fff;
+}
+.practice-row {
+  display: grid;
+  grid-template-columns: 120px 60px 120px 1fr;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.practice-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.practice-history li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(var(--ink), 0.1);
+  border-radius: 3px;
+  font:
+    700 11px Doto,
+    monospace;
+  color: var(--text-2);
+}
+.practice-history li.is-clean {
+  color: #fff;
+}
+
+/* The keyboard's practice marks: the next key outlined, the ones after it
+   numbered and dim. */
+.stage .key.is-practice-next {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.stage .key-practice-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font:
+    800 10px / 14px Doto,
+    monospace;
+  color: var(--text-2);
+}

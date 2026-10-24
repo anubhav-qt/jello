@@ -46,6 +46,9 @@ jobs:
       - name: Install UI packages
         run: npm ci
 
+      - name: Test tutor tools
+        run: npm run test:tutor
+
       - name: Build the UI
         run: npm run build
 

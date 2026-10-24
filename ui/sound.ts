@@ -324,6 +324,7 @@ export interface LooperView {
 
 // One layer of the loop (`LayerView` in src-tauri/src/commands.rs).
 export interface LayerView {
+  bars: number;
   // While it is recorded, its notes as played, in the order they started.
   // Once it plays, where each time around plays them, in the order they
   // start.
@@ -422,25 +423,25 @@ export function barNow(beats: number): number {
 export function looperWords(view: SoundView, beats: number): string {
   const looper = view.looper;
   if (looper.state === "counting in") {
-    return `count-in ${litBeat(looper, beats)}`;
+    return `count ${litBeat(looper, beats)}`;
   }
   if (looper.state === "recording") {
-    return `rec bar ${barNow(beats)}`;
+    return `rec ${barNow(beats)}`;
   }
   if (looper.state === "looping") {
     if (looper.number === 1) {
-      return "loop 1 bar";
+      return "1 bar";
     }
-    return `loop ${looper.number} bars`;
+    return `${looper.number} bars`;
   }
   // The layer being recorded is always the last.
   if (looper.state === "layering") {
-    return `rec layer ${looper.layers.length}`;
+    return `layer ${looper.layers.length}`;
   }
   if (looper.state === "paused") {
-    return "loop paused";
+    return "paused";
   }
-  return `looper, ${view.tempo} bpm`;
+  return "looper";
 }
 
 // How full right Shift's bar is, from 0 to 1. While the first loop is

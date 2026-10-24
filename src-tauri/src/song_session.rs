@@ -24,7 +24,7 @@ use crate::compose::Composer;
 use crate::engine::{Engine, LoopLayer, LoopNote, START_TEMPO};
 use crate::key_map::LAPTOP_VELOCITY;
 use crate::presets;
-use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, beats_of, samples_of, text_of};
+use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, beats_of, samples_of, song_of, text_of};
 use crate::songs::{self, SongView};
 use crate::sound_profile::SoundProfile;
 
@@ -34,12 +34,13 @@ const SAVE_AFTER: Duration = Duration::from_secs(1);
 // How often Jello looks for changes to save.
 pub const SAVE_CHECK: Duration = Duration::from_millis(250);
 
-// Where songs, presets and settings are kept.
+// Where songs, presets, settings and the agent's renders are kept.
 #[derive(Clone, Debug)]
 pub struct Folders {
     pub songs: PathBuf,
     pub sounds: PathBuf,
     pub settings: PathBuf,
+    pub renders: PathBuf,
 }
 
 pub struct OpenSong {
@@ -80,13 +81,13 @@ impl OpenSong {
         }
     }
 
-    #[cfg(test)]
+    // The open song's name, empty before one is opened or made.
     pub fn name(&self) -> &str {
         &self.name
     }
 
     // The folders, or an error saying they couldn't be found.
-    fn folders(&self) -> Result<Folders, String> {
+    pub(crate) fn folders(&self) -> Result<Folders, String> {
         match &self.folders {
             Some(folders) => Ok(folders.clone()),
             None => Err(String::from("the Songs folder couldn't be found")),
@@ -147,6 +148,7 @@ fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
             continue;
         }
         song_layers.push(SongLayer {
+            bars: layer.bars,
             volume: layer.volume,
             playing: layer.playing,
             notes,
@@ -164,7 +166,7 @@ fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
 
 // Opens `song`'s loop on `engine`, paused, at its tempo, or with no loop,
 // forgets the one there is. The beats become samples at the song's tempo.
-fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), String> {
+pub(crate) fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), String> {
     let Some(looped) = &song.looped else {
         return engine.open_loop(song.tempo, 0, &[], LAPTOP_VELOCITY);
     };
@@ -181,6 +183,7 @@ fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), String> {
             });
         }
         layers.push(LoopLayer {
+            bars: layer.bars,
             notes,
             volume: layer.volume,
             playing: layer.playing,
@@ -273,6 +276,24 @@ pub fn open_song_named(
     loop_opened
 }
 
+// Puts song `name` back as `text`, its file text kept earlier, and opens it
+// at `now`, after saving the one open. Undo of the agent's replies does
+// this (src/undo.rs). Fails, changing nothing, if `text` can't be read.
+pub fn put_back_song(
+    open: &mut OpenSong,
+    composer: &mut Composer,
+    engine: &mut Engine,
+    name: &str,
+    text: &str,
+    now: Instant,
+) -> Result<(), String> {
+    let folders = open.folders()?;
+    song_of(text, &SoundProfile::new())?;
+    save_now(open, composer, engine)?;
+    songs::save_text(&folders.songs, name, text)?;
+    open_song_named(open, composer, engine, name, now)
+}
+
 // Makes a new song at `now`, after saving the one open: "Untitled 1" or
 // the next free number, with no key, no chords and no loop, at a new
 // song's tempo, on the starting sound. Its file is written at once.
@@ -328,7 +349,7 @@ pub fn rename_open_song(
 }
 
 // Every song and the one open.
-fn songs_view_of(open: &OpenSong) -> SongsView {
+pub(crate) fn songs_view_of(open: &OpenSong) -> SongsView {
     let mut songs = Vec::new();
     if let Some(folders) = &open.folders {
         songs = songs::list(&folders.songs);
@@ -426,6 +447,7 @@ mod tests {
             songs: test_folder(&format!("{label}-songs")),
             sounds: test_folder(&format!("{label}-sounds")),
             settings: test_folder(&format!("{label}-settings")),
+            renders: test_folder(&format!("{label}-renders")),
         }
     }
 
@@ -468,11 +490,13 @@ mod tests {
         let mut sound = saw_sound();
         sound.filter.cutoff_hz = 1234.5;
         let first = SongLayer {
+            bars: 0,
             volume: 80,
             playing: true,
             notes: vec![note(A4, 0.0, 0.5), note(VIBRATO_KEY_NOTE, 1.0, 2.0)],
         };
         let second = SongLayer {
+            bars: 0,
             volume: 40,
             playing: false,
             notes: vec![note(C5, 4.25, 7.5), note(GLIDE_KEY_NOTE, 6.0, 6.5)],
@@ -665,6 +689,7 @@ mod tests {
             notes.push(note(A4, start, start + 0.001));
         }
         let layer = SongLayer {
+            bars: 0,
             volume: FULL_VOLUME,
             playing: true,
             notes,

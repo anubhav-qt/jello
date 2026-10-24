@@ -1,41 +1,6 @@
-/* The sound panel (ui/SoundPanel.svelte) and the Sound button that opens
-   it. Values, drawings and readouts are white; lavender only marks what is
+/* The sound panel (ui/SoundPanel.svelte); the Sound button that opens it
+   is styled with the top bar's buttons in ui/stage.css. Values, drawings and readouts are white; lavender only marks what is
    chosen, open or picked. */
-
-/* The Sound button at the right end of Compose's tabs: grey while the
-   panel is shut, lavender while it is open. */
-.sound-button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid rgba(var(--ink), 0.16);
-  border-radius: 4px;
-  background: transparent;
-  font-family: "Doto", monospace;
-  font-size: 15px;
-  font-weight: 800;
-  text-transform: uppercase;
-  color: var(--text-2);
-  cursor: default;
-  transition:
-    border-color 600ms ease-out,
-    color 600ms ease-out;
-}
-
-.sound-button:hover {
-  color: var(--text);
-  transition:
-    border-color 40ms,
-    color 40ms;
-}
-
-.sound-button.is-open {
-  border-color: rgba(var(--accent), 0.75);
-  background: rgba(var(--accent), 0.12);
-  color: rgb(var(--accent));
-}
 
 /* The panel opens over Compose's tape, as wide as the keyboard's panel,
    with the same 16px of room above. */

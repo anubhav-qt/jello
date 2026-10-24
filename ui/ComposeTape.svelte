@@ -16,12 +16,14 @@
     type ComposeView,
     type KeyChoice,
   } from "./compose";
+  import { noteName, type KeyLayout } from "./keyboard";
   import { clickThenLetGo } from "./dom";
   import { colorForNote } from "./note-colors";
 
   interface Props {
     // What Compose shows, or null until Rust has said.
     view: ComposeView | null;
+    layout: KeyLayout;
     // When Rust answered, by performance.now(). Until the next answer, held
     // chords grow and the playhead moves on by the page's own clock.
     answeredAt: number;
@@ -36,12 +38,77 @@
     // A block was clicked: `place` is its place in the song, from 0.
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
+    onEdit: (action: string, place: number) => void;
   }
 
-  let { view, answeredAt, tried, triedRoot, keysAcross, onKeyPick, onChordClick, onPlayClick }: Props = $props();
+  let {
+    view,
+    layout,
+    answeredAt,
+    tried,
+    triedRoot,
+    keysAcross,
+    onKeyPick,
+    onChordClick,
+    onPlayClick,
+    onEdit,
+  }: Props = $props();
 
   // How wide one second of a chord is drawn, in pixels.
   const PIXELS_PER_SECOND = 36;
+  let selectedSong = $state<number | null>(null);
+  let nextChords = $derived(
+    Object.entries(view?.live_guide ?? {})
+      .filter(([, guide]) => guide.next !== null)
+      .sort((a, b) => a[1].next!.rank - b[1].next!.rank),
+  );
+  let companions = $derived(
+    Object.entries(view?.compatible ?? {}).sort((a, b) =>
+      (view?.live_guide[a[0]].name ?? "").localeCompare(
+        view?.live_guide[b[0]].name ?? "",
+      ),
+    ),
+  );
+  let nextNotes = $derived(
+    Object.entries(view?.melody_next ?? {}).sort(
+      (a, b) => a[1].rank - b[1].rank,
+    ),
+  );
+  function keyLabel(code: string): string {
+    const punctuation: Record<string, string> = {
+      Quote: "'",
+      BracketLeft: "[",
+      BracketRight: "]",
+      Backslash: "\\",
+      Comma: ",",
+      Period: ".",
+      Slash: "/",
+      Semicolon: ";",
+      Backquote: "`",
+      ControlLeft: "Ctrl",
+      Space: "Space",
+    };
+    return punctuation[code] ?? code.replace("Key", "").replace("Digit", "");
+  }
+  function melodyName(code: string): string {
+    const name = noteName(layout.notes[code]);
+    return `${name.pitch}${name.octave}`;
+  }
+  function selectSong(place: number) {
+    selectedSong = place;
+    onChordClick(place);
+  }
+  function moveSong(direction: "left" | "right") {
+    if (selectedSong === null || view === null) {
+      return;
+    }
+    const next = selectedSong + (direction === "left" ? -1 : 1);
+    if (next < 0 || next >= view.progression.length) {
+      return;
+    }
+    onEdit(direction, selectedSong);
+    selectedSong = next;
+  }
 
   // The page's clock, by performance.now(). It ticks every frame while
   // something on the tape moves.
@@ -191,7 +258,8 @@
   // What the hint says the chord keys show: while the song plays, its
   // chords; otherwise how each one fits.
   let keysWords = $derived.by(() => {
-    const fits = "Keys: lit is best next, solid in the key, dashed can work, dim outside.";
+    const fits =
+      "Outlines show key fit. Corner squares follow the saved song. Numbers follow the live reference. Dots mark chords that work together.";
     if (view === null) {
       return fits;
     }
@@ -257,7 +325,9 @@
             <p class="tape-value is-quiet">Play a chord to see how it fits.</p>
           {:else}
             <p class="tape-value">
-              <span class="tape-trying-name" style:--accent={triedColor}>{tried.name}</span>
+              <span class="tape-trying-name" style:--accent={triedColor}
+                >{tried.name}</span
+              >
               {triedWords}
             </p>
           {/if}
@@ -292,7 +362,10 @@
           {/each}
         </div>
       {:else if songIsEmpty}
-        <p class="tape-empty">Your song shows up here. Play a chord, then press return to add it.</p>
+        <p class="tape-empty">
+          Your final progression goes here. Try chords freely, then add from
+          your history or press Return.
+        </p>
       {:else}
         <div class="tape-lane">
           {#if view.progression.length > 0}
@@ -313,12 +386,16 @@
                   type="button"
                   class="tape-block"
                   class:is-playing={played !== null}
+                  class:is-selected={selectedSong === place}
                   style:--accent={colorForNote(chord.root).accent}
                   style:width={widthFor(lengthNow(chord))}
-                  onclick={(event) => clickThenLetGo(event, () => onChordClick(place))}
+                  onclick={(event) =>
+                    clickThenLetGo(event, () => selectSong(place))}
                 >
                   <span class="tape-block-name">{chord.name}</span>
-                  <span class="tape-block-length">{secondsWords(lengthNow(chord))}</span>
+                  <span class="tape-block-length"
+                    >{secondsWords(lengthNow(chord))}</span
+                  >
                   {#if played !== null}
                     <span class="tape-playhead" style:--played={played}></span>
                   {/if}
@@ -331,7 +408,9 @@
                   style:width={widthFor(lengthNow(view.holding))}
                 >
                   <span class="tape-block-name">{view.holding.name}</span>
-                  <span class="tape-block-length">{secondsWords(lengthNow(view.holding))}</span>
+                  <span class="tape-block-length"
+                    >{secondsWords(lengthNow(view.holding))}</span
+                  >
                 </div>
               {/if}
             </div>
@@ -340,8 +419,109 @@
       {/if}
     </div>
 
+    {#if selectedSong !== null && selectedSong < view.progression.length}
+      <div class="progression-tools">
+        <span>Selected: {view.progression[selectedSong].name}</span>
+        <button disabled={selectedSong === 0} onclick={() => moveSong("left")}
+          >← Move</button
+        >
+        <button
+          disabled={selectedSong === view.progression.length - 1}
+          onclick={() => moveSong("right")}>Move →</button
+        >
+        <button
+          onclick={() => {
+            onEdit("remove", selectedSong!);
+            selectedSong = null;
+          }}>Remove</button
+        >
+      </div>
+    {/if}
+
+    <div class="exploration">
+      <section class="exploration-history">
+        <div class="exploration-heading">
+          <h2>Tried chords</h2>
+          <span>Explore first. Add your choices below.</span>
+        </div>
+        <div class="history-list">
+          {#each view.history as chord, place}
+            <div
+              class="history-chord"
+              class:is-selected={view.selected_history === place}
+              style:--accent={colorForNote(chord.root).accent}
+            >
+              <button
+                class="history-select"
+                onclick={() => onEdit("select_history", place)}
+                title="Use this chord as the guidance reference"
+              >
+                <strong>{chord.name}</strong><span
+                  >{secondsWords(lengthNow(chord))}</span
+                >
+              </button>
+              <button
+                class="history-add"
+                onclick={() => onEdit("add_history", place)}
+                aria-label={`Add ${chord.name} to progression`}>+ Add</button
+              >
+            </div>
+          {:else}
+            <p class="exploration-empty">
+              Play chords on the left. Each try stays here for this session.
+            </p>
+          {/each}
+        </div>
+      </section>
+      <section class="exploration-guide">
+        <div class="exploration-heading">
+          <h2>After {view.reference?.name ?? "your next chord"}</h2>
+          <button
+            class:is-active={view.selected_history === null}
+            onclick={() => onEdit("follow_live", 0)}>Follow playing</button
+          >
+        </div>
+        <div class="guidance-columns">
+          <div>
+            <h3>Next chords <span>numbered keys</span></h3>
+            {#each nextChords as [code, guide]}
+              <p>
+                <strong>{guide.next!.rank}. {guide.name}</strong><kbd
+                  >{keyLabel(code)}</kbd
+                ><span>{guide.next!.why}</span>
+              </p>
+            {:else}<p>Play a chord to get suggestions.</p>{/each}
+          </div>
+          <div>
+            <h3>Work together <span>dotted keys</span></h3>
+            <div class="companion-list">
+              {#each companions as [code, why]}
+                <span title={why}
+                  >{view.live_guide[code].name}<kbd>{keyLabel(code)}</kbd></span
+                >
+              {:else}<p>Chords sharing notes appear here.</p>{/each}
+            </div>
+          </div>
+          <div>
+            <h3>Next melody <span>numbered notes</span></h3>
+            {#each nextNotes as [code, next]}
+              <p>
+                <strong>{next.rank}. {melodyName(code)}</strong><kbd
+                  >{keyLabel(code)}</kbd
+                ><span>{next.why}</span>
+              </p>
+            {:else}<p>
+                Play a melody note on the right. Suggestions update after every
+                note.
+              </p>{/each}
+          </div>
+        </div>
+      </section>
+    </div>
+
     <p class="tape-hint" class:is-hidden={pickerShown}>
-      Return adds the chord you're holding or just let go of. Delete takes the last one off. {keysWords}
+      Return adds the chord you're holding or just let go of. Delete takes the
+      last one off. {keysWords}
     </p>
   {/if}
 </section>

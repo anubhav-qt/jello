@@ -1,0 +1,431 @@
+/* Every panel owns the space above the instrument. Nothing covers the keys. */
+.screen {
+  --u: clamp(
+    30px,
+    min(calc((100vw - 72px) / 15), calc((100vh - 300px) / 10)),
+    54px
+  );
+}
+.screen-body,
+.screen-body.is-composing {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 10px 16px 90px;
+}
+.workspace {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Panels stay anchored. Only their contents move with the wheel or trackpad. */
+.screen * {
+  scrollbar-width: none;
+}
+.screen *::-webkit-scrollbar {
+  display: none;
+}
+.workspace
+  :is(
+    .agent-body,
+    .sound-panel-content,
+    .sound-module,
+    .history-list,
+    .guidance-columns
+  ) {
+  overscroll-behavior: contain;
+}
+.stage-panel {
+  flex: none;
+  width: 100%;
+  padding: 8px 12px;
+}
+.keyboard {
+  margin: auto;
+}
+.looper-lane {
+  height: 68px;
+  gap: 10px;
+}
+.workspace .sound-panel {
+  position: relative;
+  inset: auto;
+  transform: none;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: none;
+}
+.sound-panel-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.sound-panel-top {
+  flex: none;
+  gap: 20px;
+  padding: 0 14px;
+}
+.workspace .tape {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  gap: 10px;
+}
+.tape::before,
+.tape::after {
+  display: none;
+}
+.tape-top {
+  height: auto;
+  min-height: 38px;
+  gap: 28px;
+}
+.tape-hint {
+  flex: none;
+  margin: 0 0 6px;
+  line-height: 1.5;
+}
+.workspace .stage-readout {
+  min-height: 100%;
+  height: auto;
+  flex-wrap: wrap;
+}
+.progression-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.progression-tools button,
+.exploration-heading button {
+  font: inherit;
+  border: 1px solid rgba(var(--ink), 0.2);
+  background: transparent;
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+.progression-tools button:disabled {
+  opacity: 0.3;
+}
+.tape-block.is-selected {
+  outline: 1px solid rgba(var(--accent), 0.9);
+  outline-offset: -2px;
+}
+.exploration {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2.5fr);
+  gap: 12px;
+}
+.exploration-history,
+.exploration-guide {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid rgba(var(--ink), 0.09);
+  border-radius: 5px;
+  background: var(--panel-bg);
+}
+.exploration-heading {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 25px;
+  margin-bottom: 8px;
+}
+.exploration-heading h2 {
+  margin: 0;
+  font:
+    800 14px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.exploration-heading > span {
+  font-size: 10px;
+  color: var(--text-3);
+}
+.exploration-heading button {
+  font-size: 10px;
+}
+.exploration-heading button.is-active {
+  color: rgb(var(--accent));
+  border-color: rgba(var(--accent), 0.5);
+}
+.history-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  overflow: auto;
+  align-content: start;
+}
+.history-chord {
+  display: flex;
+  border: 1px solid rgba(var(--accent), 0.25);
+  border-radius: 3px;
+}
+.history-chord.is-selected {
+  background: rgba(var(--accent), 0.16);
+  border-color: rgb(var(--accent));
+}
+.history-chord button {
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  font: inherit;
+  padding: 5px 7px;
+}
+.history-select {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.history-select strong {
+  font:
+    800 16px Doto,
+    monospace;
+  color: rgb(var(--accent));
+}
+.history-select span {
+  font-size: 10px;
+  color: var(--text-2);
+}
+.history-chord .history-add {
+  font-size: 10px;
+  border-left: 1px solid rgba(var(--accent), 0.15);
+}
+.guidance-columns {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.guidance-columns h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+.guidance-columns h3 span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 400;
+}
+.guidance-columns p,
+.exploration-empty {
+  margin: 0 0 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.guidance-columns p > span {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+}
+.guidance-columns strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.guidance-columns kbd {
+  font: 10px monospace;
+  margin-left: 6px;
+  color: rgb(var(--accent));
+}
+.companion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+.key-live-rank {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  font:
+    800 10px Doto,
+    monospace;
+  color: rgb(var(--accent-core));
+}
+.stage .key[data-live-next],
+.stage .key[data-melody-next] {
+  background-color: rgba(var(--accent), 0.17);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent), 0.6);
+}
+.stage .key.is-compatible::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  width: 14px;
+  height: 3px;
+  background: radial-gradient(circle, rgb(var(--accent)) 1px, transparent 1.5px)
+    0 0 / 5px 3px;
+}
+.actions {
+  gap: 10px;
+}
+@media (max-width: 1050px) {
+  .exploration {
+    grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
+  }
+}
+@media (max-height: 620px) {
+  .screen {
+    --u: 30px;
+  }
+  .screen-body {
+    padding-bottom: 75px;
+  }
+  .looper-lane {
+    height: 54px;
+  }
+}
+.workspace .sound-modules {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 0;
+}
+.sound-module {
+  padding: 0 16px;
+  overflow: auto;
+}
+.sound-module-top {
+  margin-bottom: 8px;
+}
+.workspace .tape {
+  gap: 7px;
+}
+.tape-slot {
+  margin-top: 2px;
+}
+.guidance-columns {
+  gap: 12px;
+}
+.guidance-columns p {
+  margin-bottom: 5px;
+}
+.exploration-history,
+.exploration-guide {
+  padding: 9px;
+}
+.stage .key-best {
+  top: auto;
+  bottom: 4px;
+  right: 4px;
+}
+.sound-panel-top {
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 44px;
+  row-gap: 0;
+}
+.sound-pick-hint {
+  min-height: 30px;
+}
+.sound-shortcut {
+  white-space: nowrap;
+  margin-right: 5px;
+}
+.tutor-markdown {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.tutor-markdown > :first-child {
+  margin-top: 5px;
+}
+.tutor-markdown > :last-child {
+  margin-bottom: 5px;
+}
+.tutor-markdown p {
+  margin: 8px 0;
+  white-space: normal;
+}
+.tutor-markdown :is(strong, th) {
+  color: var(--text);
+  font-weight: 700;
+}
+.tutor-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 12px 0 6px;
+  color: var(--text);
+  font:
+    600 14px / 1.4 "Open Sans",
+    sans-serif;
+  text-transform: none;
+}
+h3 > .tutor-markdown {
+  color: inherit;
+  font: inherit;
+}
+.tutor-markdown :is(ul, ol) {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+.tutor-markdown li + li {
+  margin-top: 4px;
+}
+.tutor-markdown code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(var(--ink), 0.07);
+  color: var(--text);
+  font: 11px / 1.5 monospace;
+}
+.tutor-markdown pre {
+  overflow-x: auto;
+  padding: 10px;
+  background: rgba(var(--ink), 0.04);
+}
+.tutor-markdown pre code {
+  padding: 0;
+  background: none;
+}
+.tutor-markdown blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 2px solid rgba(var(--accent), 0.5);
+}
+.tutor-markdown a {
+  color: rgb(var(--accent));
+  text-underline-offset: 3px;
+}
+.tutor-markdown table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+.tutor-markdown :is(th, td) {
+  padding: 5px 8px;
+  border: 1px solid rgba(var(--ink), 0.15);
+  text-align: left;
+}
+.tutor-markdown hr {
+  border: 0;
+  border-top: 1px solid rgba(var(--ink), 0.12);
+  margin: 12px 0;
+}

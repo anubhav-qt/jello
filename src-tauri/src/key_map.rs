@@ -78,9 +78,9 @@ const fn minor(root: u8) -> Chord {
 // four keys, from the bottom row up to the number row, each a half step
 // above the one below it, and the next finger's column carries on from
 // there. So an octave is always the same row, three fingers over: M is
-// middle C and / is the C above it. The keys play G#3 to D#5. Listed finger
+// middle C and / is the C above it. The keys play G#3 to G5. Listed finger
 // by finger, bottom row first.
-const MELODY_NOTES: [(&str, u8); 20] = [
+const MELODY_NOTES: [(&str, u8); 24] = [
     // Index reaching in.
     ("KeyN", 56),   // G#3
     ("KeyH", 57),   // A3
@@ -106,11 +106,14 @@ const MELODY_NOTES: [(&str, u8); 20] = [
     ("Semicolon", 73), // C#5
     ("KeyP", 74),      // D5
     ("Digit0", 75),    // D#5
+    ("Quote", 76),
+    ("BracketLeft", 77),
+    ("BracketRight", 78),
+    ("Backslash", 79),
 ];
 
-// The default layout's key for moving new notes on to the next wave: \ at
-// the end of the top letter row, past the melody keys.
-const WAVE_KEY: &str = "Backslash";
+// F12 changes the wave; backslash now plays a melody note.
+const WAVE_KEY: &str = "F12";
 
 // The key held for vibrato, or whatever the song's routing list connects
 // the vibrato key to (docs/adr/0032-the-vibrato-key.md): left Shift, under
@@ -118,9 +121,11 @@ const WAVE_KEY: &str = "Backslash";
 const VIBRATO_KEY: &str = "ShiftLeft";
 
 // The key held to glide: while it is held, each melody note slides in from
-// the last one (docs/adr/0036-glide.md). Left Option on a Mac, left Alt on
-// Windows, under the left thumb.
-const GLIDE_KEY: &str = "AltLeft";
+// the last one (docs/adr/0036-glide.md). Left Option on Mac, right Alt on Windows.
+#[cfg(not(target_os = "windows"))]
+pub(crate) const GLIDE_KEY: &str = "AltLeft";
+#[cfg(target_os = "windows")]
+pub(crate) const GLIDE_KEY: &str = "AltRight";
 
 // The keys that run the beat and the looper
 // (docs/adr/0021-a-looper-on-a-beat.md). Right Shift counts in, records and
@@ -202,7 +207,10 @@ pub enum KeyAction {
     SpeedUp,
 }
 
+// Cloned only for jello_listen's renders (src/listening.rs).
+#[derive(Clone)]
 pub struct KeyMap {
+    octave: i8,
     // What each key does. A key that isn't in here does nothing.
     layout: HashMap<String, KeyRole>,
     // The keys held down right now, each with the notes it started.
@@ -221,6 +229,7 @@ pub struct ChordForUi {
 // What each key in the layout does, for the UI to draw on the keys.
 #[derive(Serialize)]
 pub struct LayoutForUi {
+    pub octave: i8,
     // Each key that plays one note, with its note: "KeyM" plays 60.
     notes: HashMap<String, u8>,
     // Each key that plays a chord, with its chord: "KeyX" plays Cm.
@@ -255,9 +264,38 @@ impl KeyMap {
         layout.insert(String::from(FASTER_KEY), KeyRole::Faster);
 
         KeyMap {
+            octave: 0,
             layout,
             held: HashMap::new(),
         }
+    }
+
+    // Move the whole layout, preserving each held key's original notes.
+    // Refuse a shift as a whole if it would leave the supported note range.
+    pub fn shift_octave(&mut self, steps: i8) {
+        let next = self.octave.saturating_add(steps);
+        if !(-4..=4).contains(&next) {
+            return;
+        }
+        let shift = i16::from(next - self.octave) * 12;
+        for role in self.layout.values_mut() {
+            match role {
+                KeyRole::Note(note) => *note = (i16::from(*note) + shift) as u8,
+                KeyRole::Chord(chord) => chord.root = (i16::from(chord.root) + shift) as u8,
+                _ => {}
+            }
+        }
+        self.octave = next;
+    }
+
+    // How many octaves the keys are shifted, from -4 to 4.
+    pub fn octave(&self) -> i8 {
+        self.octave
+    }
+
+    // Whether `key` does anything at all.
+    pub fn knows(&self, key: &str) -> bool {
+        self.layout.contains_key(key)
     }
 
     // What pressing `key` should do, or None for nothing.
@@ -425,6 +463,7 @@ impl KeyMap {
         glide_keys.sort();
 
         LayoutForUi {
+            octave: self.octave,
             notes,
             chords,
             wave_keys,
@@ -598,27 +637,27 @@ mod tests {
     #[test]
     fn left_option_holds_the_glide_key_until_it_is_let_go() {
         let mut key_map = KeyMap::new();
-        assert!(!key_map.holds_glide_key("AltLeft"));
-        assert_eq!(key_map.press("AltLeft"), Some(KeyAction::HoldGlideKey));
-        assert!(key_map.holds_glide_key("AltLeft"));
+        assert!(!key_map.holds_glide_key(GLIDE_KEY));
+        assert_eq!(key_map.press(GLIDE_KEY), Some(KeyAction::HoldGlideKey));
+        assert!(key_map.holds_glide_key(GLIDE_KEY));
 
         // Held, it is not held again, and it starts no notes to stop.
-        assert_eq!(key_map.press("AltLeft"), None);
-        assert_eq!(key_map.release("AltLeft"), Vec::<u8>::new());
-        assert!(!key_map.holds_glide_key("AltLeft"));
+        assert_eq!(key_map.press(GLIDE_KEY), None);
+        assert_eq!(key_map.release(GLIDE_KEY), Vec::<u8>::new());
+        assert!(!key_map.holds_glide_key(GLIDE_KEY));
 
         // No other key holds it, held or not: not right Option, and not the
         // vibrato key.
         key_map.press("ShiftLeft");
         assert!(!key_map.holds_glide_key("ShiftLeft"));
-        assert!(!key_map.holds_vibrato_key("AltLeft"));
-        assert!(!key_map.holds_glide_key("AltRight"));
+        assert!(!key_map.holds_vibrato_key(GLIDE_KEY));
+
     }
 
     #[test]
-    fn backslash_switches_the_wave() {
+    fn f12_switches_the_wave() {
         let mut key_map = KeyMap::new();
-        assert_eq!(key_map.press("Backslash"), Some(KeyAction::SwitchWave));
+        assert_eq!(key_map.press("F12"), Some(KeyAction::SwitchWave));
     }
 
     #[test]
@@ -642,23 +681,19 @@ mod tests {
         let mut key_map = KeyMap::new();
         let keys = [
             "CapsLock",
-            "BracketLeft",
-            "BracketRight",
-            "Quote",
             "Enter",
             "Backspace",
             "ControlRight",
-            "AltRight",
             "MetaLeft",
         ];
         for key in keys {
             assert_eq!(key_map.press(key), None, "key {key}");
         }
 
-        // The layout holds the 24 chords, the 20 notes, the vibrato key, the
+        // The layout holds the 24 chords, the 24 notes, the vibrato key, the
         // glide key, the wave key and the 4 beat and looper keys, and
         // nothing else.
-        assert_eq!(key_map.layout.len(), 51);
+        assert_eq!(key_map.layout.len(), 55);
     }
 
     #[test]
@@ -735,8 +770,8 @@ mod tests {
         assert_eq!(key_map.release("KeyM"), nothing);
 
         // Pressed, but it plays no note.
-        key_map.press("Backslash");
-        assert_eq!(key_map.release("Backslash"), nothing);
+        key_map.press("F12");
+        assert_eq!(key_map.release("F12"), nothing);
         key_map.press("ShiftRight");
         assert_eq!(key_map.release("ShiftRight"), nothing);
 
@@ -797,7 +832,7 @@ mod tests {
     fn the_note_keys_list_what_each_press_plays() {
         // Compose shows guidance for each of these too.
         let note_keys = KeyMap::new().note_keys();
-        assert_eq!(note_keys.len(), 20);
+        assert_eq!(note_keys.len(), 24);
         for (key, note) in note_keys {
             let mut key_map = KeyMap::new();
             assert_eq!(key_map.press(&key), Some(KeyAction::PlayNote(note)), "key {key}");
@@ -809,7 +844,7 @@ mod tests {
         let key_map = KeyMap::new();
         let layout = key_map.layout_for_ui();
 
-        assert_eq!(layout.notes.len(), 20);
+        assert_eq!(layout.notes.len(), 24);
         for (key, note) in MELODY_NOTES {
             assert_eq!(layout.notes.get(key), Some(&note), "key {key}");
         }
@@ -817,7 +852,7 @@ mod tests {
         for (key, chord) in CHORDS {
             assert_eq!(layout.chords[key].notes, chord.notes(), "key {key}");
         }
-        assert_eq!(layout.wave_keys, vec![String::from("Backslash")]);
+        assert_eq!(layout.wave_keys, vec![String::from("F12")]);
         assert_eq!(layout.beat_keys.len(), 4);
         assert_eq!(layout.beat_keys["ShiftRight"], "looper");
         assert_eq!(layout.beat_keys["Escape"], "clear");
@@ -869,9 +904,37 @@ mod tests {
         assert_eq!(json["chords"]["KeyC"]["notes"][0], 48);
         assert_eq!(json["chords"]["KeyC"]["notes"][2], 55);
         assert_eq!(json["chords"]["KeyX"]["name"], "Cm");
-        assert_eq!(json["wave_keys"][0], "Backslash");
+        assert_eq!(json["wave_keys"][0], "F12");
         assert_eq!(json["vibrato_keys"][0], "ShiftLeft");
-        assert_eq!(json["glide_keys"][0], "AltLeft");
+        assert_eq!(json["glide_keys"][0], GLIDE_KEY);
         assert_eq!(json["beat_keys"]["ShiftRight"], "looper");
     }
+    #[test]
+    fn shifting_changes_all_future_notes_but_releases_original_pitches() {
+        let mut map = KeyMap::new();
+        map.press("KeyM");
+        map.press("KeyC");
+        map.shift_octave(2);
+        assert_eq!(map.layout_for_ui().notes["KeyM"], 84);
+        assert_eq!(map.layout_for_ui().chords["KeyC"].notes, [72, 76, 79]);
+        // C4 is shared with neither C3 chord note, so both releases keep their pitches.
+        assert_eq!(map.release("KeyM"), vec![60]);
+        assert_eq!(map.release("KeyC"), vec![48, 52, 55]);
+        assert_eq!(map.press("KeyM"), Some(KeyAction::PlayNote(84)));
+    }
+
+    #[test]
+    fn octave_limits_keep_the_complete_mapping_in_midi_range() {
+        let mut map = KeyMap::new();
+        map.shift_octave(-4);
+        assert_eq!(map.layout_for_ui().octave, -4);
+        assert_eq!(map.layout_for_ui().chords["KeyC"].notes[0], 0);
+        map.shift_octave(-1);
+        assert_eq!(map.layout_for_ui().octave, -4);
+        map.shift_octave(8);
+        assert_eq!(map.layout_for_ui().notes["Backslash"], 127);
+        map.shift_octave(1);
+        assert_eq!(map.layout_for_ui().octave, 4);
+    }
+
 }

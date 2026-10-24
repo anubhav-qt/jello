@@ -1,5 +1,5 @@
-/* The start page, "Stage": a dark stage of dots, lit by note family, like the
-   dot-matrix display on a piece of studio gear. */
+/* The start page, "Stage": a plain dark stage, lit by note family, like the
+   display on a piece of studio gear. */
 
 .stage {
   /* The lamps' color, as three numbers so it can be used at any strength. */
@@ -14,29 +14,13 @@
   --key-radius: calc(var(--u) * 0.08);
   --panel-padding: calc(var(--u) * 0.22);
   --panel-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.9);
-  --dot-cell: 12px;
-  --dot-size: 1.1px;
-  --dot-edge: 1.6px;
-  --dot-opacity: 0.075;
   --text: rgba(var(--ink), 0.86);
   --text-2: rgba(var(--ink), 0.5);
   --text-3: rgba(var(--ink), 0.3);
   /* The looper's red, while it records. */
   --rec: 255, 92, 92;
-  /* The dot spacing comes from the same design as the canvas beams. */
   background-color: rgb(var(--page-rgb));
-  background-image: radial-gradient(circle, rgba(var(--ink), var(--dot-opacity)) var(--dot-size), transparent var(--dot-edge));
-  background-size: var(--dot-cell) var(--dot-cell);
   color: var(--text);
-}
-
-/* The beams of light rising from the keys, behind everything else. */
-.stage-beams {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
 }
 
 /* The line of light that sweeps down as the page powers on. Unseen until
@@ -204,24 +188,50 @@
   background-color: rgba(var(--accent), 0.2);
 }
 
-.stage .action-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-2);
+/* Sound and Render WAV are one width, and the agent's button keeps one
+   width whether it says Tutor, Composer or Producer. */
+.stage .top-button,
+.stage .agent-button {
+  justify-content: center;
 }
 
+.stage .top-button {
+  width: 210px;
+}
+
+.stage .agent-button {
+  width: 140px;
+}
+
+/* A button whose panel is open stays lit in lavender. */
+.stage .action.is-open {
+  border-color: rgba(var(--accent), 0.75);
+  background-color: rgba(var(--accent), 0.12);
+}
+
+/* The agent's button in Compose and Produce, until its panel is built. */
+.stage .action:disabled {
+  opacity: 0.4;
+}
+
+.stage .action:disabled:hover {
+  border-color: rgba(var(--ink), 0.16);
+}
+
+.stage .action-name,
 .stage .action-value {
   font-family: "Doto", monospace;
   font-size: 16px;
   font-weight: 800;
   text-transform: uppercase;
-  color: rgb(var(--accent));
 }
 
-.stage .action:last-child .action-value {
+.stage .action-name {
   color: var(--text);
+}
+
+.stage .action-value {
+  color: rgb(var(--accent));
 }
 
 .stage .tabs {
@@ -316,14 +326,10 @@
   transition: opacity 400ms ease-out;
 }
 
-/* The dark panel the keyboard sits on. */
+/* The keyboard's place, with no box around it: the space beside the keys
+   stays free for more things later. */
 .stage-panel {
   padding: var(--panel-padding);
-  border-radius: calc(var(--u) * 0.14);
-  background: var(--panel-bg);
-  box-shadow:
-    0 0 0 1px rgba(var(--ink), 0.07),
-    var(--panel-shadow);
 }
 
 /* Keys: dark tiles. A held key lights up at once; let go, it fades out
@@ -662,8 +668,7 @@
   color: var(--text-2);
 }
 
-/* The buttons at the right end of the tabs, like Compose's Sound button
-   (ui/sound-panel.css). */
+/* The agent's button at the right end of the tabs. */
 .tabs-end {
   display: flex;
   align-items: center;
@@ -1006,18 +1011,6 @@
   border-radius: 3px;
   background-color: var(--panel-bg);
   overflow: hidden;
-}
-
-/* Before the first press: how to start. */
-.lane-box.is-empty {
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  border-style: dashed;
-  background-color: transparent;
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--text-2);
 }
 
 /* The count-in: 1 2 3 4, lit one per beat. */

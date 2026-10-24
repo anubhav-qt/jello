@@ -1,6 +1,6 @@
 <!-- The lane under the keyboard
      (docs/adr/0025-the-looper-s-lane-as-wide-as-the-keyboard.md), as wide
-     as the keyboard's panel, in every tab. It draws each layer of the loop
+     as the keys, in every tab, once the looper starts. It draws each layer of the loop
      in a box of its own (docs/adr/0026-layers.md): each note as a row of
      dots in its note color, low notes at the bottom, and a playhead that
      sweeps across as the loop plays. Up to four boxes sit side by side, and
@@ -8,7 +8,7 @@
      of dots around it, its volume knob, and under the knob a button that
      pauses the layer or plays it again (docs/adr/0038-song-files.md). A
      paused layer's notes are drawn dim. Before the loop, the lane shows the
-     count-in, and before the first press how to start. Its right end says
+     count-in. Until the first press there is no lane at all. Its right end says
      how long the loop is and holds the snap switch, and once there is a
      loop, a button that pauses the whole loop or plays it from beat 1. -->
 <script lang="ts">
@@ -45,9 +45,10 @@
     onLayerPlayingChange: (layer: number, playing: boolean) => void;
     // What the whole loop's play and pause button does.
     onLoopPlayingChange: (playing: boolean) => void;
+    onLayerBarsChange: (layer: number, bars: number) => void;
   }
 
-  let { sound, beats, left, top, width, onSnapClick, onVolumeChange, onLayerPlayingChange, onLoopPlayingChange }: Props =
+  let { sound, beats, left, top, width, onSnapClick, onVolumeChange, onLayerPlayingChange, onLoopPlayingChange, onLayerBarsChange }: Props =
     $props();
 
   // While the first loop is recorded its length isn't known yet, so the
@@ -86,8 +87,10 @@
   });
 
   // Where in a box a beat is drawn, as a share of its width in percent.
-  function across(beat: number): number {
-    return (beat / span) * 100;
+  function across(beat: number, layer: LayerView): number {
+    let length = span;
+    if (layer.bars > 0) length = layer.bars * BEATS_PER_BAR;
+    return (beat / length) * 100;
   }
 
   // How the boxes are laid out: how many across, and on how many levels.
@@ -373,12 +376,7 @@
 {/snippet}
 
 <div class="looper-lane" style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
-  {#if looperState === "idle"}
-    <div class="lane-loops">
-      <span class="lane-number">1</span>
-      <div class="lane-box is-empty">Right Shift records a loop</div>
-    </div>
-  {:else if looperState === "counting in"}
+  {#if looperState === "counting in"}
     <div class="lane-loops">
       <span class="lane-number">1</span>
       <div class="lane-box is-counting">
@@ -429,6 +427,12 @@
             <span class="ring-number" class:is-quiet={volume === 0}>{number}</span>
           </button>
           {#if !layer.recording}
+            <input class="layer-bars" type="number" min="1" max="64" step="1"
+              aria-label={`Layer ${number} length in bars`}
+              title="This layer repeats independently; changing length restarts playback"
+              value={layer.bars || looper.number}
+              disabled={looperState === "layering"}
+              onchange={(event) => onLayerBarsChange(number, event.currentTarget.valueAsNumber)} />
             <button
               type="button"
               class="lane-play is-layer"
@@ -448,24 +452,24 @@
           data-layer={number}
         >
           {#if layer.recording}
-            <span class="lane-recorded" style:width={`${across(beats)}%`}></span>
+            <span class="lane-recorded" style:width={`${across(beats % ((layer.bars || looper.number || 1) * BEATS_PER_BAR), layer)}%`}></span>
           {/if}
           {#each layer.notes as played}
             <span
               class="lane-note"
               data-note={played.note}
-              style:left={`${across(played.start)}%`}
-              style:width={`max(2px, calc(${across(endOf(played) - played.start)}% - 3px))`}
+              style:left={`${across(played.start, layer)}%`}
+              style:width={`max(2px, calc(${across(endOf(played) - played.start, layer)}% - 3px))`}
               style:bottom={`${height(played.note, layer.notes)}%`}
               style:opacity={noteOpacity(volume, layer)}
               style:--note={colorForNote(played.note).accent}
             ></span>
           {/each}
-          {#each barLines as beat}
-            <span class="lane-bar-line" style:left={`${across(beat)}%`}></span>
+          {#each barLines.filter((beat) => beat < (layer.bars || looper.number) * BEATS_PER_BAR) as beat}
+            <span class="lane-bar-line" style:left={`${across(beat, layer)}%`}></span>
           {/each}
           {#if !loopPaused}
-            <span class="lane-playhead" class:is-recording={layer.recording} style:left={`${across(beats)}%`}></span>
+            <span class="lane-playhead" class:is-recording={layer.recording} style:left={`${across(beats % ((layer.bars || looper.number || 1) * BEATS_PER_BAR), layer)}%`}></span>
           {/if}
         </div>
       {/each}
@@ -502,3 +506,7 @@
     </div>
   </div>
 </div>
+
+<style>
+  .layer-bars { width: 35px; padding: 1px 2px; background: var(--panel-bg); color: var(--text-2); border: 1px solid rgba(var(--accent), .3); border-radius: 2px; font-size: 10px; }
+</style>

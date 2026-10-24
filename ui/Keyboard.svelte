@@ -1,21 +1,31 @@
 <!-- The laptop keyboard, row by row, with each key's note from Rust. -->
 <script lang="ts">
-  import type { ChordGuide, Fit, SongKeys } from "./compose";
+  import type { BestNext, ChordGuide, Fit, SongKeys } from "./compose";
   import Key from "./Key.svelte";
   import { keyRows, type KeyLayout, type Platform } from "./keyboard";
+  import type { PracticeMark } from "./practice";
   import type { SoundView } from "./sound";
 
   interface Props {
     platform: Platform;
     layout: KeyLayout;
-    // The keys held down right now, by place, like "KeyQ".
+    // The keys held down right now, by place, like "KeyQ", and the keys the
+    // agent holds while it plays a phrase.
     held: Set<string>;
+    agentHeld: Set<string>;
+    // The keys the agent marked, each with its label, and the keys
+    // practice marks, which come first.
+    agentMarks: Map<string, string>;
+    practiceMarks: Map<string, PracticeMark>;
     // The sound, the tempo and the looper, or null until Rust has said.
     sound: SoundView | null;
     // How many beats into what the looper is doing it is now.
     looperBeats: number;
     // Compose's guidance for each chord key. Empty outside Compose.
     guide: Record<string, ChordGuide>;
+    liveGuide: Record<string, ChordGuide>;
+    compatible: Record<string, string>;
+    melodyNext: Record<string, BestNext>;
     // Compose's guidance for each melody key. Empty outside Compose.
     melody: Record<string, Fit>;
     // The notes of the chords held now, as pitches from 0 (C) to 11 (B),
@@ -30,9 +40,35 @@
     stepping: boolean;
   }
 
-  let { platform, layout, held, sound, looperBeats, guide, melody, chordNotes, song, actions, stepping }: Props = $props();
+  let {
+    platform,
+    layout,
+    held,
+    agentHeld,
+    agentMarks,
+    practiceMarks,
+    sound,
+    looperBeats,
+    guide,
+    liveGuide,
+    compatible,
+    melodyNext,
+    melody,
+    chordNotes,
+    song,
+    actions,
+    stepping,
+  }: Props = $props();
 
   let rows = $derived(keyRows(platform));
+
+  // Whether `code` is held, by the player or the agent.
+  function isHeld(code: string): boolean {
+    if (held.has(code)) {
+      return true;
+    }
+    return agentHeld.has(code);
+  }
 </script>
 
 <div class="keyboard" data-platform={platform}>
@@ -49,12 +85,18 @@
             {sound}
             {looperBeats}
             {guide}
+            {liveGuide}
+            {compatible}
+            {melodyNext}
             {melody}
             {chordNotes}
             {song}
             {actions}
             {stepping}
-            held={held.has(spec.code)}
+            held={isHeld(spec.code)}
+            byAgent={agentHeld.has(spec.code)}
+            mark={agentMarks.get(spec.code)}
+              practiceMark={practiceMarks.get(spec.code)}
           />
         {:else}
           <!-- A key with another stacked under it shares its spot in the row. -->
@@ -65,12 +107,18 @@
               {sound}
               {looperBeats}
               {guide}
+              {liveGuide}
+              {compatible}
+              {melodyNext}
               {melody}
               {chordNotes}
               {song}
               {actions}
               {stepping}
-              held={held.has(spec.code)}
+              held={isHeld(spec.code)}
+            byAgent={agentHeld.has(spec.code)}
+              mark={agentMarks.get(spec.code)}
+              practiceMark={practiceMarks.get(spec.code)}
             />
             <Key
               spec={spec.below}
@@ -78,12 +126,18 @@
               {sound}
               {looperBeats}
               {guide}
+              {liveGuide}
+              {compatible}
+              {melodyNext}
               {melody}
               {chordNotes}
               {song}
               {actions}
               {stepping}
-              held={held.has(spec.below.code)}
+              held={isHeld(spec.below.code)}
+              byAgent={agentHeld.has(spec.below.code)}
+              mark={agentMarks.get(spec.below.code)}
+              practiceMark={practiceMarks.get(spec.below.code)}
             />
           </div>
         {/if}

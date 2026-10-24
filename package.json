@@ -8,10 +8,14 @@
     "dev": "vite",
     "build": "svelte-check && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:agent": "node --test tools/tests/agent-host.test.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2"
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@tauri-apps/api": "^2",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

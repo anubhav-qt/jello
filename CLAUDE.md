@@ -11,24 +11,32 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Platforms: macOS (laptop) and Windows (desktop), both from day one.
 - Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
   dependencies with GPL-3.0-compatible licenses (see ADR 0007).
-- Run: `nvm use`, `npm install`, `npm run tauri dev`. Tests: `cargo test` in
+- Run: `nvm use`, `npm install`, `npm run tauri dev`. Tests: `npm run build`,
+  `npm run test:tutor`, `cargo test` in
   `src-tauri/`. `tauri dev` does not watch `engine/`: restart it after C++ edits.
 
 ## Status
 
-- Step 1 is done: test tone, WAV and CI on both OSes. Windows sound unheard.
-- Step 2 [slices](docs/design.md#step-2-slices) are done and tuned by ear:
-  Stage (0010), Svelte 5 (0011), chords left and melody right (0012), note
-  colors (0014). Keep this layout. Every chord has its own key (0020).
-- Tabs (0016) Play, Compose, Produce (dev panel). Compose: tape (0022), keys
-  guided (0017, 0023, 0034) by `src-tauri/src/harmony.rs`, lit in playback.
-- Looper (0021) done: snap, layers (0026), look (0024), full lane (0025).
-  Step 4: 3 oscillators, kinds, noise, pulse width (0035), filter with 4
-  types (0028), unison (0029), envelope, tuning, all per song (0030), 8 LFOs,
-  routing list (0031), left Shift vibrato (0032), left Option glide (0036),
-  sound panel (0033), presets with a starting sound (0037), song files in
-  Music/Jello that save themselves, Songs panel, play and pause (0038).
-  Later: AI harness on a pi fork (0018); own instruments, no guitar (0019).
+- Synth/looper/song slices through 0038 are done; [details](docs/design.md).
+  Windows sound still needs listening. Produce is an undesigned dev panel.
+- Fullscreen workspace (0039): plain page, no box, dots or beams around
+  the keys; looper lane (keys' width) only once looping. Keep 24 chords left,
+  24 melody notes right. Panels stay fixed; contents scroll without bars.
+- Bare arrows shift octaves (up/down 1, right/left 2). Left Cmd+arrows edits
+  sound values (left Alt Windows). Shift vibrato; Option glide (right Alt
+  Windows); F12 steps the wave shown in Sound. Recordings keep original
+  pitch after octave changes. Agent button: Tutor, Composer or Producer.
+- One agent for every mode (0041), before the sampler. Built in Rust: MCP
+  tool server (`tool_server.rs`, `tools.rs`): look, sound, play, looper,
+  song, presets, listen (`listening.rs`, `measures.rs`); Undo (`undo.rs`).
+  Agent mode (0043): live steps, cards, saved chats, memory, master-level
+  Tutor, attachments, voice; build order in design.md. `npx pi`, `/login`.
+
+- Pointer transport and independent layer lengths (0042): Record/Finish,
+  exact tempo, timed takes, expression holds and cycle WAV export. Layer
+  lengths live in song files; `layer_cycles.rs` expands playback on a common
+  cycle without changing the audio thread. Limits: 64 bars per layer,
+  4096 playback notes/common bars. Shortening preserves original notes.
 
 ## Repo layout
 
@@ -45,14 +53,12 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 
 ### Talking with the user
 
-- One topic at a time. Plan as much as you like, but ask the user one
-  question or decision at a time. Never stack several decisions in one message.
+- Discuss one decision at a time; never stack questions in one message.
 - The user wants to understand all code. Explain each new piece in plain
   words and get a yes before writing it, then explain what was written.
 - Never write C++ engine code before the user has approved its design.
-- Explain new music terms briefly; the user is learning music theory.
-- Sound choices are the user's and each song's own (0030): never tune a
-  value for every song. Ask before any sound demo; one change at a time.
+- Explain music terms briefly; the user is learning. Sound choices belong
+  to each song (0030). Ask before sound demos; change one thing at a time.
 
 ### UI
 

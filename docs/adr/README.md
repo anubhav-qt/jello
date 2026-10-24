@@ -18,7 +18,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0007](0007-gpl-3-license.md) | License Jello under GPL-3.0 | Accepted |
 | [0008](0008-miniaudio-for-audio-devices.md) | miniaudio for audio devices | Accepted |
 | [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted; fixed envelope superseded by 0030, Ctrl as a shortcut key by 0032, one wave per note by 0035, Option/Alt as a shortcut key by 0036 |
-| [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted; colors superseded by 0014 |
+| [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted; colors superseded by 0014; dot grid and beams dropped (design.md) |
 | [0011](0011-svelte-5-for-the-ui.md) | Svelte 5 for the UI | Accepted |
 | [0012](0012-chords-left-melody-right.md) | Chords on the left, melody on the right | Accepted |
 | [0013](0013-highlight-next-chords-on-the-existing-layout.md) | Highlight next chords on the existing layout | Accepted; guidance groups superseded by 0017 |
@@ -26,7 +26,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0015](0015-minor-on-space-sharp-on-right-shift.md) | Minor on Space, sharp on right Shift | Superseded by 0020 |
 | [0016](0016-play-compose-and-produce-tabs.md) | Play, Compose and Produce tabs | Accepted |
 | [0017](0017-guided-compose.md) | Guided Compose | Accepted; following the key only superseded by 0034 |
-| [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Accepted |
+| [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Superseded in part by 0040 |
 | [0019](0019-instruments-built-from-scratch-no-guitar.md) | Instruments built from scratch, no guitar | Accepted |
 | [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted; F#m on left Shift superseded by 0032 |
 | [0021](0021-a-looper-on-a-beat.md) | A looper on a beat | Accepted; Esc superseded by 0026 |
@@ -47,6 +47,11 @@ To change a decision, write a new ADR and mark the old one as
 | [0036](0036-glide.md) | Glide | Accepted |
 | [0037](0037-presets.md) | Presets | Accepted |
 | [0038](0038-song-files.md) | Song files | Accepted |
+| [0039](0039-fullscreen-guided-workspace.md) | Fullscreen guided workspace | Accepted |
+| [0040](0040-play-tutor-on-pi.md) | Play tutor on pi | Superseded by 0041 |
+| [0041](0041-one-agent-for-every-mode.md) | One agent for every mode | Accepted; extended by 0043 |
+| [0042](0042-independent-layer-lengths.md) | Independent layer lengths and pointer recording | Accepted |
+| [0043](0043-the-agent-mode.md) | The agent mode | Accepted |
 
 ## Template
 
@@ -68,3 +73,4 @@ What we decided, in plain words.
 
 What gets easier, what gets harder, what we must remember.
 ```
+

@@ -83,6 +83,8 @@ pub struct SongLoop {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SongLayer {
+    // Zero inherits the common loop; otherwise this layer repeats every bars.
+    pub bars: u32,
     // In percent, from 0 to 100.
     pub volume: u32,
     // False while it is paused.
@@ -201,7 +203,11 @@ pub fn text_of(song: &Song) -> String {
         text.push_str("chords = [\n");
         for held in &song.chords {
             let name = chord_name(held.chord, song.key);
-            text.push_str(&format!("  {{ chord = \"{name}\", held_ms = {} }},\n", held.held_ms));
+            let mut root = String::new();
+            if !(48..=59).contains(&held.chord.root) {
+                root = format!(", root_note = \"{}\"", note_name(held.chord.root));
+            }
+            text.push_str(&format!("  {{ chord = \"{name}\", held_ms = {}{root} }},\n", held.held_ms));
         }
         text.push_str("]\n");
     }
@@ -220,6 +226,9 @@ fn write_loop(text: &mut String, looped: &SongLoop) {
 
     for layer in &looped.layers {
         start_group(text, "[[loop.layer]]");
+        if layer.bars > 0 {
+            write_number(text, "bars", layer.bars);
+        }
         write_number(text, "volume", layer.volume);
         write_flag(text, "playing", layer.playing);
         text.push_str("notes = [\n");
@@ -318,7 +327,14 @@ fn items<'a>(table: &'a Table, name: &str) -> Vec<&'a Table> {
 // A chord of the list, or None if its name or its length can't be read.
 fn read_chord(item: &Table) -> Option<HeldChord> {
     let name = read_word(item, "chord")?;
-    let chord = chord_of_name(name)?;
+    let mut chord = chord_of_name(name)?;
+    if let Some(root_name) = read_word(item, "root_note") {
+        let root = note_of_name(root_name)?;
+        if root > 120 || root % 12 != chord.pitch() {
+            return None;
+        }
+        chord.root = root;
+    }
     let held = item.get("held_ms")?;
     let held_ms = number_in(held)?;
     if held_ms.is_nan() {
@@ -365,6 +381,7 @@ fn read_loop(loop_table: &Table) -> Option<SongLoop> {
         let volume = volume.min(FULL_VOLUME);
         let playing = read_flag(layer_table, "playing", true);
         layers.push(SongLayer {
+            bars: read_count(layer_table, "bars", 0).min(64),
             volume,
             playing,
             notes,
@@ -435,6 +452,7 @@ mod tests {
         sound.filter.cutoff_hz = 1234.5;
 
         let first = SongLayer {
+            bars: 0,
             volume: 80,
             playing: true,
             notes: vec![
@@ -444,6 +462,7 @@ mod tests {
             ],
         };
         let second = SongLayer {
+            bars: 0,
             volume: 35,
             playing: false,
             notes: vec![note(GLIDE_KEY_NOTE, 0.25, 0.5), note(70, 2.0, 7.999999)],
@@ -646,11 +665,13 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
             bars: 1,
             layers: vec![
                 SongLayer {
+                    bars: 0,
                     volume: FULL_VOLUME,
                     playing: true,
                     notes: vec![note(64, 0.0, 1.0)],
                 },
                 SongLayer {
+                    bars: 0,
                     volume: 0,
                     playing: true,
                     notes: vec![note(48, 3.0, 3.5)],
@@ -716,5 +737,30 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
     #[test]
     fn text_that_is_not_toml_can_t_be_read() {
         assert!(song_of("this is [not toml", &SoundProfile::new()).is_err());
+    }
+    #[test]
+    fn shifted_chords_round_trip_at_their_recorded_octave() {
+        let text = "chords = [{ chord = \"C\", held_ms = 500, root_note = \"C5\" }]";
+        let song = read(text);
+        assert_eq!(song.chords[0].chord.root, 72);
+        let reopened = read(&text_of(&song));
+        assert_eq!(reopened.chords[0].chord.root, 72);
+        assert_eq!(reopened.chords[0].held_ms, 500);
+    }
+
+}
+
+#[cfg(test)]
+mod independent_length_tests {
+    use super::*;
+    fn read(text: &str) -> Song {
+        song_of(text, &SoundProfile::new()).unwrap()
+    }
+    #[test]
+    fn layer_lengths_survive_save_and_open() {
+        let song = read("[loop]\nbars = 6\n[[loop.layer]]\nbars = 3\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n[[loop.layer]]\nbars = 2\nnotes = [{ note = \"E4\", start = 0, end = 1 }]\n");
+        let reopened = read(&text_of(&song));
+        assert_eq!(song.looped, reopened.looped);
+        assert_eq!(reopened.looped.unwrap().layers.iter().map(|layer| layer.bars).collect::<Vec<_>>(), vec![3, 2]);
     }
 }
