@@ -13,14 +13,14 @@ constexpr std::uint64_t still_held = std::numeric_limits<std::uint64_t>::max();
 
 }  // namespace
 
-// The looper and the synth agree on how many layers there can be.
-static_assert(Looper::max_layers == Synth::layer_count, "the looper and the synth hold the same number of layers");
+// Each track's synth has a slot for every layer the track can hold.
+static_assert(Looper::max_track_layers == Synth::layer_count, "each track's synth plays every layer it holds");
 
 Looper::Looper(LoopChanges& changes) : changes_(changes) {
     held_.fill(no_note);
 }
 
-void Looper::press(const Clock& clock, Synth& synth) {
+void Looper::press(const Clock& clock, Tracks& tracks, int track) {
     if (state_ == State::idle) {
         // The conductor has just started a new bar, so the count-in's first
         // beat is now. The tempo is locked from here until the loop is
@@ -32,30 +32,30 @@ void Looper::press(const Clock& clock, Synth& synth) {
         count_in_beat_ = 1;
         beat_ = clock.beat_length();
         recording_start_ = count_in_start_ + clock.samples_per_bar();
-        start_layer(synth);
+        start_layer(tracks, track);
     } else if (state_ == State::counting_in) {
-        clear(synth);
+        clear(tracks);
     } else if (state_ == State::recording) {
-        close_at_nearest_bar_line(clock, synth);
+        close_at_nearest_bar_line(clock, tracks);
     } else if (state_ == State::looping) {
-        if (layer_count_ < max_layers) {
+        if (layers_on(track) < max_track_layers) {
             state_ = State::layering;
-            start_layer(synth);
+            start_layer(tracks, track);
         }
     } else if (state_ == State::layering) {
-        stop_layer(synth);
+        stop_layer(tracks);
     } else if (state_ == State::paused) {
-        play(clock.now(), synth);
+        play(clock.now(), tracks);
     }
     // While closing, a press does nothing.
 }
 
-void Looper::pause(std::uint64_t now, Synth& synth) {
+void Looper::pause(std::uint64_t now, Tracks& tracks) {
     if (!is_playing()) {
         return;
     }
     if (state_ == State::layering) {
-        stop_layer(synth);
+        stop_layer(tracks);
     }
     // Stopping a layer with no notes, when it was the only one, clears the
     // loop.
@@ -67,11 +67,11 @@ void Looper::pause(std::uint64_t now, Synth& synth) {
     for (int note = 0; note < pitch_count; note++) {
         end_held_note(note, now);
     }
-    synth.all_notes_off(Source::loop);
+    tracks.all_notes_off(Source::loop);
     state_ = State::paused;
 }
 
-void Looper::play(std::uint64_t now, Synth& synth) {
+void Looper::play(std::uint64_t now, Tracks& tracks) {
     if (state_ != State::paused) {
         return;
     }
@@ -83,10 +83,10 @@ void Looper::play(std::uint64_t now, Synth& synth) {
         make_plan(i, layers_[i].count);
     }
     start_repeat(now);
-    catch_up(0, synth);
+    catch_up(0, tracks);
 }
 
-void Looper::set_layer_playing(int layer, bool playing, std::uint64_t now, Synth& synth) {
+void Looper::set_layer_playing(int layer, bool playing, std::uint64_t now, Tracks& tracks) {
     if (layer < 0) {
         return;
     }
@@ -100,7 +100,7 @@ void Looper::set_layer_playing(int layer, bool playing, std::uint64_t now, Synth
     changed.playing = playing;
 
     if (!playing) {
-        synth.layer_notes_off(changed.slot);
+        tracks.synth(changed.track).layer_notes_off(changed.slot);
         return;
     }
     if (!is_playing()) {
@@ -111,41 +111,39 @@ void Looper::set_layer_playing(int layer, bool playing, std::uint64_t now, Synth
     // right away, and the rest wait their turn.
     changed.next_start = 0;
     changed.next_end = 0;
-    catch_up_layer(changed, now - repeat_start_, synth);
+    catch_up_layer(changed, now - repeat_start_, tracks);
 }
 
-void Looper::load(LoadedNotes& loaded, int count, int layers, int bars, BeatLength beat, Synth& synth) {
-    clear(synth);
+void Looper::load(LoadedNotes& loaded, int count, int layers, int bars, BeatLength beat, Tracks& tracks) {
+    clear(tracks);
 
     beat_ = beat;
     bars_ = bars;
     std::uint64_t whole_bars = static_cast<std::uint64_t>(bars);
     length_ = whole_bars * beats_per_bar * beat.samples_per_minute / beat.tempo;
 
-    for (int i = 0; i < layers; i++) {
-        Layer& layer = layers_[i];
-        layer.first = 0;
-        layer.count = 0;
-        layer.planned = 0;
-        layer.slot = i;
-        layer.next_start = 0;
-        layer.next_end = 0;
-        layer.playing = true;
-        synth.set_layer_volume(i, 1.0f);
-    }
-    layer_count_ = layers;
-
-    // The notes come layer by layer, so each layer's first note is where
-    // the notes taken so far end when its own first note comes.
+    // The notes come layer by layer, and every layer has one, so a layer
+    // starts with its first note: there it gets its track and a slot on it,
+    // and its notes start where the notes taken so far end.
     LoadedNote taken{};
     for (int i = 0; i < count; i++) {
         if (!loaded.receive(taken)) {
             break;
         }
-        Layer& layer = layers_[taken.layer];
-        if (layer.count == 0) {
-            layer.first = note_count_;
+        if (taken.layer == layer_count_) {
+            Layer& added = layers_[layer_count_];
+            added.first = note_count_;
+            added.count = 0;
+            added.planned = 0;
+            added.track = taken.track;
+            added.slot = free_slot(taken.track);
+            added.next_start = 0;
+            added.next_end = 0;
+            added.playing = true;
+            tracks.synth(added.track).set_layer_volume(added.slot, 1.0f);
+            layer_count_ += 1;
         }
+        Layer& layer = layers_[taken.layer];
 
         LoopNote kept = taken.note;
         if (kept.end > length_) {
@@ -166,8 +164,8 @@ void Looper::load(LoadedNotes& loaded, int count, int layers, int bars, BeatLeng
     tell(LoopChange::Type::loaded, layers, 0, 0, 0);
 }
 
-void Looper::clear(Synth& synth) {
-    synth.all_notes_off(Source::loop);
+void Looper::clear(Tracks& tracks) {
+    tracks.all_notes_off(Source::loop);
     state_ = State::idle;
     layer_count_ = 0;
     note_count_ = 0;
@@ -175,14 +173,14 @@ void Looper::clear(Synth& synth) {
     tell(LoopChange::Type::forgot, 0, 0, 0, 0);
 }
 
-void Looper::remove_layer(int layer, Synth& synth) {
+void Looper::remove_layer(int layer, Tracks& tracks) {
     if (state_ == State::idle) {
         return;
     }
     // Before the first loop closes it is the only layer, being counted in or
     // recorded.
     if (!has_loop()) {
-        clear(synth);
+        clear(tracks);
         return;
     }
 
@@ -198,7 +196,7 @@ void Looper::remove_layer(int layer, Synth& synth) {
     }
 
     if (layer_count_ == 1) {
-        clear(synth);
+        clear(tracks);
         return;
     }
 
@@ -210,24 +208,25 @@ void Looper::remove_layer(int layer, Synth& synth) {
         }
     }
 
-    take_out_layer(place, synth);
+    take_out_layer(place, tracks);
     tell(LoopChange::Type::layer_removed, place, 0, 0, 0);
     if (was_recording) {
         state_ = State::looping;
     }
 }
 
-void Looper::set_layer_volume(int layer, float volume, Synth& synth) {
+void Looper::set_layer_volume(int layer, float volume, Tracks& tracks) {
     if (layer < 0) {
         return;
     }
     if (layer >= layer_count_) {
         return;
     }
-    synth.set_layer_volume(layers_[layer].slot, volume);
+    const Layer& changed = layers_[layer];
+    tracks.synth(changed.track).set_layer_volume(changed.slot, volume);
 }
 
-void Looper::set_snap(bool snap, std::uint64_t now, Synth& synth) {
+void Looper::set_snap(bool snap, std::uint64_t now, Tracks& tracks) {
     if (snap == snap_) {
         return;
     }
@@ -240,17 +239,17 @@ void Looper::set_snap(bool snap, std::uint64_t now, Synth& synth) {
     // sounding by now start right away, and the rest wait their turn. Each
     // layer is planned again from the notes it already plays; the ones it
     // was given since this repeat started still wait for the next.
-    synth.all_notes_off(Source::loop);
+    tracks.all_notes_off(Source::loop);
     for (int i = 0; i < layer_count_; i++) {
         make_plan(i, layers_[i].planned);
         layers_[i].next_start = 0;
         layers_[i].next_end = 0;
     }
-    catch_up(now - repeat_start_, synth);
+    catch_up(now - repeat_start_, tracks);
 }
 
-void Looper::note_on(int note, int velocity, std::uint64_t now) {
-    if (!records_at(now)) {
+void Looper::note_on(int note, int velocity, std::uint64_t now, int track) {
+    if (!records_at(now, track)) {
         return;
     }
 
@@ -289,9 +288,16 @@ void Looper::note_on(int note, int velocity, std::uint64_t now) {
     note_count_ += 1;
 }
 
-// Only notes being recorded are held, so these do nothing at other times.
+// Only notes being recorded are held, so these do nothing at other times,
+// or for another track's notes.
 
-void Looper::note_off(int note, std::uint64_t now) {
+void Looper::note_off(int note, std::uint64_t now, int track) {
+    if (state_ == State::idle) {
+        return;
+    }
+    if (track != layers_[layer_count_ - 1].track) {
+        return;
+    }
     end_held_note(note, now);
 }
 
@@ -324,12 +330,12 @@ bool Looper::has_something_now(const Clock& clock) const {
     return false;
 }
 
-void Looper::act_now(const Clock& clock, Synth& synth) {
+void Looper::act_now(const Clock& clock, Tracks& tracks) {
     if (clock.beat_starts_now()) {
-        on_beat(clock, synth);
+        on_beat(clock, tracks);
     }
     if (is_playing()) {
-        play_due(clock.now() - repeat_start_, synth);
+        play_due(clock.now() - repeat_start_, tracks);
     }
 }
 
@@ -405,7 +411,14 @@ bool Looper::has_loop() const {
     return state_ == State::paused;
 }
 
-bool Looper::records_at(std::uint64_t now) const {
+bool Looper::records_at(std::uint64_t now, int track) const {
+    if (state_ == State::idle) {
+        return false;
+    }
+    // The layer being recorded is always the last one.
+    if (track != layers_[layer_count_ - 1].track) {
+        return false;
+    }
     if (is_recording()) {
         return true;
     }
@@ -419,23 +432,24 @@ bool Looper::records_at(std::uint64_t now) const {
     return now + quarter_beat >= recording_start_;
 }
 
-void Looper::tell(LoopChange::Type type, int layer, int index, int note, std::uint64_t sample) {
+void Looper::tell(LoopChange::Type type, int layer, int index, int note, std::uint64_t sample, int track) {
     LoopChange change;
     change.type = type;
     change.layer = layer;
     change.index = index;
     change.note = note;
     change.sample = sample;
+    change.track = track;
     changes_.send(change);
 }
 
-void Looper::on_beat(const Clock& clock, Synth& synth) {
+void Looper::on_beat(const Clock& clock, Tracks& tracks) {
     if (state_ == State::counting_in) {
         count_in(clock.now());
         return;
     }
     if (clock.bar_starts_now()) {
-        on_bar(clock.now(), synth);
+        on_bar(clock.now(), tracks);
     }
 }
 
@@ -449,7 +463,7 @@ void Looper::count_in(std::uint64_t now) {
     }
 }
 
-void Looper::on_bar(std::uint64_t now, Synth& synth) {
+void Looper::on_bar(std::uint64_t now, Tracks& tracks) {
     if (state_ == State::recording) {
         bar_ += 1;
         bar_start_ = now;
@@ -462,7 +476,7 @@ void Looper::on_bar(std::uint64_t now, Synth& synth) {
             // Beats start on whole samples, so a repeat can come out one
             // sample shorter than the loop. Whatever it has left plays now,
             // before the next repeat starts.
-            play_due(length_, synth);
+            play_due(length_, tracks);
             start_repeat(now);
         }
     }
@@ -476,21 +490,22 @@ void Looper::start_recording(std::uint64_t now) {
     bar_start_ = now;
 }
 
-void Looper::start_layer(Synth& synth) {
+void Looper::start_layer(Tracks& tracks, int track) {
     Layer& layer = layers_[layer_count_];
     layer.first = note_count_;
     layer.count = 0;
     layer.planned = 0;
-    layer.slot = free_slot();
+    layer.track = track;
+    layer.slot = free_slot(track);
     layer.next_start = 0;
     layer.next_end = 0;
     layer.playing = true;
-    synth.set_layer_volume(layer.slot, 1.0f);
-    tell(LoopChange::Type::layer_started, layer_count_, 0, 0, 0);
+    tracks.synth(track).set_layer_volume(layer.slot, 1.0f);
+    tell(LoopChange::Type::layer_started, layer_count_, 0, 0, 0, track);
     layer_count_ += 1;
 }
 
-void Looper::stop_layer(Synth& synth) {
+void Looper::stop_layer(Tracks& tracks) {
     state_ = State::looping;
     int newest = layer_count_ - 1;
     if (layers_[newest].count > 0) {
@@ -506,15 +521,29 @@ void Looper::stop_layer(Synth& synth) {
 
     // It was the only layer left, so the loop is empty.
     if (layer_count_ == 0) {
-        clear(synth);
+        clear(tracks);
     }
 }
 
-int Looper::free_slot() const {
-    // There are as many slots as layers, so one is always free.
-    for (int slot = 0; slot < max_layers; slot++) {
+int Looper::layers_on(int track) const {
+    int count = 0;
+    for (int i = 0; i < layer_count_; i++) {
+        if (layers_[i].track == track) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+int Looper::free_slot(int track) const {
+    // A track has as many slots as layers, so one is always free when it
+    // has room for another layer.
+    for (int slot = 0; slot < max_track_layers; slot++) {
         bool used = false;
         for (int i = 0; i < layer_count_; i++) {
+            if (layers_[i].track != track) {
+                continue;
+            }
             if (layers_[i].slot == slot) {
                 used = true;
             }
@@ -526,9 +555,9 @@ int Looper::free_slot() const {
     return 0;
 }
 
-void Looper::take_out_layer(int layer, Synth& synth) {
+void Looper::take_out_layer(int layer, Tracks& tracks) {
     Layer gone = layers_[layer];
-    synth.layer_notes_off(gone.slot);
+    tracks.synth(gone.track).layer_notes_off(gone.slot);
 
     // Every note after its notes moves down into the gap they leave, and its
     // plan and the order its plan's notes end in with it. Those count from
@@ -606,7 +635,7 @@ void Looper::end_held_notes_at_the_end() {
     }
 }
 
-void Looper::close_at_nearest_bar_line(const Clock& clock, Synth& synth) {
+void Looper::close_at_nearest_bar_line(const Clock& clock, Tracks& tracks) {
     // A loop is at least 1 bar, so in the first bar it closes at its end.
     if (bar_ == 1) {
         state_ = State::closing;
@@ -621,7 +650,7 @@ void Looper::close_at_nearest_bar_line(const Clock& clock, Synth& synth) {
     if (since_bar_line * 2 < clock.samples_per_bar()) {
         close(bar_start_, bar_ - 1);
         start_repeat(bar_start_);
-        catch_up(since_bar_line, synth);
+        catch_up(since_bar_line, tracks);
     } else {
         state_ = State::closing;
     }
@@ -699,13 +728,13 @@ void Looper::start_repeat(std::uint64_t start) {
     }
 }
 
-void Looper::catch_up(std::uint64_t position, Synth& synth) {
+void Looper::catch_up(std::uint64_t position, Tracks& tracks) {
     for (int i = 0; i < layer_count_; i++) {
-        catch_up_layer(layers_[i], position, synth);
+        catch_up_layer(layers_[i], position, tracks);
     }
 }
 
-void Looper::catch_up_layer(Layer& layer, std::uint64_t position, Synth& synth) {
+void Looper::catch_up_layer(Layer& layer, std::uint64_t position, Tracks& tracks) {
     const LoopNote* plan = plan_.data() + layer.first;
     const int* ends = plan_ends_.data() + layer.first;
 
@@ -718,7 +747,7 @@ void Looper::catch_up_layer(Layer& layer, std::uint64_t position, Synth& synth) 
         // layer is playing.
         if (starting.end > position) {
             if (layer.playing) {
-                synth.loop_note_on(starting.note, starting.velocity, layer.slot);
+                tracks.synth(layer.track).loop_note_on(starting.note, starting.velocity, layer.slot);
             }
         }
         layer.next_start += 1;
@@ -749,7 +778,7 @@ bool Looper::is_end_due(const Layer& layer, std::uint64_t position) const {
     return plan_[layer.first + ending].end <= position;
 }
 
-void Looper::play_due(std::uint64_t position, Synth& synth) {
+void Looper::play_due(std::uint64_t position, Tracks& tracks) {
     // Each layer plays on its own voices, so one layer's notes never touch
     // another's. Within a layer, ends go first, so a note that ends just as
     // the same note starts again lets go before it starts again. One at a
@@ -758,15 +787,15 @@ void Looper::play_due(std::uint64_t position, Synth& synth) {
         Layer& layer = layers_[i];
         bool played = true;
         while (played) {
-            played = play_next_end(layer, position, synth);
+            played = play_next_end(layer, position, tracks);
             if (!played) {
-                played = play_next_start(layer, position, synth);
+                played = play_next_start(layer, position, tracks);
             }
         }
     }
 }
 
-bool Looper::play_next_end(Layer& layer, std::uint64_t position, Synth& synth) {
+bool Looper::play_next_end(Layer& layer, std::uint64_t position, Tracks& tracks) {
     if (!is_end_due(layer, position)) {
         return false;
     }
@@ -778,12 +807,12 @@ bool Looper::play_next_end(Layer& layer, std::uint64_t position, Synth& synth) {
         return false;
     }
 
-    synth.loop_note_off(plan_[layer.first + ending].note, layer.slot);
+    tracks.synth(layer.track).loop_note_off(plan_[layer.first + ending].note, layer.slot);
     layer.next_end += 1;
     return true;
 }
 
-bool Looper::play_next_start(Layer& layer, std::uint64_t position, Synth& synth) {
+bool Looper::play_next_start(Layer& layer, std::uint64_t position, Tracks& tracks) {
     if (!is_start_due(layer, position)) {
         return false;
     }
@@ -791,7 +820,7 @@ bool Looper::play_next_start(Layer& layer, std::uint64_t position, Synth& synth)
     // A paused layer's notes go by unheard.
     const LoopNote& starting = plan_[layer.first + layer.next_start];
     if (layer.playing) {
-        synth.loop_note_on(starting.note, starting.velocity, layer.slot);
+        tracks.synth(layer.track).loop_note_on(starting.note, starting.velocity, layer.slot);
     }
     layer.next_start += 1;
     return true;

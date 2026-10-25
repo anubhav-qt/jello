@@ -7,8 +7,10 @@
 #include "clock.h"
 #include "looper.h"
 #include "mailbox.h"
+#include "sequencer.h"
 #include "song_player.h"
 #include "synth.h"
+#include "tracks.h"
 
 // What the looper is doing, for the screen.
 struct LooperStatus {
@@ -27,30 +29,37 @@ struct LooperStatus {
 // Runs everything the audio thread does (docs/adr/0021-a-looper-on-a-beat.md).
 // Like an orchestra's conductor, it keeps the beat and cues the players: it
 // takes the messages other threads leave in the mailbox, passes notes on to
-// the synth and the looper, gives Compose's song to the song player, plays
-// the click on the beat, and puts the sum through the soft clip, the last
-// step before the speakers.
+// the tracks and the looper, gives Compose's song to the song player and the
+// arrangement's timed messages to the sequencer, plays the click on the beat,
+// and puts the sum through the soft clip, the last step before the speakers.
 class Conductor {
 public:
     explicit Conductor(int sample_rate);
 
     // These only put a message in the mailbox. The audio thread acts on it at
     // the start of its next chunk of sound. Only one thread may call them at
-    // a time.
-    void note_on(int note, int velocity);
-    void note_off(int note);
+    // a time. `track`, from 0 to Tracks::count - 1, says which track's synth
+    // a note or a sound setting is for (docs/design.md#tracks-in-the-engine);
+    // the caller makes sure it is in range.
+    //
+    // Between time_next and send_now, the ones marked "timed" go to the
+    // sequencer instead, due on the sample time_next gave.
+    void note_on(int track, int note, int velocity);  // timed
+    void note_off(int track, int note);               // timed
+    // Lets go of every live note on every track.
     void all_notes_off();
-    // Oscillator `index`, from 0 (Synth::set_oscillator).
-    void set_oscillator(int index, const OscillatorSettings& oscillator);
+    // Oscillator `index`, from 0 (Synth::set_oscillator). Timed.
+    void set_oscillator(int track, int index, const OscillatorSettings& oscillator);
     // Starts the click on beat 1 of a bar. Does nothing if it is already on.
     void start_click();
     // Stops the click. A tick already sounding rings out.
     void stop_click();
     // Plays the beat at `tempo` beats per minute from the next beat on.
-    // Ignored while the looper is busy, so a loop keeps its beat.
+    // Ignored while the looper is busy, so a loop keeps its beat. Timed.
     void set_tempo(int tempo);
-    // Right Shift (Looper::press), and clearing the loop (Looper::clear).
-    void press_looper();
+    // Right Shift on track `track` (Looper::press), and clearing the loop
+    // (Looper::clear).
+    void press_looper(int track);
     void clear_loop();
     // Esc (Looper::remove_layer), and a layer's volume knob
     // (Looper::set_layer_volume).
@@ -68,37 +77,70 @@ public:
     // The "snap to beat" switch (Looper::set_snap).
     void set_snap(bool snap);
     // The filter's controls (Synth::set_filter), and the filter envelope
-    // (Synth::set_filter_envelope).
-    void set_filter(const FilterSettings& settings);
-    void set_filter_envelope(const FilterEnvelopeSettings& envelope);
+    // (Synth::set_filter_envelope). Timed, like every sound setting from here
+    // to set_glide_time, and set_drum_pad.
+    void set_filter(int track, const FilterSettings& settings);
+    void set_filter_envelope(int track, const FilterEnvelopeSettings& envelope);
     // Unison's copies (Synth::set_unison).
-    void set_unison(const UnisonSettings& unison);
+    void set_unison(int track, const UnisonSettings& unison);
     // The loudness envelope, the key tracking and the tuning
     // (Synth::set_loudness_envelope, set_key_tracking and set_tuning).
-    void set_loudness_envelope(const LoudnessEnvelopeSettings& envelope);
-    void set_key_tracking(float key_tracking);
-    void set_tuning(float a4_hz);
+    void set_loudness_envelope(int track, const LoudnessEnvelopeSettings& envelope);
+    void set_key_tracking(int track, float key_tracking);
+    void set_tuning(int track, float a4_hz);
     // The routing list's LFOs and connections, and how long the vibrato key
     // takes to rise and fall (Synth::set_lfo, set_connection and
     // set_vibrato_key_times).
-    void set_lfo(int index, const LfoSettings& settings);
-    void set_connection(int index, const Connection& connection);
-    void set_vibrato_key_times(int rise_ms, int fall_ms);
+    void set_lfo(int track, int index, const LfoSettings& settings);
+    void set_connection(int track, int index, const Connection& connection);
+    void set_vibrato_key_times(int track, int rise_ms, int fall_ms);
     // Holds or lets go of the live vibrato key (Synth::set_vibrato_key). The
     // looper records it like a note.
-    void set_vibrato_key(bool held);
+    void set_vibrato_key(int track, bool held);
     // Holds or lets go of the live glide key (Synth::set_glide_key), which
     // the looper records like a note too, and how long a glide takes
     // (Synth::set_glide_time).
-    void set_glide_key(bool held);
-    void set_glide_time(int glide_ms);
+    void set_glide_key(int track, bool held);
+    void set_glide_time(int track, int glide_ms);
     // Oscillator `index`'s instrument (Synth::set_instrument), the drum
     // kit's recordings (Synth::set_drum_kit) and pad `pad`'s settings
     // (Synth::set_drum_pad). The first two return false and send nothing if
     // the mailbox is full, so the sender knows the set is not on its way.
-    bool set_instrument(int index, const SampleSet* set);
-    bool set_drum_kit(const SampleSet* set);
-    void set_drum_pad(int pad, const DrumPad& settings);
+    // They are never timed.
+    bool set_instrument(int track, int index, const SampleSet* set);
+    bool set_drum_kit(int track, const SampleSet* set);
+    void set_drum_pad(int track, int pad, const DrumPad& settings);
+
+    // How loud track `track` plays, from 0 to 1 (Tracks::set_volume). Timed.
+    void set_track_volume(int track, float volume);
+
+    // A layer's notes and volume for the sequencer, which plays the
+    // arrangement's layers on the tracks' layer slots, from 0 to
+    // Synth::layer_count - 1, while the loop is cleared
+    // (Synth::loop_note_on, loop_note_off and set_layer_volume). Timed.
+    void layer_note_on(int track, int slot, int note, int velocity);
+    void layer_note_off(int track, int slot, int note);
+    void set_slot_volume(int track, int slot, float volume);
+
+    // From here until send_now, the timed messages go to the sequencer, due
+    // `sample` samples after the next sequence to play starts.
+    void time_next(std::uint64_t sample);
+    void send_now();
+
+    // Starts the sequence that the timed messages since the last stop belong
+    // to, from the start of the next chunk. Stopping it lets go of every
+    // note its layers play, and drops its messages still waiting; the timed
+    // messages after it belong to the next sequence. Play a sequence once:
+    // stop it before playing again.
+    void play_sequence();
+    void stop_sequence();
+
+    // How many samples the sequence has played as of the last chunk, or
+    // Sequencer::not_playing; a play still on its way counts as 0, and a
+    // stop as not playing. And how many more timed messages fit right now.
+    // Only the thread that sends the messages may ask.
+    std::uint64_t sequence_position() const;
+    std::uint64_t sequence_room() const;
 
     // Which sample sets the audio thread still plays, one bit each, and how
     // many of the instrument and kit messages it has acted on. A set is
@@ -117,11 +159,11 @@ public:
     bool next_loop_change(LoopChange& change);
 
     // Plays `chords`, `count` of them, one after another, each for its own
-    // length, from the start of the next chunk
+    // length, on track `track`, from the start of the next chunk
     // (docs/adr/0022-compose-as-a-tape.md). Whatever the song was playing
     // stops first. Returns false and sends nothing if the mailbox has no room
     // for all of it, so the audio thread never plays half a song.
-    bool play_song(const SongChord* chords, int count);
+    bool play_song(int track, const SongChord* chords, int count);
 
     // Lets go of what the song is playing and forgets it.
     void stop_song();
@@ -139,14 +181,18 @@ public:
     void render(float* out, int frames);
 
 private:
+    // Puts a timed message in the mailbox, or in the sequencer's while
+    // time_next is in force.
+    void send(const Event& event);
+
     // Acts on every message waiting in the mailbox, oldest first.
     void take_messages();
 
     // Does what one message asks.
     void handle(const Event& event);
 
-    // Right Shift's press, on the audio thread.
-    void handle_looper_press();
+    // Right Shift's press on track `track`, on the audio thread.
+    void handle_looper_press(int track);
 
     // True while someone needs to hear the beat.
     bool wants_click() const;
@@ -158,9 +204,13 @@ private:
     // played, at the end of each chunk.
     void publish_looper_status();
     void publish_song_position();
+    void publish_sequence_position();
     void publish_sets_in_use();
 
     EventMailbox mailbox_;
+
+    // The arrangement's timed messages, on their way to the sequencer.
+    TimedEvents timed_events_;
 
     // The loop's changes, on their way to Rust. The looper sends them, so
     // this must be made before the looper, below.
@@ -169,11 +219,15 @@ private:
     // A loaded loop's notes, on their way to the looper.
     LoadedNotes loaded_notes_;
 
-    Synth synth_;
+    Tracks tracks_;
     Clock clock_;
     Click click_;
     Looper looper_;
     SongPlayer song_player_;
+    Sequencer sequencer_;
+
+    // The track the song plays on.
+    int song_track_ = 0;
 
     // Whether the click was started on its own, without the looper.
     bool click_on_ = false;
@@ -204,6 +258,21 @@ private:
     // for where it is, so it can never be read half updated.
     std::atomic<std::uint64_t> shown_song_position_{SongPlayer::not_playing};
     std::atomic<std::uint64_t> shown_song_handled_{0};
+
+    // The same for the sequencer. Timed messages go to sequence_sent_ while
+    // timing_ is on, due on timed_sample_. Only the sending thread uses
+    // these.
+    bool timing_ = false;
+    std::uint64_t timed_sample_ = 0;
+    std::uint64_t sequence_sent_ = 1;
+    std::uint64_t sequence_messages_sent_ = 0;
+    bool sequence_will_play_ = false;
+
+    // How many play and stop messages the audio thread has acted on, and what
+    // it last told about where the sequence is.
+    std::uint64_t sequence_messages_handled_ = 0;
+    std::atomic<std::uint64_t> shown_sequence_position_{Sequencer::not_playing};
+    std::atomic<std::uint64_t> shown_sequence_handled_{0};
 
     // The same for the sample sets: how many instrument and kit messages
     // got into the mailbox, how many the audio thread has acted on, and

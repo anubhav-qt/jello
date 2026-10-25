@@ -123,7 +123,10 @@
   onpointerdown={letGoOutside}
 >
   <div class="sound-panel-top">
-    <span class="sound-panel-title">Sound</span>
+    <!-- The picked track's sound (docs/design.md#tracks-and-sections). -->
+    <span class="sound-panel-title">
+      Sound: {sound.picked_track}. {sound.tracks[sound.picked_track - 1]?.name ?? ""}
+    </span>
     {#each PAGES as each (each.page)}
       <button
         type="button"

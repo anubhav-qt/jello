@@ -8,11 +8,13 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use crate::arrange;
+use crate::sections::{self, SectionEdit, SectionsView};
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
     BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
-    LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison, VIBRATO_KEY_NOTE,
-    drum_note,
+    LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, TRACK_COUNT, Unison,
+    VIBRATO_KEY_NOTE, drum_note,
 };
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
@@ -23,7 +25,9 @@ use crate::modulation::{
     VibratoKeyTimes,
 };
 use crate::presets::{self, PresetView};
+use crate::song_session::OpenSong;
 use crate::sound_profile::SoundProfile;
+use crate::tracks::Track;
 use crate::starters::{StarterView, Starters, starter_views};
 use crate::wav::write_wav;
 
@@ -65,8 +69,41 @@ pub struct SoundView {
     // The preset the song sounds exactly like, whose tile is lit, or None
     // (null for the UI) (docs/adr/0037-presets.md).
     preset: Option<String>,
-    // The song's drum kit and pads (docs/design.md#sampler).
+    // The picked track's drum kit and pads (docs/design.md#sampler).
     drums: DrumsView,
+    // The song's tracks, in order, and the picked one, counted from 1
+    // (docs/design.md#tracks-and-sections). The Sound panel shows the
+    // picked one's sound, and the lane its layers.
+    tracks: Vec<TrackView>,
+    picked_track: usize,
+}
+
+// A track, as its tile in the track row shows it.
+#[derive(Serialize)]
+pub struct TrackView {
+    name: String,
+    // True for a drums track, with its kit, if one is picked.
+    drums: bool,
+    kit: Option<String>,
+    // In percent, from 0 to 100.
+    volume: u32,
+}
+
+fn track_views_of(composer: &Composer) -> Vec<TrackView> {
+    let mut views = Vec::new();
+    for (number, track) in composer.tracks().list().iter().enumerate() {
+        let mut kit = None;
+        if track.is_drums() {
+            kit = track.drums().kit.clone();
+        }
+        views.push(TrackView {
+            name: track.name(number + 1),
+            drums: track.is_drums(),
+            kit,
+            volume: track.volume(),
+        });
+    }
+    views
 }
 
 // Where an instrument is, as the screen shows it: "none" when none is
@@ -464,6 +501,9 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
     let busy = engine.is_looper_busy();
     let position = engine.looper_position();
     let mut layers = engine.loop_layers().to_vec();
+    // The lane shows the picked track's layers.
+    let picked = engine.track();
+    layers.retain(|layer| layer.track == picked);
     // The vibrato and glide keys' presses are kept with a layer's notes, but
     // the lane leaves them out until its design says how to draw them.
     for layer in &mut layers {
@@ -520,6 +560,8 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
         glide_ms: sound_profile.glide_time(),
         preset: composer.lit_preset().map(String::from),
         drums: drums_view_of(engine, composer),
+        tracks: track_views_of(composer),
+        picked_track: composer.tracks().picked() + 1,
     }
 }
 
@@ -1313,8 +1355,34 @@ pub(crate) fn press_key_on(key_map: &mut KeyMap, composer: &mut Composer, engine
     if picks_layer(engine, key, now) {
         return;
     }
-    if let Some(action) = key_down(key_map, composer, key, now) {
-        take_key_action(engine, composer, action, now);
+    follow_picked_track(key_map, composer);
+    let Some(action) = key_down(key_map, composer, key, now) else {
+        return;
+    };
+    if action == KeyAction::JumpToDrums {
+        jump_to_drums(composer, engine);
+        follow_picked_track(key_map, composer);
+        return;
+    }
+    take_key_action(engine, composer, action, now);
+}
+
+// Drum mode follows the picked track: on for a drums track, so its letters
+// hit drums (docs/design.md#tracks-and-sections).
+pub(crate) fn follow_picked_track(key_map: &mut KeyMap, composer: &Composer) {
+    let on = composer.tracks().picked_track().is_drums();
+    key_map.set_drum_mode(on);
+}
+
+// Right Option's jump: to the drums track used last, made if there is
+// none, and back. With 9 tracks and none for drums, the top bar says why
+// nothing happened.
+fn jump_to_drums(composer: &mut Composer, engine: &mut Engine) {
+    if composer.tracks_mut().jump(engine) {
+        return;
+    }
+    if !composer.tracks().picked_track().is_drums() {
+        engine.show_message("9 tracks is the most, so none can be made for drums");
     }
 }
 
@@ -1354,15 +1422,19 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HitDrum(pad) => {
             engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
         }
-        // The key map has switched already, and the keys show it.
-        KeyAction::SwitchDrumMode => {}
+        // press_key_on jumps, since drum mode follows in the key map.
+        KeyAction::JumpToDrums => {}
         KeyAction::SwitchWave => {
             composer.sound_profile_mut().switch_first_kind(engine);
         }
+        // The looper's keys work on the loop, so an arrangement playing
+        // stops and gives the loop back first.
         KeyAction::PressLooper => {
+            arrange::stop(composer, engine);
             engine.press_looper();
         }
         KeyAction::RemoveLayer => {
+            arrange::stop(composer, engine);
             engine.press_esc(now);
         }
         KeyAction::SlowDown => {
@@ -1463,9 +1535,176 @@ pub fn sound_view(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<
 // What every laptop key does, so the UI can draw each key's note or chord on
 // it.
 #[tauri::command]
-pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>) -> LayoutForUi {
-    let key_map = key_map.lock().unwrap();
+pub fn key_layout(key_map: State<'_, Mutex<KeyMap>>, composer: State<'_, Mutex<Composer>>) -> LayoutForUi {
+    let mut key_map = key_map.lock().unwrap();
+    let composer = composer.lock().unwrap();
+    follow_picked_track(&mut key_map, &composer);
     key_map.layout_for_ui()
+}
+
+// Picks track `track`, counted from 1 (docs/design.md#tracks-and-sections).
+// With no such track it makes the next one, in the marked starting sound,
+// and picks that: left Cmd + 7 with two tracks makes track 3. Notes held
+// finish on their old track. Returns what the screen shows about the sound;
+// the keys' layout may change too, since drum mode follows the track.
+// Left Cmd and a number and the track row's tiles send it.
+#[tauri::command]
+pub fn pick_track(
+    open: State<'_, Mutex<OpenSong>>,
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    track: usize,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let open = open.lock().unwrap();
+    let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    pick_track_on(&open, &mut composer, &mut engine, track)?;
+    follow_picked_track(&mut key_map, &composer);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Picks track `track`, counted from 1, or makes the next one in the
+// starting sound from `open`'s folders. Fails for track 0 or with 9 tracks
+// already.
+pub(crate) fn pick_track_on(open: &OpenSong, composer: &mut Composer, engine: &mut Engine, track: usize) -> Result<(), String> {
+    if track < 1 {
+        return Err(String::from("tracks are counted from 1"));
+    }
+    if composer.tracks_mut().pick(engine, track - 1) {
+        return Ok(());
+    }
+    let Some(made) = composer.tracks_mut().add(engine, Track::new()) else {
+        return Err(format!("{TRACK_COUNT} tracks is the most"));
+    };
+    composer.tracks_mut().pick(engine, made);
+    if let Ok(folders) = open.folders() {
+        load_starting_sound(&folders.sounds, &folders.settings, composer, engine);
+    }
+    Ok(())
+}
+
+// Names track `track`, counted from 1, `name`, or with a blank name lets
+// its name follow its sound again. Returns what the screen shows about the
+// sound. Fails for a track the song doesn't have.
+#[tauri::command]
+pub fn rename_track(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    track: usize,
+    name: String,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    let Some(renamed) = track_of(&mut composer, track) else {
+        return Err(format!("there is no track {track}"));
+    };
+    renamed.rename(Some(&name));
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Track `track`, counted from 1, or None.
+fn track_of(composer: &mut Composer, track: usize) -> Option<&mut Track> {
+    if track < 1 {
+        return None;
+    }
+    composer.tracks_mut().get_mut(track - 1)
+}
+
+// Sets track `track`'s volume, counted from 1, to `volume` percent, from 0
+// to 100, eased so it never clicks. Returns what the screen shows about
+// the sound. Fails for a track the song doesn't have.
+#[tauri::command]
+pub fn set_track_volume(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    track: usize,
+    volume: u32,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    if track < 1 || track > composer.tracks().len() {
+        return Err(format!("there is no track {track}"));
+    }
+    composer.tracks_mut().set_volume(&mut engine, track - 1, volume);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// Removes track `track`, counted from 1, with its layers. The tracks after
+// it move one down, with their layers, and the sections forget it. The
+// loop keeps playing if it was. Returns what the screen shows about the
+// sound. Fails for the only track, one the song doesn't have, or while the
+// looper counts in or records.
+#[tauri::command]
+pub fn remove_track(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    track: usize,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    remove_track_on(&mut composer, &mut engine, track)?;
+    follow_picked_track(&mut key_map, &composer);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+pub(crate) fn remove_track_on(composer: &mut Composer, engine: &mut Engine, track: usize) -> Result<(), String> {
+    if track < 1 || track > composer.tracks().len() {
+        return Err(format!("there is no track {track}"));
+    }
+    if composer.tracks().len() == 1 {
+        return Err(String::from("a song keeps at least one track"));
+    }
+    let state = engine.looper_status().state;
+    let records = match state {
+        LooperState::CountingIn => true,
+        LooperState::Recording => true,
+        LooperState::Layering => true,
+        _ => false,
+    };
+    if records {
+        return Err(String::from("finish recording before removing a track"));
+    }
+
+    arrange::stop(composer, engine);
+    let removed = track - 1;
+    let kept = engine.loop_to_keep();
+    composer.tracks_mut().remove(engine, removed);
+    composer.forget_track(removed);
+
+    // The loop opens again with the later tracks' layers one track down.
+    let Some((bars, layers)) = kept else {
+        return Ok(());
+    };
+    let mut moved = Vec::new();
+    for mut layer in layers {
+        if layer.track == removed {
+            continue;
+        }
+        if layer.track > removed {
+            layer.track -= 1;
+        }
+        moved.push(layer);
+    }
+    let tempo = engine.tempo();
+    if moved.is_empty() {
+        return engine.open_loop(tempo, 0, &[], LAPTOP_VELOCITY);
+    }
+    engine.open_loop(tempo, bars, &moved, LAPTOP_VELOCITY)?;
+    if state == LooperState::Looping {
+        engine.play_loop();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1603,6 +1842,33 @@ pub fn play_song(
     Ok(composer.view(&key_map, engine.song_place(), now))
 }
 
+// What the sections lane and details show
+// (docs/design.md#tracks-and-sections).
+#[tauri::command]
+pub fn sections_view(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> SectionsView {
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    sections::view(&mut composer, &mut engine)
+}
+
+// Makes one change to the song's sections, like saving the layers playing
+// now as a section (left Cmd + Return) or playing them in order. Like
+// `switch_kind`, an edit that plays opens the speakers first.
+#[tauri::command]
+pub fn edit_sections(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    edit: SectionEdit,
+) -> Result<SectionsView, String> {
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    if edit.plays() {
+        engine.start_audio()?;
+    }
+    sections::edit(&mut composer, &mut engine, edit)?;
+    Ok(sections::view(&mut composer, &mut engine))
+}
+
 // Stops the song. Live notes and the loop play on.
 #[tauri::command]
 pub fn stop_song(
@@ -1620,6 +1886,29 @@ pub fn stop_song(
         engine.stop_song();
     }
     composer.view(&key_map, engine.song_place(), now)
+}
+
+// The top bar's Render WAV: renders the song's sections in order to
+// Music/Jello/Renders, or with none, a held middle C, and returns where it
+// went (docs/design.md#tracks-and-sections).
+#[tauri::command]
+pub fn render_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
+    let song = {
+        let composer = composer.lock().unwrap();
+        let mut engine = engine.lock().unwrap();
+        crate::song_session::song_now(&composer, &mut engine)
+    };
+    if song.arrangement.is_empty() {
+        return render_test_note(app);
+    }
+    let (samples, sample_rate) = arrange::render(&song)?;
+    let folder = renders_folder(&app)?;
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let since_1970 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let stamp = since_1970.map_err(|error| error.to_string())?.as_millis();
+    let path = folder.join(format!("Jello-song-{stamp}.wav"));
+    write_wav(&path, &samples, sample_rate)?;
+    Ok(path.display().to_string())
 }
 
 // Renders a held middle C to Music/Jello/test-note.wav and returns where it
@@ -2363,6 +2652,7 @@ mod tests {
             volume: 100,
             playing: true,
             recording: false,
+            track: 0,
         }
     }
 
@@ -2734,7 +3024,7 @@ mod tests {
         let view = view_of(&mut engine, Instant::now());
         assert_eq!(
             view.looper.message,
-            Some(String::from("8 layers is the most, Esc removes one"))
+            Some(String::from("8 layers is the most on a track, Esc removes one"))
         );
         assert_eq!(view.looper.layers.len(), 8);
     }
@@ -2850,8 +3140,190 @@ pub fn export_loop_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, eng
     }
     let folder = renders_folder(&app)?;
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let since_1970 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let stamp = since_1970.map_err(|error| error.to_string())?.as_millis();
     let path = folder.join(format!("Jello-loop-{stamp}.wav"));
     crate::listening::export_loop(&song, &path)?;
     Ok(path.display().to_string())
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+
+    use crate::key_map::DRUM_MODE_KEY;
+    use crate::song_session::Folders;
+
+    // A song open with folders of its own, its starting sound a saw at
+    // A4 = 432 Hz, and a new song's Compose and an engine.
+    fn starting(label: &str) -> (OpenSong, KeyMap, Composer, Engine) {
+        let folders = Folders {
+            songs: presets::test_folder(&format!("{label}-songs")),
+            sounds: presets::test_folder(&format!("{label}-sounds")),
+            settings: presets::test_folder(&format!("{label}-settings")),
+            renders: presets::test_folder(&format!("{label}-renders")),
+        };
+        let mut sound = SoundProfile::new().sound();
+        sound.oscillators[0].kind = Kind::Saw;
+        presets::save(&folders.sounds, "Low saw", &sound).unwrap();
+        presets::mark_starting(&folders.settings, Some("Low saw")).unwrap();
+        let open = OpenSong::new(Some(folders));
+        (open, KeyMap::new(), Composer::new(), Engine::new().unwrap())
+    }
+
+    fn layer_on(track: usize, note: u8) -> LoopLayer {
+        LoopLayer {
+            bars: 0,
+            notes: vec![LoopNote {
+                note,
+                start: 0,
+                end: Some(1000),
+            }],
+            volume: FULL_VOLUME,
+            playing: true,
+            recording: false,
+            track,
+        }
+    }
+
+    // The tracks of each layer of the loop and its first note.
+    fn layers_of(engine: &mut Engine) -> Vec<(usize, u8)> {
+        let mut found = Vec::new();
+        for layer in engine.loop_layers() {
+            found.push((layer.track, layer.notes[0].note));
+        }
+        found
+    }
+
+    use crate::engine::FULL_VOLUME;
+
+    #[test]
+    fn a_number_past_the_last_track_makes_the_next_one_in_the_starting_sound() {
+        let (open, _, mut composer, mut engine) = starting("tracks-make");
+        pick_track_on(&open, &mut composer, &mut engine, 7).unwrap();
+        assert_eq!(composer.tracks().len(), 2);
+        assert_eq!(composer.tracks().picked(), 1);
+        assert_eq!(engine.track(), 1);
+        assert_eq!(composer.sound_profile().oscillators()[0].kind, Kind::Saw);
+        assert_eq!(composer.tracks().picked_track().name(2), "Low saw");
+
+        // An existing track is only picked.
+        pick_track_on(&open, &mut composer, &mut engine, 1).unwrap();
+        assert_eq!(composer.tracks().len(), 2);
+        assert_eq!(composer.tracks().picked(), 0);
+        assert!(pick_track_on(&open, &mut composer, &mut engine, 0).is_err());
+
+        for _ in 2..TRACK_COUNT {
+            pick_track_on(&open, &mut composer, &mut engine, 9).unwrap();
+        }
+        assert_eq!(composer.tracks().len(), TRACK_COUNT);
+        pick_track_on(&open, &mut composer, &mut engine, 9).unwrap();
+        assert_eq!(composer.tracks().picked(), 8);
+    }
+
+    #[test]
+    fn right_option_jumps_to_drums_and_the_letters_follow() {
+        let (_, mut key_map, mut composer, mut engine) = starting("tracks-jump");
+        let now = Instant::now();
+        press_key_on(&mut key_map, &mut composer, &mut engine, DRUM_MODE_KEY, now);
+        release_key_on(&mut key_map, &mut composer, &mut engine, DRUM_MODE_KEY, now);
+        assert_eq!(composer.tracks().len(), 2);
+        assert_eq!(composer.tracks().picked(), 1);
+        assert!(key_map.drum_mode());
+        assert_eq!(key_map.press("Space"), Some(KeyAction::HitDrum(0)));
+        key_map.release("Space");
+
+        press_key_on(&mut key_map, &mut composer, &mut engine, DRUM_MODE_KEY, now);
+        release_key_on(&mut key_map, &mut composer, &mut engine, DRUM_MODE_KEY, now);
+        assert_eq!(composer.tracks().picked(), 0);
+        assert!(!key_map.drum_mode());
+        assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
+    }
+
+    #[test]
+    fn with_9_tracks_and_no_drums_right_option_says_why_nothing_happened() {
+        let (open, mut key_map, mut composer, mut engine) = starting("tracks-full");
+        pick_track_on(&open, &mut composer, &mut engine, 9).unwrap();
+        for _ in 2..TRACK_COUNT {
+            pick_track_on(&open, &mut composer, &mut engine, 9).unwrap();
+        }
+        press_key_on(&mut key_map, &mut composer, &mut engine, DRUM_MODE_KEY, Instant::now());
+        assert_eq!(composer.tracks().picked(), 8);
+        let message = engine.take_looper_message().unwrap();
+        assert_eq!(message, "9 tracks is the most, so none can be made for drums");
+    }
+
+    #[test]
+    fn the_lane_shows_the_picked_track_s_layers() {
+        let (open, _, mut composer, mut engine) = starting("tracks-lane");
+        pick_track_on(&open, &mut composer, &mut engine, 2).unwrap();
+        let layers = [layer_on(0, 60), layer_on(1, 62), layer_on(0, 64)];
+        engine.open_loop(120, 1, &layers, LAPTOP_VELOCITY).unwrap();
+        engine.render(64);
+
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        let lane = json["looper"]["layers"].as_array().unwrap();
+        assert_eq!(lane.len(), 1);
+        assert_eq!(lane[0]["notes"][0]["note"], 62);
+
+        pick_track_on(&open, &mut composer, &mut engine, 1).unwrap();
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["looper"]["layers"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn removing_a_track_takes_its_layers_and_moves_the_later_ones_down() {
+        let (open, mut key_map, mut composer, mut engine) = starting("tracks-remove");
+        pick_track_on(&open, &mut composer, &mut engine, 2).unwrap();
+        pick_track_on(&open, &mut composer, &mut engine, 3).unwrap();
+        let layers = [layer_on(0, 60), layer_on(1, 62), layer_on(2, 64), layer_on(2, 65)];
+        engine.open_loop(120, 1, &layers, LAPTOP_VELOCITY).unwrap();
+        engine.render(64);
+        // The engine's word that it took in the first loop is still waiting
+        // when the second is sent.
+        engine.play_loop();
+        engine.render(64);
+
+        remove_track_on(&mut composer, &mut engine, 2).unwrap();
+        follow_picked_track(&mut key_map, &composer);
+        engine.render(64);
+        assert_eq!(composer.tracks().len(), 2);
+        assert_eq!(composer.tracks().picked(), 1);
+        assert_eq!(layers_of(&mut engine), vec![(0, 60), (1, 64), (1, 65)]);
+        assert_eq!(engine.looper_status().state, LooperState::Looping);
+
+        // The last track goes, and the loop with it, and the only one stays.
+        remove_track_on(&mut composer, &mut engine, 2).unwrap();
+        engine.render(64);
+        assert_eq!(layers_of(&mut engine), vec![(0, 60)]);
+        assert!(remove_track_on(&mut composer, &mut engine, 1).is_err());
+        assert!(remove_track_on(&mut composer, &mut engine, 5).is_err());
+    }
+
+    #[test]
+    fn a_track_can_t_be_removed_while_the_looper_records() {
+        let (open, _, mut composer, mut engine) = starting("tracks-recording");
+        pick_track_on(&open, &mut composer, &mut engine, 2).unwrap();
+        engine.press_looper();
+        engine.render(64);
+        assert!(remove_track_on(&mut composer, &mut engine, 1).is_err());
+        assert_eq!(composer.tracks().len(), 2);
+    }
+
+    #[test]
+    fn the_ui_reads_the_tracks_by_these_names() {
+        let (open, _, mut composer, mut engine) = starting("tracks-names");
+        composer.set_drum_kit(&mut engine, Some("Black Pearl"));
+        pick_track_on(&open, &mut composer, &mut engine, 2).unwrap();
+        composer.tracks_mut().set_volume(&mut engine, 1, 40);
+        let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
+        assert_eq!(json["picked_track"], 2);
+        assert_eq!(json["tracks"][0]["name"], "Black Pearl");
+        assert_eq!(json["tracks"][0]["drums"], true);
+        assert_eq!(json["tracks"][0]["kit"], "Black Pearl");
+        assert_eq!(json["tracks"][1]["name"], "Low saw");
+        assert_eq!(json["tracks"][1]["drums"], false);
+        assert_eq!(json["tracks"][1]["kit"], serde_json::Value::Null);
+        assert_eq!(json["tracks"][1]["volume"], 40);
+    }
 }

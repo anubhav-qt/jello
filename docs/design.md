@@ -145,6 +145,9 @@ Jello is a desktop synthesizer and music studio with four long-term goals:
    [chord guidance](#chord-guidance). Song files came early too: every
    song saves itself as text as it changes
    ([ADR 0038](adr/0038-song-files.md)); see [song files](#song-files).
+   Tracks and sections are designed
+   ([ADR 0045](adr/0045-tracks-and-sections.md),
+   [Tracks and sections](#tracks-and-sections)).
 6. **Mix.** Mixer, effects, sidechain, automation, master limiter, WAV export.
 
 **Finish line:** a full YOASOBI-style instrumental made entirely in Jello and
@@ -1419,6 +1422,158 @@ chords and play a melody over them
      [play and pause](#play-and-pause).
   Each slice adds its own placeholders.
 
+## Tracks and sections
+
+[ADR 0045](adr/0045-tracks-and-sections.md): several instruments in one
+song, and the song built from sections in order. Roadmap step 5.
+
+- **Tracks.** A song has up to 9. A track is an instrument: one sound of
+  its own, either a whole sound profile (oscillators, sample instruments,
+  filter, envelopes, LFOs, connections, glide) or a drum kit with its
+  pads, and a volume from 0 to 100. A track with a kit is a drums track.
+  Its name follows its sound (a preset's or an instrument's name), or
+  "Track 3" with nothing better, and can be renamed. The Sound panel
+  edits the picked track's sound.
+- **Picking and making.** Left Cmd and 1 to 9 (left Alt on Windows) picks
+  that track. With no such track, it makes the next one, in the marked
+  starting sound, and picks it: numbers never leave gaps, so left Cmd + 7
+  with two tracks makes track 3. A new song starts with track 1. Clicking
+  a tile in the track row picks it too. Notes held while the track changes
+  finish on their old track. Removing a track is done on screen.
+- **Drum mode follows the track.** Picking a drums track switches the
+  letters to drums; picking another switches them back. Right Option
+  (right Ctrl on Windows) jumps to the drums track used last, and again
+  back to the track it came from. DRUMS shows in the top bar while a drums
+  track is picked. Drums never take a section's key shift.
+- **Layers.** Each track holds up to 8 loop layers, which play in its
+  sound. Right Shift records on the picked track; Esc, and Esc with a
+  number, removes the picked track's layers. There is one loop for the
+  song: one tempo and one count-in, and every layer keeps its own length
+  ([ADR 0042](adr/0042-independent-layer-lengths.md)). The looper lane
+  shows the picked track's layers.
+- **Sections.** A section is a named set of layers that play together,
+  across every track, for a number of bars, starting at one time around
+  the loop. It has its own tempo (the song's to start) and key shift, from
+  12 half steps down to 12 up (0 to start). Its details name the key it
+  plays in with the shift (C major shifted 2 up plays in D major); the
+  progression's chord names stay in the song's key. Left Cmd + Return (left Alt + Return on Windows) saves the layers playing
+  now as a new section at the end, "Section 1" and so on, and the sections
+  lane's button does the same. Left Cmd + Delete removes the last section.
+- **Arrangement.** The song is its sections in order, and one section can
+  be used more than once, so changing a layer changes every use. Playing
+  the arrangement plays the sections in turn; the looper still jams as
+  before. Clicking a section turns its layers on in the looper, at its
+  tempo, to change it, and its details save it again. Its key shift and
+  automation are heard when it plays as a section. While the arrangement
+  plays the loop is put away, since both use the same layer slots, and it
+  comes back paused once the arrangement stops.
+- **Automation.** A section can move any number of values, each from a
+  start to an end in a straight line across the section: a track's volume,
+  any of its sound settings, or the tempo. The same start and end holds a
+  value for the section. LFOs and connections move a value from where
+  automation puts it. After the section, the value goes back to the
+  track's own. Mixer values join in step 6; curves are a todo.
+- **Compose screen.** Under the progression lane, a sections lane: one
+  block per use of a section, in order, with its name, bars, and tempo or
+  key shift when they differ, and a play button for the arrangement. With
+  no sections, a dashed lane says how to save one. Clicking a section opens
+  its details in the guidance row's place: each track with its layers on
+  or off, its bars, tempo and key shift, and its automation; clicking it
+  again, or Esc, brings the guidance back. The lane reorders, reuses and
+  removes sections by clicking, like the progression's blocks. Just above
+  Record loop, the track row: a numbered tile per track with its name, the
+  picked one lavender, a drums track showing its kit.
+- **Agent.** `jello_tracks` makes (an instrument or drums track), picks,
+  names, sets the volume of and removes tracks. `jello_arrange` takes the
+  same edits as the lane and details (save, save again, open, rename,
+  bars, tempo, key shift, layer, automate, stop automating, move, use
+  again, remove a use, play, stop). `jello_sound`, `jello_drums`,
+  `jello_looper` and `jello_notes` take a track number, the picked track
+  when left out, and leave the pick as it was; pressing keys records on
+  the picked track only. `jello_look` has `tracks` (each with its name,
+  kit, volume and layer count) and `sections`. Undo keeps the song file's
+  text, so tracks and sections come back too.
+- **Song files.** The one-sound format is dropped, not converted (only a
+  sample song used it). After the single values and `chords`, `picked` is
+  the picked track's number and `[loop]` keeps `bars`. Each track is a
+  `[[track]]` with `name`, `volume`, its sound under `[track.sound]` or its
+  kit under `[track.drums]`, and its layers as `[[track.layer]]`, written
+  as layers are now. Each section is a `[[section]]` with `name`, `bars`,
+  `tempo`, `key_shift`, a `layers` list of `{ track = 1, layer = 2 }`
+  pairs, and an `automation` list of entries like
+  `{ track = 1, value = "filter cutoff_hz", from = 200, to = 8000 }`.
+  Values are named as `jello_sound` names them in its answers ("volume",
+  "glide_ms", "lfo 1 depth"), and the tempo is
+  `{ track = 0, value = "tempo", ... }`. A track also keeps `preset`, the
+  preset its sound came from. `arrangement` lists the sections' names in
+  order, so names are unique.
+- **Rust.** `tracks.rs` keeps the tracks, the picked one and the drums
+  track used last; each track has its own sound profile. Keys: left Cmd
+  with a number, Return and Delete, and right Option jumping. `arrange.rs`
+  turns the arrangement into timed engine messages: each section's layers
+  expanded on their cycles (`layer_cycles.rs`), shifted by its key, timed
+  by its tempo and tempo automation in samples, and each automated value
+  sent as a step every 10 ms, which the engine's existing glides smooth.
+  Render WAV renders the arrangement to Music/Jello/Renders, or a held
+  middle C with no sections; the looper's cycle export plays every track.
+  Both renders first throw away 20 ms of silence, so track volumes have
+  eased to where they were set and a muted track is never heard.
+
+### Tracks in the engine
+
+Approved.
+
+- **Tracks.** The conductor holds 9 tracks, made when the engine is made,
+  so the audio thread never allocates. A track is a `Synth` as now: 32
+  voices, its sound, its routing list and LFOs, and its drum kit, which
+  only a drums track uses. So 288 voices exist; a silent voice costs
+  nothing. Each track has a volume that eases over 10 ms, so it never
+  clicks.
+- **Messages carry a track.** Every note and sound message, and every C
+  API function that sends one, gains a track number from 0 to 8. Rust
+  sends live notes to the picked track. A track number out of range is
+  ignored, like other values today.
+- **Mixing.** Each track renders into its own buffer, set aside when the
+  engine is made, is turned up or down by its volume and added to the
+  sum. The click goes on top, then the soft clip, as now. Step 6's mixer
+  goes in exactly here: effects per track, then the master limiter.
+- **The looper.** A layer belongs to a track and plays on that track's
+  synth, in a slot of its own there (0 to 7), so up to 72 layers. Each
+  live note says its track, so a layer records the notes of the track it
+  was started on. Removing, volumes and playing go by track and layer.
+  The loop holds 16,384 notes, and its mailboxes grow to match, as does
+  `layer_cycles.rs`'s limit.
+- **The sequencer** (`sequencer.*`, new): plays timed messages, each an
+  ordinary engine message with the sample it is due on. Rust keeps it
+  about 2 seconds ahead through a mailbox of 8,192, so a song of any
+  length never needs all its notes in memory at once. The conductor plays
+  each message on its exact sample, rendering up to it first, as it does
+  for loop notes. It tells Rust how far it has played, like the song
+  player. An offline render is fed the same way between its chunks, so
+  the same song always gives the same audio.
+- **The song player** for Compose's progression stays as it is.
+
+### Build slices
+
+1. The engine's tracks: track numbers on every message, 9 synths, track
+   volumes, the looper's layers by track. One track shows, so everything
+   works as today.
+2. Tracks in Rust, keys and the song file, drum mode following the track,
+   the track row, and the Sound panel per track.
+3. The sequencer, and `arrange.rs` playing an arrangement.
+4. Sections: saving, the sections lane and details, tempo, key shift and
+   automation, and Render WAV of the arrangement.
+5. `jello_tracks`, `jello_arrange`, and track numbers on the other tools.
+
+All five are built. Todo: moving the tempo slider while the arrangement
+plays isn't handled yet.
+
+Tests check that tracks never hear each other's notes or sounds, track
+volumes, layers by track, the sequencer playing messages on their samples
+and the same audio twice, the arrangement's timing across tempo changes and
+ramps, key shifts skipping drums, automation steps, the song file keeping
+every track and section, and the keys.
+
 ## Sound
 
 Jello is a flexible toolbox, not a genre machine: any instrument, any chain
@@ -1514,12 +1669,14 @@ changes.
   to a millionth, or "vibrato key" and "glide key" for those keys'
   presses. Then the sound, a preset's text, under `[sound]`
   ([presets](#presets)). Saving then reading gives back exactly the same
-  song, and a loop opens on the very samples it was saved on.
+  song, and a loop opens on the very samples it was saved on. Since
+  tracks, the sound and the layers belong to each `[[track]]`, and
+  sections follow ([tracks and sections](#tracks-and-sections)).
 - **Reading.** Like a preset's. Left out or the wrong sort: a new song's
   value. A chord or note Jello can't read, or one that ends before it
   starts, is skipped, and so is a layer left with no notes. The tempo is
-  kept from 40 to 240, a volume to 100; the first 8 layers and 4,096 notes
-  are kept. A loop needs bars and a layer with a note. Text that is not
+  kept from 40 to 240, a volume to 100; the first 8 layers of each track
+  and 16,384 notes are kept. A loop needs bars and a layer with a note. Text that is not
   TOML can't be read.
 - **Saving.** By looking, not by being told (`src-tauri/src/song_session.rs`):
   every 250 ms Jello writes the song out as text, and once that text has

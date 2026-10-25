@@ -8,43 +8,32 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - **Webview UI** (TypeScript, Tauri 2): only draws and forwards laptop keys.
 - **Rust core** (Tauri backend): commands, input, song files, scoring, file I/O.
 - **C++ engine**: all sound, sequencer, instruments, effects, mixer and WAV.
-- Platforms: macOS (laptop) and Windows (desktop), both from day one.
-- Open source under GPL-3.0, public on GitHub (anubhav-qt/jello). Only add
-  dependencies with GPL-3.0-compatible licenses (see ADR 0007).
-- Run: `nvm use`, `npm install`, `npm run tauri dev`. Tests: `npm run build`,
-  `npm run test:agent`, `cargo test` in
-  `src-tauri/` (needs cmake for whisper.cpp). `tauri dev` does not watch `engine/`: restart it after C++ edits.
+- macOS and Windows from day one. GPL-3.0, public (anubhav-qt/jello): only
+  GPL-3.0-compatible dependencies (ADR 0007).
+- Run: `nvm use`, `npm install`, `npm run tauri dev` (restart it after
+  `engine/` edits). Tests: `npm run build`, `npm run test:agent`,
+  `cargo test` in `src-tauri/` (needs cmake for whisper.cpp).
 
 ## Status
 
-- Synth/looper/song slices through 0038 are done; [details](docs/design.md).
-  Windows sound still needs listening. Produce is an undesigned dev panel.
-- Fullscreen workspace (0039): plain page, no box, dots or beams around
-  the keys; looper lane (keys' width) only once looping. Keep 24 chords left,
-  24 melody notes right. Panels stay fixed; contents scroll without bars.
-- Bare arrows shift octaves (up/down 1, right/left 2). Left Cmd+arrows edits
-  sound values (left Alt Windows). Shift vibrato; Option glide (right Alt
-  Windows); F12 steps the wave shown in Sound. Recordings keep original
-  pitch after octave changes. Agent button: Tutor, Composer or Producer.
-- One agent for every mode (0041), before the sampler. Built in Rust: MCP
-  tool server (`tool_server.rs`, `tools.rs`): look, sound, play, looper,
-  song, presets, listen (`listening.rs`, `measures.rs`); Undo (`undo.rs`).
-  Agent mode (0043): build steps 1 to 9 done (live steps, cards, saved
-  chats, theory, practice, memory, skills, attachments, mic, dictation,
-  hum); step 10 asks first.
-- Sampler (0044): sample kind plays Music/Jello/Instruments (SFZ subset or
-  named WAV/FLAC, `instruments.rs`, `engine/src/sample_set.*`); drum kit
-  (`drums.rs`, `engine/src/drum_kit.*`) on notes 130 to 145, right Option
-  (right Ctrl Windows) toggles drum mode. Starters download only on click
-  (`starters.rs`). Agent: `jello_drums`. Todos in design.md#sampler. Mic: `engine/src/capture.*`, `mic.rs`; voice:
-  `dictation.rs`, `hum.rs`, `pitch.rs`; files: `attachments.rs`,
-  `audio_file.rs`. First providers: Anthropic, OpenAI, Google.
-
-- Pointer transport and independent layer lengths (0042): Record/Finish,
-  exact tempo, timed takes, expression holds and cycle WAV export. Layer
-  lengths live in song files; `layer_cycles.rs` expands playback on a common
-  cycle without changing the audio thread. Limits: 64 bars per layer,
-  4096 playback notes/common bars. Shortening preserves original notes.
+- Built through roadmap step 5; [details](docs/design.md). Windows sound
+  still needs listening. Produce is an undesigned dev panel.
+- Fullscreen workspace (0039): plain page, 24 chords left, 24 melody notes
+  right; panels stay fixed, contents scroll without bars.
+- Keys: bare arrows shift octaves; left Cmd+arrows edit sound values (left
+  Alt Windows); Shift vibrato, Option glide (right Alt Windows); F12 steps
+  the wave in Sound. Left Cmd+1..9 picks or makes a track, +Return saves a
+  section, +Delete removes the last; right Option jumps to the drums track.
+- Agent (0041, 0043): MCP tool server in Rust (`tool_server.rs`,
+  `tools.rs`, `listening.rs`, `undo.rs`); steps 1 to 9 done, step 10 asks
+  first. Providers: Anthropic, OpenAI, Google.
+- Sampler (0044): `instruments.rs`, `drums.rs`, `starters.rs` (download
+  only on click), `engine/src/sample_set.*`, `drum_kit.*`.
+- Tracks and sections (0045): built. `tracks.rs`, `sections.rs`,
+  `arrange.rs`, `automation.rs`; engine `tracks.*`, `sequencer.*`. Agent:
+  `jello_tracks`, `jello_arrange`, `track` on the other tools.
+- Layers (0042): own lengths on a common cycle (`layer_cycles.rs`), 64 bars
+  each, 16,384 notes.
 
 ## Repo layout
 
@@ -52,8 +41,7 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - `src-tauri/`: Rust core (Tauri app, `tauri.conf.json`, capabilities).
 - `engine/`: C++ engine. C API in `include/jello_engine.h`, built by
   `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).
-- [docs/design.md](docs/design.md): the design, roadmap and open questions.
-- [docs/adr/](docs/adr/README.md): one file per decision (ADRs).
+- [docs/design.md](docs/design.md): design and roadmap; [docs/adr/](docs/adr/README.md): ADRs.
 - `.github/workflows/ci.yml`: CI, builds and tests on macOS and Windows.
 - `tools/jello-drive.swift`: drives the real app on macOS; build steps inside.
 

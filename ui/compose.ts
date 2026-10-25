@@ -185,3 +185,105 @@ export function pickerName(choice: KeyChoice): string {
   }
   return tonic;
 }
+
+// What the sections lane and a section's details show
+// (`SectionsView` in src-tauri/src/sections.rs). Sections, tracks, layers
+// and places in the order count from 1.
+export interface SectionsView {
+  // Every section, in the order they were saved.
+  sections: SectionView[];
+  // The order the song plays them in, as section numbers.
+  order: number[];
+  // The place in the order playing now, or null.
+  playing: number | null;
+  // Each track's name and how many layers it has.
+  tracks: TrackLayers[];
+  // The song's tempo, so a section shows its own only if it differs.
+  tempo: number;
+}
+
+export interface SectionView {
+  name: string;
+  bars: number;
+  tempo: number;
+  // In half steps, from -12 to 12.
+  key_shift: number;
+  // The key it plays in, with its shift, or null before a key is picked.
+  key: string | null;
+  // The layers it plays, as [track, layer].
+  layers: [number, number][];
+  automation: AutomationView[];
+}
+
+// A value a section moves from `from` to `to` across it.
+export interface AutomationView {
+  // null for the tempo.
+  track: number | null;
+  value: string;
+  from: number;
+  to: number;
+}
+
+export interface TrackLayers {
+  name: string;
+  layers: number;
+}
+
+// One change to the sections (`SectionEdit` in src-tauri/src/sections.rs).
+export type SectionEdit =
+  | { action: "save" }
+  | { action: "remove_last" }
+  | { action: "save_again"; section: number }
+  | { action: "open"; section: number }
+  | { action: "rename"; section: number; name: string }
+  | { action: "bars"; section: number; bars: number }
+  | { action: "tempo"; section: number; tempo: number }
+  | { action: "key_shift"; section: number; key_shift: number }
+  | {
+      action: "layer";
+      section: number;
+      track: number;
+      layer: number;
+      on: boolean;
+    }
+  | {
+      action: "automate";
+      section: number;
+      track: number | null;
+      value: string;
+      from: number;
+      to: number;
+    }
+  | {
+      action: "stop_automating";
+      section: number;
+      track: number | null;
+      value: string;
+    }
+  | { action: "move"; place: number; to: number }
+  | { action: "use_again"; place: number }
+  | { action: "remove_use"; place: number }
+  | { action: "play" }
+  | { action: "stop" };
+
+// What a section's block says under its name: its bars, and its tempo and
+// key shift when they differ from the song's.
+export function sectionWords(section: SectionView, songTempo: number): string {
+  const words = [barsWords(section.bars)];
+  if (section.tempo !== songTempo) {
+    words.push(`${section.tempo} bpm`);
+  }
+  if (section.key_shift > 0) {
+    words.push(`+${section.key_shift}`);
+  } else if (section.key_shift < 0) {
+    words.push(`${section.key_shift}`);
+  }
+  return words.join(", ");
+}
+
+export function barsWords(bars: number): string {
+  if (bars === 1) {
+    return "1 bar";
+  }
+  return `${bars} bars`;
+}

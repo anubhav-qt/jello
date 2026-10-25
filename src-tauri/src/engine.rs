@@ -37,6 +37,7 @@ struct RawLoopChange {
     index: c_int,
     note: c_int,
     sample: u64,
+    track: c_int,
 }
 
 // The kinds of change, the `JELLO_LOOP_` numbers in
@@ -68,6 +69,7 @@ struct RawLoopNote {
 #[repr(C)]
 struct RawLoadedNote {
     layer: c_int,
+    track: c_int,
     note: c_int,
     velocity: c_int,
     start: u64,
@@ -136,11 +138,13 @@ unsafe extern "C" {
     fn jello_engine_create() -> *mut JelloEngine;
     fn jello_engine_destroy(engine: *mut JelloEngine);
     fn jello_engine_start_audio(engine: *mut JelloEngine) -> bool;
-    fn jello_engine_note_on(engine: *mut JelloEngine, note: c_int, velocity: c_int);
-    fn jello_engine_note_off(engine: *mut JelloEngine, note: c_int);
+    fn jello_engine_note_on(engine: *mut JelloEngine, track: c_int, note: c_int, velocity: c_int);
+    fn jello_engine_note_off(engine: *mut JelloEngine, track: c_int, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
+    fn jello_engine_set_track_volume(engine: *mut JelloEngine, track: c_int, volume: f32);
     fn jello_engine_set_oscillator(
         engine: *mut JelloEngine,
+        track: c_int,
         index: c_int,
         kind: c_int,
         level: f32,
@@ -153,7 +157,7 @@ unsafe extern "C" {
     fn jello_engine_start_click(engine: *mut JelloEngine);
     fn jello_engine_stop_click(engine: *mut JelloEngine);
     fn jello_engine_set_tempo(engine: *mut JelloEngine, tempo: c_int);
-    fn jello_engine_press_looper(engine: *mut JelloEngine);
+    fn jello_engine_press_looper(engine: *mut JelloEngine, track: c_int);
     fn jello_engine_clear_loop(engine: *mut JelloEngine);
     fn jello_engine_pause_loop(engine: *mut JelloEngine);
     fn jello_engine_play_loop(engine: *mut JelloEngine);
@@ -179,43 +183,66 @@ unsafe extern "C" {
     ) -> bool;
     fn jello_engine_looper_status(engine: *mut JelloEngine) -> RawLooperStatus;
     fn jello_engine_next_loop_change(engine: *mut JelloEngine, change: *mut RawLoopChange) -> bool;
-    fn jello_engine_play_song(engine: *mut JelloEngine, chords: *const RawSongChord, count: c_int) -> bool;
+    fn jello_engine_play_song(engine: *mut JelloEngine, track: c_int, chords: *const RawSongChord, count: c_int) -> bool;
     fn jello_engine_stop_song(engine: *mut JelloEngine);
-    fn jello_engine_set_filter(engine: *mut JelloEngine, filter_type: c_int, cutoff_hz: f32, resonance: f32);
+    fn jello_engine_set_filter(
+        engine: *mut JelloEngine,
+        track: c_int,
+        filter_type: c_int,
+        cutoff_hz: f32,
+        resonance: f32,
+    );
     fn jello_engine_set_filter_envelope(
         engine: *mut JelloEngine,
+        track: c_int,
         amount: f32,
         attack_ms: c_int,
         decay_ms: c_int,
         sustain: f32,
         release_ms: c_int,
     );
-    fn jello_engine_set_unison(engine: *mut JelloEngine, copies: c_int, detune_cents: f32, spread: f32);
+    fn jello_engine_set_unison(engine: *mut JelloEngine, track: c_int, copies: c_int, detune_cents: f32, spread: f32);
     fn jello_engine_set_loudness_envelope(
         engine: *mut JelloEngine,
+        track: c_int,
         attack_ms: c_int,
         decay_ms: c_int,
         sustain: f32,
         release_ms: c_int,
     );
-    fn jello_engine_set_key_tracking(engine: *mut JelloEngine, key_tracking: f32);
-    fn jello_engine_set_tuning(engine: *mut JelloEngine, a4_hz: f32);
-    fn jello_engine_set_lfo(engine: *mut JelloEngine, index: c_int, lfo: *const RawLfo);
-    fn jello_engine_set_connection(engine: *mut JelloEngine, index: c_int, connection: *const RawConnection);
-    fn jello_engine_set_vibrato_key_times(engine: *mut JelloEngine, rise_ms: c_int, fall_ms: c_int);
-    fn jello_engine_set_vibrato_key(engine: *mut JelloEngine, held: bool);
-    fn jello_engine_set_glide_key(engine: *mut JelloEngine, held: bool);
-    fn jello_engine_set_glide_time(engine: *mut JelloEngine, glide_ms: c_int);
+    fn jello_engine_set_key_tracking(engine: *mut JelloEngine, track: c_int, key_tracking: f32);
+    fn jello_engine_set_tuning(engine: *mut JelloEngine, track: c_int, a4_hz: f32);
+    fn jello_engine_set_lfo(engine: *mut JelloEngine, track: c_int, index: c_int, lfo: *const RawLfo);
+    fn jello_engine_set_connection(
+        engine: *mut JelloEngine,
+        track: c_int,
+        index: c_int,
+        connection: *const RawConnection,
+    );
+    fn jello_engine_set_vibrato_key_times(engine: *mut JelloEngine, track: c_int, rise_ms: c_int, fall_ms: c_int);
+    fn jello_engine_set_vibrato_key(engine: *mut JelloEngine, track: c_int, held: bool);
+    fn jello_engine_set_glide_key(engine: *mut JelloEngine, track: c_int, held: bool);
+    fn jello_engine_set_glide_time(engine: *mut JelloEngine, track: c_int, glide_ms: c_int);
+    fn jello_engine_time_next(engine: *mut JelloEngine, sample: u64);
+    fn jello_engine_send_now(engine: *mut JelloEngine);
+    fn jello_engine_play_sequence(engine: *mut JelloEngine);
+    fn jello_engine_stop_sequence(engine: *mut JelloEngine);
+    fn jello_engine_sequence_position(engine: *mut JelloEngine) -> i64;
+    fn jello_engine_sequence_room(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_layer_note_on(engine: *mut JelloEngine, track: c_int, slot: c_int, note: c_int, velocity: c_int);
+    fn jello_engine_layer_note_off(engine: *mut JelloEngine, track: c_int, slot: c_int, note: c_int);
+    fn jello_engine_set_slot_volume(engine: *mut JelloEngine, track: c_int, slot: c_int, volume: f32);
     fn jello_engine_song_position(engine: *mut JelloEngine) -> i64;
     fn jello_engine_add_sample_set(engine: *mut JelloEngine, zones: *const RawSampleZone, count: c_int) -> c_int;
     fn jello_engine_forget_sample_set(engine: *mut JelloEngine, set: c_int);
     fn jello_engine_tidy_sample_sets(engine: *mut JelloEngine);
     #[cfg(test)]
     fn jello_engine_sample_sets_kept(engine: *mut JelloEngine) -> c_int;
-    fn jello_engine_set_instrument(engine: *mut JelloEngine, index: c_int, set: c_int) -> bool;
-    fn jello_engine_set_drum_kit(engine: *mut JelloEngine, set: c_int) -> bool;
+    fn jello_engine_set_instrument(engine: *mut JelloEngine, track: c_int, index: c_int, set: c_int) -> bool;
+    fn jello_engine_set_drum_kit(engine: *mut JelloEngine, track: c_int, set: c_int) -> bool;
     fn jello_engine_set_drum_pad(
         engine: *mut JelloEngine,
+        track: c_int,
         pad: c_int,
         level: f32,
         half_steps: c_int,
@@ -259,13 +286,25 @@ pub const START_TEMPO: u32 = 120;
 // How many beats make a bar (`beats_per_bar` in engine/src/clock.h).
 pub const BEATS_PER_BAR: u32 = 4;
 
-// The most layers a loop holds (`JELLO_LOOP_MAX_LAYERS` in
+// How many tracks a song has room for, one for each number key
+// (`JELLO_TRACK_COUNT` in engine/include/jello_engine.h,
+// docs/design.md#tracks-and-sections).
+pub const TRACK_COUNT: usize = 9;
+
+// The most layers a track holds (`JELLO_TRACK_MAX_LAYERS` in
 // engine/include/jello_engine.h).
 pub const MAX_LAYERS: usize = 8;
+
+// How many pitches the engine's notes have: the 128 notes, the vibrato and
+// glide keys and the 16 drum pads.
+const PITCH_COUNT: usize = 146;
 
 // A layer's volume, in percent, from silent to as played. Each layer starts
 // at full.
 pub const FULL_VOLUME: u32 = 100;
+
+// A bit longer than the engine takes to ease a track's volume.
+const VOLUME_SETTLE_MS: usize = 20;
 
 // How long Esc waits for a layer's number (docs/adr/0026-layers.md).
 const ESC_WAIT: Duration = Duration::from_millis(500);
@@ -810,6 +849,9 @@ pub struct LoopLayer {
     pub playing: bool,
     // True while it is being recorded.
     pub recording: bool,
+    // The track it belongs to, from 0: it plays in that track's sound
+    // (docs/design.md#tracks-and-sections).
+    pub track: usize,
 }
 
 // One chord of a song for the engine to play
@@ -840,6 +882,16 @@ pub struct SongPlace {
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
+    // The picked track, from 0 (docs/design.md#tracks-and-sections). Notes,
+    // sound settings, the song and the looper's presses go to it, and the
+    // layer numbers count its layers.
+    track: usize,
+    // The track each note started on, so letting go of it reaches that
+    // track even after another is picked; the same for the vibrato and
+    // glide keys.
+    live_tracks: [usize; PITCH_COUNT],
+    vibrato_track: usize,
+    glide_track: usize,
     // The beat's tempo in beats per minute. The C++ engine starts there too.
     tempo: u32,
     // Whether loops snap to the beat. The C++ engine starts with it on too.
@@ -855,17 +907,25 @@ pub struct Engine {
     looper_message: Option<String>,
     // When Esc was pressed, while it waits for a layer's number.
     esc_pressed_at: Option<Instant>,
+    // The layers removed since Rust last asked, as (track, layer) from 0,
+    // so the song's sections can forget them.
+    removed_layers: Vec<(usize, usize)>,
     // A loop sent to the engine from a song file, with how many bars it
     // lasts, kept until the engine says it has taken it in. Then its layers
     // become Rust's copy.
     loading: Option<(u32, Vec<LoopLayer>)>,
-    // The instrument each oscillator's samples play and the drum kit's, by
-    // name, as last asked for, and the engine's sample sets they play now:
-    // none while an instrument is still loading or can't be read.
-    instruments: [Option<String>; OSCILLATOR_COUNT],
-    drum_kit: Option<String>,
-    playing_sets: [Option<c_int>; OSCILLATOR_COUNT],
-    kit_set: Option<c_int>,
+    // How many loops were sent that the engine hasn't said it took in yet.
+    // Only the last one's word makes `loading` Rust's copy: an earlier
+    // one's can still be on its way when another loop is sent.
+    loads_waiting: usize,
+    // On each track, the instrument each oscillator's samples play and the
+    // drum kit's, by name, as last asked for, and the engine's sample sets
+    // they play now: none while an instrument is still loading or can't be
+    // read.
+    instruments: [[Option<String>; OSCILLATOR_COUNT]; TRACK_COUNT],
+    drum_kit: [Option<String>; TRACK_COUNT],
+    playing_sets: [[Option<c_int>; OSCILLATOR_COUNT]; TRACK_COUNT],
+    kit_set: [Option<c_int>; TRACK_COUNT],
     // Every set the engine keeps for this engine, with the instrument it
     // came from and whether it was made as a drum kit.
     sets: Vec<SentSet>,
@@ -896,17 +956,23 @@ impl Engine {
         let engine = Engine {
             raw,
             audio_running: false,
+            track: 0,
+            live_tracks: [0; PITCH_COUNT],
+            vibrato_track: 0,
+            glide_track: 0,
             tempo: START_TEMPO,
             snap: true,
             song_lengths: Vec::new(),
             layers: Vec::new(),
             looper_message: None,
             esc_pressed_at: None,
+            removed_layers: Vec::new(),
             loading: None,
-            instruments: [None, None, None],
-            drum_kit: None,
-            playing_sets: [None; OSCILLATOR_COUNT],
-            kit_set: None,
+            loads_waiting: 0,
+            instruments: Default::default(),
+            drum_kit: Default::default(),
+            playing_sets: [[None; OSCILLATOR_COUNT]; TRACK_COUNT],
+            kit_set: [None; TRACK_COUNT],
             sets: Vec::new(),
             loads_in_background: false,
         };
@@ -939,18 +1005,64 @@ impl Engine {
 
     // Starts `note` (0 to 127, middle C is 60) at `velocity`, how hard the key
     // was hit (1 to 127). The engine ignores anything outside those ranges.
+    // It plays on the picked track.
     pub fn note_on(&mut self, note: u8, velocity: u8) {
+        if usize::from(note) < PITCH_COUNT {
+            self.live_tracks[usize::from(note)] = self.track;
+        }
+        let track = self.track as c_int;
         let note = c_int::from(note);
         let velocity = c_int::from(velocity);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_note_on(self.raw, note, velocity) };
+        unsafe { jello_engine_note_on(self.raw, track, note, velocity) };
     }
 
-    // Lets go of `note`, so it fades out.
+    // Lets go of `note`, so it fades out, on the track it started on.
     pub fn note_off(&mut self, note: u8) {
+        let mut track = self.track;
+        if usize::from(note) < PITCH_COUNT {
+            track = self.live_tracks[usize::from(note)];
+        }
+        let track = track as c_int;
         let note = c_int::from(note);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_note_off(self.raw, note) };
+        unsafe { jello_engine_note_off(self.raw, track, note) };
+    }
+
+    // Picks track `track`, from 0, for the notes, sound settings, song and
+    // looper presses sent after this. A track past TRACK_COUNT is ignored.
+    // Notes already held finish on the track they started on.
+    pub fn set_track(&mut self, track: usize) {
+        if track < TRACK_COUNT {
+            self.track = track;
+        }
+    }
+
+    // The picked track, from 0.
+    pub fn track(&self) -> usize {
+        self.track
+    }
+
+    // Runs `work` with track `track` picked, then picks the track picked
+    // before. A song's sound goes to each of its tracks this way.
+    pub fn on_track<T>(&mut self, track: usize, work: impl FnOnce(&mut Engine) -> T) -> T {
+        let picked = self.track;
+        self.set_track(track);
+        let done = work(self);
+        self.track = picked;
+        done
+    }
+
+    // Sets track `track`'s volume to `percent`, from 0 to FULL_VOLUME,
+    // eased over 10 ms (`jello_engine_set_track_volume`). Above FULL_VOLUME
+    // counts as FULL_VOLUME. Returns it as sent.
+    pub fn set_track_volume(&mut self, track: usize, percent: u32) -> u32 {
+        let percent = percent.min(FULL_VOLUME);
+        let volume = percent as f32 / FULL_VOLUME as f32;
+        let track = c_int::try_from(track).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_track_volume(self.raw, track, volume) };
+        percent
     }
 
     // Lets go of every note.
@@ -975,6 +1087,7 @@ impl Engine {
         unsafe {
             jello_engine_set_oscillator(
                 self.raw,
+                self.track as c_int,
                 index as c_int,
                 oscillator.kind.number(),
                 level,
@@ -999,8 +1112,8 @@ impl Engine {
         if let Some(name) = name {
             instruments::try_again(name);
         }
-        self.instruments[index] = name.map(String::from);
-        self.send_instrument(index);
+        self.instruments[self.track][index] = name.map(String::from);
+        self.send_instrument(self.track, index);
         self.forget_unused_sets();
     }
 
@@ -1010,35 +1123,39 @@ impl Engine {
         if let Some(name) = name {
             instruments::try_again(name);
         }
-        self.drum_kit = name.map(String::from);
-        self.send_drum_kit();
+        self.drum_kit[self.track] = name.map(String::from);
+        self.send_drum_kit(self.track);
         self.forget_unused_sets();
     }
 
     // Plays every instrument asked for that is read by now. The app calls
     // this once one has finished loading in the background.
     pub fn send_loaded_instruments(&mut self) {
-        for index in 0..OSCILLATOR_COUNT {
-            if self.playing_sets[index].is_none() {
-                self.send_instrument(index);
+        for track in 0..TRACK_COUNT {
+            for index in 0..OSCILLATOR_COUNT {
+                if self.playing_sets[track][index].is_none() {
+                    self.send_instrument(track, index);
+                }
             }
-        }
-        if self.kit_set.is_none() {
-            self.send_drum_kit();
+            if self.kit_set[track].is_none() {
+                self.send_drum_kit(track);
+            }
         }
         self.forget_unused_sets();
     }
 
-    // The instrument oscillator `index` plays, and whether it is playing
-    // yet.
+    // The instrument oscillator `index` plays on the picked track, and
+    // whether it is playing yet.
     pub fn instrument(&self, index: usize) -> (Option<&str>, bool) {
-        let name = self.instruments[index].as_deref();
-        (name, self.playing_sets[index].is_some())
+        let name = self.instruments[self.track][index].as_deref();
+        (name, self.playing_sets[self.track][index].is_some())
     }
 
-    // The drum kit's instrument, and whether it is playing yet.
+    // The picked track's drum kit's instrument, and whether it is playing
+    // yet.
     pub fn drum_kit(&self) -> (Option<&str>, bool) {
-        (self.drum_kit.as_deref(), self.kit_set.is_some())
+        let name = self.drum_kit[self.track].as_deref();
+        (name, self.kit_set[self.track].is_some())
     }
 
     // Makes hits on pad `pad`, from 0, after this sound as `settings` says
@@ -1056,6 +1173,7 @@ impl Engine {
         unsafe {
             jello_engine_set_drum_pad(
                 self.raw,
+                self.track as c_int,
                 pad as c_int,
                 level,
                 settings.half_steps as c_int,
@@ -1066,25 +1184,28 @@ impl Engine {
         settings
     }
 
-    // Sends oscillator `index`'s instrument, if it is read.
-    fn send_instrument(&mut self, index: usize) {
-        let wanted = self.instruments[index].clone();
+    // Sends track `track`'s instrument for oscillator `index`, if it is
+    // read.
+    fn send_instrument(&mut self, track: usize, index: usize) {
+        let wanted = self.instruments[track][index].clone();
         let set = self.set_for(wanted.as_deref(), false);
+        let number = set.unwrap_or(NO_SET);
         // SAFETY: `raw` points to a live engine until Drop.
-        let sent = unsafe { jello_engine_set_instrument(self.raw, index as c_int, set.unwrap_or(NO_SET)) };
+        let sent = unsafe { jello_engine_set_instrument(self.raw, track as c_int, index as c_int, number) };
         if sent {
-            self.playing_sets[index] = set;
+            self.playing_sets[track][index] = set;
         }
     }
 
-    // Sends the drum kit's instrument, if it is read.
-    fn send_drum_kit(&mut self) {
-        let wanted = self.drum_kit.clone();
+    // Sends track `track`'s drum kit's instrument, if it is read.
+    fn send_drum_kit(&mut self, track: usize) {
+        let wanted = self.drum_kit[track].clone();
         let set = self.set_for(wanted.as_deref(), true);
+        let number = set.unwrap_or(NO_SET);
         // SAFETY: `raw` points to a live engine until Drop.
-        let sent = unsafe { jello_engine_set_drum_kit(self.raw, set.unwrap_or(NO_SET)) };
+        let sent = unsafe { jello_engine_set_drum_kit(self.raw, track as c_int, number) };
         if sent {
-            self.kit_set = set;
+            self.kit_set[track] = set;
         }
     }
 
@@ -1128,10 +1249,15 @@ impl Engine {
     fn forget_unused_sets(&mut self) {
         let mut kept = Vec::new();
         for sent in self.sets.drain(..) {
-            let mut used = self.kit_set == Some(sent.id);
-            for playing in self.playing_sets {
-                if playing == Some(sent.id) {
+            let mut used = false;
+            for track in 0..TRACK_COUNT {
+                if self.kit_set[track] == Some(sent.id) {
                     used = true;
+                }
+                for playing in self.playing_sets[track] {
+                    if playing == Some(sent.id) {
+                        used = true;
+                    }
                 }
             }
             if used {
@@ -1191,18 +1317,60 @@ impl Engine {
 
     // Right Shift's looper (`jello_engine_press_looper`): counts in, records,
     // closes the loop at the nearest bar line, then starts and stops layers.
-    // A loop with MAX_LAYERS layers takes no more: the engine ignores the
-    // press, and a message says why.
+    // A new layer belongs to the picked track. A track with MAX_LAYERS
+    // layers takes no more: the engine ignores the press, and a message
+    // says why.
     pub fn press_looper(&mut self) {
         let status = self.looper_status();
-        let full = self.loop_layers().len() == MAX_LAYERS;
+        let full = self.track_layer_count() == MAX_LAYERS;
         if status.state == LooperState::Looping {
             if full {
-                self.looper_message = Some(format!("{MAX_LAYERS} layers is the most, Esc removes one"));
+                self.looper_message = Some(format!("{MAX_LAYERS} layers is the most on a track, Esc removes one"));
             }
         }
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_press_looper(self.raw) };
+        unsafe { jello_engine_press_looper(self.raw, self.track as c_int) };
+    }
+
+    // How many layers the picked track has, as of the engine's last chunk
+    // of sound.
+    pub fn track_layer_count(&mut self) -> usize {
+        let track = self.track;
+        let mut count = 0;
+        for layer in self.loop_layers() {
+            if layer.track == track {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    // Where the picked track's layer `number`, counted from 1, sits among
+    // the loop's layers, or None if it has no such layer.
+    fn place_of(&mut self, number: u32) -> Option<usize> {
+        let track = self.track;
+        let wanted = number as usize;
+        let mut count = 0;
+        for (place, layer) in self.loop_layers().iter().enumerate() {
+            if layer.track == track {
+                count += 1;
+                if count == wanted {
+                    return Some(place);
+                }
+            }
+        }
+        None
+    }
+
+    // Checks that the picked track has a layer `number`.
+    fn layer_place(&mut self, number: u32) -> Result<usize, String> {
+        if number == 0 {
+            return Err(String::from("layers are counted from 1"));
+        }
+        match self.place_of(number) {
+            Some(place) => Ok(place),
+            None => Err(format!("there is no layer {number}")),
+        }
     }
 
     // Stops every layer's notes and forgets the loop, or cancels the
@@ -1228,19 +1396,11 @@ impl Engine {
         unsafe { jello_engine_play_loop(self.raw) };
     }
 
-    // Pauses layer `number` (counted from 1) or plays it again
-    // (`jello_engine_set_layer_playing`). A paused layer is silent and
+    // Pauses the picked track's layer `number` (counted from 1) or plays it
+    // again (`jello_engine_set_layer_playing`). A paused layer is silent and
     // keeps its volume. Fails for a layer that doesn't exist.
     pub fn set_layer_playing(&mut self, number: u32, playing: bool) -> Result<(), String> {
-        let count = self.loop_layers().len();
-        if number == 0 {
-            return Err(String::from("layers are counted from 1"));
-        }
-        if number as usize > count {
-            return Err(format!("there is no layer {number}"));
-        }
-
-        let place = number as usize - 1;
+        let place = self.layer_place(number)?;
         let layer = place as c_int;
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_layer_playing(self.raw, layer, playing) };
@@ -1280,9 +1440,9 @@ impl Engine {
         let Some((common, mut layers)) = self.loop_to_keep() else {
             return Err(String::from("record a loop first"));
         };
-        if number == 0 || number as usize > layers.len() {
+        let Some(place) = self.place_of(number) else {
             return Err(String::from("there is no layer with that number"));
-        }
+        };
         if matches!(self.looper_status().state, LooperState::Layering) {
             return Err(String::from("finish recording before changing layer lengths"));
         }
@@ -1291,7 +1451,7 @@ impl Engine {
                 layer.bars = common;
             }
         }
-        layers[number as usize - 1].bars = bars;
+        layers[place].bars = bars;
         self.open_loop(self.tempo, common, &layers, crate::key_map::LAPTOP_VELOCITY)?;
         if was_playing {
             self.play_loop();
@@ -1351,6 +1511,7 @@ impl Engine {
             for note in &notes {
                 raw_notes.push(RawLoadedNote {
                     layer: place as c_int,
+                    track: c_int::try_from(layer.track).unwrap_or(-1),
                     note: c_int::from(note.note),
                     velocity: c_int::from(velocity),
                     start: note.start,
@@ -1363,6 +1524,7 @@ impl Engine {
                 volume: layer.volume.min(FULL_VOLUME),
                 playing: layer.playing,
                 recording: false,
+                track: layer.track,
             });
         }
 
@@ -1379,6 +1541,7 @@ impl Engine {
                 "the engine did not take the loop: too many notes or layers, a note out of range, or too many messages waiting",
             ));
         }
+        self.loads_waiting += 1;
 
         // Each layer starts at full volume and playing, so only the others
         // are sent.
@@ -1398,26 +1561,49 @@ impl Engine {
         Ok(())
     }
 
-    // Stops the newest layer's notes and forgets it
-    // (`jello_engine_remove_layer`). Removing the only layer clears the
-    // loop, and so does removing any during the count-in or the first
-    // recording.
+    // Stops the picked track's newest layer's notes and forgets it
+    // (`jello_engine_remove_layer`). Removing the loop's only layer clears
+    // the loop, and so does removing any during the count-in or the first
+    // recording, whichever track is picked.
     pub fn remove_newest_layer(&mut self) {
-        // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_remove_layer(self.raw, NEWEST_LAYER) };
+        let state = self.looper_status().state;
+        let mut first_loop = false;
+        if state == LooperState::CountingIn {
+            first_loop = true;
+        }
+        if state == LooperState::Recording {
+            first_loop = true;
+        }
+        if first_loop {
+            // SAFETY: `raw` points to a live engine until Drop.
+            unsafe { jello_engine_remove_layer(self.raw, NEWEST_LAYER) };
+            return;
+        }
+        let newest = self.track_layer_count() as u32;
+        self.remove_layer(newest);
     }
 
-    // The same for layer `number`, counted from 1 in the order the layers
-    // were recorded. The layers after it move up. A layer that doesn't
-    // exist changes nothing.
+    // The same for the picked track's layer `number`, counted from 1 in the
+    // order its layers were recorded. The layers after it move up. A layer
+    // that doesn't exist changes nothing.
     pub fn remove_layer(&mut self, number: u32) {
         if number == 0 {
             return;
         }
-        // A number too big for a C int becomes -2, which the engine ignores.
-        let layer = c_int::try_from(number - 1).unwrap_or(-2);
+        let Some(place) = self.place_of(number) else {
+            return;
+        };
+        let layer = place as c_int;
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_remove_layer(self.raw, layer) };
+        let track_layer = number as usize - 1;
+        self.removed_layers.push((self.track, track_layer));
+    }
+
+    // The layers removed since this was asked last, oldest first, as
+    // (track, layer) from 0, each counted as it was just before it went.
+    pub fn take_removed_layers(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.removed_layers)
     }
 
     // What Esc does at `now` (docs/adr/0026-layers.md). With two layers or
@@ -1432,7 +1618,7 @@ impl Engine {
             self.remove_newest_layer();
             return;
         }
-        if self.loop_layers().len() < 2 {
+        if self.track_layer_count() < 2 {
             self.remove_newest_layer();
             return;
         }
@@ -1449,7 +1635,7 @@ impl Engine {
         }
         self.esc_pressed_at = None;
 
-        let count = self.loop_layers().len();
+        let count = self.track_layer_count();
         if number as usize > count {
             self.looper_message = Some(format!("There is no layer {number}"));
             return true;
@@ -1489,11 +1675,12 @@ impl Engine {
         if !self.is_esc_waiting(now) {
             return None;
         }
-        let newest = self.loop_layers().len();
+        let newest = self.track_layer_count();
         u32::try_from(newest).ok()
     }
 
-    // Sets layer `number`'s volume (counted from 1) to `percent`, from 0 to
+    // Sets the picked track's layer `number`'s volume (counted from 1) to
+    // `percent`, from 0 to
     // FULL_VOLUME, its notes already sounding too
     // (`jello_engine_set_layer_volume`). Fails for a layer that doesn't
     // exist or a volume above FULL_VOLUME.
@@ -1501,15 +1688,7 @@ impl Engine {
         if percent > FULL_VOLUME {
             return Err(format!("a layer's volume goes from 0 to {FULL_VOLUME}, not {percent}"));
         }
-        let count = self.loop_layers().len();
-        if number == 0 {
-            return Err(String::from("layers are counted from 1"));
-        }
-        if number as usize > count {
-            return Err(format!("there is no layer {number}"));
-        }
-
-        let place = number as usize - 1;
+        let place = self.layer_place(number)?;
         let layer = place as c_int;
         let volume = percent as f32 / FULL_VOLUME as f32;
         // SAFETY: `raw` points to a live engine until Drop.
@@ -1520,6 +1699,12 @@ impl Engine {
 
     // The message about the looper waiting for the top bar, if there is
     // one. Taking it means it shows once.
+    // Shows `message` in the top bar with the next answer, as the looper's
+    // messages are.
+    pub fn show_message(&mut self, message: &str) {
+        self.looper_message = Some(String::from(message));
+    }
+
     pub fn take_looper_message(&mut self) -> Option<String> {
         self.looper_message.take()
     }
@@ -1628,6 +1813,7 @@ impl Engine {
                 index: 0,
                 note: 0,
                 sample: 0,
+                track: 0,
             };
             // SAFETY: `raw` points to a live engine until Drop, and `change`
             // is ours to fill.
@@ -1654,6 +1840,7 @@ impl Engine {
                 volume: FULL_VOLUME,
                 playing: true,
                 recording: true,
+                track: usize::try_from(change.track).unwrap_or(0),
             };
             self.layers.push(started);
         } else if change.change == LOOP_STARTED {
@@ -1684,8 +1871,13 @@ impl Engine {
         } else if change.change == LOOP_LAYER_REMOVED {
             self.forget_layer(layer);
         } else if change.change == LOOP_LOADED {
-            if let Some((_, loaded)) = self.loading.take() {
-                self.layers = loaded;
+            if self.loads_waiting > 0 {
+                self.loads_waiting -= 1;
+            }
+            if self.loads_waiting == 0 {
+                if let Some((_, loaded)) = self.loading.take() {
+                    self.layers = loaded;
+                }
             }
         }
     }
@@ -1747,9 +1939,9 @@ impl Engine {
         status.state != LooperState::Idle
     }
 
-    // Plays `chords` one after another, each for its length, with no gap
-    // between them, from the engine's next chunk of sound. Whatever the song
-    // was playing stops first. Fails and plays nothing if there are more
+    // Plays `chords` on the picked track one after another, each for its
+    // length, with no gap between them, from the engine's next chunk of
+    // sound. Whatever the song was playing stops first. Fails and plays nothing if there are more
     // than SONG_MAX_CHORDS chords, a chord has more than 4 notes, a note or
     // velocity is outside MIDI's range, or too many messages are waiting.
     // The engine checks the number of chords itself, so it isn't checked
@@ -1770,7 +1962,8 @@ impl Engine {
         };
         // SAFETY: `raw` points to a live engine until Drop, and `raw_chords`
         // holds exactly `count` chords.
-        let played = unsafe { jello_engine_play_song(self.raw, raw_chords.as_ptr(), count) };
+        let track = self.track as c_int;
+        let played = unsafe { jello_engine_play_song(self.raw, track, raw_chords.as_ptr(), count) };
         if !played {
             return Err(format!(
                 "the engine did not take the song: {too_many}, a note or velocity is outside MIDI's range, or too many messages are waiting",
@@ -1879,7 +2072,7 @@ impl Engine {
         let share = resonance as f32 / FULL_PERCENT as f32;
         let filter_type = filter.filter_type;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_filter(self.raw, filter_type.number(), cutoff_hz, share) };
+        unsafe { jello_engine_set_filter(self.raw, self.track as c_int, filter_type.number(), cutoff_hz, share) };
         Filter {
             filter_type,
             cutoff_hz,
@@ -1898,7 +2091,7 @@ impl Engine {
         let decay = stage_ms(envelope.decay_ms);
         let release = stage_ms(envelope.release_ms);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_filter_envelope(self.raw, amount, attack, decay, share, release) };
+        unsafe { jello_engine_set_filter_envelope(self.raw, self.track as c_int, amount, attack, decay, share, release) };
         FilterEnvelope {
             amount,
             attack_ms: attack as u32,
@@ -1917,7 +2110,7 @@ impl Engine {
         let spread = unison.spread.min(FULL_PERCENT);
         let share = spread as f32 / FULL_PERCENT as f32;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_unison(self.raw, copies as c_int, detune_cents as f32, share) };
+        unsafe { jello_engine_set_unison(self.raw, self.track as c_int, copies as c_int, detune_cents as f32, share) };
         Unison {
             copies,
             detune_cents,
@@ -1935,7 +2128,7 @@ impl Engine {
         let share = sustain as f32 / FULL_PERCENT as f32;
         let release = loudness_ms(envelope.release_ms);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_loudness_envelope(self.raw, attack, decay, share, release) };
+        unsafe { jello_engine_set_loudness_envelope(self.raw, self.track as c_int, attack, decay, share, release) };
         LoudnessEnvelope {
             attack_ms: attack as u32,
             decay_ms: decay as u32,
@@ -1951,7 +2144,7 @@ impl Engine {
         let key_tracking = key_tracking.min(FULL_PERCENT);
         let share = key_tracking as f32 / FULL_PERCENT as f32;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_key_tracking(self.raw, share) };
+        unsafe { jello_engine_set_key_tracking(self.raw, self.track as c_int, share) };
         key_tracking
     }
 
@@ -1961,7 +2154,7 @@ impl Engine {
     pub fn set_tuning(&mut self, a4_hz: f32) -> f32 {
         let a4_hz = within(a4_hz, TUNING_LOWEST_HZ, TUNING_HIGHEST_HZ);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_tuning(self.raw, a4_hz) };
+        unsafe { jello_engine_set_tuning(self.raw, self.track as c_int, a4_hz) };
         a4_hz
     }
 
@@ -1977,7 +2170,7 @@ impl Engine {
         let raw = raw_lfo(&lfo);
         // SAFETY: `raw` points to a live engine until Drop, and the LFO's
         // settings live until the call returns.
-        unsafe { jello_engine_set_lfo(self.raw, index as c_int, &raw) };
+        unsafe { jello_engine_set_lfo(self.raw, self.track as c_int, index as c_int, &raw) };
         lfo
     }
 
@@ -1993,7 +2186,7 @@ impl Engine {
         let raw = raw_connection(&connection);
         // SAFETY: `raw` points to a live engine until Drop, and the
         // connection lives until the call returns.
-        unsafe { jello_engine_set_connection(self.raw, index as c_int, &raw) };
+        unsafe { jello_engine_set_connection(self.raw, self.track as c_int, index as c_int, &raw) };
         connection
     }
 
@@ -2004,22 +2197,33 @@ impl Engine {
         let rise_ms = times.rise_ms.min(VIBRATO_KEY_LONGEST_MS);
         let fall_ms = times.fall_ms.min(VIBRATO_KEY_LONGEST_MS);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_vibrato_key_times(self.raw, rise_ms as c_int, fall_ms as c_int) };
+        unsafe { jello_engine_set_vibrato_key_times(self.raw, self.track as c_int, rise_ms as c_int, fall_ms as c_int) };
         VibratoKeyTimes { rise_ms, fall_ms }
     }
 
     // Holds or lets go of the live vibrato key
     // (`jello_engine_set_vibrato_key`, docs/adr/0032-the-vibrato-key.md).
+    // Held, it moves the picked track's notes; let go, it reaches the track
+    // it was held on.
     pub fn set_vibrato_key(&mut self, held: bool) {
+        if held {
+            self.vibrato_track = self.track;
+        }
+        let track = self.vibrato_track as c_int;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_vibrato_key(self.raw, held) };
+        unsafe { jello_engine_set_vibrato_key(self.raw, track, held) };
     }
 
     // Holds or lets go of the live glide key
     // (`jello_engine_set_glide_key`, docs/adr/0036-glide.md).
+    // Held and let go like the vibrato key.
     pub fn set_glide_key(&mut self, held: bool) {
+        if held {
+            self.glide_track = self.track;
+        }
+        let track = self.glide_track as c_int;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_glide_key(self.raw, held) };
+        unsafe { jello_engine_set_glide_key(self.raw, track, held) };
     }
 
     // Sets how long a glide takes for the notes started after this, in ms
@@ -2028,8 +2232,85 @@ impl Engine {
     pub fn set_glide_time(&mut self, glide_ms: u32) -> u32 {
         let glide_ms = glide_ms.min(GLIDE_LONGEST_MS);
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_glide_time(self.raw, glide_ms as c_int) };
+        unsafe { jello_engine_set_glide_time(self.raw, self.track as c_int, glide_ms as c_int) };
         glide_ms
+    }
+
+    // The sequencer (docs/design.md#tracks-in-the-engine). Between
+    // time_next and send_now, the notes, sound settings, track volumes,
+    // timed tempo and layer functions sent are due `sample` samples after
+    // the sequence starts, instead of at once.
+    pub fn time_next(&mut self, sample: u64) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_time_next(self.raw, sample) };
+    }
+
+    pub fn send_now(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_send_now(self.raw) };
+    }
+
+    // Starts the sequence the timed messages since the last stop belong to.
+    pub fn play_sequence(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_play_sequence(self.raw) };
+    }
+
+    // Stops it: its layers' notes let go, and its messages still waiting
+    // are dropped.
+    pub fn stop_sequence(&mut self) {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_stop_sequence(self.raw) };
+    }
+
+    // How many samples the sequence has played, as of the engine's last
+    // chunk of sound, or None when none plays.
+    pub fn sequence_position(&self) -> Option<u64> {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let position = unsafe { jello_engine_sequence_position(self.raw) };
+        u64::try_from(position).ok()
+    }
+
+    // How many more timed messages fit right now.
+    pub fn sequence_room(&self) -> usize {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let room = unsafe { jello_engine_sequence_room(self.raw) };
+        usize::try_from(room).unwrap_or(0)
+    }
+
+    // Changes the beat's tempo, timed, without the tempo kept here: the
+    // arrangement does this while the looper is idle.
+    pub fn send_tempo(&mut self, tempo: u32) {
+        let number = c_int::try_from(tempo).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_tempo(self.raw, number) };
+    }
+
+    // A layer's note played straight on track `track`'s layer slot `slot`
+    // (`jello_engine_layer_note_on`), as the arrangement plays its layers.
+    pub fn layer_note_on(&mut self, track: usize, slot: usize, note: u8, velocity: u8) {
+        let track = c_int::try_from(track).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_layer_note_on(self.raw, track, slot, c_int::from(note), c_int::from(velocity)) };
+    }
+
+    pub fn layer_note_off(&mut self, track: usize, slot: usize, note: u8) {
+        let track = c_int::try_from(track).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_layer_note_off(self.raw, track, slot, c_int::from(note)) };
+    }
+
+    // How loud track `track`'s layer slot `slot` plays, in percent, from 0
+    // to FULL_VOLUME.
+    pub fn set_slot_volume(&mut self, track: usize, slot: usize, percent: u32) {
+        let percent = percent.min(FULL_VOLUME);
+        let volume = percent as f32 / FULL_VOLUME as f32;
+        let track = c_int::try_from(track).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_slot_volume(self.raw, track, slot, volume) };
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -2056,6 +2337,15 @@ impl Engine {
         unsafe { jello_engine_render(self.raw, samples.as_mut_ptr(), frame_count) };
 
         samples
+    }
+
+    // Renders, and throws away, a moment of silence before anything plays,
+    // so the track volumes just set have eased all the way to where they
+    // were asked. The engine eases them over 10 ms, so without this a muted
+    // track would still be heard for its first 10 ms.
+    pub fn settle_volumes(&mut self) {
+        let frames = self.sample_rate() as usize * VOLUME_SETTLE_MS / 1000;
+        self.render(frames);
     }
 
     // The names of the mics there are now, in the order start_capture
@@ -3294,7 +3584,7 @@ mod tests {
         engine.set_first_kind(Kind::Sine);
         let (index, kind, level, octaves, half_steps, cents, width) = call;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_oscillator(engine.raw, index, kind, level, octaves, half_steps, cents, width) };
+        unsafe { jello_engine_set_oscillator(engine.raw, 0, index, kind, level, octaves, half_steps, cents, width) };
         hold(&mut engine, A4, VELOCITY)
     }
 
@@ -4982,31 +5272,32 @@ mod tests {
 
     // How many notes a loop holds. When it is changed there on purpose,
     // change it here too.
-    const LOOP_NOTES: usize = 4096; // `max_notes` in engine/src/looper.h
+    const LOOP_NOTES: usize = 16384; // `max_notes` in engine/src/looper.h
 
     #[test]
-    fn a_full_loop_keeps_4096_notes_and_plays_the_rest_live() {
-        // 4,096 short notes fill the loop, one every 7 samples. C5, the
-        // note after them, still sounds live but isn't recorded.
+    fn a_full_loop_keeps_16384_notes_and_plays_the_rest_live() {
+        // 16,384 short notes fill the loop, one every 4 samples, and fade
+        // out before it repeats. C5, the note after them, still sounds live
+        // but isn't recorded.
         let mut bar = Vec::new();
         for i in 0..LOOP_NOTES {
             let note = C3 + (i % 24) as u8;
-            bar.push((7 * i, NoteOn(note)));
-            bar.push((7 * i + 3, NoteOff(note)));
+            bar.push((4 * i, NoteOn(note)));
+            bar.push((4 * i + 2, NoteOff(note)));
         }
         let start = RECORDING_STARTS;
         let mut looped = vec![
             (0, PressLooper),
-            (start + 40_000, NoteOn(C5)),
-            (start + 45_000, NoteOff(C5)),
+            (start + 66_000, NoteOn(C5)),
+            (start + 66_500, NoteOff(C5)),
             (start + 80_000, PressLooper),
         ];
         looped.extend(moved(&bar, start));
 
         let mut live = vec![
             (0, StartClick),
-            (start + 40_000, NoteOn(C5)),
-            (start + 45_000, NoteOff(C5)),
+            (start + 66_000, NoteOn(C5)),
+            (start + 66_500, NoteOff(C5)),
             (start + BAR_AT_120, StopClick),
         ];
         for time_around in 0..3 {
@@ -5857,7 +6148,7 @@ mod tests {
         play(&mut engine, &steps, ninth + 10_000);
         assert_eq!(engine.loop_layers().len(), 8);
         assert_eq!(engine.looper_status(), looper(LooperState::Looping, 1, false));
-        assert_eq!(engine.take_looper_message(), Some(String::from("8 layers is the most, Esc removes one")));
+        assert_eq!(engine.take_looper_message(), Some(String::from("8 layers is the most on a track, Esc removes one")));
 
         // Once one goes, a new one can start. The eighth is the C API's
         // highest number.
@@ -5895,6 +6186,7 @@ mod tests {
             volume: 30,
             playing: true,
             recording: false,
+            track: 0,
         };
         let e4_layer = LoopLayer {
             bars: 0,
@@ -5902,6 +6194,7 @@ mod tests {
             volume: FULL_VOLUME,
             playing: true,
             recording: false,
+            track: 0,
         };
         assert_eq!(engine.loop_layers().to_vec(), vec![c5_layer, e4_layer]);
     }
@@ -5965,6 +6258,7 @@ mod tests {
             volume,
             playing,
             recording: false,
+            track: 0,
         }
     }
 
@@ -6688,7 +6982,7 @@ mod tests {
         }
         // SAFETY: `raw` points to a live engine until Drop, and `raw_chords`
         // holds exactly 513 chords.
-        let played = unsafe { jello_engine_play_song(engine.raw, raw_chords.as_ptr(), 513) };
+        let played = unsafe { jello_engine_play_song(engine.raw, 0, raw_chords.as_ptr(), 513) };
         assert!(!played);
 
         // 512 play, the same as playing them by hand.
@@ -6784,7 +7078,7 @@ mod tests {
             raw.note_count = note_count;
             // SAFETY: `raw` points to a live engine until Drop, and `raw` is
             // one chord.
-            let played = unsafe { jello_engine_play_song(engine.raw, &raw, 1) };
+            let played = unsafe { jello_engine_play_song(engine.raw, 0, &raw, 1) };
             assert!(!played, "a chord of {note_count} notes was played");
         }
 
@@ -7573,7 +7867,7 @@ mod tests {
         for (filter_type, cutoff_hz, resonance) in odd_filters {
             let odd = filtered_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_filter(engine.raw, filter_type, cutoff_hz, resonance) };
+                unsafe { jello_engine_set_filter(engine.raw, 0, filter_type, cutoff_hz, resonance) };
             });
             assert!(odd == plain, "type {filter_type} at {cutoff_hz} Hz and {resonance} changed the sound");
         }
@@ -7594,7 +7888,7 @@ mod tests {
         for (amount, attack, decay, sustain, release) in odd_envelopes {
             let odd = filtered_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_filter_envelope(engine.raw, amount, attack, decay, sustain, release) };
+                unsafe { jello_engine_set_filter_envelope(engine.raw, 0, amount, attack, decay, sustain, release) };
             });
             assert!(
                 odd == plain,
@@ -8079,7 +8373,7 @@ mod tests {
         for (copies, detune_cents, spread) in odd_values {
             let odd = unison_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_unison(engine.raw, copies, detune_cents, spread) };
+                unsafe { jello_engine_set_unison(engine.raw, 0, copies, detune_cents, spread) };
             });
             assert!(
                 odd == plain,
@@ -8369,7 +8663,7 @@ mod tests {
         for (attack, decay, sustain, release) in odd_envelopes {
             let odd = shaped_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_loudness_envelope(engine.raw, attack, decay, sustain, release) };
+                unsafe { jello_engine_set_loudness_envelope(engine.raw, 0, attack, decay, sustain, release) };
             });
             assert!(
                 odd == plain,
@@ -8379,14 +8673,14 @@ mod tests {
         for key_tracking in [-0.1, 1.1, f32::NAN] {
             let odd = shaped_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_key_tracking(engine.raw, key_tracking) };
+                unsafe { jello_engine_set_key_tracking(engine.raw, 0, key_tracking) };
             });
             assert!(odd == plain, "key tracking at {key_tracking} changed the sound");
         }
         for a4_hz in [414.9, 466.1, f32::NAN] {
             let odd = shaped_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_tuning(engine.raw, a4_hz) };
+                unsafe { jello_engine_set_tuning(engine.raw, 0, a4_hz) };
             });
             assert!(odd == plain, "tuning to {a4_hz} changed the sound");
         }
@@ -10328,7 +10622,7 @@ mod tests {
         for glide_ms in [-1, GLIDE_LONGEST_MS as c_int + 1] {
             let mut engine = sine_engine();
             // SAFETY: `raw` points to a live engine until Drop.
-            unsafe { jello_engine_set_glide_time(engine.raw, glide_ms) };
+            unsafe { jello_engine_set_glide_time(engine.raw, 0, glide_ms) };
             let odd = play(&mut engine, &steps, 48_000);
             assert!(odd == plain, "a glide time of {glide_ms} ms changed the sound");
         }
@@ -10708,7 +11002,7 @@ mod tests {
                 let raw = raw_triangle(change);
                 // SAFETY: `raw` points to a live engine until Drop, and the
                 // LFO lives until the call returns.
-                unsafe { jello_engine_set_lfo(engine.raw, 0, &raw) };
+                unsafe { jello_engine_set_lfo(engine.raw, 0, 0, &raw) };
             });
             assert!(odd == plain, "an LFO with {what} changed the sound");
         }
@@ -10716,7 +11010,7 @@ mod tests {
             let odd = routed_a4_after(|engine| {
                 let raw = raw_triangle(|_| {});
                 // SAFETY: as above.
-                unsafe { jello_engine_set_lfo(engine.raw, index, &raw) };
+                unsafe { jello_engine_set_lfo(engine.raw, 0, index, &raw) };
             });
             assert!(odd == plain, "LFO {index} changed the sound");
         }
@@ -10738,7 +11032,7 @@ mod tests {
             let odd = routed_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop, and the
                 // connection lives until the call returns.
-                unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+                unsafe { jello_engine_set_connection(engine.raw, 0, 0, &raw) };
             });
             assert!(odd == plain, "a connection with {what} changed the sound");
         }
@@ -10752,7 +11046,7 @@ mod tests {
                 raw.amount = raw.amount * 1.001;
                 let odd = routed_a4_after(|engine| {
                     // SAFETY: as above.
-                    unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+                    unsafe { jello_engine_set_connection(engine.raw, 0, 0, &raw) };
                 });
                 assert!(odd == plain, "{} past {most} changed the sound", target.name());
             }
@@ -10761,7 +11055,7 @@ mod tests {
             let odd = routed_a4_after(|engine| {
                 let raw = raw_connection(&dip_by(Source::Lfo(0)));
                 // SAFETY: as above.
-                unsafe { jello_engine_set_connection(engine.raw, index, &raw) };
+                unsafe { jello_engine_set_connection(engine.raw, 0, index, &raw) };
             });
             assert!(odd == plain, "connection {index} changed the sound");
         }
@@ -10769,7 +11063,7 @@ mod tests {
         for (rise_ms, fall_ms) in [(-1, 0), (10_001, 0), (0, -1), (0, 10_001)] {
             let odd = routed_a4_after(|engine| {
                 // SAFETY: `raw` points to a live engine until Drop.
-                unsafe { jello_engine_set_vibrato_key_times(engine.raw, rise_ms, fall_ms) };
+                unsafe { jello_engine_set_vibrato_key_times(engine.raw, 0, rise_ms, fall_ms) };
             });
             assert!(odd == plain, "key times of {rise_ms} and {fall_ms} ms changed the sound");
         }
@@ -10912,7 +11206,7 @@ mod tests {
                 let raw = raw_lfo(&edge);
                 // SAFETY: `raw` points to a live engine until Drop, and the
                 // LFO lives until the call returns.
-                unsafe { jello_engine_set_lfo(engine.raw, 0, &raw) };
+                unsafe { jello_engine_set_lfo(engine.raw, 0, 0, &raw) };
             });
             assert!(moved != plain, "the engine refused {edge:?}");
         }
@@ -10929,7 +11223,7 @@ mod tests {
                     let raw = raw_connection(&unused);
                     // SAFETY: `raw` points to a live engine until Drop, and
                     // the connection lives until the call returns.
-                    unsafe { jello_engine_set_connection(engine.raw, 0, &raw) };
+                    unsafe { jello_engine_set_connection(engine.raw, 0, 0, &raw) };
                 });
                 assert!(moved != plain, "the engine refused {} by {most}", target.name());
             }
@@ -10939,7 +11233,7 @@ mod tests {
         let moved = routed_a4_after(|engine| {
             let longest = VIBRATO_KEY_LONGEST_MS as c_int;
             // SAFETY: `raw` points to a live engine until Drop.
-            unsafe { jello_engine_set_vibrato_key_times(engine.raw, longest, longest) };
+            unsafe { jello_engine_set_vibrato_key_times(engine.raw, 0, longest, longest) };
         });
         assert!(moved != plain, "the engine refused the longest key times");
     }
@@ -11301,5 +11595,235 @@ mod tests {
         assert_eq!(past, wild.within_ranges());
         engine.note_on(pad("kick"), VELOCITY);
         assert!(peak(&render_left(&mut engine, 30)) > 0.0);
+    }
+
+    // Tracks (docs/design.md#tracks-in-the-engine): nine instruments, each
+    // with its own sound and loop layers, played only by their own notes.
+
+    #[test]
+    fn a_track_plays_only_its_own_notes_in_its_own_sound() {
+        // A sine on track 3, while track 0 keeps the triangle.
+        let mut tracks = Engine::new().unwrap();
+        tracks.set_track(3);
+        tracks.set_first_kind(Kind::Sine);
+        tracks.note_on(A4, VELOCITY);
+        let on_three = render_left(&mut tracks, 200);
+
+        let mut alone = Engine::new().unwrap();
+        alone.set_first_kind(Kind::Sine);
+        alone.note_on(A4, VELOCITY);
+        assert_same_samples(&on_three, &render_left(&mut alone, 200));
+
+        // Track 0 never heard the sine.
+        let mut both = Engine::new().unwrap();
+        both.set_track(3);
+        both.set_first_kind(Kind::Sine);
+        both.set_track(0);
+        both.note_on(A4, VELOCITY);
+        let mut triangle = Engine::new().unwrap();
+        triangle.note_on(A4, VELOCITY);
+        assert_same_samples(&render_left(&mut both, 200), &render_left(&mut triangle, 200));
+    }
+
+    #[test]
+    fn a_note_lets_go_on_the_track_it_started_on() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_track(2);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        engine.set_track(5);
+        engine.note_off(A4);
+        let fade = render_left(&mut engine, RELEASE_MS);
+        let after = render_left(&mut engine, 50);
+        assert_fades_out(&engine, &fade, &after);
+        assert_eq!(engine.track(), 5);
+    }
+
+    #[test]
+    fn a_track_past_the_last_is_ignored() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_track(TRACK_COUNT);
+        assert_eq!(engine.track(), 0);
+        let picked = engine.on_track(4, |engine| engine.track());
+        assert_eq!(picked, 4);
+        assert_eq!(engine.track(), 0);
+    }
+
+    #[test]
+    fn a_track_s_volume_eases_to_its_level() {
+        let mut full = Engine::new().unwrap();
+        let held = hold(&mut full, A4, VELOCITY);
+
+        let mut half = Engine::new().unwrap();
+        assert_eq!(half.set_track_volume(0, 50), 50);
+        let quieter = hold(&mut half, A4, VELOCITY);
+        assert_within_percent(peak(&quieter), peak(&held) * 0.5, 1.0);
+
+        // Another track's volume changes nothing here, and too loud counts
+        // as full.
+        let mut other = Engine::new().unwrap();
+        other.set_track_volume(1, 0);
+        assert_eq!(other.set_track_volume(0, 400), FULL_VOLUME);
+        assert_same_samples(&hold(&mut other, A4, VELOCITY), &held);
+    }
+
+    #[test]
+    fn layers_belong_to_the_track_they_are_recorded_on() {
+        // The first loop on track 0, then a layer on track 4 that hears only
+        // track 4's notes.
+        let mut engine = engine_without_snap();
+        play(&mut engine, &base_looped(), time_around(2));
+        engine.set_track(4);
+        engine.press_looper();
+        render_frames_left(&mut engine, 10_000, usize::MAX);
+        engine.set_track(0);
+        engine.note_on(E4, VELOCITY);
+        render_frames_left(&mut engine, 5_000, usize::MAX);
+        engine.note_off(E4);
+        engine.set_track(4);
+        engine.note_on(C5, VELOCITY);
+        render_frames_left(&mut engine, 5_000, usize::MAX);
+        engine.note_off(C5);
+        render_frames_left(&mut engine, 30_000, usize::MAX);
+        engine.press_looper();
+        render_frames_left(&mut engine, 10, usize::MAX);
+
+        let layers = engine.loop_layers().to_vec();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].track, 0);
+        assert_eq!(layers[1].track, 4);
+        assert_eq!(layers[1].notes.len(), 1);
+        assert_eq!(layers[1].notes[0].note, C5);
+
+        // Track 4's layer 1 is the loop's second layer.
+        assert_eq!(engine.track_layer_count(), 1);
+        engine.set_layer_volume(1, 30).unwrap();
+        assert_eq!(engine.loop_layers()[1].volume, 30);
+        assert!(engine.set_layer_volume(2, 30).is_err());
+        engine.remove_layer(1);
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.loop_layers().len(), 1);
+        assert_eq!(engine.loop_layers()[0].track, 0);
+
+        // A track with no layers removes nothing with Esc.
+        engine.remove_newest_layer();
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.loop_layers().len(), 1);
+    }
+
+    #[test]
+    fn a_song_s_loop_keeps_each_layer_s_track() {
+        let on_track = |track: usize, note: u8| LoopLayer {
+            bars: 0,
+            notes: vec![ended(note, 1_000, 20_000)],
+            volume: FULL_VOLUME,
+            playing: true,
+            recording: false,
+            track,
+        };
+        let layers = vec![on_track(2, A4), on_track(0, C5), on_track(2, E4)];
+        let mut engine = Engine::new().unwrap();
+        engine.open_loop(START_TEMPO, 1, &layers, VELOCITY).unwrap();
+        render_frames_left(&mut engine, 10, usize::MAX);
+        assert_eq!(engine.loop_layers(), layers.as_slice());
+        engine.set_track(2);
+        assert_eq!(engine.track_layer_count(), 2);
+
+        // At most MAX_LAYERS on one track.
+        let mut crowded = Vec::new();
+        for _ in 0..MAX_LAYERS + 1 {
+            crowded.push(on_track(1, A4));
+        }
+        assert!(engine.open_loop(START_TEMPO, 1, &crowded, VELOCITY).is_err());
+    }
+
+    // The sequencer plays timed messages on their own samples.
+
+    // Notes on track `track` at `on` and `off`, timed, then the sequence
+    // played.
+    fn send_timed_note(engine: &mut Engine, track: usize, on: u64, off: u64) {
+        engine.set_track(track);
+        engine.time_next(on);
+        engine.note_on(A4, VELOCITY);
+        engine.time_next(off);
+        engine.note_off(A4);
+        engine.send_now();
+    }
+
+    #[test]
+    fn the_sequencer_plays_each_message_on_its_sample() {
+        let mut timed = Engine::new().unwrap();
+        assert_eq!(timed.sequence_position(), None);
+        send_timed_note(&mut timed, 0, 1_001, 5_003);
+        timed.play_sequence();
+        assert_eq!(timed.sequence_position(), Some(0));
+        let frames = 30_000;
+        let wave = render_frames_left(&mut timed, frames, 512);
+        assert_eq!(timed.sequence_position(), Some(frames as u64));
+
+        let mut live = Engine::new().unwrap();
+        let steps = [(1_001, NoteOn(A4)), (5_003, NoteOff(A4))];
+        assert_same_samples(&wave, &play(&mut live, &steps, frames));
+
+        // Played again, in other chunks, it sounds the same.
+        let mut again = Engine::new().unwrap();
+        send_timed_note(&mut again, 0, 1_001, 5_003);
+        again.play_sequence();
+        assert_same_samples(&render_frames_left(&mut again, frames, 300), &wave);
+
+        // Once stopped, nothing plays until the next sequence.
+        timed.stop_sequence();
+        render_frames_left(&mut timed, 10, 512);
+        assert_eq!(timed.sequence_position(), None);
+    }
+
+    #[test]
+    fn a_stopped_sequence_s_messages_are_dropped() {
+        let mut engine = Engine::new().unwrap();
+        send_timed_note(&mut engine, 1, 20_000, 30_000);
+        engine.play_sequence();
+        render_frames_left(&mut engine, 10_000, 512);
+        engine.stop_sequence();
+        assert_eq!(peak(&render_frames_left(&mut engine, 40_000, 512)), 0.0);
+
+        // The next sequence plays from its own start.
+        send_timed_note(&mut engine, 1, 0, 1_000);
+        engine.play_sequence();
+        assert!(peak(&render_frames_left(&mut engine, 2_000, 512)) > 0.0);
+    }
+
+    #[test]
+    fn a_sequence_s_layer_notes_let_go_when_it_stops() {
+        let mut engine = Engine::new().unwrap();
+        engine.time_next(0);
+        engine.set_slot_volume(6, 2, 50);
+        engine.layer_note_on(6, 2, A4, VELOCITY);
+        engine.send_now();
+        engine.play_sequence();
+        let half = render_frames_left(&mut engine, 30_000, 512);
+
+        let mut full = Engine::new().unwrap();
+        full.note_on(A4, VELOCITY);
+        let held = render_frames_left(&mut full, 30_000, 512);
+        assert_within_percent(peak(&half[20_000..]), peak(&held[20_000..]) * 0.5, 1.0);
+
+        engine.stop_sequence();
+        let release = frames_in_ms(&engine, RELEASE_MS + 20);
+        render_frames_left(&mut engine, release, 512);
+        assert_eq!(peak(&render_frames_left(&mut engine, 1_000, 512)), 0.0);
+    }
+
+    #[test]
+    fn a_timed_tempo_moves_the_beat_on_its_sample() {
+        let mut engine = Engine::new().unwrap();
+        engine.time_next(0);
+        engine.send_tempo(60);
+        engine.send_now();
+        engine.play_sequence();
+        engine.start_click();
+        let wave = render_frames_left(&mut engine, 4 * BAR_AT_120, 512);
+        let starts = tick_starts(&wave);
+        assert_eq!(starts[1] - starts[0], 2 * BEAT_AT_120);
+        assert_eq!(engine.tempo(), START_TEMPO);
     }
 }

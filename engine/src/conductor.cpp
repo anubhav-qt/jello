@@ -51,27 +51,36 @@ constexpr int glide_key_velocity = 127;
 }  // namespace
 
 Conductor::Conductor(int sample_rate)
-    : synth_(sample_rate), clock_(sample_rate), click_(sample_rate), looper_(loop_changes_) {
-    synth_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+    : tracks_(sample_rate),
+      clock_(sample_rate),
+      click_(sample_rate),
+      looper_(loop_changes_),
+      sequencer_(timed_events_) {
+    tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
 }
 
-void Conductor::note_on(int note, int velocity) {
-    mailbox_.send(Event{EventType::note_on, note, velocity});
+void Conductor::note_on(int track, int note, int velocity) {
+    Event event{EventType::note_on, note, velocity};
+    event.track = track;
+    send(event);
 }
 
-void Conductor::note_off(int note) {
-    mailbox_.send(Event{EventType::note_off, note, 0});
+void Conductor::note_off(int track, int note) {
+    Event event{EventType::note_off, note, 0};
+    event.track = track;
+    send(event);
 }
 
 void Conductor::all_notes_off() {
     mailbox_.send(Event{EventType::all_notes_off, 0, 0});
 }
 
-void Conductor::set_oscillator(int index, const OscillatorSettings& oscillator) {
+void Conductor::set_oscillator(int track, int index, const OscillatorSettings& oscillator) {
     Event event{EventType::set_oscillator, 0, 0};
+    event.track = track;
     event.index = index;
     event.oscillator = oscillator;
-    mailbox_.send(event);
+    send(event);
 }
 
 void Conductor::start_click() {
@@ -85,11 +94,13 @@ void Conductor::stop_click() {
 void Conductor::set_tempo(int tempo) {
     Event event{EventType::set_tempo, 0, 0};
     event.tempo = tempo;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::press_looper() {
-    bool sent = mailbox_.send(Event{EventType::press_looper, 0, 0});
+void Conductor::press_looper(int track) {
+    Event event{EventType::press_looper, 0, 0};
+    event.track = track;
+    bool sent = mailbox_.send(event);
     if (sent) {
         looper_messages_sent_ += 1;
     }
@@ -166,83 +177,96 @@ void Conductor::set_snap(bool snap) {
     mailbox_.send(event);
 }
 
-void Conductor::set_filter(const FilterSettings& settings) {
+void Conductor::set_filter(int track, const FilterSettings& settings) {
     Event event{EventType::set_filter, 0, 0};
+    event.track = track;
     event.filter = settings;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_filter_envelope(const FilterEnvelopeSettings& envelope) {
+void Conductor::set_filter_envelope(int track, const FilterEnvelopeSettings& envelope) {
     Event event{EventType::set_filter_envelope, 0, 0};
+    event.track = track;
     event.filter_envelope = envelope;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_unison(const UnisonSettings& unison) {
+void Conductor::set_unison(int track, const UnisonSettings& unison) {
     Event event{EventType::set_unison, 0, 0};
+    event.track = track;
     event.unison = unison;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_loudness_envelope(const LoudnessEnvelopeSettings& envelope) {
+void Conductor::set_loudness_envelope(int track, const LoudnessEnvelopeSettings& envelope) {
     Event event{EventType::set_loudness_envelope, 0, 0};
+    event.track = track;
     event.loudness_envelope = envelope;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_key_tracking(float key_tracking) {
+void Conductor::set_key_tracking(int track, float key_tracking) {
     Event event{EventType::set_key_tracking, 0, 0};
+    event.track = track;
     event.key_tracking = key_tracking;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_tuning(float a4_hz) {
+void Conductor::set_tuning(int track, float a4_hz) {
     Event event{EventType::set_tuning, 0, 0};
+    event.track = track;
     event.a4_hz = a4_hz;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_lfo(int index, const LfoSettings& settings) {
+void Conductor::set_lfo(int track, int index, const LfoSettings& settings) {
     Event event{EventType::set_lfo, 0, 0};
+    event.track = track;
     event.index = index;
     event.lfo = settings;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_connection(int index, const Connection& connection) {
+void Conductor::set_connection(int track, int index, const Connection& connection) {
     Event event{EventType::set_connection, 0, 0};
+    event.track = track;
     event.index = index;
     event.connection = connection;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_vibrato_key_times(int rise_ms, int fall_ms) {
+void Conductor::set_vibrato_key_times(int track, int rise_ms, int fall_ms) {
     Event event{EventType::set_vibrato_key_times, 0, 0};
+    event.track = track;
     event.rise_ms = rise_ms;
     event.fall_ms = fall_ms;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_vibrato_key(bool held) {
+void Conductor::set_vibrato_key(int track, bool held) {
     Event event{EventType::set_vibrato_key, 0, 0};
+    event.track = track;
     event.held = held;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_glide_key(bool held) {
+void Conductor::set_glide_key(int track, bool held) {
     Event event{EventType::set_glide_key, 0, 0};
+    event.track = track;
     event.held = held;
-    mailbox_.send(event);
+    send(event);
 }
 
-void Conductor::set_glide_time(int glide_ms) {
+void Conductor::set_glide_time(int track, int glide_ms) {
     Event event{EventType::set_glide_time, 0, 0};
+    event.track = track;
     event.glide_ms = glide_ms;
-    mailbox_.send(event);
+    send(event);
 }
 
-bool Conductor::set_instrument(int index, const SampleSet* set) {
+bool Conductor::set_instrument(int track, int index, const SampleSet* set) {
     Event event{EventType::set_instrument, 0, 0};
+    event.track = track;
     event.index = index;
     event.set = set;
     bool sent = mailbox_.send(event);
@@ -252,8 +276,9 @@ bool Conductor::set_instrument(int index, const SampleSet* set) {
     return sent;
 }
 
-bool Conductor::set_drum_kit(const SampleSet* set) {
+bool Conductor::set_drum_kit(int track, const SampleSet* set) {
     Event event{EventType::set_drum_kit, 0, 0};
+    event.track = track;
     event.set = set;
     bool sent = mailbox_.send(event);
     if (sent) {
@@ -262,11 +287,102 @@ bool Conductor::set_drum_kit(const SampleSet* set) {
     return sent;
 }
 
-void Conductor::set_drum_pad(int pad, const DrumPad& settings) {
+void Conductor::set_drum_pad(int track, int pad, const DrumPad& settings) {
     Event event{EventType::set_drum_pad, 0, 0};
+    event.track = track;
     event.index = pad;
     event.pad = settings;
-    mailbox_.send(event);
+    send(event);
+}
+
+void Conductor::set_track_volume(int track, float volume) {
+    Event event{EventType::set_track_volume, 0, 0};
+    event.track = track;
+    event.volume = volume;
+    send(event);
+}
+
+void Conductor::layer_note_on(int track, int slot, int note, int velocity) {
+    Event event{EventType::layer_note_on, note, velocity};
+    event.track = track;
+    event.layer = slot;
+    send(event);
+}
+
+void Conductor::layer_note_off(int track, int slot, int note) {
+    Event event{EventType::layer_note_off, note, 0};
+    event.track = track;
+    event.layer = slot;
+    send(event);
+}
+
+void Conductor::set_slot_volume(int track, int slot, float volume) {
+    Event event{EventType::set_slot_volume, 0, 0};
+    event.track = track;
+    event.layer = slot;
+    event.volume = volume;
+    send(event);
+}
+
+void Conductor::time_next(std::uint64_t sample) {
+    timing_ = true;
+    timed_sample_ = sample;
+}
+
+void Conductor::send_now() {
+    timing_ = false;
+}
+
+void Conductor::play_sequence() {
+    Event event{EventType::play_sequence, 0, 0};
+    event.sequence = sequence_sent_;
+    bool sent = mailbox_.send(event);
+    if (sent) {
+        sequence_messages_sent_ += 1;
+        sequence_will_play_ = true;
+    }
+}
+
+void Conductor::stop_sequence() {
+    Event event{EventType::stop_sequence, 0, 0};
+    event.sequence = sequence_sent_;
+    bool sent = mailbox_.send(event);
+    if (sent) {
+        sequence_messages_sent_ += 1;
+        sequence_will_play_ = false;
+    }
+    // The timed messages from here on belong to the next sequence, even if
+    // the stop did not fit: its messages would only wait, never play.
+    sequence_sent_ += 1;
+}
+
+std::uint64_t Conductor::sequence_position() const {
+    // Read the count first, as in looper_status.
+    std::uint64_t handled = shown_sequence_handled_.load();
+    std::uint64_t position = shown_sequence_position_.load();
+    if (handled != sequence_messages_sent_) {
+        if (sequence_will_play_) {
+            return 0;
+        }
+        return Sequencer::not_playing;
+    }
+    return position;
+}
+
+std::uint64_t Conductor::sequence_room() const {
+    return timed_events_.room();
+}
+
+void Conductor::send(const Event& event) {
+    if (!timing_) {
+        mailbox_.send(event);
+        return;
+    }
+    TimedEvent timed;
+    timed.sequence = sequence_sent_;
+    timed.sample = timed_sample_;
+    timed.event = event;
+    timed_events_.send(timed);
 }
 
 std::uint32_t Conductor::sets_in_use() const {
@@ -281,7 +397,7 @@ std::uint64_t Conductor::sample_messages_sent() const {
     return sample_messages_sent_;
 }
 
-bool Conductor::play_song(const SongChord* chords, int count) {
+bool Conductor::play_song(int track, const SongChord* chords, int count) {
     // A stop, every chord, then the play.
     std::uint64_t needed = static_cast<std::uint64_t>(count) + 2;
     if (mailbox_.room() < needed) {
@@ -294,7 +410,9 @@ bool Conductor::play_song(const SongChord* chords, int count) {
         event.chord = chords[i];
         mailbox_.send(event);
     }
-    mailbox_.send(Event{EventType::play_song, 0, 0});
+    Event play{EventType::play_song, 0, 0};
+    play.track = track;
+    mailbox_.send(play);
 
     song_messages_sent_ += needed;
     song_will_play_ = true;
@@ -343,27 +461,27 @@ bool Conductor::next_loop_change(LoopChange& change) {
 }
 
 void Conductor::render(float* out, int frames) {
-    // Start from silence: the synth and the click both add on top.
+    // Start from silence: the tracks and the click all add on top.
     for (int i = 0; i < 2 * frames; i++) {
         out[i] = 0.0f;
     }
 
     // Sample by sample, so each tick starts on its beat's exact sample, and
-    // each loop note and song chord on its own, wherever they fall in the
-    // chunk. Before the looper or the song player starts or ends a note, the
-    // synth renders the stretch up to that sample, so the note is heard from
-    // there on.
+    // each loop note, song chord and timed message on its own, wherever they
+    // fall in the chunk. Before the looper, the song player or the sequencer
+    // starts or ends a note, the tracks render the stretch up to that
+    // sample, so the note is heard from there on.
     int rendered = 0;
     for (int i = 0; i < frames; i++) {
         if (looper_.has_something_now(clock_)) {
-            synth_.render(out + 2 * rendered, i - rendered);
+            tracks_.render(out + 2 * rendered, i - rendered);
             rendered = i;
-            looper_.act_now(clock_, synth_);
+            looper_.act_now(clock_, tracks_);
         }
         if (song_player_.has_something_now(clock_.now())) {
-            synth_.render(out + 2 * rendered, i - rendered);
+            tracks_.render(out + 2 * rendered, i - rendered);
             rendered = i;
-            song_player_.act_now(clock_.now(), synth_);
+            song_player_.act_now(clock_.now(), tracks_.synth(song_track_));
         }
 
         // Everything sent since the last chunk is heard from its first
@@ -373,16 +491,34 @@ void Conductor::render(float* out, int frames) {
         if (i == 0) {
             take_messages();
             if (!clock_.is_beat_running()) {
-                synth_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+                tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+            }
+        }
+
+        // The sequencer's messages due by now, each like a message from the
+        // mailbox, heard from this sample.
+        Event due{};
+        bool rendered_here = false;
+        while (sequencer_.next_due(clock_.now(), due)) {
+            if (!rendered_here) {
+                tracks_.render(out + 2 * rendered, i - rendered);
+                rendered = i;
+                rendered_here = true;
+            }
+            handle(due);
+        }
+        if (rendered_here) {
+            if (!clock_.is_beat_running()) {
+                tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
             }
         }
 
         // The LFOs in beats hear each beat on its own sample, at the tempo
         // it plays at.
         if (clock_.beat_starts_now()) {
-            synth_.render(out + 2 * rendered, i - rendered);
+            tracks_.render(out + 2 * rendered, i - rendered);
             rendered = i;
-            synth_.on_beat(clock_.beat_number(), beats_per_sample(clock_.asked_beat_length()));
+            tracks_.on_beat(clock_.beat_number(), beats_per_sample(clock_.asked_beat_length()));
 
             if (wants_click()) {
                 click_.start(clock_.bar_starts_now());
@@ -394,7 +530,7 @@ void Conductor::render(float* out, int frames) {
 
         clock_.step();
     }
-    synth_.render(out + 2 * rendered, frames - rendered);
+    tracks_.render(out + 2 * rendered, frames - rendered);
 
     // Notes and click together can add up to more than speakers can play.
     for (int i = 0; i < 2 * frames; i++) {
@@ -403,6 +539,7 @@ void Conductor::render(float* out, int frames) {
 
     publish_looper_status();
     publish_song_position();
+    publish_sequence_position();
     publish_sets_in_use();
 }
 
@@ -414,21 +551,22 @@ void Conductor::take_messages() {
 }
 
 void Conductor::handle(const Event& event) {
-    // Live notes go to the synth, and to the looper in case it is recording.
-    // The current sample is the first one they are heard on.
+    // Live notes go to their track's synth, and to the looper in case it is
+    // recording. The current sample is the first one they are heard on.
     std::uint64_t now = clock_.now();
+    Synth& synth = tracks_.synth(event.track);
 
     if (event.type == EventType::note_on) {
-        synth_.note_on(event.note, event.velocity, Source::live);
-        looper_.note_on(event.note, event.velocity, now);
+        synth.note_on(event.note, event.velocity, Source::live);
+        looper_.note_on(event.note, event.velocity, now, event.track);
     } else if (event.type == EventType::note_off) {
-        synth_.note_off(event.note, Source::live);
-        looper_.note_off(event.note, now);
+        synth.note_off(event.note, Source::live);
+        looper_.note_off(event.note, now, event.track);
     } else if (event.type == EventType::all_notes_off) {
-        synth_.all_notes_off(Source::live);
+        tracks_.all_notes_off(Source::live);
         looper_.all_notes_off(now);
     } else if (event.type == EventType::set_oscillator) {
-        synth_.set_oscillator(event.index, event.oscillator);
+        synth.set_oscillator(event.index, event.oscillator);
     } else if (event.type == EventType::start_click) {
         click_on_ = true;
         // Starting again while the beat runs would jump back to beat 1.
@@ -445,87 +583,106 @@ void Conductor::handle(const Event& event) {
             clock_.set_tempo(event.tempo);
         }
     } else if (event.type == EventType::press_looper) {
-        handle_looper_press();
+        handle_looper_press(event.track);
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::clear_loop) {
-        looper_.clear(synth_);
+        looper_.clear(tracks_);
         stop_beat_if_unused();
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::remove_layer) {
         // Removing the only layer clears the loop.
-        looper_.remove_layer(event.layer, synth_);
+        looper_.remove_layer(event.layer, tracks_);
         stop_beat_if_unused();
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::set_layer_volume) {
-        looper_.set_layer_volume(event.layer, event.volume, synth_);
+        looper_.set_layer_volume(event.layer, event.volume, tracks_);
     } else if (event.type == EventType::set_layer_playing) {
-        looper_.set_layer_playing(event.layer, event.playing, now, synth_);
+        looper_.set_layer_playing(event.layer, event.playing, now, tracks_);
     } else if (event.type == EventType::pause_loop) {
-        looper_.pause(now, synth_);
+        looper_.pause(now, tracks_);
         stop_beat_if_unused();
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::play_loop) {
         // Like Right Shift while paused: the loop starts on a new bar.
         if (looper_.is_paused()) {
             clock_.start_beat();
-            looper_.play(now, synth_);
+            looper_.play(now, tracks_);
         }
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::load_loop) {
         // The tempo is the one asked for last, sent after the clear that
         // comes before a load, while the looper was idle.
         looper_.load(loaded_notes_, event.loaded_count, event.loaded_layers, event.loaded_bars,
-                     clock_.asked_beat_length(), synth_);
+                     clock_.asked_beat_length(), tracks_);
         stop_beat_if_unused();
         looper_messages_handled_ += 1;
     } else if (event.type == EventType::set_snap) {
-        looper_.set_snap(event.snap, now, synth_);
+        looper_.set_snap(event.snap, now, tracks_);
     } else if (event.type == EventType::set_filter) {
-        synth_.set_filter(event.filter);
+        synth.set_filter(event.filter);
     } else if (event.type == EventType::set_filter_envelope) {
-        synth_.set_filter_envelope(event.filter_envelope);
+        synth.set_filter_envelope(event.filter_envelope);
     } else if (event.type == EventType::set_unison) {
-        synth_.set_unison(event.unison);
+        synth.set_unison(event.unison);
     } else if (event.type == EventType::set_loudness_envelope) {
-        synth_.set_loudness_envelope(event.loudness_envelope);
+        synth.set_loudness_envelope(event.loudness_envelope);
     } else if (event.type == EventType::set_key_tracking) {
-        synth_.set_key_tracking(event.key_tracking);
+        synth.set_key_tracking(event.key_tracking);
     } else if (event.type == EventType::set_tuning) {
-        synth_.set_tuning(event.a4_hz);
+        synth.set_tuning(event.a4_hz);
     } else if (event.type == EventType::set_lfo) {
-        synth_.set_lfo(event.index, event.lfo);
+        synth.set_lfo(event.index, event.lfo);
     } else if (event.type == EventType::set_connection) {
-        synth_.set_connection(event.index, event.connection);
+        synth.set_connection(event.index, event.connection);
     } else if (event.type == EventType::set_vibrato_key_times) {
-        synth_.set_vibrato_key_times(event.rise_ms, event.fall_ms);
+        synth.set_vibrato_key_times(event.rise_ms, event.fall_ms);
     } else if (event.type == EventType::set_vibrato_key) {
         // Like a live note: the synth plays it, and the looper records it.
-        synth_.set_vibrato_key(event.held);
+        synth.set_vibrato_key(event.held);
         if (event.held) {
-            looper_.note_on(Synth::vibrato_key_note, vibrato_key_velocity, now);
+            looper_.note_on(Synth::vibrato_key_note, vibrato_key_velocity, now, event.track);
         } else {
-            looper_.note_off(Synth::vibrato_key_note, now);
+            looper_.note_off(Synth::vibrato_key_note, now, event.track);
         }
     } else if (event.type == EventType::set_glide_key) {
         // The same for the glide key.
-        synth_.set_glide_key(event.held);
+        synth.set_glide_key(event.held);
         if (event.held) {
-            looper_.note_on(Synth::glide_key_note, glide_key_velocity, now);
+            looper_.note_on(Synth::glide_key_note, glide_key_velocity, now, event.track);
         } else {
-            looper_.note_off(Synth::glide_key_note, now);
+            looper_.note_off(Synth::glide_key_note, now, event.track);
         }
     } else if (event.type == EventType::set_glide_time) {
-        synth_.set_glide_time(event.glide_ms);
+        synth.set_glide_time(event.glide_ms);
     } else if (event.type == EventType::set_instrument) {
-        synth_.set_instrument(event.index, event.set);
+        synth.set_instrument(event.index, event.set);
         sample_messages_handled_ += 1;
     } else if (event.type == EventType::set_drum_kit) {
-        synth_.set_drum_kit(event.set);
+        synth.set_drum_kit(event.set);
         sample_messages_handled_ += 1;
     } else if (event.type == EventType::set_drum_pad) {
-        synth_.set_drum_pad(event.index, event.pad);
+        synth.set_drum_pad(event.index, event.pad);
+    } else if (event.type == EventType::set_track_volume) {
+        tracks_.set_volume(event.track, event.volume);
+    } else if (event.type == EventType::layer_note_on) {
+        synth.loop_note_on(event.note, event.velocity, event.layer);
+    } else if (event.type == EventType::layer_note_off) {
+        synth.loop_note_off(event.note, event.layer);
+    } else if (event.type == EventType::set_slot_volume) {
+        synth.set_layer_volume(event.layer, event.volume);
+    } else if (event.type == EventType::play_sequence) {
+        sequencer_.play(event.sequence, now);
+        sequence_messages_handled_ += 1;
+    } else if (event.type == EventType::stop_sequence) {
+        // Its layers' notes stop. Only while it plays: the loop plays on the
+        // same slots once the sequence is over.
+        if (sequencer_.is_playing()) {
+            tracks_.all_notes_off(Source::loop);
+        }
+        sequencer_.stop(event.sequence);
+        sequence_messages_handled_ += 1;
     } else if (event.type == EventType::stop_song) {
-        song_player_.stop(synth_);
+        song_player_.stop(tracks_.synth(song_track_));
         song_messages_handled_ += 1;
     } else if (event.type == EventType::add_song_chord) {
         song_player_.add(event.chord);
@@ -533,13 +690,15 @@ void Conductor::handle(const Event& event) {
     } else if (event.type == EventType::play_song) {
         // play_song always sends a stop first, so nothing is playing here.
         // Its presses count from 0 again, so it moves the same each time.
-        synth_.restart_song_presses();
-        song_player_.play(now, synth_);
+        song_track_ = event.track;
+        Synth& song_synth = tracks_.synth(song_track_);
+        song_synth.restart_song_presses();
+        song_player_.play(now, song_synth);
         song_messages_handled_ += 1;
     }
 }
 
-void Conductor::handle_looper_press() {
+void Conductor::handle_looper_press(int track) {
     // The count-in starts a new bar right away, and so does playing a
     // paused loop.
     if (looper_.is_idle()) {
@@ -547,7 +706,7 @@ void Conductor::handle_looper_press() {
     } else if (looper_.is_paused()) {
         clock_.start_beat();
     }
-    looper_.press(clock_, synth_);
+    looper_.press(clock_, tracks_, track);
 
     // A press during the count-in cancels it, and stopping a layer with no
     // notes when it is the only one clears the loop.
@@ -580,7 +739,7 @@ void Conductor::publish_looper_status() {
 }
 
 void Conductor::publish_sets_in_use() {
-    shown_sets_in_use_.store(synth_.sets_in_use());
+    shown_sets_in_use_.store(tracks_.sets_in_use());
     // Last: the engine reads the count first, so the sets read after it
     // are at least as new.
     shown_sample_handled_.store(sample_messages_handled_);
@@ -590,4 +749,10 @@ void Conductor::publish_song_position() {
     shown_song_position_.store(song_player_.position(clock_.now()));
     // Last: see song_position.
     shown_song_handled_.store(song_messages_handled_);
+}
+
+void Conductor::publish_sequence_position() {
+    shown_sequence_position_.store(sequencer_.position(clock_.now()));
+    // Last: see sequence_position.
+    shown_sequence_handled_.store(sequence_messages_handled_);
 }

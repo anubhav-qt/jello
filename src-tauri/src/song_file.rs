@@ -1,29 +1,39 @@
 // A whole song written as text (docs/adr/0038-song-files.md): its key, its
-// chords with how long each was held, its tempo, the loop, and its sound.
-// Like a sound file (src/sound_file.rs) the text is TOML, and every choice
-// is a word: the key is "A minor", a chord "Am", a note "E4". The sound is
-// a sound file's text, under [sound].
+// chords with how long each was held, its tempo, the loop, its tracks and
+// its sections (docs/design.md#tracks-and-sections). Like a sound file
+// (src/sound_file.rs) the text is TOML, and every choice is a word: the key
+// is "A minor", a chord "Am", a note "E4". A track's sound is a sound
+// file's text, under [track.sound].
 //
 // The chords keep their milliseconds, as held: Compose's chords are played
 // freely, not on a beat. The loop is whole bars at the song's tempo, so its
 // notes say the beat they start and end on, counted from the loop's start.
 // That reads the same on any sound card.
 //
+// Tracks, layers and sections are numbered from 1 in the file, as on
+// screen, and from 0 everywhere else.
+//
 // Reading is forgiving, like a sound file's:
 // - A value left out, or of the wrong sort, takes a new song's.
 // - A chord or a note Jello can't read is skipped, and so is a layer left
 //   with no notes.
-// - A loop keeps its first 8 layers and its first 4096 notes.
-// - The tempo is kept from 40 to 240 and a layer's volume to 100.
+// - A song keeps its first 9 tracks, each track its first 8 layers, and
+//   the loop its first 16384 notes.
+// - The tempo is kept from 40 to 240, and a track's or a layer's volume
+//   to 100.
 // - A pad Jello doesn't know is skipped, and a pad's values are kept
 //   within their ranges.
+// - A section with no name, or the name of one before it, is skipped, and
+//   so is a layer or a value of one that names a track or layer the song
+//   doesn't have. The arrangement skips names no section has.
+// - A song file from before tracks keeps none of its sound or loop.
 // Text that is not TOML at all can't be read.
 
 use toml::{Table, Value};
 
 use crate::drums::{DrumPad, Drums, PAD_NAMES, pad_named, pad_of_note};
 use crate::engine::{
-    FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, drum_note,
+    FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, TRACK_COUNT, drum_note,
     VIBRATO_KEY_NOTE,
 };
 use crate::presets::name_problem;
@@ -36,7 +46,24 @@ use crate::sound_profile::SoundProfile;
 
 // The most notes a loop holds, in all its layers (`JELLO_LOOP_MAX_NOTES` in
 // engine/include/jello_engine.h).
-pub const LOOP_MAX_NOTES: usize = 4096;
+pub const LOOP_MAX_NOTES: usize = 16384;
+
+// The most sections a song keeps, and the most times they are played in
+// all, in its arrangement.
+pub const MOST_SECTIONS: usize = 64;
+pub const MOST_ARRANGED: usize = 256;
+
+// A section lasts 1 to this many bars.
+pub const SECTION_MOST_BARS: u32 = 64;
+
+// A section's key shift goes from this many half steps down to as many up.
+pub const MOST_KEY_SHIFT: i32 = 12;
+
+// The most values a section moves.
+pub const MOST_AUTOMATION: usize = 64;
+
+// The word an automation entry with no track moves: the tempo.
+pub const TEMPO_WORD: &str = "tempo";
 
 // How a loop note's beats are written: to a millionth of a beat, far finer
 // than a sample even at the fastest tempo, so a loop opens exactly as it
@@ -60,15 +87,17 @@ pub struct Song {
     pub key: Option<Key>,
     pub tempo: u32,
     pub snap: bool,
-    // The preset the song's sound came from, so its tile lights up again if
-    // the sound still matches it. None if there is none.
-    pub preset: Option<String>,
+    // The picked track, from 0.
+    pub picked: usize,
     pub chords: Vec<HeldChord>,
-    // None for a song with no loop.
+    // None for a song with no loop. Each layer says its track.
     pub looped: Option<SongLoop>,
-    pub sound: Sound,
-    // The drum kit's instrument and how each pad sounds.
-    pub drums: Drums,
+    // From 1 to TRACK_COUNT of them.
+    pub tracks: Vec<SongTrack>,
+    pub sections: Vec<SongSection>,
+    // The sections in the order the song plays them, each a place in
+    // `sections`.
+    pub arrangement: Vec<usize>,
 }
 
 // A chord of the song and how long it was held.
@@ -79,7 +108,7 @@ pub struct HeldChord {
 }
 
 // The loop: how many bars it lasts, and its layers in the order they were
-// recorded.
+// recorded, by track.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SongLoop {
     pub bars: u32,
@@ -88,6 +117,8 @@ pub struct SongLoop {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SongLayer {
+    // The track it belongs to, from 0.
+    pub track: usize,
     // Zero inherits the common loop; otherwise this layer repeats every bars.
     pub bars: u32,
     // In percent, from 0 to 100.
@@ -105,6 +136,102 @@ pub struct BeatNote {
     pub note: u8,
     pub start: f64,
     pub end: f64,
+}
+
+// A track: its name, its volume and its sound, which is either a sound
+// profile's or, for a drums track, a drum kit's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongTrack {
+    // As it shows on screen. None if the file leaves it out.
+    pub name: Option<String>,
+    // In percent, from 0 to 100.
+    pub volume: u32,
+    // The preset its sound came from, so its tile lights up again if the
+    // sound still matches it. None if there is none.
+    pub preset: Option<String>,
+    // A new song's for a drums track.
+    pub sound: Sound,
+    // Some for a drums track.
+    pub drums: Option<Drums>,
+}
+
+// A section of the song, like a verse: layers that play together for some
+// bars, at its tempo and key shift, moving the values in its automation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongSection {
+    // No other section has it.
+    pub name: String,
+    pub bars: u32,
+    pub tempo: u32,
+    // In half steps, from -MOST_KEY_SHIFT to MOST_KEY_SHIFT.
+    pub key_shift: i32,
+    pub layers: Vec<SectionLayer>,
+    pub automation: Vec<Automation>,
+}
+
+// A layer a section plays: layer `layer` of track `track`, both from 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SectionLayer {
+    pub track: usize,
+    pub layer: usize,
+}
+
+// A value a section moves in a straight line from `from` at its start to
+// `to` at its end: one of track `track`'s values, named as jello_sound names
+// them, or with no track, the tempo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Automation {
+    // From 0, or None for the tempo.
+    pub track: Option<usize>,
+    pub value: String,
+    pub from: f64,
+    pub to: f64,
+}
+
+impl Song {
+    // A new song's: no key, chords or loop, one instrument track on
+    // `new_song`'s sound, and no sections.
+    pub fn new(new_song: &SoundProfile) -> Song {
+        Song {
+            key: None,
+            tempo: START_TEMPO,
+            snap: true,
+            picked: 0,
+            chords: Vec::new(),
+            looped: None,
+            tracks: vec![SongTrack::new(new_song)],
+            sections: Vec::new(),
+            arrangement: Vec::new(),
+        }
+    }
+
+    // How many layers track `track`, from 0, has in the loop.
+    pub fn layer_count(&self, track: usize) -> usize {
+        let Some(looped) = &self.looped else {
+            return 0;
+        };
+        let mut count = 0;
+        for layer in &looped.layers {
+            if layer.track == track {
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
+impl SongTrack {
+    // An instrument track on `new_song`'s sound, with no name, at full
+    // volume.
+    pub fn new(new_song: &SoundProfile) -> SongTrack {
+        SongTrack {
+            name: None,
+            volume: FULL_VOLUME,
+            preset: None,
+            sound: new_song.sound(),
+            drums: None,
+        }
+    }
 }
 
 // How many beats `samples` samples last at `tempo`, at `sample_rate`.
@@ -214,9 +341,8 @@ pub fn text_of(song: &Song) -> String {
     }
     write_number(&mut text, "tempo", song.tempo);
     write_flag(&mut text, "snap", song.snap);
-    if let Some(preset) = &song.preset {
-        write_word(&mut text, "preset", preset);
-    }
+    write_number(&mut text, "picked", song.picked + 1);
+    write_arrangement(&mut text, song);
 
     // One chord a line, named for the key.
     text.push('\n');
@@ -236,17 +362,65 @@ pub fn text_of(song: &Song) -> String {
     }
 
     if let Some(looped) = &song.looped {
-        write_loop(&mut text, looped);
+        start_group(&mut text, "[loop]");
+        write_number(&mut text, "bars", looped.bars);
     }
 
-    write_sound(&mut text, &song.sound, "sound");
-    write_drums(&mut text, &song.drums);
+    for (number, track) in song.tracks.iter().enumerate() {
+        write_track(&mut text, song, number, track);
+    }
+    for section in &song.sections {
+        write_section(&mut text, section);
+    }
     text
+}
+
+// The arrangement, as the names of its sections, like
+// `arrangement = ["Verse", "Chorus", "Verse"]`.
+fn write_arrangement(text: &mut String, song: &Song) {
+    let mut names = Vec::new();
+    for place in &song.arrangement {
+        if let Some(section) = song.sections.get(*place) {
+            names.push(quoted(&section.name));
+        }
+    }
+    text.push_str(&format!("arrangement = [{}]\n", names.join(", ")));
+}
+
+// `name` in quotes, with any quote or backslash in it escaped as TOML
+// wants.
+fn quoted(name: &str) -> String {
+    Value::String(String::from(name)).to_string()
+}
+
+// Track `number`, from 0: its values, its sound or drums, then its layers.
+fn write_track(text: &mut String, song: &Song, number: usize, track: &SongTrack) {
+    start_group(text, "[[track]]");
+    if let Some(name) = &track.name {
+        write_name(text, "name", name);
+    }
+    write_number(text, "volume", track.volume);
+    if let Some(preset) = &track.preset {
+        write_word(text, "preset", preset);
+    }
+    match &track.drums {
+        Some(drums) => write_drums(text, drums),
+        None => write_sound(text, &track.sound, "track.sound"),
+    }
+
+    let Some(looped) = &song.looped else {
+        return;
+    };
+    for layer in &looped.layers {
+        if layer.track == number {
+            write_layer(text, layer);
+        }
+    }
 }
 
 // The drums: the kit's instrument, if one is picked, then one pad a line.
 fn write_drums(text: &mut String, drums: &Drums) {
-    start_group(text, "[drums]");
+    start_group(text, "[track.drums]");
     if let Some(kit) = &drums.kit {
         write_name(text, "kit", kit);
     }
@@ -261,8 +435,182 @@ fn write_drums(text: &mut String, drums: &Drums) {
     text.push_str("]\n");
 }
 
-// The drums `table`, a song file's [drums], describes, starting from a new
-// song's.
+fn write_layer(text: &mut String, layer: &SongLayer) {
+    start_group(text, "[[track.layer]]");
+    if layer.bars > 0 {
+        write_number(text, "bars", layer.bars);
+    }
+    write_number(text, "volume", layer.volume);
+    write_flag(text, "playing", layer.playing);
+    text.push_str("notes = [\n");
+    for note in &layer.notes {
+        let name = note_name(note.note);
+        let start = beat_text(note.start);
+        let end = beat_text(note.end);
+        text.push_str(&format!("  {{ note = \"{name}\", start = {start}, end = {end} }},\n"));
+    }
+    text.push_str("]\n");
+}
+
+// A section: its values, its layers as track and layer numbers from 1, and
+// its automation, the tempo's with track 0.
+fn write_section(text: &mut String, section: &SongSection) {
+    start_group(text, "[[section]]");
+    write_name(text, "name", &section.name);
+    write_number(text, "bars", section.bars);
+    write_number(text, "tempo", section.tempo);
+    write_number(text, "key_shift", section.key_shift);
+
+    if section.layers.is_empty() {
+        text.push_str("layers = []\n");
+    } else {
+        text.push_str("layers = [\n");
+        for layer in &section.layers {
+            let track = layer.track + 1;
+            let number = layer.layer + 1;
+            text.push_str(&format!("  {{ track = {track}, layer = {number} }},\n"));
+        }
+        text.push_str("]\n");
+    }
+
+    if section.automation.is_empty() {
+        text.push_str("automation = []\n");
+    } else {
+        text.push_str("automation = [\n");
+        for moved in &section.automation {
+            let mut track = 0;
+            if let Some(number) = moved.track {
+                track = number + 1;
+            }
+            let value = quoted(&moved.value);
+            text.push_str(&format!(
+                "  {{ track = {track}, value = {value}, from = {}, to = {} }},\n",
+                moved.from, moved.to
+            ));
+        }
+        text.push_str("]\n");
+    }
+}
+
+// A beat to a millionth, without the zeros at the end: "5.25", not
+// "5.250000", and "2", not "2.000000".
+fn beat_text(beat: f64) -> String {
+    let mut text = format!("{beat:.BEAT_DECIMALS$}");
+    while text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
+// The song `text` describes, with `new_song`'s sound for whatever a track's
+// sound leaves out. Fails only on text that is not TOML.
+pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
+    let table = match text.parse::<Table>() {
+        Ok(table) => table,
+        Err(error) => return Err(format!("it is not a song file: {}", error.message())),
+    };
+
+    let mut song = Song::new(new_song);
+    if let Some(name) = read_word(&table, "key") {
+        song.key = key_of_name(name);
+    }
+
+    let tempo = read_count(&table, "tempo", START_TEMPO);
+    song.tempo = tempo.clamp(SLOWEST_TEMPO, FASTEST_TEMPO);
+    song.snap = read_flag(&table, "snap", true);
+
+    for item in items(&table, "chords") {
+        if let Some(held) = read_chord(item) {
+            song.chords.push(held);
+        }
+    }
+
+    let mut loop_bars = 0;
+    if let Some(loop_table) = group(&table, "loop") {
+        loop_bars = read_count(loop_table, "bars", 0);
+    }
+
+    // The tracks, and their layers if the loop has bars.
+    let mut tracks = Vec::new();
+    let mut layers = Vec::new();
+    let mut note_count = 0;
+    for track_table in groups(&table, "track") {
+        if tracks.len() == TRACK_COUNT {
+            break;
+        }
+        let number = tracks.len();
+        tracks.push(read_track(track_table, new_song));
+        if loop_bars < 1 {
+            continue;
+        }
+        let mut track_layers = 0;
+        for layer_table in groups(track_table, "layer") {
+            if track_layers == MAX_LAYERS {
+                break;
+            }
+            let Some(layer) = read_layer(layer_table, number, &mut note_count) else {
+                continue;
+            };
+            layers.push(layer);
+            track_layers += 1;
+        }
+    }
+    if !tracks.is_empty() {
+        song.tracks = tracks;
+    }
+    if !layers.is_empty() {
+        song.looped = Some(SongLoop {
+            bars: loop_bars,
+            layers,
+        });
+    }
+
+    let picked = read_count(&table, "picked", 1);
+    if picked >= 1 && (picked as usize) <= song.tracks.len() {
+        song.picked = picked as usize - 1;
+    }
+
+    for section_table in groups(&table, "section") {
+        if song.sections.len() == MOST_SECTIONS {
+            break;
+        }
+        if let Some(section) = read_section(section_table, &song) {
+            song.sections.push(section);
+        }
+    }
+    song.arrangement = read_arrangement(&table, &song.sections);
+    Ok(song)
+}
+
+// A track: an instrument track on its [track.sound], or with a
+// [track.drums], a drums track.
+fn read_track(track_table: &Table, new_song: &SoundProfile) -> SongTrack {
+    let mut track = SongTrack::new(new_song);
+    if let Some(name) = read_word(track_table, "name") {
+        track.name = Some(String::from(name));
+    }
+    track.volume = read_count(track_table, "volume", FULL_VOLUME).min(FULL_VOLUME);
+
+    // Only a name a preset could have, so it is written back as it was.
+    if let Some(name) = read_word(track_table, "preset") {
+        if name_problem(name).is_none() {
+            track.preset = Some(String::from(name));
+        }
+    }
+
+    if let Some(drums_table) = group(track_table, "drums") {
+        track.drums = Some(read_drums(drums_table));
+    } else if let Some(sound_table) = group(track_table, "sound") {
+        track.sound = sound_of_table(sound_table, new_song);
+    }
+    track
+}
+
+// The drums `table`, a track's [track.drums], describes, starting from a
+// new song's.
 fn read_drums(table: &Table) -> Drums {
     let mut drums = Drums::new();
     if let Some(kit) = read_word(table, "kit") {
@@ -287,100 +635,151 @@ fn read_drums(table: &Table) -> Drums {
     drums
 }
 
-fn write_loop(text: &mut String, looped: &SongLoop) {
-    start_group(text, "[loop]");
-    write_number(text, "bars", looped.bars);
-
-    for layer in &looped.layers {
-        start_group(text, "[[loop.layer]]");
-        if layer.bars > 0 {
-            write_number(text, "bars", layer.bars);
+// A layer of track `track`, from 0, counting its notes into `note_count`,
+// or None if it is left with no notes, with LOOP_MAX_NOTES counted already
+// or none of its own read.
+fn read_layer(layer_table: &Table, track: usize, note_count: &mut usize) -> Option<SongLayer> {
+    let mut notes = Vec::new();
+    for item in items(layer_table, "notes") {
+        if *note_count == LOOP_MAX_NOTES {
+            break;
         }
-        write_number(text, "volume", layer.volume);
-        write_flag(text, "playing", layer.playing);
-        text.push_str("notes = [\n");
-        for note in &layer.notes {
-            let name = note_name(note.note);
-            let start = beat_text(note.start);
-            let end = beat_text(note.end);
-            text.push_str(&format!("  {{ note = \"{name}\", start = {start}, end = {end} }},\n"));
-        }
-        text.push_str("]\n");
-    }
-}
-
-// A beat to a millionth, without the zeros at the end: "5.25", not
-// "5.250000", and "2", not "2.000000".
-fn beat_text(beat: f64) -> String {
-    let mut text = format!("{beat:.BEAT_DECIMALS$}");
-    while text.ends_with('0') {
-        text.pop();
-    }
-    if text.ends_with('.') {
-        text.pop();
-    }
-    text
-}
-
-// The song `text` describes, with `new_song`'s sound for whatever its sound
-// leaves out. Fails only on text that is not TOML.
-pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
-    let table = match text.parse::<Table>() {
-        Ok(table) => table,
-        Err(error) => return Err(format!("it is not a song file: {}", error.message())),
-    };
-
-    let mut key = None;
-    if let Some(name) = read_word(&table, "key") {
-        key = key_of_name(name);
-    }
-
-    let tempo = read_count(&table, "tempo", START_TEMPO);
-    let tempo = tempo.clamp(SLOWEST_TEMPO, FASTEST_TEMPO);
-    let snap = read_flag(&table, "snap", true);
-
-    // Only a name a preset could have, so it is written back as it was.
-    let mut preset = None;
-    if let Some(name) = read_word(&table, "preset") {
-        if name_problem(name).is_none() {
-            preset = Some(String::from(name));
+        if let Some(note) = read_note(item) {
+            notes.push(note);
+            *note_count += 1;
         }
     }
-
-    let mut chords = Vec::new();
-    for item in items(&table, "chords") {
-        if let Some(held) = read_chord(item) {
-            chords.push(held);
-        }
+    if notes.is_empty() {
+        return None;
     }
 
-    let mut looped = None;
-    if let Some(loop_table) = group(&table, "loop") {
-        looped = read_loop(loop_table);
-    }
-
-    // A file with no [sound] keeps a new song's whole sound, its routing
-    // list included.
-    let sound = match group(&table, "sound") {
-        Some(sound_table) => sound_of_table(sound_table, new_song),
-        None => new_song.sound(),
-    };
-
-    let drums = match group(&table, "drums") {
-        Some(drums_table) => read_drums(drums_table),
-        None => Drums::new(),
-    };
-
-    Ok(Song {
-        key,
-        tempo,
-        snap,
-        preset,
-        chords,
-        looped,
-        sound,
-        drums,
+    let volume = read_count(layer_table, "volume", FULL_VOLUME);
+    Some(SongLayer {
+        track,
+        bars: read_count(layer_table, "bars", 0).min(64),
+        volume: volume.min(FULL_VOLUME),
+        playing: read_flag(layer_table, "playing", true),
+        notes,
     })
+}
+
+// A section, or None if it has no name or the name of one before it. Its
+// values are kept within their ranges, and its layers and automation keep
+// only what `song`'s tracks and layers have.
+fn read_section(section_table: &Table, song: &Song) -> Option<SongSection> {
+    let name = read_word(section_table, "name")?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    for before in &song.sections {
+        if before.name == name {
+            return None;
+        }
+    }
+
+    let bars = read_count(section_table, "bars", 1).clamp(1, SECTION_MOST_BARS);
+    let tempo = read_count(section_table, "tempo", song.tempo).clamp(SLOWEST_TEMPO, FASTEST_TEMPO);
+    let key_shift = read_signed(section_table, "key_shift", 0).clamp(-MOST_KEY_SHIFT, MOST_KEY_SHIFT);
+
+    let mut layers: Vec<SectionLayer> = Vec::new();
+    for item in items(section_table, "layers") {
+        let Some(layer) = read_section_layer(item, song) else {
+            continue;
+        };
+        if !layers.contains(&layer) {
+            layers.push(layer);
+        }
+    }
+
+    let mut automation = Vec::new();
+    for item in items(section_table, "automation") {
+        if automation.len() == MOST_AUTOMATION {
+            break;
+        }
+        if let Some(moved) = read_automation(item, song) {
+            automation.push(moved);
+        }
+    }
+
+    Some(SongSection {
+        name: String::from(name),
+        bars,
+        tempo,
+        key_shift,
+        layers,
+        automation,
+    })
+}
+
+// A section's `{ track = 1, layer = 2 }`, or None if `song` has no such
+// layer.
+fn read_section_layer(item: &Table, song: &Song) -> Option<SectionLayer> {
+    let track = read_count(item, "track", 0) as usize;
+    let layer = read_count(item, "layer", 0) as usize;
+    if track < 1 || layer < 1 {
+        return None;
+    }
+    if layer > song.layer_count(track - 1) {
+        return None;
+    }
+    Some(SectionLayer {
+        track: track - 1,
+        layer: layer - 1,
+    })
+}
+
+// A section's `{ track = 1, value = "filter cutoff", from = 200, to = 8000 }`,
+// or with track 0, the tempo's. None if `song` has no such track, or a
+// value or number is missing.
+fn read_automation(item: &Table, song: &Song) -> Option<Automation> {
+    let track = read_count(item, "track", u32::MAX) as usize;
+    let value = read_word(item, "value")?;
+    let from = number_in(item.get("from")?)?;
+    let to = number_in(item.get("to")?)?;
+    if from.is_nan() || to.is_nan() {
+        return None;
+    }
+    if track == 0 {
+        return Some(Automation {
+            track: None,
+            value: String::from(TEMPO_WORD),
+            from,
+            to,
+        });
+    }
+    if track > song.tracks.len() {
+        return None;
+    }
+    Some(Automation {
+        track: Some(track - 1),
+        value: String::from(value),
+        from,
+        to,
+    })
+}
+
+// The arrangement's sections, as places in `sections`, skipping names none
+// of them has.
+fn read_arrangement(table: &Table, sections: &[SongSection]) -> Vec<usize> {
+    let mut arrangement = Vec::new();
+    let Some(Value::Array(names)) = table.get("arrangement") else {
+        return arrangement;
+    };
+    for name in names {
+        if arrangement.len() == MOST_ARRANGED {
+            break;
+        }
+        let Value::String(name) = name else {
+            continue;
+        };
+        for (place, section) in sections.iter().enumerate() {
+            if section.name == *name {
+                arrangement.push(place);
+                break;
+            }
+        }
+    }
+    arrangement
 }
 
 // The tables in the list called `name`, like the chords, in order. Anything
@@ -420,51 +819,6 @@ fn read_chord(item: &Table) -> Option<HeldChord> {
         chord,
         held_ms: held_ms.round() as u64,
     })
-}
-
-// The loop, or None if it has no bars or no layer with a note.
-fn read_loop(loop_table: &Table) -> Option<SongLoop> {
-    let bars = read_count(loop_table, "bars", 0);
-    if bars < 1 {
-        return None;
-    }
-
-    let mut layers = Vec::new();
-    let mut note_count = 0;
-    for layer_table in groups(loop_table, "layer") {
-        if layers.len() == MAX_LAYERS {
-            break;
-        }
-
-        let mut notes = Vec::new();
-        for item in items(layer_table, "notes") {
-            if note_count == LOOP_MAX_NOTES {
-                break;
-            }
-            if let Some(note) = read_note(item) {
-                notes.push(note);
-                note_count += 1;
-            }
-        }
-        if notes.is_empty() {
-            continue;
-        }
-
-        let volume = read_count(layer_table, "volume", FULL_VOLUME);
-        let volume = volume.min(FULL_VOLUME);
-        let playing = read_flag(layer_table, "playing", true);
-        layers.push(SongLayer {
-            bars: read_count(layer_table, "bars", 0).min(64),
-            volume,
-            playing,
-            notes,
-        });
-    }
-
-    if layers.is_empty() {
-        return None;
-    }
-    Some(SongLoop { bars, layers })
 }
 
 // A note of a layer, or None if its name or its beats can't be read, or it
@@ -518,6 +872,16 @@ mod tests {
         BeatNote { note, start, end }
     }
 
+    fn layer(track: usize, notes: Vec<BeatNote>) -> SongLayer {
+        SongLayer {
+            track,
+            bars: 0,
+            volume: FULL_VOLUME,
+            playing: true,
+            notes,
+        }
+    }
+
     // A song with every part filled in and moved away from a new song's.
     fn full_song() -> Song {
         let mut sound = SoundProfile::new().sound();
@@ -537,23 +901,72 @@ mod tests {
         };
 
         let first = SongLayer {
+            track: 0,
             bars: 0,
             volume: 80,
             playing: true,
             notes: vec![
                 note(64, 0.0, 0.5),
                 note(VIBRATO_KEY_NOTE, 1.0, 2.0),
-                note(drum_note(0), 1.0, 1.1),
-                note(drum_note(4), 1.5, 1.6),
                 note(67, 5.237396, 5.75),
             ],
         };
         let second = SongLayer {
-            bars: 0,
+            track: 0,
+            bars: 1,
             volume: 35,
             playing: false,
             notes: vec![note(GLIDE_KEY_NOTE, 0.25, 0.5), note(70, 2.0, 7.999999)],
         };
+        let hits = layer(1, vec![note(drum_note(0), 1.0, 1.1), note(drum_note(4), 1.5, 1.6)]);
+
+        let lead = SongTrack {
+            name: Some(String::from("Lead")),
+            volume: 90,
+            preset: Some(String::from("Warm pad")),
+            sound,
+            drums: None,
+        };
+        let kit = SongTrack {
+            name: Some(String::from("Black Pearl")),
+            volume: 60,
+            preset: None,
+            sound: SoundProfile::new().sound(),
+            drums: Some(drums),
+        };
+        let verse = SongSection {
+            name: String::from("Verse \"one\""),
+            bars: 4,
+            tempo: 90,
+            key_shift: -3,
+            layers: vec![
+                SectionLayer { track: 0, layer: 1 },
+                SectionLayer { track: 1, layer: 0 },
+            ],
+            automation: vec![
+                Automation {
+                    track: Some(0),
+                    value: String::from("filter cutoff"),
+                    from: 200.0,
+                    to: 8000.5,
+                },
+                Automation {
+                    track: None,
+                    value: String::from(TEMPO_WORD),
+                    from: 90.0,
+                    to: 100.0,
+                },
+            ],
+        };
+        let chorus = SongSection {
+            name: String::from("Chorus"),
+            bars: 8,
+            tempo: 96,
+            key_shift: 0,
+            layers: Vec::new(),
+            automation: Vec::new(),
+        };
+
         Song {
             key: Some(Key {
                 tonic: 9,
@@ -561,7 +974,7 @@ mod tests {
             }),
             tempo: 96,
             snap: false,
-            preset: Some(String::from("Warm pad")),
+            picked: 1,
             chords: vec![
                 HeldChord {
                     chord: minor(57),
@@ -578,10 +991,11 @@ mod tests {
             ],
             looped: Some(SongLoop {
                 bars: 2,
-                layers: vec![first, second],
+                layers: vec![first, second, hits],
             }),
-            sound,
-            drums,
+            tracks: vec![lead, kit],
+            sections: vec![verse, chorus],
+            arrangement: vec![0, 1, 0],
         }
     }
 
@@ -594,7 +1008,7 @@ mod tests {
         let song = full_song();
         assert_eq!(read(&text_of(&song)), song);
 
-        // And a new song's, with no key, chords or loop.
+        // And a new song's, with no key, chords, loop or sections.
         let empty = read("");
         assert_eq!(read(&text_of(&empty)), empty);
     }
@@ -606,30 +1020,46 @@ mod tests {
         assert!(text.contains("key = \"A minor\"\n"));
         assert!(text.contains("tempo = 96\n"));
         assert!(text.contains("snap = false\n"));
-        assert!(text.contains("preset = \"Warm pad\"\n"));
+        assert!(text.contains("picked = 2\n"));
+        assert!(text.contains("arrangement = ['Verse \"one\"', \"Chorus\", 'Verse \"one\"']\n"));
         assert!(text.contains("  { chord = \"Am\", held_ms = 1250 },\n"));
         assert!(text.contains("  { chord = \"Bb\", held_ms = 3 },\n"));
         assert!(text.contains("[loop]\nbars = 2\n"));
-        assert!(text.contains("[[loop.layer]]\nvolume = 80\nplaying = true\n"));
+        assert!(text.contains("[[track]]\nname = \"Lead\"\nvolume = 90\npreset = \"Warm pad\"\n"));
+        assert!(text.contains("[track.sound]\ntuning_hz = 432.5\n"));
+        assert!(text.contains("[[track.sound.oscillators]]\nkind = \"saw\"\n"));
+        assert!(text.contains("[track.sound.filter]\n"));
+        assert!(text.contains("kind = \"sample\"\ninstrument = 'The \"Big\" \\ piano'\n"));
+        assert!(text.contains("[[track.layer]]\nvolume = 80\nplaying = true\n"));
+        assert!(text.contains("[[track.layer]]\nbars = 1\nvolume = 35\nplaying = false\n"));
         assert!(text.contains("  { note = \"E4\", start = 0, end = 0.5 },\n"));
         assert!(text.contains("  { note = \"vibrato key\", start = 1, end = 2 },\n"));
         assert!(text.contains("  { note = \"glide key\", start = 0.25, end = 0.5 },\n"));
         assert!(text.contains("  { note = \"G4\", start = 5.237396, end = 5.75 },\n"));
-        assert!(text.contains("[sound]\ntuning_hz = 432.5\n"));
-        assert!(text.contains("[[sound.oscillators]]\nkind = \"saw\"\n"));
-        assert!(text.contains("[sound.filter]\n"));
-        assert!(text.contains("kind = \"sample\"\ninstrument = 'The \"Big\" \\ piano'\n"));
+        assert!(text.contains("[[track]]\nname = \"Black Pearl\"\nvolume = 60\n\n[track.drums]\nkit = \"Black Pearl\"\npads = [\n"));
         assert!(text.contains("  { note = \"kick\", start = 1, end = 1.1 },\n"));
         assert!(text.contains("  { note = \"closed hat\", start = 1.5, end = 1.6 },\n"));
-        assert!(text.contains("[drums]\nkit = \"Black Pearl\"\npads = [\n"));
         assert!(text.contains("  { pad = \"snare\", level = 70, half_steps = -2, pan = 30, group = 2 },\n"));
         assert!(text.contains("  { pad = \"open hat\", level = 100, half_steps = 0, pan = 0, group = 1 },\n"));
+        assert!(text.contains("[[section]]\nname = 'Verse \"one\"'\nbars = 4\ntempo = 90\nkey_shift = -3\n"));
+        assert!(text.contains("layers = [\n  { track = 1, layer = 2 },\n  { track = 2, layer = 1 },\n]\n"));
+        assert!(text.contains("  { track = 1, value = \"filter cutoff\", from = 200, to = 8000.5 },\n"));
+        assert!(text.contains("  { track = 0, value = \"tempo\", from = 90, to = 100 },\n"));
+        assert!(text.contains("[[section]]\nname = \"Chorus\"\nbars = 8\ntempo = 96\nkey_shift = 0\nlayers = []\nautomation = []\n"));
+
+        // A drums track writes no sound, and each layer comes under its track.
+        assert_eq!(text.matches("[track.sound]").count(), 1);
+        let drums_at = text.find("[track.drums]").unwrap();
+        assert!(text.find("note = \"kick\"").unwrap() > drums_at);
+        assert!(text.find("note = \"E4\"").unwrap() < drums_at);
     }
 
     #[test]
     fn drums_are_read_by_pad_name_within_their_ranges() {
         let text = r#"
-[drums]
+[[track]]
+
+[track.drums]
 kit = "Kit"
 pads = [
   { pad = "Closed_Hat", level = 50, group = 0 },
@@ -649,11 +1079,12 @@ pads = [
             pan: 100,
             group: DRUM_MOST_GROUP,
         };
-        assert_eq!(song.drums, expected);
+        assert_eq!(song.tracks[0].drums, Some(expected));
 
-        // A song with no [drums] has a new song's, and hits read by name.
-        assert_eq!(read("").drums, Drums::new());
-        let hits = "[loop]\nbars = 1\n[[loop.layer]]\nnotes = [{ note = \"snare\", start = 0, end = 0.1 }, { note = \"cowbell\", start = 1, end = 2 }]\n";
+        // A song with no [track.drums] has an instrument track, and hits
+        // read by name.
+        assert_eq!(read("").tracks[0].drums, None);
+        let hits = "[loop]\nbars = 1\n[[track]]\n[[track.layer]]\nnotes = [{ note = \"snare\", start = 0, end = 0.1 }, { note = \"cowbell\", start = 1, end = 2 }]\n";
         let looped = read(hits).looped.unwrap();
         assert_eq!(looped.layers[0].notes, vec![note(drum_note(1), 0.0, 0.1)]);
     }
@@ -718,20 +1149,37 @@ pads = [
             key: None,
             tempo: START_TEMPO,
             snap: true,
-            preset: None,
+            picked: 0,
             chords: Vec::new(),
             looped: None,
-            sound: SoundProfile::new().sound(),
-            drums: crate::drums::Drums::new(),
+            tracks: vec![SongTrack {
+                name: None,
+                volume: FULL_VOLUME,
+                preset: None,
+                sound: SoundProfile::new().sound(),
+                drums: None,
+            }],
+            sections: Vec::new(),
+            arrangement: Vec::new(),
         };
         assert_eq!(song, new_song);
+        assert_eq!(song, Song::new(&SoundProfile::new()));
 
-        // A [sound] that leaves things out takes a new song's for them.
-        let song = read("[sound]\ntuning_hz = 450\n");
+        // A [track.sound] that leaves things out takes a new song's for them.
+        let song = read("[[track]]\n[track.sound]\ntuning_hz = 450\n");
         let mut sound = SoundProfile::new().sound();
         sound.tuning_hz = 450.0;
-        sound.connections = song.sound.connections;
-        assert_eq!(song.sound, sound);
+        sound.connections = song.tracks[0].sound.connections;
+        assert_eq!(song.tracks[0].sound, sound);
+    }
+
+    #[test]
+    fn a_song_file_from_before_tracks_keeps_none_of_its_sound_or_loop() {
+        let text = "tempo = 90\npreset = \"Old\"\n[loop]\nbars = 1\n[[loop.layer]]\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n[sound]\ntuning_hz = 450\n";
+        let song = read(text);
+        assert_eq!(song.tempo, 90);
+        assert_eq!(song.looped, None);
+        assert_eq!(song.tracks, Song::new(&SoundProfile::new()).tracks);
     }
 
     #[test]
@@ -740,7 +1188,7 @@ pads = [
 key = "H major"
 tempo = 999
 snap = "yes"
-preset = "../Secret"
+picked = 5
 chords = [
   { chord = "Am", held_ms = 100 },
   { chord = "H", held_ms = 100 },
@@ -753,7 +1201,11 @@ chords = [
 [loop]
 bars = 1
 
-[[loop.layer]]
+[[track]]
+volume = 150
+preset = "../Secret"
+
+[[track.layer]]
 volume = 150
 playing = 3
 notes = [
@@ -765,13 +1217,13 @@ notes = [
   { note = "E4", start = "one", end = 2 },
 ]
 
-[[loop.layer]]
+[[track.layer]]
 notes = []
 
-[[loop.layer]]
+[[track.layer]]
 notes = [{ note = "H2", start = 0, end = 1 }]
 
-[[loop.layer]]
+[[track.layer]]
 volume = 0
 notes = [{ note = "C3", start = 3, end = 3.5 }]
 "#;
@@ -779,7 +1231,9 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
         assert_eq!(song.key, None);
         assert_eq!(song.tempo, FASTEST_TEMPO);
         assert!(song.snap);
-        assert_eq!(song.preset, None);
+        assert_eq!(song.picked, 0);
+        assert_eq!(song.tracks[0].preset, None);
+        assert_eq!(song.tracks[0].volume, FULL_VOLUME);
         let expected_chords = vec![
             HeldChord {
                 chord: minor(57),
@@ -792,22 +1246,11 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
         ];
         assert_eq!(song.chords, expected_chords);
 
+        let mut quiet = layer(0, vec![note(48, 3.0, 3.5)]);
+        quiet.volume = 0;
         let expected_loop = SongLoop {
             bars: 1,
-            layers: vec![
-                SongLayer {
-                    bars: 0,
-                    volume: FULL_VOLUME,
-                    playing: true,
-                    notes: vec![note(64, 0.0, 1.0)],
-                },
-                SongLayer {
-                    bars: 0,
-                    volume: 0,
-                    playing: true,
-                    notes: vec![note(48, 3.0, 3.5)],
-                },
-            ],
+            layers: vec![layer(0, vec![note(64, 0.0, 1.0)]), quiet],
         };
         assert_eq!(song.looped, Some(expected_loop));
 
@@ -817,39 +1260,135 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
 
     #[test]
     fn a_loop_needs_bars_and_a_layer_with_a_note() {
-        let layer = "\n[[loop.layer]]\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n";
+        let layer = "\n[[track]]\n[[track.layer]]\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n";
         assert!(read(&format!("[loop]\nbars = 2\n{layer}")).looped.is_some());
         assert_eq!(read(&format!("[loop]\nbars = 0\n{layer}")).looped, None);
         assert_eq!(read(&format!("[loop]\n{layer}")).looped, None);
-        assert_eq!(read("[loop]\nbars = 2\n").looped, None);
+        assert_eq!(read(layer).looped, None);
+        assert_eq!(read("[loop]\nbars = 2\n[[track]]\n").looped, None);
     }
 
     #[test]
-    fn a_loop_keeps_its_first_8_layers_and_its_first_4096_notes() {
-        // Ten layers of a note each: the first 8 stay.
+    fn a_song_keeps_9_tracks_8_layers_a_track_and_16384_notes() {
+        // Ten tracks: the first 9 stay.
+        let mut text = String::new();
+        for number in 0..10 {
+            text.push_str(&format!("\n[[track]]\nvolume = {number}\n"));
+        }
+        let song = read(&text);
+        let volumes: Vec<u32> = song.tracks.iter().map(|track| track.volume).collect();
+        assert_eq!(volumes, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // Ten layers on each of two tracks: the first 8 of each stay.
         let mut text = String::from("[loop]\nbars = 1\n");
-        for layer in 0..10 {
-            text.push_str(&format!("\n[[loop.layer]]\nvolume = {layer}\n"));
-            text.push_str("notes = [{ note = \"C4\", start = 0, end = 1 }]\n");
+        for _ in 0..2 {
+            text.push_str("\n[[track]]\n");
+            for layer in 0..10 {
+                text.push_str(&format!("\n[[track.layer]]\nvolume = {layer}\n"));
+                text.push_str("notes = [{ note = \"C4\", start = 0, end = 1 }]\n");
+            }
         }
         let looped = read(&text).looped.unwrap();
-        let volumes: Vec<u32> = looped.layers.iter().map(|layer| layer.volume).collect();
-        assert_eq!(volumes, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        let volumes: Vec<(usize, u32)> = looped.layers.iter().map(|layer| (layer.track, layer.volume)).collect();
+        let mut expected = Vec::new();
+        for track in 0..2 {
+            for volume in 0..8 {
+                expected.push((track, volume));
+            }
+        }
+        assert_eq!(volumes, expected);
 
-        // Three layers of 3,000 notes: the second takes the rest of the
-        // 4096, and the third, with none left, is left out.
+        // Three tracks of 9,000 notes: the second takes the rest of the
+        // 16384, and the third, with none left, has no layer.
         let mut text = String::from("[loop]\nbars = 1\n");
         for _ in 0..3 {
-            text.push_str("\n[[loop.layer]]\nnotes = [\n");
-            for _ in 0..3000 {
+            text.push_str("\n[[track]]\n[[track.layer]]\nnotes = [\n");
+            for _ in 0..9000 {
                 text.push_str("  { note = \"C4\", start = 0, end = 1 },\n");
             }
             text.push_str("]\n");
         }
-        let looped = read(&text).looped.unwrap();
+        let song = read(&text);
+        assert_eq!(song.tracks.len(), 3);
+        let looped = song.looped.unwrap();
         assert_eq!(looped.layers.len(), 2);
-        assert_eq!(looped.layers[0].notes.len(), 3000);
-        assert_eq!(looped.layers[1].notes.len(), LOOP_MAX_NOTES - 3000);
+        assert_eq!(looped.layers[0].notes.len(), 9000);
+        assert_eq!(looped.layers[1].notes.len(), LOOP_MAX_NOTES - 9000);
+    }
+
+    #[test]
+    fn sections_keep_only_what_the_song_has_within_their_ranges() {
+        let text = r#"
+tempo = 100
+arrangement = ["B", "Nope", "A", 3, "B"]
+
+[loop]
+bars = 1
+
+[[track]]
+[[track.layer]]
+notes = [{ note = "C4", start = 0, end = 1 }]
+
+[[track]]
+
+[[section]]
+name = " A "
+bars = 900
+tempo = 9
+key_shift = 30
+layers = [
+  { track = 1, layer = 1 },
+  { track = 1, layer = 1 },
+  { track = 1, layer = 2 },
+  { track = 2, layer = 1 },
+  { track = 0, layer = 1 },
+  { layer = 1 },
+]
+automation = [
+  { track = 2, value = "volume", from = 0, to = 100 },
+  { track = 0, value = "anything", from = 90, to = 120 },
+  { track = 3, value = "volume", from = 0, to = 100 },
+  { track = 1, value = "volume", from = 0 },
+  { value = "volume", from = 0, to = 1 },
+]
+
+[[section]]
+name = "A"
+
+[[section]]
+bars = 2
+
+[[section]]
+name = "B"
+"#;
+        let song = read(text);
+        assert_eq!(song.sections.len(), 2);
+        let a = &song.sections[0];
+        assert_eq!(a.name, "A");
+        assert_eq!(a.bars, SECTION_MOST_BARS);
+        assert_eq!(a.tempo, SLOWEST_TEMPO);
+        assert_eq!(a.key_shift, MOST_KEY_SHIFT);
+        assert_eq!(a.layers, vec![SectionLayer { track: 0, layer: 0 }]);
+        let expected = vec![
+            Automation {
+                track: Some(1),
+                value: String::from("volume"),
+                from: 0.0,
+                to: 100.0,
+            },
+            Automation {
+                track: None,
+                value: String::from(TEMPO_WORD),
+                from: 90.0,
+                to: 120.0,
+            },
+        ];
+        assert_eq!(a.automation, expected);
+
+        // A section left plain takes 1 bar at the song's tempo.
+        let b = &song.sections[1];
+        assert_eq!((b.bars, b.tempo, b.key_shift), (1, 100, 0));
+        assert_eq!(song.arrangement, vec![1, 0, 1]);
     }
 
     #[test]
@@ -869,6 +1408,7 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
     fn text_that_is_not_toml_can_t_be_read() {
         assert!(song_of("this is [not toml", &SoundProfile::new()).is_err());
     }
+
     #[test]
     fn shifted_chords_round_trip_at_their_recorded_octave() {
         let text = "chords = [{ chord = \"C\", held_ms = 500, root_note = \"C5\" }]";
@@ -879,19 +1419,12 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
         assert_eq!(reopened.chords[0].held_ms, 500);
     }
 
-}
-
-#[cfg(test)]
-mod independent_length_tests {
-    use super::*;
-    fn read(text: &str) -> Song {
-        song_of(text, &SoundProfile::new()).unwrap()
-    }
     #[test]
     fn layer_lengths_survive_save_and_open() {
-        let song = read("[loop]\nbars = 6\n[[loop.layer]]\nbars = 3\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n[[loop.layer]]\nbars = 2\nnotes = [{ note = \"E4\", start = 0, end = 1 }]\n");
+        let song = read("[loop]\nbars = 6\n[[track]]\n[[track.layer]]\nbars = 3\nnotes = [{ note = \"C4\", start = 0, end = 1 }]\n[[track.layer]]\nbars = 2\nnotes = [{ note = \"E4\", start = 0, end = 1 }]\n");
         let reopened = read(&text_of(&song));
         assert_eq!(song.looped, reopened.looped);
-        assert_eq!(reopened.looped.unwrap().layers.iter().map(|layer| layer.bars).collect::<Vec<_>>(), vec![3, 2]);
+        let bars: Vec<u32> = reopened.looped.unwrap().layers.iter().map(|layer| layer.bars).collect();
+        assert_eq!(bars, vec![3, 2]);
     }
 }

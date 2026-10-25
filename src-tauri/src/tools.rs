@@ -13,10 +13,11 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use crate::cards::{self, Offers};
-use crate::commands::sound_view_of;
+use crate::commands::{follow_picked_track, pick_track_on, remove_track_on, sound_view_of};
 use crate::compose::Composer;
 use crate::drum_changes;
-use crate::engine::{Engine, FASTEST_TEMPO, FULL_VOLUME, SLOWEST_TEMPO};
+use crate::engine::{Engine, FASTEST_TEMPO, FULL_VOLUME, SLOWEST_TEMPO, TRACK_COUNT};
+use crate::sections::{self, SectionEdit};
 use crate::harmony::{key_name, key_of_name};
 use crate::instruments;
 use crate::key_map::KeyMap;
@@ -32,6 +33,7 @@ use crate::song_session::{self, OpenSong, song_now, songs_view_of};
 use crate::sound_changes;
 use crate::sound_profile::SoundProfile;
 use crate::theory;
+use crate::tracks::Track;
 
 // Everything the tools reach: what the app keeps for its commands, the
 // phrase playing, the agent's offers, and the screen.
@@ -110,9 +112,9 @@ impl ToolAnswer {
 }
 
 // The parts jello_look can read.
-const LOOK_PARTS: [&str; 12] = [
+const LOOK_PARTS: [&str; 14] = [
     "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory", "drums",
-    "instruments",
+    "instruments", "tracks", "sections",
 ];
 
 // Every tool, as MCP's tools/list names and describes them.
@@ -130,7 +132,10 @@ pub fn list() -> Value {
                 tries), trend and recent points, measured from every practice try. memory: your \
                 notes about the player, and whether you ask before saving one. drums: the drum \
                 kit's instrument, whether it is ready, and every pad. instruments: the instruments \
-                in Music/Jello/Instruments, by name. With no parts it reads them all.",
+                in Music/Jello/Instruments, by name. tracks: the song's tracks, which is picked, \
+                and each one's layers. sections: the song's sections, the order it plays them \
+                in, and the place playing now. Sound and drums are the picked track's. With no \
+                parts it reads them all.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -151,12 +156,14 @@ pub fn list() -> Value {
                 number. An oscillator of kind \"sample\" plays its instrument, named as jello_look's \
                 instruments lists them, or null for none. A connection with source \"none\" is \
                 removed; an empty one needs a source and a target. A value outside its range, or a name Jello doesn't know, is refused \
-                with what is allowed, and then nothing changes. Answers with what changed and the \
+                with what is allowed, and then nothing changes. track: the track whose sound \
+                changes, from 1, by default the picked one. Answers with what changed and the \
                 whole sound.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "changes": {"type": "object"},
+                    "track": {"type": "integer"},
                 },
                 "required": ["changes"],
             },
@@ -171,11 +178,14 @@ pub fn list() -> Value {
                 right), half_steps -12 to 12, group 0 (none) to 4: a hit cuts off the pads ringing \
                 in its group, as a closed hat cuts an open one. Hits are one-shots, written with \
                 jello_notes by pad name, like {\"note\": \"kick\", \"start\": 0, \"hold\": 0.25}. \
-                Refused with what is allowed if Jello doesn't know a name or a value is outside its \
-                range, and then nothing changes. Answers with what changed and the drums.",
+                A kit makes the track a drums track, and null an instrument track again. track: \
+                the track whose drums change, from 1, by default the picked one. Refused with \
+                what is allowed if Jello doesn't know a name or a value is outside its range, and \
+                then nothing changes. Answers with what changed and the drums.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "track": {"type": "integer"},
                     "kit": {"type": ["string", "null"]},
                     "pads": {
                         "type": "array",
@@ -203,8 +213,9 @@ pub fn list() -> Value {
                 (\"Am\", found on the chord keys), with its start and hold in the phrase's unit: \
                 beats at the song's tempo (the default) or ms. Example: {\"presses\": [{\"chord\": \
                 \"Am\", \"start\": 0, \"hold\": 2}, {\"note\": \"E4\", \"start\": 0, \"hold\": \
-                1}]}. A phrase lasts at most 60 s, one at a time; the player's Stop ends it. Answers \
-                when it ends, with what was played and what the looper caught.",
+                1}]}. It plays the picked track. A phrase lasts at most 60 s, one at a time; the \
+                player's Stop ends it. Answers when it ends, with what was played and what the \
+                looper caught.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -219,12 +230,13 @@ pub fn list() -> Value {
             "description": "Runs the looper, as the player does. press: what Right Shift does: \
                 when idle it counts in a bar and records; while recording it closes the loop at the \
                 nearest bar line; while looping it records a new layer over it, and pressed again \
-                that layer starts playing. pause and play: the whole loop; play starts it from beat \
-                1. snap: whether loops snap to the beat (on: true or false). tempo: the song's beats \
-                per minute, 40 to 240, not while the looper is busy. layer_volume: a layer's volume \
-                in percent (layer, volume). layer_playing: pauses or plays a layer (layer, playing). \
-                remove_layer: removes a layer, or with no layer the newest. Layers count from 1, \
-                oldest first. Answers with what the looper is doing.",
+                that layer starts playing; it records on the picked track. pause and play: the whole \
+                loop; play starts it from beat 1. snap: whether loops snap to the beat (on: true or \
+                false). tempo: the song's beats per minute, 40 to 240, not while the looper is \
+                busy. layer_volume: a layer's volume in percent (layer, volume). layer_playing: \
+                pauses or plays a layer (layer, playing). remove_layer: removes a layer, or with no \
+                layer the newest. Each track's layers count from 1, oldest first; track names the \
+                track, from 1, by default the picked one. Answers with what the looper is doing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -234,6 +246,7 @@ pub fn list() -> Value {
                     },
                     "on": {"type": "boolean"},
                     "tempo": {"type": "integer"},
+                    "track": {"type": "integer"},
                     "layer": {"type": "integer"},
                     "volume": {"type": "integer"},
                     "playing": {"type": "boolean"},
@@ -404,7 +417,8 @@ pub fn list() -> Value {
             "description": "Writes a loop layer's notes directly, at exact times and any pitch, \
                 not only what the keys reach. notes: [{note|chord, start, hold}] in beats from \
                 the layer's start, a chord giving its three notes, at most 2048. A note can be a \
-                drum pad's name, like \"kick\" or \"closed hat\", which hits that drum. layer: the layer \
+                drum pad's name, like \"kick\" or \"closed hat\", which hits that drum. track: the \
+                track the layer is on, from 1, by default the picked one. layer: that track's layer \
                 to replace, from 1; without it a new layer goes on top (8 at most). bars: how \
                 long the layer lasts, 1 to 64, by default what its notes need, or a replaced \
                 layer's own. volume: percent. With no loop yet, the layer becomes the loop. \
@@ -412,6 +426,7 @@ pub fn list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "track": {"type": "integer"},
                     "layer": {"type": "integer"},
                     "bars": {"type": "integer"},
                     "volume": {"type": "integer"},
@@ -489,6 +504,68 @@ pub fn list() -> Value {
                 "required": ["action"],
             },
         },
+        {
+            "name": "jello_tracks",
+            "description": "Works with the song's tracks, 1 to 9 instruments, each with its own \
+                sound or drum kit, volume and loop layers. One is picked: the keys, jello_play and \
+                the looper's recording play it. Tracks count from 1. make: makes a track after the \
+                last, on the starting sound, or with drums: true a drums track, and picks it. \
+                pick: picks track. name: names track name, or with a blank name lets its name \
+                follow its sound. volume: track's volume in percent. remove: removes track with \
+                its layers, not the only one and not while the looper records. A track's sound and \
+                kit change with jello_sound and jello_drums. Answers with every track.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["make", "pick", "name", "volume", "remove"]},
+                    "track": {"type": "integer"},
+                    "drums": {"type": "boolean"},
+                    "name": {"type": "string"},
+                    "volume": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "jello_arrange",
+            "description": "Arranges the song in sections, each a set of loop layers playing for \
+                some bars, and an order the song plays them in. Sections, tracks, layers (each \
+                track's own) and places in the order count from 1. save: saves the layers playing \
+                now as a new section at the end of the order. save_again: section's layers become \
+                the ones playing now. open: turns section's layers on in the looper, the rest off, \
+                at its tempo, and plays the loop. rename: section, name. bars: section, bars 1 to \
+                64. tempo: section, tempo 40 to 240. key_shift: section, key_shift -12 to 12 half \
+                steps. layer: section, track, layer, on. automate: section moves value of track \
+                from from to to across its bars (value named as jello_sound's, like \"filter \
+                cutoff_hz\"), or with no track the tempo. stop_automating: section, track, value. \
+                move: the place in the order place goes to place to. use_again: plays place again \
+                just after it. remove_use: takes place out of the order. remove_last: takes the \
+                last place out. play: plays the order from the start, putting the loop away until \
+                it stops. stop: stops it. A section no place uses is forgotten. Answers with the \
+                sections.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["save", "save_again", "open", "rename", "bars", "tempo", "key_shift", "layer", "automate", "stop_automating", "move", "use_again", "remove_use", "remove_last", "play", "stop"],
+                    },
+                    "section": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "bars": {"type": "integer"},
+                    "tempo": {"type": "integer"},
+                    "key_shift": {"type": "integer"},
+                    "track": {"type": ["integer", "null"]},
+                    "layer": {"type": "integer"},
+                    "on": {"type": "boolean"},
+                    "value": {"type": "string"},
+                    "from": {"type": "number"},
+                    "to": {"type": "number"},
+                    "place": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        },
     ])
 }
 
@@ -535,6 +612,8 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_theory" => theory::answer(studio, arguments),
         "jello_practice" => practice::answer(studio, arguments),
         "jello_memory" => memory::answer(studio, arguments),
+        "jello_tracks" => use_tracks(studio, arguments),
+        "jello_arrange" => arrange_sections(studio, arguments),
         _ => Err(format!("Jello has no tool called {name}")),
     };
     match answer {
@@ -549,7 +628,7 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
     let now = Instant::now();
     let open_song = studio.open_song.lock().unwrap();
     let key_map = studio.key_map.lock().unwrap();
-    let composer = studio.composer.lock().unwrap();
+    let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
 
     let mut state = serde_json::Map::new();
@@ -593,6 +672,8 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
             "memory" => studio.memory.lock().unwrap().view(),
             "drums" => drum_changes::json_of(composer.drums(), &engine),
             "instruments" => json!({ "names": instruments::list() }),
+            "tracks" => tracks_json(&composer, &mut engine),
+            "sections" => to_json(&sections::view(&mut composer, &mut engine)),
             _ => Value::Null,
         };
         state.insert(part, value);
@@ -641,15 +722,23 @@ fn change_sound(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String
     };
     let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
+    let picked = pick_named_track(&mut composer, &mut engine, arguments)?;
+    let answer = change_sound_on(&mut composer, &mut engine, changes);
+    pick_again(&mut composer, &mut engine, picked);
+    answer
+}
 
+// The same, on the picked track.
+fn change_sound_on(composer: &mut Composer, engine: &mut Engine, changes: &Value) -> Result<ToolAnswer, String> {
     let before = composer.sound_profile().sound();
     let wanted = sound_changes::changed(&before, changes)?;
-    sound_changes::take_changes(composer.sound_profile_mut(), &mut engine, &before, &wanted);
+    sound_changes::take_changes(composer.sound_profile_mut(), engine, &before, &wanted);
 
     // The lines say what the sound became, which is what the engine took.
     let after = composer.sound_profile().sound();
     let lines = sound_changes::change_lines(&before, &after);
     let state = json!({
+        "track": composer.tracks().picked() + 1,
         "changed": lines,
         "preset": composer.lit_preset(),
         "values": sound_changes::json_of(&after),
@@ -663,15 +752,24 @@ fn change_sound(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String
 fn change_drums(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
     let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
+    let picked = pick_named_track(&mut composer, &mut engine, arguments)?;
+    let answer = change_drums_on(&mut composer, &mut engine, arguments);
+    pick_again(&mut composer, &mut engine, picked);
+    answer
+}
+
+// The same, on the picked track.
+fn change_drums_on(composer: &mut Composer, engine: &mut Engine, arguments: &Value) -> Result<ToolAnswer, String> {
     let before = composer.drums().clone();
     let wanted = drum_changes::changed(&before, arguments)?;
-    drum_changes::take_changes(&mut composer, &mut engine, &before, &wanted);
+    drum_changes::take_changes(composer, engine, &before, &wanted);
 
     let after = composer.drums().clone();
     let lines = drum_changes::change_lines(&before, &after);
     let state = json!({
+        "track": composer.tracks().picked() + 1,
         "changed": lines,
-        "drums": drum_changes::json_of(&after, &engine),
+        "drums": drum_changes::json_of(&after, engine),
     });
     Ok(ToolAnswer::of(state, lines))
 }
@@ -709,10 +807,29 @@ fn run_looper(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
     let now = Instant::now();
     let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
+    let picked = pick_named_track(&mut composer, &mut engine, arguments)?;
+    let done = run_looper_on(&mut composer, &mut engine, &action, arguments, picked);
+    pick_again(&mut composer, &mut engine, picked);
+    let lines = done?;
+    let state = looper_json(&mut engine, &composer, now);
+    Ok(ToolAnswer::of(state, lines))
+}
 
+// The same, with the layers counted on the picked track. `picked` is the
+// track picked before, if jello_looper named another.
+fn run_looper_on(
+    composer: &mut Composer,
+    engine: &mut Engine,
+    action: &str,
+    arguments: &Value,
+    picked: Option<usize>,
+) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
-    match action.as_str() {
+    match action {
         "press" => {
+            if picked.is_some() {
+                return Err(String::from("press records on the picked track: pick it with jello_tracks first"));
+            }
             let was = engine.looper_status().state.name();
             engine.press_looper();
             lines.push(format!("Looper pressed while {was}"));
@@ -743,7 +860,7 @@ fn run_looper(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
                 return Err(String::from("the tempo can't change while the looper is busy"));
             }
             let was = composer.tempo();
-            composer.set_tempo(&mut engine, tempo as u32);
+            composer.set_tempo(engine, tempo as u32);
             lines.push(format!("Tempo {was} -> {} bpm", composer.tempo()));
         }
         "layer_volume" => {
@@ -766,14 +883,14 @@ fn run_looper(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
             }
         }
         "remove_layer" => {
-            let count = engine.loop_layers().len() as u32;
+            let count = engine.track_layer_count() as u32;
             if count == 0 {
-                return Err(String::from("the loop has no layers"));
+                return Err(String::from("the track has no layers"));
             }
             if arguments.get("layer").is_some() {
                 let layer = layer_argument(arguments)?;
                 if layer > count {
-                    return Err(format!("the loop has layers 1 to {count}, not {layer}"));
+                    return Err(format!("the track has layers 1 to {count}, not {layer}"));
                 }
                 engine.remove_layer(layer);
                 lines.push(format!("Layer {layer} removed"));
@@ -787,9 +904,7 @@ fn run_looper(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
             return Err(format!("jello_looper has no action {action}: it has {actions}"));
         }
     }
-
-    let state = looper_json(&mut engine, &composer, now);
-    Ok(ToolAnswer::of(state, lines))
+    Ok(lines)
 }
 
 // jello_notes: writes a loop layer's notes, as `arguments` give them.
@@ -798,20 +913,29 @@ fn write_notes(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String>
     let layer = optional_count_argument(arguments, "layer")?;
     let bars = optional_count_argument(arguments, "bars")?;
     let volume = optional_count_argument(arguments, "volume")?;
+    let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
-    let written = layer_notes::write_layer(&mut engine, layer, bars, volume, &notes)?;
+    let picked = pick_named_track(&mut composer, &mut engine, arguments)?;
+    let track = engine.track();
+    let written = layer_notes::write_layer(&mut engine, layer, bars, volume, &notes);
+    pick_again(&mut composer, &mut engine, picked);
+    let written = written?;
     // The loop as written, which the engine's audio thread takes in a moment.
     let mut layers = Vec::new();
     let mut loop_bars = 0;
     if let Some((bars, kept)) = engine.loop_to_keep() {
         loop_bars = bars;
-        for (place, kept_layer) in kept.iter().enumerate() {
+        // Each track's layers count from 1.
+        let mut counts = [0; TRACK_COUNT];
+        for kept_layer in &kept {
             let mut layer_bars = kept_layer.bars;
             if layer_bars == 0 {
                 layer_bars = bars;
             }
+            counts[kept_layer.track] += 1;
             layers.push(json!({
-                "layer": place + 1,
+                "track": kept_layer.track + 1,
+                "layer": counts[kept_layer.track],
                 "bars": layer_bars,
                 "notes": kept_layer.notes.len(),
                 "volume": kept_layer.volume,
@@ -821,6 +945,7 @@ fn write_notes(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String>
     }
     let state = json!({
         "written": written.line,
+        "track": track + 1,
         "loop": {"bars": loop_bars, "layers": layers},
         "tempo": engine.tempo(),
     });
@@ -1074,6 +1199,147 @@ fn use_presets(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String>
         "sounds_like": composer.lit_preset(),
     });
     Ok(ToolAnswer::of(state, lines))
+}
+
+// jello_tracks: the action in `arguments`, done to the song's tracks.
+fn use_tracks(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
+    let action = text_argument(arguments, "action")?;
+    let open_song = studio.open_song.lock().unwrap();
+    let mut key_map = studio.key_map.lock().unwrap();
+    let mut composer = studio.composer.lock().unwrap();
+    let mut engine = studio.engine.lock().unwrap();
+
+    let mut lines = Vec::new();
+    match action.as_str() {
+        "make" => {
+            let drums = optional_flag_argument(arguments, "drums")?;
+            let count = composer.tracks().len();
+            if drums {
+                let Some(made) = composer.tracks_mut().add(&mut engine, Track::new_drums()) else {
+                    return Err(format!("{TRACK_COUNT} tracks is the most"));
+                };
+                composer.tracks_mut().pick(&mut engine, made);
+                lines.push(format!("Made drums track {}", made + 1));
+            } else {
+                pick_track_on(&open_song, &mut composer, &mut engine, count + 1)?;
+                lines.push(format!("Made track {}", count + 1));
+            }
+        }
+        "pick" => {
+            let track = track_number(&composer, arguments)?;
+            pick_track_on(&open_song, &mut composer, &mut engine, track)?;
+            lines.push(format!("Picked track {track}"));
+        }
+        "name" => {
+            let track = track_number(&composer, arguments)?;
+            let name = text_argument(arguments, "name")?;
+            let index = track - 1;
+            if let Some(renamed) = composer.tracks_mut().get_mut(index) {
+                renamed.rename(Some(&name));
+            }
+            let called = composer.tracks().list()[index].name(track);
+            lines.push(format!("Track {track} is called {called}"));
+        }
+        "volume" => {
+            let track = track_number(&composer, arguments)?;
+            let volume = whole_argument(arguments, "volume")?;
+            if volume < 0 || volume > i64::from(FULL_VOLUME) {
+                return Err(format!("volume is 0 to {FULL_VOLUME}%, not {volume}"));
+            }
+            composer.tracks_mut().set_volume(&mut engine, track - 1, volume as u32);
+            lines.push(format!("Track {track} volume {volume}%"));
+        }
+        "remove" => {
+            let track = track_number(&composer, arguments)?;
+            let name = composer.tracks().list()[track - 1].name(track);
+            remove_track_on(&mut composer, &mut engine, track)?;
+            lines.push(format!("Removed track {track} ({name})"));
+        }
+        _ => {
+            let actions = "make, pick, name, volume and remove";
+            return Err(format!("jello_tracks has no action {action}: it has {actions}"));
+        }
+    }
+    // Drum mode follows the picked track, as it does on screen.
+    follow_picked_track(&mut key_map, &composer);
+    let state = tracks_json(&composer, &mut engine);
+    Ok(ToolAnswer::of(state, lines))
+}
+
+// The song's tracks, as jello_look and jello_tracks read them, with how
+// many layers each has.
+fn tracks_json(composer: &Composer, engine: &mut Engine) -> Value {
+    // The loop as the song file keeps it, so layers just written count.
+    let mut counts = [0; TRACK_COUNT];
+    if let Some((_, layers)) = engine.loop_to_keep() {
+        for layer in layers {
+            counts[layer.track] += 1;
+        }
+    }
+    let picked = composer.tracks().picked();
+    let mut tracks = Vec::new();
+    for (index, track) in composer.tracks().list().iter().enumerate() {
+        let mut kit = None;
+        if track.is_drums() {
+            kit = track.drums().kit.clone();
+        }
+        tracks.push(json!({
+            "track": index + 1,
+            "name": track.name(index + 1),
+            "drums": track.is_drums(),
+            "kit": kit,
+            "volume": track.volume(),
+            "layers": counts[index],
+        }));
+    }
+    json!({
+        "tracks": tracks,
+        "picked": picked + 1,
+    })
+}
+
+// The track `arguments` name, counted from 1, one the song has.
+fn track_number(composer: &Composer, arguments: &Value) -> Result<usize, String> {
+    let track = whole_argument(arguments, "track")?;
+    let count = composer.tracks().len();
+    if track < 1 || track > count as i64 {
+        return Err(format!("the song has tracks 1 to {count}, not {track}"));
+    }
+    Ok(track as usize)
+}
+
+// Picks the track `arguments` name for the while, so a tool can work on a
+// track that isn't picked. Returns the track picked before, from 0, for
+// pick_again, or None with no track named, picking nothing.
+fn pick_named_track(composer: &mut Composer, engine: &mut Engine, arguments: &Value) -> Result<Option<usize>, String> {
+    if arguments["track"].is_null() {
+        return Ok(None);
+    }
+    let track = track_number(composer, arguments)?;
+    let before = composer.tracks().picked();
+    composer.tracks_mut().pick_for_a_while(engine, track - 1);
+    Ok(Some(before))
+}
+
+// Picks the track picked before pick_named_track again.
+fn pick_again(composer: &mut Composer, engine: &mut Engine, before: Option<usize>) {
+    if let Some(before) = before {
+        composer.tracks_mut().pick_for_a_while(engine, before);
+    }
+}
+
+// jello_arrange: the edit `arguments` describe, made to the song's sections.
+fn arrange_sections(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
+    let edit: SectionEdit = match serde_json::from_value(arguments.clone()) {
+        Ok(edit) => edit,
+        Err(error) => return Err(format!("jello_arrange can't take that: {error}")),
+    };
+    let line = edit.line();
+    let mut composer = studio.composer.lock().unwrap();
+    let mut engine = studio.engine.lock().unwrap();
+    sections::edit(&mut composer, &mut engine, edit)?;
+    let state = to_json(&sections::view(&mut composer, &mut engine));
+    Ok(ToolAnswer::of(state, vec![line]))
 }
 
 // jello_listen: renders and measures, changing nothing live.
@@ -1355,7 +1621,7 @@ mod tests {
         assert!(!test.engine.lock().unwrap().snap());
 
         let answer = test.call("jello_looper", json!({"action": "remove_layer"}));
-        assert_eq!(answer.text, "the loop has no layers");
+        assert_eq!(answer.text, "the track has no layers");
         let answer = test.call("jello_looper", json!({"action": "layer_volume", "layer": 1, "volume": 101}));
         assert_eq!(answer.text, "volume is 0 to 100%, not 101");
         let answer = test.call("jello_looper", json!({"action": "dance"}));
@@ -1641,7 +1907,144 @@ mod tests {
         let late = json!({"layer": 1, "notes": [{"note": "E4", "start": 8, "hold": 1}]});
         assert_eq!(test.call("jello_notes", late).text, "E4 ends on beat 9, after the layer's 2 bars (8 beats)");
         let missing = json!({"layer": 3, "notes": [{"note": "E4", "start": 0, "hold": 1}]});
-        assert_eq!(test.call("jello_notes", missing).text, "there is no layer 3: the loop has 1");
+        assert_eq!(test.call("jello_notes", missing).text, "there is no layer 3: track 1 has 1");
+    }
+
+    #[test]
+    fn tracks_are_made_picked_named_and_removed() {
+        let test = TestStudio::new();
+        let made = test.call("jello_tracks", json!({"action": "make"}));
+        assert_eq!(made.changes, vec![String::from("Made track 2")]);
+        assert_eq!(json_text(&made)["picked"], 2);
+
+        // A drums track turns drum mode on, as picking it on screen does.
+        let drums = test.call("jello_tracks", json!({"action": "make", "drums": true}));
+        let state = json_text(&drums);
+        assert_eq!(state["picked"], 3);
+        assert_eq!(state["tracks"][2]["drums"], true);
+        assert!(test.key_map.lock().unwrap().drum_mode());
+
+        let named = test.call("jello_tracks", json!({"action": "name", "track": 3, "name": "Beat"}));
+        assert_eq!(named.changes, vec![String::from("Track 3 is called Beat")]);
+        let quieter = test.call("jello_tracks", json!({"action": "volume", "track": 1, "volume": 40}));
+        assert_eq!(json_text(&quieter)["tracks"][0]["volume"], 40);
+        test.call("jello_tracks", json!({"action": "pick", "track": 1}));
+        assert!(!test.key_map.lock().unwrap().drum_mode());
+
+        let removed = test.call("jello_tracks", json!({"action": "remove", "track": 2}));
+        assert_eq!(removed.changes, vec![String::from("Removed track 2 (Track 2)")]);
+        let state = json_text(&removed);
+        assert_eq!(state["tracks"].as_array().unwrap().len(), 2);
+        assert_eq!(state["tracks"][1]["name"], "Beat");
+
+        let past = test.call("jello_tracks", json!({"action": "pick", "track": 7}));
+        assert_eq!(past.text, "the song has tracks 1 to 2, not 7");
+        let just_past = test.call("jello_tracks", json!({"action": "pick", "track": 3}));
+        assert_eq!(just_past.text, "the song has tracks 1 to 2, not 3");
+        let loud = test.call("jello_tracks", json!({"action": "volume", "track": 1, "volume": 140}));
+        assert!(loud.failed);
+        assert!(test.call("jello_tracks", json!({"action": "dance"})).failed);
+    }
+
+    #[test]
+    fn a_tool_works_on_a_track_that_is_not_picked_and_leaves_the_pick() {
+        let test = TestStudio::new();
+        test.call("jello_tracks", json!({"action": "make"}));
+        test.call("jello_tracks", json!({"action": "pick", "track": 1}));
+
+        let changes = json!({"track": 2, "changes": {"filter": {"cutoff_hz": 800}}});
+        let changed = test.call("jello_sound", changes);
+        assert!(!changed.failed, "{}", changed.text);
+        assert_eq!(json_text(&changed)["track"], 2);
+        {
+            let composer = test.composer.lock().unwrap();
+            let tracks = composer.tracks();
+            assert_eq!(tracks.picked(), 0);
+            assert_eq!(tracks.list()[1].sound_profile().filter().cutoff_hz, 800.0);
+            assert_ne!(tracks.list()[0].sound_profile().filter().cutoff_hz, 800.0);
+            assert_eq!(test.engine.lock().unwrap().track(), 0);
+        }
+
+        // A refused change leaves the pick as it was too.
+        let wrong = json!({"track": 2, "changes": {"filter": {"cutoff_hz": -5}}});
+        assert!(test.call("jello_sound", wrong).failed);
+        assert_eq!(test.composer.lock().unwrap().tracks().picked(), 0);
+        assert_eq!(test.engine.lock().unwrap().track(), 0);
+
+        // Notes go on track 2, whose layers count from 1.
+        let notes = json!({"track": 2, "notes": [{"note": "E4", "start": 0, "hold": 1}]});
+        let written = test.call("jello_notes", notes);
+        assert!(!written.failed, "{}", written.text);
+        assert_eq!(json_text(&written)["loop"]["layers"][0]["track"], 2);
+        let looked = test.call("jello_look", json!({"parts": ["tracks"]}));
+        let tracks = &json_text(&looked)["tracks"]["tracks"];
+        assert_eq!(tracks[0]["layers"], 0);
+        assert_eq!(tracks[1]["layers"], 1);
+        // The engine takes the loop with its next chunk of sound.
+        test.engine.lock().unwrap().render(2048);
+        let quieter = json!({"action": "layer_volume", "track": 2, "layer": 1, "volume": 50});
+        let answer = test.call("jello_looper", quieter);
+        assert!(!answer.failed, "{}", answer.text);
+        let none = json!({"action": "layer_volume", "layer": 1, "volume": 50});
+        assert!(test.call("jello_looper", none).failed);
+        let press = test.call("jello_looper", json!({"action": "press", "track": 2}));
+        assert!(press.failed);
+        assert_eq!(test.engine.lock().unwrap().track(), 0);
+
+        let past = test.call("jello_drums", json!({"track": 5, "kit": null}));
+        assert_eq!(past.text, "the song has tracks 1 to 2, not 5");
+    }
+
+    #[test]
+    fn the_agent_arranges_sections() {
+        let test = TestStudio::new();
+        let notes = json!({"notes": [{"note": "E4", "start": 0, "hold": 1}]});
+        test.call("jello_notes", notes);
+
+        let saved = test.call("jello_arrange", json!({"action": "save"}));
+        assert!(!saved.failed, "{}", saved.text);
+        let state = json_text(&saved);
+        assert_eq!(state["order"], json!([1]));
+        assert_eq!(state["sections"][0]["layers"], json!([[1, 1]]));
+
+        let edits = [
+            json!({"action": "rename", "section": 1, "name": "Verse"}),
+            json!({"action": "bars", "section": 1, "bars": 4}),
+            json!({"action": "tempo", "section": 1, "tempo": 100}),
+            json!({"action": "key_shift", "section": 1, "key_shift": 2}),
+            json!({"action": "automate", "section": 1, "track": null, "from": 90, "to": 110}),
+            json!({"action": "automate", "section": 1, "track": 1, "value": "filter cutoff_hz", "from": 200, "to": 900}),
+            json!({"action": "use_again", "place": 1}),
+        ];
+        for edit in edits {
+            let answer = test.call("jello_arrange", edit);
+            assert!(!answer.failed, "{}", answer.text);
+        }
+        let looked = json_text(&test.call("jello_look", json!({"parts": ["sections", "tracks"]})));
+        let verse = &looked["sections"]["sections"][0];
+        assert_eq!(verse["name"], "Verse");
+        assert_eq!(verse["bars"], 4);
+        assert_eq!(verse["tempo"], 100);
+        assert_eq!(verse["key_shift"], 2);
+        assert_eq!(verse["automation"].as_array().unwrap().len(), 2);
+        assert_eq!(looked["sections"]["order"], json!([1, 1]));
+        assert_eq!(looked["tracks"]["tracks"][0]["layers"], 1);
+
+        let line = test.call("jello_arrange", json!({"action": "layer", "section": 1, "track": 1, "layer": 1, "on": false}));
+        assert_eq!(line.changes, vec![String::from("Section 1 leaves out track 1's layer 1")]);
+
+        // Refusals change nothing.
+        let wrong = json!({"action": "automate", "section": 1, "track": 1, "value": "filter loudness", "from": 0, "to": 1});
+        assert!(test.call("jello_arrange", wrong).failed);
+        assert!(test.call("jello_arrange", json!({"action": "bars", "section": 1, "bars": 65})).failed);
+        assert!(test.call("jello_arrange", json!({"action": "bars", "section": 3, "bars": 2})).failed);
+        assert!(test.call("jello_arrange", json!({"action": "dance"})).failed);
+        assert!(test.call("jello_arrange", json!({"action": "bars", "section": 1})).failed);
+        let looked = json_text(&test.call("jello_look", json!({"parts": ["sections"]})));
+        assert_eq!(looked["sections"]["sections"][0]["bars"], 4);
+
+        let removed = test.call("jello_arrange", json!({"action": "remove_use", "place": 2}));
+        assert_eq!(json_text(&removed)["order"], json!([1]));
     }
 
     #[test]

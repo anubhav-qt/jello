@@ -2,7 +2,7 @@
 // The audio thread keeps its existing allocation-free, sample-timed scheduler.
 use crate::engine::{LoopLayer, LoopNote};
 
-const MAX_NOTES: usize = 4096;
+const MAX_NOTES: usize = 16384;
 const MAX_CYCLE_BARS: u32 = 4096;
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -46,7 +46,7 @@ pub fn expand(bars: u32, layers: &[LoopLayer], tempo: u32, sample_rate: u32) -> 
             total += pattern.len() * (cycle / period) as usize;
         }
         if total > MAX_NOTES {
-            return Err(String::from("these layer lengths need more than 4096 playback notes; use shorter or matching lengths"));
+            return Err(String::from("these layer lengths need more than 16384 playback notes; use shorter or matching lengths"));
         }
         let mut copy = layer.clone();
         copy.bars = 0;
@@ -91,6 +91,7 @@ mod tests {
             volume: 50,
             playing: true,
             recording: false,
+            track: 0,
         }
     }
 
@@ -118,7 +119,7 @@ mod tests {
     fn rejects_large_cycles_before_changing_the_engine() {
         assert!(expand(1, &[layer(61), layer(59), layer(53)], 120, 48000).is_err());
         let mut dense = layer(1);
-        dense.notes = vec![dense.notes[0]; 100];
+        dense.notes = vec![dense.notes[0]; 300];
         assert!(expand(1, &[dense, layer(64)], 120, 48000).is_err());
     }
 

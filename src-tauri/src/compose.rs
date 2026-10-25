@@ -8,13 +8,16 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::arrange::Player;
+use crate::sections::Sections;
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, chord_name, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
-use crate::song_file::{HeldChord, Song};
+use crate::song_file::{HeldChord, Song, SongSection};
 use crate::sound_file::Sound;
-use crate::drums::{DRUM_PAD_COUNT, DrumPad, Drums};
+use crate::drums::{DrumPad, Drums};
 use crate::sound_profile::SoundProfile;
+use crate::tracks::{Track, Tracks};
 
 // How much slowing down or speeding up changes the song's tempo.
 const TEMPO_STEP: u32 = 5;
@@ -42,18 +45,16 @@ pub struct Composer {
     // The song's tempo, in beats per minute: the click and the looper play
     // at it. A new song starts at 120.
     tempo: u32,
-    // How the song's notes sound: its oscillators, envelopes, filter,
-    // unison and tuning (docs/adr/0030-a-sound-profile-per-song.md). Every
-    // note played while the song is open plays it, in Play too.
-    sound_profile: SoundProfile,
-    // The preset the song's sound was loaded from or saved as last, with
-    // the sound profile as it was right then (docs/adr/0037-presets.md).
-    // While the song still sounds exactly like that, the Presets page
-    // lights the preset's tile. None until a preset is loaded or saved.
-    preset: Option<(String, SoundProfile)>,
-    // The drum kit's instrument and how each pad sounds (src/drums.rs). They
-    // belong to the song, not to its sound, so no preset holds them.
-    drums: Drums,
+    // The song's instruments, each with its own sound
+    // (docs/adr/0030-a-sound-profile-per-song.md, src/tracks.rs), and the
+    // one picked, which the keys play and the Sound panel edits.
+    tracks: Tracks,
+    // The song's sections and the order it plays them in
+    // (docs/design.md#tracks-and-sections, src/sections.rs).
+    sections: Sections,
+    // The arrangement while it plays (src/arrange.rs), holding the loop it
+    // put away. None otherwise.
+    arranging: Option<Player>,
 }
 
 // A press as practice reads it.
@@ -214,17 +215,17 @@ impl Composer {
             playing_from: 0,
             playing_until: 0,
             tempo: START_TEMPO,
-            sound_profile: SoundProfile::new(),
-            preset: None,
-            drums: Drums::new(),
+            tracks: Tracks::new(),
+            sections: Sections::default(),
+            arranging: None,
         }
     }
 
     // The song in `song`, opened at `now` (docs/adr/0038-song-files.md):
-    // its key, its chords with their lengths, and its sound, sent to
-    // `engine` too. The tempo is the one `engine` plays, which opening the
-    // song's loop sets first (Engine::open_loop). No preset is lit until
-    // remember_preset_if_same says so.
+    // its key, its chords with their lengths, its tracks and their sounds,
+    // sent to `engine` too, and its sections. The tempo is the one `engine`
+    // plays, which opening the song's loop sets first (Engine::open_loop).
+    // No preset is lit until remember_preset_if_same says so.
     pub fn opened(engine: &mut Engine, song: &Song, now: Instant) -> Composer {
         let mut composer = Composer::new();
         composer.key = song.key;
@@ -239,9 +240,29 @@ impl Composer {
             composer.progression.push(played);
         }
         composer.tempo = engine.tempo();
-        composer.sound_profile.take_sound(engine, &song.sound);
-        composer.drums = song.drums.clone();
-        composer.send_drums(engine);
+
+        let mut tracks = Vec::new();
+        for (number, song_track) in song.tracks.iter().enumerate() {
+            let sound = &song_track.sound;
+            let drums = song_track.drums.as_ref();
+            let preset = song_track.preset.as_deref();
+            let track = engine.on_track(number, |engine| {
+                Track::of_song(engine, sound, drums, song_track.volume, preset)
+            });
+            tracks.push(track);
+        }
+        // A name is a new one only if it is not the one the sound gives.
+        for (number, song_track) in song.tracks.iter().enumerate() {
+            let Some(name) = &song_track.name else {
+                continue;
+            };
+            if *name != tracks[number].followed_name(number + 1) {
+                tracks[number].rename(Some(name));
+            }
+        }
+        composer.tracks = Tracks::of_list(tracks, song.picked);
+        composer.tracks.send_all(engine);
+        composer.sections = Sections::new(song.sections.clone(), song.arrangement.clone());
         composer
     }
 
@@ -265,52 +286,89 @@ impl Composer {
         chords
     }
 
-    // Lights preset `name`'s tile if the song sounds exactly like `sound`,
-    // the preset's file as it is now. Opening a song that names its preset
-    // does this.
-    pub fn remember_preset_if_same(&mut self, name: &str, sound: &Sound) {
-        if self.sound_profile.sound() == *sound {
-            self.preset = Some((String::from(name), self.sound_profile.clone()));
+    // Lights preset `name`'s tile on track `track`, from 0, if it sounds
+    // exactly like `sound`, the preset's file as it is now. Opening a song
+    // that names its presets does this.
+    pub fn remember_preset_if_same(&mut self, track: usize, name: &str, sound: &Sound) {
+        if let Some(track) = self.tracks.get_mut(track) {
+            track.remember_preset_if_same(name, sound);
         }
     }
 
-    // Sends the song's tempo and its whole sound profile to `engine`, so
+    // Sends the song's tempo and every track's sound to `engine`, so
     // everything after this plays them. The app does this as it starts,
     // before the first note.
     pub fn send_all(&self, engine: &mut Engine) {
         engine.set_tempo(self.tempo);
-        self.sound_profile.send_all(engine);
-        self.send_drums(engine);
+        self.tracks.send_all(engine);
     }
 
-    // Sends the song's drum kit and every pad to `engine`. Every pad is
-    // within its ranges already: reading a song file and setting a pad
-    // both see to that.
-    fn send_drums(&self, engine: &mut Engine) {
-        engine.set_drum_kit(self.drums.kit.as_deref());
-        for (pad, settings) in self.drums.pads.iter().enumerate() {
-            engine.set_drum_pad(pad, *settings);
-        }
+    pub fn tracks(&self) -> &Tracks {
+        &self.tracks
     }
 
+    // For picking, making and changing tracks. Each change goes on to the
+    // engine.
+    pub fn tracks_mut(&mut self) -> &mut Tracks {
+        &mut self.tracks
+    }
+
+    pub fn sections(&self) -> &[SongSection] {
+        self.sections.list()
+    }
+
+    // The order the song plays its sections in, as places among them.
+    pub fn arrangement(&self) -> &[usize] {
+        self.sections.order()
+    }
+
+    pub fn sections_mut(&mut self) -> &mut Sections {
+        &mut self.sections
+    }
+
+    // Keeps `sections` as the song's, played in the order `arrangement`
+    // gives as places among them.
+    #[cfg(test)]
+    pub fn set_sections(&mut self, sections: Vec<SongSection>, arrangement: Vec<usize>) {
+        self.sections = Sections::new(sections, arrangement);
+    }
+
+    // The arrangement playing, if it plays.
+    pub fn arranging(&self) -> Option<&Player> {
+        self.arranging.as_ref()
+    }
+
+    pub fn arranging_mut(&mut self) -> Option<&mut Player> {
+        self.arranging.as_mut()
+    }
+
+    // Keeps `arranging` as the arrangement playing, and returns the one
+    // there was.
+    pub fn set_arranging(&mut self, arranging: Option<Player>) -> Option<Player> {
+        std::mem::replace(&mut self.arranging, arranging)
+    }
+
+    // Takes track `removed`, from 0, out of the sections: its layers and
+    // values go, and the later tracks' move one track down.
+    pub fn forget_track(&mut self, removed: usize) {
+        self.sections.forget_track(removed);
+    }
+
+    // The picked track's drums.
     pub fn drums(&self) -> &Drums {
-        &self.drums
+        self.tracks.picked_track().drums()
     }
 
-    // Makes the song's drums play instrument `name`, or nothing for None,
-    // on `engine` too.
+    // Makes the picked track's drums play instrument `name`, or nothing for
+    // None, on `engine` too. A kit makes it a drums track.
     pub fn set_drum_kit(&mut self, engine: &mut Engine, name: Option<&str>) {
-        self.drums.kit = name.map(String::from);
-        engine.set_drum_kit(name);
+        self.tracks.set_drum_kit(engine, name);
     }
 
-    // Sets how pad `pad`, from 0, sounds, on `engine` too, kept as the
-    // engine sent it. A pad past the last changes nothing.
+    // Sets how the picked track's pad `pad`, from 0, sounds, on `engine`
+    // too, kept as the engine sent it. A pad past the last changes nothing.
     pub fn set_drum_pad(&mut self, engine: &mut Engine, pad: usize, settings: DrumPad) {
-        if pad >= DRUM_PAD_COUNT {
-            return;
-        }
-        self.drums.pads[pad] = engine.set_drum_pad(pad, settings);
+        self.tracks.set_drum_pad(engine, pad, settings);
     }
 
     // Plays the song at `tempo` beats per minute from the next beat on, on
@@ -319,6 +377,12 @@ impl Composer {
     // the looper is busy.
     pub fn set_tempo(&mut self, engine: &mut Engine, tempo: u32) {
         self.tempo = engine.set_tempo(tempo);
+    }
+
+    // Takes the tempo `engine` plays as the song's: opening the loop again
+    // at another tempo sets it there.
+    pub fn follow_tempo(&mut self, engine: &Engine) {
+        self.tempo = engine.tempo();
     }
 
     // Slows the song down by 5 beats per minute, but never below
@@ -344,38 +408,32 @@ impl Composer {
         self.tempo
     }
 
+    // The picked track's sound profile.
     pub fn sound_profile(&self) -> &SoundProfile {
-        &self.sound_profile
+        self.tracks.picked_track().sound_profile()
     }
 
-    // For changing the song's sound. Each change goes on to the engine.
+    // For changing the picked track's sound. Each change goes on to the
+    // engine, whose picked track is the same one.
     pub fn sound_profile_mut(&mut self) -> &mut SoundProfile {
-        &mut self.sound_profile
+        self.tracks.picked_track_mut().sound_profile_mut()
     }
 
-    // Copies preset `name`'s `sound` into the song, on `engine` too, and
-    // remembers it as the preset the song sounds like.
+    // Copies preset `name`'s `sound` into the picked track, on `engine`
+    // too, and remembers it as the preset the track sounds like.
     pub fn take_preset(&mut self, engine: &mut Engine, name: &str, sound: &Sound) {
-        self.sound_profile.take_sound(engine, sound);
-        self.preset = Some((String::from(name), self.sound_profile.clone()));
+        self.tracks.picked_track_mut().take_preset(engine, name, sound);
     }
 
-    // Remembers that the song's sound was just saved as preset `name`.
+    // Remembers that the picked track's sound was just saved as preset
+    // `name`.
     pub fn saved_as_preset(&mut self, name: &str) {
-        self.preset = Some((String::from(name), self.sound_profile.clone()));
+        self.tracks.picked_track_mut().saved_as_preset(name);
     }
 
-    // The preset the song sounds exactly like, or None once its sound has
-    // changed since loading or saving it, or if it never did either.
+    // The preset the picked track sounds exactly like, or None.
     pub fn lit_preset(&self) -> Option<&str> {
-        let Some((name, profile)) = &self.preset else {
-            return None;
-        };
-        if *profile == self.sound_profile {
-            Some(name.as_str())
-        } else {
-            None
-        }
+        self.tracks.picked_track().lit_preset()
     }
 
     // Sets the song's key. Chords added already stay, named for the new key.
@@ -564,6 +622,8 @@ impl Composer {
     // song longer than the engine plays stops after its first
     // SONG_MAX_CHORDS chords. The tape's play button does this.
     pub fn play_song(&mut self, engine: &mut Engine, now: Instant) -> Result<(), String> {
+        // The progression and the sections never play over each other.
+        crate::arrange::stop(self, engine);
         let mut chords = Vec::new();
         for played in self.progression.iter().take(SONG_MAX_CHORDS) {
             chords.push(played.to_play(now));

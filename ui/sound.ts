@@ -30,8 +30,23 @@ export interface SoundView {
   // The preset the song sounds exactly like, whose tile is lit, or null
   // (docs/adr/0037-presets.md).
   preset: string | null;
-  // The song's drum kit and its pads (docs/design.md#sampler).
+  // The picked track's drum kit and its pads (docs/design.md#sampler).
   drums: DrumsView;
+  // The song's tracks, in order, and the picked one, counted from 1
+  // (docs/design.md#tracks-and-sections).
+  tracks: TrackView[];
+  picked_track: number;
+}
+
+// A track, as its tile in the track row shows it (`TrackView` in
+// src-tauri/src/commands.rs).
+export interface TrackView {
+  name: string;
+  // True for a drums track, with its kit, if one is picked.
+  drums: boolean;
+  kit: string | null;
+  // In percent, from 0 to 100.
+  volume: number;
 }
 
 // Where an instrument is (`InstrumentView` in src-tauri/src/commands.rs):
@@ -376,6 +391,13 @@ export interface SoundSender {
   // Fetches starter `name` into the folder. Done once it is kept, or once
   // it failed and the top bar says why.
   downloadStarter(name: string): Promise<void>;
+  // The track row's changes, each track counted from 1
+  // (docs/design.md#tracks-and-sections). Picking one past the last makes it.
+  pickTrack(track: number): void;
+  renameTrack(track: number, name: string): void;
+  // In percent.
+  setTrackVolume(track: number, volume: number): void;
+  removeTrack(track: number): void;
 }
 
 // What the looper is doing (`LooperView` in src-tauri/src/commands.rs).

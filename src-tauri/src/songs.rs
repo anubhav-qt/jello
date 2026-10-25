@@ -190,16 +190,8 @@ mod tests {
 
     // A new song's text, at `tempo`.
     fn song_text(tempo: u32) -> String {
-        let song = Song {
-            key: None,
-            tempo,
-            snap: true,
-            preset: None,
-            chords: Vec::new(),
-            looped: None,
-            sound: SoundProfile::new().sound(),
-            drums: crate::drums::Drums::new(),
-        };
+        let mut song = Song::new(&SoundProfile::new());
+        song.tempo = tempo;
         text_of(&song)
     }
 

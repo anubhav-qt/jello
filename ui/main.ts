@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mount } from "svelte";
-import type { ComposeView } from "./compose";
+import type { ComposeView, SectionEdit, SectionsView } from "./compose";
 import { findElement, makeElement } from "./dom";
 import { detectPlatform, type KeyLayout } from "./keyboard";
 import type {
@@ -47,6 +47,8 @@ interface StageControls {
   wantsPerformance(): boolean;
   // What Compose shows, as Rust answered.
   showCompose(view: ComposeView): void;
+  // The song's sections, as Rust answered.
+  showSections(view: SectionsView): void;
   // The songs and the one open, as Rust answered.
   showSongs(view: SongsView): void;
   // The agent pressed or let go of a key, playing a phrase.
@@ -65,6 +67,7 @@ function showSound(view: SoundView) {
   if (screen !== null) {
     screen.showSound(view);
   }
+  askForSectionsIfLoopChanged(view);
   // Rust sends a looper message once, like "There is no layer 7".
   if (view.looper.message !== null) {
     showStatus(view.looper.message);
@@ -500,6 +503,56 @@ async function setDrumKit(name: string | null) {
   } catch (error) {
     showStatus(`Could not pick the drum kit: ${error}`);
   }
+  // A kit makes the track a drums track, so the letters hit drums.
+  await askForLayout();
+}
+
+// Picks track `track`, counted from 1, or makes the next one
+// (docs/design.md#tracks-and-sections). Drum mode follows the track, so the
+// page asks for the keys again.
+async function pickTrack(track: number) {
+  try {
+    showSound(await invoke<SoundView>("pick_track", { track }));
+  } catch (error) {
+    showStatus(`Could not pick track ${track}: ${error}`);
+  }
+  await askForLayout();
+}
+
+// The track row's other changes, each counted from 1.
+async function renameTrack(track: number, name: string) {
+  try {
+    showSound(await invoke<SoundView>("rename_track", { track, name }));
+  } catch (error) {
+    showStatus(`Could not rename track ${track}: ${error}`);
+  }
+}
+
+async function setTrackVolume(track: number, volume: number) {
+  try {
+    showSound(await invoke<SoundView>("set_track_volume", { track, volume }));
+  } catch (error) {
+    showStatus(`Could not set track ${track}'s volume: ${error}`);
+  }
+}
+
+async function removeTrack(track: number) {
+  try {
+    showSound(await invoke<SoundView>("remove_track", { track }));
+  } catch (error) {
+    showStatus(`Could not remove track ${track}: ${error}`);
+  }
+  await askForLayout();
+}
+
+// The track a number key picks with left Cmd (left Alt on Windows): Digit1
+// picks track 1, up to Digit9. Null for any other key.
+function trackNumberOf(key: string): number | null {
+  const match = /^Digit([1-9])$/.exec(key);
+  if (match === null) {
+    return null;
+  }
+  return Number(match[1]);
 }
 
 // ...and sets pad `pad`, from 0.
@@ -671,7 +724,7 @@ async function playSong() {
 
 async function renderWav() {
   try {
-    const path = await invoke<string>("render_test_note");
+    const path = await invoke<string>("render_wav");
     showStatus(`Saved ${path}`);
   } catch (error) {
     showStatus(`Could not render: ${error}`);
@@ -765,6 +818,64 @@ async function shiftOctave(steps: number) {
   }
 }
 
+// The sections lane shows each track's layers, so the page asks for the
+// sections again whenever the loop's shape changes: a layer recorded,
+// removed, paused or played, another track picked, or the tempo.
+let loopShapeBefore = "";
+
+function askForSectionsIfLoopChanged(view: SoundView) {
+  const playing = view.looper.layers.map((layer) => layer.playing);
+  const parts = [
+    view.picked_track,
+    view.tracks.length,
+    view.looper.state,
+    view.looper.layers.length,
+    playing.join(","),
+    view.tempo,
+  ];
+  const shape = parts.join(" ");
+  if (shape === loopShapeBefore) {
+    return;
+  }
+  loopShapeBefore = shape;
+  sendInOrder(askForSections);
+}
+
+async function askForSections() {
+  try {
+    const view = await invoke<SectionsView>("sections_view");
+    screen?.showSections(view);
+  } catch (error) {
+    showStatus(`Could not get the sections: ${error}`);
+  }
+}
+
+async function editSections(edit: SectionEdit) {
+  try {
+    const view = await invoke<SectionsView>("edit_sections", { edit });
+    screen?.showSections(view);
+  } catch (error) {
+    showStatus(`Could not change the sections: ${error}`);
+  }
+  // Opening a section or playing them changes the looper and the tempo.
+  await askForSound();
+}
+
+// Left Cmd + Return saves the layers playing now as a section, and left
+// Cmd + Delete takes the last one off (docs/design.md#tracks-and-sections).
+function sectionEditOf(code: string): SectionEdit | null {
+  if (code === "Enter") {
+    return { action: "save" };
+  }
+  if (code === "NumpadEnter") {
+    return { action: "save" };
+  }
+  if (code === "Backspace") {
+    return { action: "remove_last" };
+  }
+  return null;
+}
+
 async function editComposition(action: string, place: number) {
   try {
     showCompose(
@@ -791,6 +902,23 @@ window.addEventListener("keydown", (event) => {
   ) {
     event.preventDefault();
     stepWithArrow(event.code, ARROW_STEPS[event.code], event.repeat);
+    return;
+  }
+  // Left Cmd and a number picks that track, or makes the next one.
+  const trackNumber = trackNumberOf(event.code);
+  if (soundModifierHeld && trackNumber !== null && !isTyping(event)) {
+    event.preventDefault();
+    if (!event.repeat) {
+      sendInOrder(() => pickTrack(trackNumber));
+    }
+    return;
+  }
+  const sectionEdit = sectionEditOf(event.code);
+  if (soundModifierHeld && sectionEdit !== null && !isTyping(event)) {
+    event.preventDefault();
+    if (!event.repeat) {
+      sendInOrder(() => editSections(sectionEdit));
+    }
     return;
   }
   if (event.code === "Escape" && screen?.closePanel()) {
@@ -931,6 +1059,11 @@ const soundSender: SoundSender = {
   listInstruments: () => listInstruments(),
   openInstrumentsFolder: () => openInstrumentsFolder(),
   downloadStarter: (name) => downloadStarter(name),
+  pickTrack: (track) => sendInOrder(() => pickTrack(track)),
+  renameTrack: (track, name) => sendInOrder(() => renameTrack(track, name)),
+  setTrackVolume: (track, volume) =>
+    sendInOrder(() => setTrackVolume(track, volume)),
+  removeTrack: (track) => sendInOrder(() => removeTrack(track)),
 };
 
 // What the Songs panel sends, each in order with the keys.
@@ -957,6 +1090,7 @@ function listSongsInOrder(): Promise<SongsView | null> {
 function redrawAfterAgent() {
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
+  sendInOrder(askForSections);
   sendInOrder(async () => {
     await askForSongs();
   });
@@ -987,6 +1121,18 @@ function hearTheAgent() {
   });
   listen<{ marks: PracticeMark[] }>("practice-marks", (event) => {
     screen?.showPracticeMarks(event.payload.marks);
+  });
+}
+
+// The sections tell the page as another starts and once they have played
+// (src-tauri/src/lib.rs).
+function hearTheSections() {
+  listen("section-playing", () => {
+    sendInOrder(askForSections);
+  });
+  listen("arrangement-stopped", () => {
+    sendInOrder(askForSections);
+    sendInOrder(askForSound);
   });
 }
 
@@ -1049,6 +1195,8 @@ async function start() {
       onPlayClick: () => sendInOrder(playSong),
       onComposeEdit: (action: string, place: number) =>
         sendInOrder(() => editComposition(action, place)),
+      onSectionEdit: (edit: SectionEdit) =>
+        sendInOrder(() => editSections(edit)),
       soundSender,
       songSender,
       onSongChanged: redrawAfterAgent,
@@ -1056,6 +1204,7 @@ async function start() {
   });
   hearTheAgent();
   hearTheInstruments();
+  hearTheSections();
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
   sendInOrder(async () => {

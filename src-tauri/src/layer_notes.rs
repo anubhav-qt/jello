@@ -112,8 +112,9 @@ pub struct Written {
     pub line: String,
 }
 
-// Writes `notes` into `engine`'s loop: replacing layer `layer`'s notes
-// (from 1), or as a new layer on top with None. The layer lasts `bars`, or
+// Writes `notes` into `engine`'s loop on its picked track: replacing that
+// track's layer `layer`'s notes (from 1), or as a new layer on top with
+// None. The layer lasts `bars`, or
 // with None the bars it had, or for a new layer the bars its notes need.
 // With no loop yet, the layer becomes the loop. A loop that was playing
 // keeps playing. Refused while the looper records, changing nothing.
@@ -138,17 +139,25 @@ pub fn write_layer(
         Some(kept) => kept,
         None => (0, Vec::new()),
     };
-    if let Some(number) = layer {
-        if number == 0 || number as usize > layers.len() {
-            return Err(format!("there is no layer {number}: the loop has {}", layers.len()));
+    // Where the picked track's layers sit among the loop's, oldest first.
+    let track = engine.track();
+    let mut places = Vec::new();
+    for (place, kept) in layers.iter().enumerate() {
+        if kept.track == track {
+            places.push(place);
         }
-    } else if layers.len() >= MAX_LAYERS {
-        return Err(format!("a loop holds at most {MAX_LAYERS} layers: replace one with layer"));
+    }
+    if let Some(number) = layer {
+        if number == 0 || number as usize > places.len() {
+            return Err(format!("there is no layer {number}: track {} has {}", track + 1, places.len()));
+        }
+    } else if places.len() >= MAX_LAYERS {
+        return Err(format!("a track holds at most {MAX_LAYERS} layers: replace one with layer"));
     }
 
     let mut layer_bars = bars_for(notes);
     if let Some(number) = layer {
-        let had = layers[number as usize - 1].bars;
+        let had = layers[places[number as usize - 1]].bars;
         if had == 0 {
             layer_bars = common;
         } else {
@@ -201,7 +210,7 @@ pub fn write_layer(
 
     let number;
     if let Some(asked) = layer {
-        let replaced = &mut layers[asked as usize - 1];
+        let replaced = &mut layers[places[asked as usize - 1]];
         replaced.notes = loop_notes;
         replaced.bars = kept_bars;
         if let Some(percent) = volume {
@@ -219,8 +228,9 @@ pub fn write_layer(
             volume: percent,
             playing: true,
             recording: false,
+            track,
         });
-        number = layers.len() as u32;
+        number = places.len() as u32 + 1;
     }
     // Layers that inherit the loop's length keep it, so another layer's new
     // length never stretches them.

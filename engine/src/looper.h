@@ -7,6 +7,7 @@
 #include "mailbox.h"
 #include "snap.h"
 #include "synth.h"
+#include "tracks.h"
 
 // One change to the loop's layers or notes, for the screen
 // (docs/adr/0024-the-looper-s-look.md, docs/adr/0026-layers.md). The looper
@@ -20,7 +21,7 @@ struct LoopChange {
         started,        // note `index` of layer `layer` started: its pitch `note`, on `sample`
         ended,          // note `index` of layer `layer` ended on `sample`
         kept,           // the first loop closed, and layer 0 kept only its first `index` notes
-        layer_started,  // layer `layer` started recording, after the others
+        layer_started,  // layer `layer` started recording on track `track`, after the others
         layer_stopped,  // layer `layer` stopped recording
         layer_dropped,  // layer `layer` stopped with no notes, so it is gone
         layer_removed,  // layer `layer` was removed; the layers after it move up
@@ -33,17 +34,20 @@ struct LoopChange {
     int index = 0;
     int note = 0;  // its pitch, 0 to 127, 128 for the vibrato key or 129 for the glide key; only for `started`
     std::uint64_t sample = 0;
+    int track = 0;  // the layer's track, from 0; only for `layer_started`
 };
 
 // The mailbox that carries the loop's changes from the audio thread to Rust.
 // Rust takes them out each time the screen asks what the looper is doing,
 // every 50 ms while it is busy, so this many never pile up: it is room for
 // as many notes as a loop holds.
-using LoopChanges = Mailbox<LoopChange, 4096>;
+using LoopChanges = Mailbox<LoopChange, 16384>;
 
-// One note of a loop opened from a song file, and the layer it belongs to.
+// One note of a loop opened from a song file, the layer it belongs to, and
+// that layer's track.
 struct LoadedNote {
     int layer;
+    int track;
     LoopNote note;
 };
 
@@ -52,7 +56,7 @@ struct LoadedNote {
 // fewer, so the notes come this way, and one event then tells the audio
 // thread to take them. It has room for as many notes as a loop holds, set
 // aside when the engine is made.
-using LoadedNotes = Mailbox<LoadedNote, 4096>;
+using LoadedNotes = Mailbox<LoadedNote, 16384>;
 
 // Records what the player plays and plays it back on the beat
 // (docs/adr/0021-a-looper-on-a-beat.md). A loop is a list of notes, not
@@ -61,19 +65,23 @@ using LoadedNotes = Mailbox<LoadedNote, 4096>;
 // played, and each time around plays them as planned by plan_loop: moved to
 // the nearest half beat while "snap to beat" is on. The notes come in layers
 // (docs/adr/0026-layers.md): the first loop is layer 0, and each layer
-// recorded over it adds one. The conductor tells it about every live note
-// and every beat, and it tells the synth when to play each loop note. Only
-// the audio thread uses it, so nothing in here locks, allocates or waits.
+// recorded over it adds one. Each layer belongs to the track it was started
+// on (docs/design.md#tracks-in-the-engine), records only that track's notes
+// and plays them on that track's synth. The conductor tells it about every
+// live note and every beat, and it tells the tracks when to play each loop
+// note. Only the audio thread uses it, so nothing in here locks, allocates or
+// waits.
 class Looper {
 public:
     // The most notes a loop holds, in all its layers. The room for them is
     // set aside when the engine is created, so recording never asks for more
     // memory. Once it is full, new notes still sound live but are not
     // recorded.
-    static constexpr int max_notes = 4096;
+    static constexpr int max_notes = 16384;
 
-    // The most layers a loop holds.
-    static constexpr int max_layers = 8;
+    // The most layers one track holds, and a whole loop.
+    static constexpr int max_track_layers = Synth::layer_count;
+    static constexpr int max_layers = max_track_layers * Tracks::count;
 
     // For remove_layer: the layer recorded last.
     static constexpr int newest_layer = -1;
@@ -92,66 +100,69 @@ public:
     // The looper sends the loop's changes to `changes`.
     explicit Looper(LoopChanges& changes);
 
-    // What right Shift does. When idle, it starts the count-in on the
-    // current sample; the conductor starts a new bar there for it first.
-    // During the count-in, it cancels it. While recording, it closes the
-    // loop at the nearest bar line. While looping, it starts recording a new
-    // layer over the loop at once, unless the loop already has max_layers.
+    // What right Shift does, on track `track`. When idle, it starts the
+    // count-in on the current sample; the conductor starts a new bar there
+    // for it first. During the count-in, it cancels it. While recording, it
+    // closes the loop at the nearest bar line. While looping, it starts
+    // recording a new layer on `track` over the loop at once, unless that
+    // track already has max_track_layers.
     // While recording a layer, it stops: what was played plays from the next
     // time around, and a layer with no notes is dropped. While paused, it
     // plays the loop, as play does; the conductor starts a new bar for it
     // first. While closing, it does nothing.
-    void press(const Clock& clock, Synth& synth);
+    void press(const Clock& clock, Tracks& tracks, int track);
 
     // Pauses the loop on sample `now`: every layer's notes stop, and it waits
     // at its start (docs/adr/0038-song-files.md). A layer being recorded
     // stops first, as the press that stops it would. Does nothing unless the
     // loop plays.
-    void pause(std::uint64_t now, Synth& synth);
+    void pause(std::uint64_t now, Tracks& tracks);
 
     // Plays a paused loop from its start, on sample `now`; the conductor
     // starts a new bar there for it first. Does nothing unless paused.
-    void play(std::uint64_t now, Synth& synth);
+    void play(std::uint64_t now, Tracks& tracks);
 
     // Pauses layer `layer` or plays it again, on sample `now`. A paused
     // layer is silent and keeps its volume. Played again while the loop
     // plays, the notes that should be sounding start at once. A layer that
     // doesn't exist changes nothing.
-    void set_layer_playing(int layer, bool playing, std::uint64_t now, Synth& synth);
+    void set_layer_playing(int layer, bool playing, std::uint64_t now, Tracks& tracks);
 
     // Forgets the loop, as clear does, and takes `count` notes from
     // `loaded` in `layers` layers, a loop `bars` bars long at `beat`, paused.
     // The notes come layer by layer, 0 first, each layer's in the order they
-    // start, and every layer has at least one; the C API checks that. Notes
+    // start, every layer has at least one, all of a layer's on one track, and
+    // no track has more than max_track_layers; the C API checks that. Notes
     // past the loop's end are kept to it.
-    void load(LoadedNotes& loaded, int count, int layers, int bars, BeatLength beat, Synth& synth);
+    void load(LoadedNotes& loaded, int count, int layers, int bars, BeatLength beat, Tracks& tracks);
 
     // Stops every layer's notes and forgets the loop, or cancels the
     // count-in or the recording. Live notes play on.
-    void clear(Synth& synth);
+    void clear(Tracks& tracks);
 
     // What Esc does: stops layer `layer`'s notes and forgets it, or the
     // newest layer's for newest_layer. The layers after it move up, and if it
     // was being recorded, the recording stops. Removing the only layer clears
     // the loop, and so does removing any during the count-in or the first
     // recording. A layer that doesn't exist changes nothing.
-    void remove_layer(int layer, Synth& synth);
+    void remove_layer(int layer, Tracks& tracks);
 
     // How loud layer `layer` plays, from 0 (silent) to 1 (as played), its
     // notes already sounding too. Each layer starts at 1. A layer that
     // doesn't exist changes nothing.
-    void set_layer_volume(int layer, float volume, Synth& synth);
+    void set_layer_volume(int layer, float volume, Tracks& tracks);
 
     // The "snap to beat" switch, on to start with. While looping, the loop
     // changes right away: its notes stop, and those that should be sounding
     // on sample `now` start again. Otherwise the next loop plays by it.
-    void set_snap(bool snap, std::uint64_t now, Synth& synth);
+    void set_snap(bool snap, std::uint64_t now, Tracks& tracks);
 
-    // Live notes, so they can be recorded. `now` is the sample they are
-    // heard from. Notes played in the count-in's last quarter beat count as
-    // played on beat 1.
-    void note_on(int note, int velocity, std::uint64_t now);
-    void note_off(int note, std::uint64_t now);
+    // Live notes on track `track`, so they can be recorded: only the layer
+    // being recorded's own track's are. `now` is the sample they are heard
+    // from. Notes played in the count-in's last quarter beat count as played
+    // on beat 1.
+    void note_on(int note, int velocity, std::uint64_t now, int track);
+    void note_off(int note, std::uint64_t now, int track);
     void all_notes_off(std::uint64_t now);
 
     // True when the looper has something to do on the current sample: a
@@ -159,7 +170,7 @@ public:
     bool has_something_now(const Clock& clock) const;
 
     // Does everything the looper has to do on the current sample.
-    void act_now(const Clock& clock, Synth& synth);
+    void act_now(const Clock& clock, Tracks& tracks);
 
     State state() const;
     bool is_idle() const;
@@ -192,9 +203,11 @@ private:
         int first = 0;    // the place of its first note, in notes_ and in plan_
         int count = 0;    // how many notes it has
         int planned = 0;  // how many of them its plan covers, from its first
-        // Which of the synth's layer slots plays its notes, 0 to 7. A layer
-        // keeps its slot while the layers before it are removed and its
-        // number changes, so the notes it has sounding are always its own.
+        int track = 0;    // the track it records and plays on
+        // Which of its track's synth's layer slots plays its notes, 0 to 7.
+        // A layer keeps its slot while the layers before it are removed and
+        // its number changes, so the notes it has sounding are always its
+        // own.
         int slot = 0;
         int next_start = 0;  // the next note to start, in its plan
         int next_end = 0;    // the next note to end, in its plan_ends_
@@ -212,33 +225,38 @@ private:
     // True while there is a loop, playing or paused.
     bool has_loop() const;
 
-    // True if a note played on sample `now` is recorded: while recording,
-    // in the count-in's last quarter beat, and while recording a layer.
-    bool records_at(std::uint64_t now) const;
+    // True if a note played on sample `now` on track `track` is recorded:
+    // while recording, in the count-in's last quarter beat, and while
+    // recording a layer, each only on the track of the layer being recorded.
+    bool records_at(std::uint64_t now, int track) const;
 
     // Sends one change to the screen. If its mailbox is full, the change is
     // dropped: the sound never waits for the screen.
-    void tell(LoopChange::Type type, int layer, int index, int note, std::uint64_t sample);
+    void tell(LoopChange::Type type, int layer, int index, int note, std::uint64_t sample, int track = 0);
 
     // Each beat and bar moves the looper along.
-    void on_beat(const Clock& clock, Synth& synth);
+    void on_beat(const Clock& clock, Tracks& tracks);
     void count_in(std::uint64_t now);
-    void on_bar(std::uint64_t now, Synth& synth);
+    void on_bar(std::uint64_t now, Tracks& tracks);
 
     void start_recording(std::uint64_t now);
 
-    // Adds an empty layer after the others, being recorded.
-    void start_layer(Synth& synth);
+    // Adds an empty layer on track `track` after the others, being
+    // recorded.
+    void start_layer(Tracks& tracks, int track);
 
     // The press that stops recording a layer.
-    void stop_layer(Synth& synth);
+    void stop_layer(Tracks& tracks);
 
-    // A slot no layer plays on.
-    int free_slot() const;
+    // How many layers track `track` has.
+    int layers_on(int track) const;
+
+    // A slot no layer of track `track` plays on.
+    int free_slot(int track) const;
 
     // Takes layer `layer` out, with its notes, and moves the ones after it
     // up.
-    void take_out_layer(int layer, Synth& synth);
+    void take_out_layer(int layer, Tracks& tracks);
 
     // The layer that note `place` in notes_ belongs to.
     int layer_holding(int place) const;
@@ -250,7 +268,7 @@ private:
     void end_held_notes_at_the_end();
 
     // The second press, while recording.
-    void close_at_nearest_bar_line(const Clock& clock, Synth& synth);
+    void close_at_nearest_bar_line(const Clock& clock, Tracks& tracks);
 
     // Ends the first loop on sample `end`, `bars` bars after it started, and
     // starts looping.
@@ -268,8 +286,8 @@ private:
     // has acted on it: starts the notes that would be sounding `position`
     // samples in, those due on that very sample too, and skips the ones
     // already over.
-    void catch_up(std::uint64_t position, Synth& synth);
-    void catch_up_layer(Layer& layer, std::uint64_t position, Synth& synth);
+    void catch_up(std::uint64_t position, Tracks& tracks);
+    void catch_up_layer(Layer& layer, std::uint64_t position, Tracks& tracks);
 
     // Whether a layer's next note to start, or to end, is due `position`
     // samples into the repeat.
@@ -277,9 +295,9 @@ private:
     bool is_end_due(const Layer& layer, std::uint64_t position) const;
 
     // Plays every start and end due `position` samples into the repeat.
-    void play_due(std::uint64_t position, Synth& synth);
-    bool play_next_end(Layer& layer, std::uint64_t position, Synth& synth);
-    bool play_next_start(Layer& layer, std::uint64_t position, Synth& synth);
+    void play_due(std::uint64_t position, Tracks& tracks);
+    bool play_next_end(Layer& layer, std::uint64_t position, Tracks& tracks);
+    bool play_next_start(Layer& layer, std::uint64_t position, Tracks& tracks);
 
     LoopChanges& changes_;
 

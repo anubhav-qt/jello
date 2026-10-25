@@ -52,6 +52,27 @@ static_assert(JELLO_LOOP_MAX_NOTES == Looper::max_notes, "the C API and the loop
 static_assert(JELLO_LOOP_MAX_LAYERS == Looper::max_layers, "the C API and the looper hold the same number of layers");
 static_assert(JELLO_NEWEST_LAYER == Looper::newest_layer, "the C API and the looper name the newest layer alike");
 
+// The C API and the tracks agree on how many there are and how many layers
+// each holds.
+static_assert(JELLO_TRACK_COUNT == Tracks::count, "the C API and the conductor have the same tracks");
+static_assert(JELLO_TRACK_MAX_LAYERS == Looper::max_track_layers, "the C API and the looper hold as many layers a track");
+
+// A track's number: from 0, below JELLO_TRACK_COUNT.
+bool is_valid_track(int track) {
+    if (track < 0) {
+        return false;
+    }
+    return track < JELLO_TRACK_COUNT;
+}
+
+// A layer slot's number on a track: from 0, below JELLO_TRACK_MAX_LAYERS.
+bool is_valid_slot(int slot) {
+    if (slot < 0) {
+        return false;
+    }
+    return slot < JELLO_TRACK_MAX_LAYERS;
+}
+
 // A layer's number for the C API: from 0, below JELLO_LOOP_MAX_LAYERS.
 bool is_valid_layer(int layer) {
     if (layer < 0) {
@@ -536,31 +557,50 @@ void jello_engine_stop_audio(JelloEngine* engine) {
     engine->audio_running = false;
 }
 
-void jello_engine_note_on(JelloEngine* engine, int note, int velocity) {
+void jello_engine_note_on(JelloEngine* engine, int track, int note, int velocity) {
     // Ignore anything MIDI could never send, so nothing odd reaches the synth.
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_valid_played_note(note)) {
         return;
     }
     if (!is_valid_velocity(velocity)) {
         return;
     }
-    engine->conductor.note_on(note, velocity);
+    engine->conductor.note_on(track, note, velocity);
 }
 
-void jello_engine_note_off(JelloEngine* engine, int note) {
+void jello_engine_note_off(JelloEngine* engine, int track, int note) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_valid_played_note(note)) {
         return;
     }
-    engine->conductor.note_off(note);
+    engine->conductor.note_off(track, note);
 }
 
 void jello_engine_all_notes_off(JelloEngine* engine) {
     engine->conductor.all_notes_off();
 }
 
-void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
-                                 float cents, float width) {
+void jello_engine_set_track_volume(JelloEngine* engine, int track, float volume) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_volume(volume)) {
+        return;
+    }
+    engine->conductor.set_track_volume(track, volume);
+}
+
+void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
+                                 int half_steps, float cents, float width) {
     // Anything out of range is ignored, so nothing odd reaches the synth.
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
         return;
     }
@@ -590,7 +630,7 @@ void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float
     oscillator.half_steps = half_steps;
     oscillator.cents = cents;
     oscillator.width = width;
-    engine->conductor.set_oscillator(index, oscillator);
+    engine->conductor.set_oscillator(track, index, oscillator);
 }
 
 void jello_engine_start_click(JelloEngine* engine) {
@@ -608,8 +648,11 @@ void jello_engine_set_tempo(JelloEngine* engine, int tempo) {
     engine->conductor.set_tempo(tempo);
 }
 
-void jello_engine_press_looper(JelloEngine* engine) {
-    engine->conductor.press_looper();
+void jello_engine_press_looper(JelloEngine* engine, int track) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    engine->conductor.press_looper(track);
 }
 
 void jello_engine_clear_loop(JelloEngine* engine) {
@@ -656,7 +699,10 @@ void jello_engine_set_layer_playing(JelloEngine* engine, int layer, bool playing
     engine->conductor.set_layer_playing(layer, playing);
 }
 
-bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, int count) {
+bool jello_engine_play_song(JelloEngine* engine, int track, const JelloSongChord* chords, int count) {
+    if (!is_valid_track(track)) {
+        return false;
+    }
     if (count < 0) {
         return false;
     }
@@ -674,14 +720,17 @@ bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, i
         }
         song[i] = song_chord_of(chords[i]);
     }
-    return engine->conductor.play_song(song.data(), count);
+    return engine->conductor.play_song(track, song.data(), count);
 }
 
 void jello_engine_stop_song(JelloEngine* engine) {
     engine->conductor.stop_song();
 }
 
-void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, float resonance) {
+void jello_engine_set_filter(JelloEngine* engine, int track, int type, float cutoff_hz, float resonance) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(type, JELLO_FILTER_LOW_PASS, JELLO_FILTER_NOTCH)) {
         return;
     }
@@ -696,11 +745,14 @@ void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, flo
     settings.type = static_cast<FilterType>(type);
     settings.cutoff_hz = cutoff_hz;
     settings.resonance = resonance;
-    engine->conductor.set_filter(settings);
+    engine->conductor.set_filter(track, settings);
 }
 
-void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int attack_ms, int decay_ms, float sustain,
-                                      int release_ms) {
+void jello_engine_set_filter_envelope(JelloEngine* engine, int track, float amount, int attack_ms, int decay_ms,
+                                      float sustain, int release_ms) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within(amount, 0.0f, JELLO_FILTER_MOST_OCTAVES)) {
         return;
     }
@@ -723,10 +775,13 @@ void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int att
     envelope.decay_ms = decay_ms;
     envelope.sustain = sustain;
     envelope.release_ms = release_ms;
-    engine->conductor.set_filter_envelope(envelope);
+    engine->conductor.set_filter_envelope(track, envelope);
 }
 
-void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents, float spread) {
+void jello_engine_set_unison(JelloEngine* engine, int track, int copies, float detune_cents, float spread) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (copies < 1) {
         return;
     }
@@ -744,11 +799,14 @@ void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents
     unison.copies = copies;
     unison.detune_cents = detune_cents;
     unison.spread = spread;
-    engine->conductor.set_unison(unison);
+    engine->conductor.set_unison(track, unison);
 }
 
-void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int decay_ms, float sustain,
+void jello_engine_set_loudness_envelope(JelloEngine* engine, int track, int attack_ms, int decay_ms, float sustain,
                                         int release_ms) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_valid_loudness_ms(attack_ms)) {
         return;
     }
@@ -767,24 +825,33 @@ void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int 
     envelope.decay_ms = decay_ms;
     envelope.sustain = sustain;
     envelope.release_ms = release_ms;
-    engine->conductor.set_loudness_envelope(envelope);
+    engine->conductor.set_loudness_envelope(track, envelope);
 }
 
-void jello_engine_set_key_tracking(JelloEngine* engine, float key_tracking) {
+void jello_engine_set_key_tracking(JelloEngine* engine, int track, float key_tracking) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within(key_tracking, 0.0f, 1.0f)) {
         return;
     }
-    engine->conductor.set_key_tracking(key_tracking);
+    engine->conductor.set_key_tracking(track, key_tracking);
 }
 
-void jello_engine_set_tuning(JelloEngine* engine, float a4_hz) {
+void jello_engine_set_tuning(JelloEngine* engine, int track, float a4_hz) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within(a4_hz, JELLO_TUNING_LOWEST_HZ, JELLO_TUNING_HIGHEST_HZ)) {
         return;
     }
-    engine->conductor.set_tuning(a4_hz);
+    engine->conductor.set_tuning(track, a4_hz);
 }
 
-void jello_engine_set_lfo(JelloEngine* engine, int index, const JelloLfo* lfo) {
+void jello_engine_set_lfo(JelloEngine* engine, int track, int index, const JelloLfo* lfo) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(index, 0, JELLO_LFO_COUNT - 1)) {
         return;
     }
@@ -792,10 +859,13 @@ void jello_engine_set_lfo(JelloEngine* engine, int index, const JelloLfo* lfo) {
     if (!lfo_of_api(*lfo, settings)) {
         return;
     }
-    engine->conductor.set_lfo(index, settings);
+    engine->conductor.set_lfo(track, index, settings);
 }
 
-void jello_engine_set_connection(JelloEngine* engine, int index, const JelloConnection* connection) {
+void jello_engine_set_connection(JelloEngine* engine, int track, int index, const JelloConnection* connection) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(index, 0, JELLO_CONNECTION_COUNT - 1)) {
         return;
     }
@@ -803,32 +873,114 @@ void jello_engine_set_connection(JelloEngine* engine, int index, const JelloConn
     if (!connection_of_api(*connection, checked)) {
         return;
     }
-    engine->conductor.set_connection(index, checked);
+    engine->conductor.set_connection(track, index, checked);
 }
 
-void jello_engine_set_vibrato_key_times(JelloEngine* engine, int rise_ms, int fall_ms) {
+void jello_engine_set_vibrato_key_times(JelloEngine* engine, int track, int rise_ms, int fall_ms) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(rise_ms, 0, JELLO_VIBRATO_KEY_LONGEST_MS)) {
         return;
     }
     if (!is_within_int(fall_ms, 0, JELLO_VIBRATO_KEY_LONGEST_MS)) {
         return;
     }
-    engine->conductor.set_vibrato_key_times(rise_ms, fall_ms);
+    engine->conductor.set_vibrato_key_times(track, rise_ms, fall_ms);
 }
 
-void jello_engine_set_vibrato_key(JelloEngine* engine, bool held) {
-    engine->conductor.set_vibrato_key(held);
+void jello_engine_set_vibrato_key(JelloEngine* engine, int track, bool held) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    engine->conductor.set_vibrato_key(track, held);
 }
 
-void jello_engine_set_glide_key(JelloEngine* engine, bool held) {
-    engine->conductor.set_glide_key(held);
+void jello_engine_set_glide_key(JelloEngine* engine, int track, bool held) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    engine->conductor.set_glide_key(track, held);
 }
 
-void jello_engine_set_glide_time(JelloEngine* engine, int glide_ms) {
+void jello_engine_set_glide_time(JelloEngine* engine, int track, int glide_ms) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(glide_ms, 0, JELLO_GLIDE_LONGEST_MS)) {
         return;
     }
-    engine->conductor.set_glide_time(glide_ms);
+    engine->conductor.set_glide_time(track, glide_ms);
+}
+
+void jello_engine_time_next(JelloEngine* engine, uint64_t sample) {
+    engine->conductor.time_next(sample);
+}
+
+void jello_engine_send_now(JelloEngine* engine) {
+    engine->conductor.send_now();
+}
+
+void jello_engine_play_sequence(JelloEngine* engine) {
+    engine->conductor.play_sequence();
+}
+
+void jello_engine_stop_sequence(JelloEngine* engine) {
+    engine->conductor.stop_sequence();
+}
+
+int64_t jello_engine_sequence_position(JelloEngine* engine) {
+    std::uint64_t position = engine->conductor.sequence_position();
+    if (position == Sequencer::not_playing) {
+        return -1;
+    }
+    return static_cast<int64_t>(position);
+}
+
+int jello_engine_sequence_room(JelloEngine* engine) {
+    return static_cast<int>(engine->conductor.sequence_room());
+}
+
+void jello_engine_layer_note_on(JelloEngine* engine, int track, int slot, int note, int velocity) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_slot(slot)) {
+        return;
+    }
+    if (!is_valid_loop_pitch(note)) {
+        return;
+    }
+    if (!is_valid_velocity(velocity)) {
+        return;
+    }
+    engine->conductor.layer_note_on(track, slot, note, velocity);
+}
+
+void jello_engine_layer_note_off(JelloEngine* engine, int track, int slot, int note) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_slot(slot)) {
+        return;
+    }
+    if (!is_valid_loop_pitch(note)) {
+        return;
+    }
+    engine->conductor.layer_note_off(track, slot, note);
+}
+
+void jello_engine_set_slot_volume(JelloEngine* engine, int track, int slot, float volume) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_slot(slot)) {
+        return;
+    }
+    if (!is_valid_volume(volume)) {
+        return;
+    }
+    engine->conductor.set_slot_volume(track, slot, volume);
 }
 
 JelloLooperStatus jello_engine_looper_status(JelloEngine* engine) {
@@ -852,6 +1004,7 @@ bool jello_engine_next_loop_change(JelloEngine* engine, JelloLoopChange* change)
     change->index = taken.index;
     change->note = taken.note;
     change->sample = taken.sample;
+    change->track = taken.track;
     return true;
 }
 
@@ -920,18 +1073,35 @@ bool jello_engine_load_loop(JelloEngine* engine, const JelloLoadedNote* notes, i
     // Every note is checked before any is sent, so a loop with one odd note
     // never half loads. The layers come in order with none skipped: each
     // note's layer is the last one's, or the next.
+    // All of a layer's notes are on its track, and no track has more layers
+    // than it holds.
     std::vector<LoadedNote> loaded(static_cast<std::size_t>(count));
+    std::array<int, JELLO_TRACK_COUNT> track_layers{};
     int last_layer = 0;
     for (int i = 0; i < count; i++) {
         const JelloLoadedNote& note = notes[i];
+        if (!is_valid_track(note.track)) {
+            return false;
+        }
+        bool starts_layer = false;
         if (i == 0) {
             if (note.layer != 0) {
                 return false;
             }
+            starts_layer = true;
         } else if (note.layer == last_layer + 1) {
             last_layer = note.layer;
+            starts_layer = true;
         } else if (note.layer != last_layer) {
             return false;
+        } else if (note.track != notes[i - 1].track) {
+            return false;
+        }
+        if (starts_layer) {
+            track_layers[note.track] += 1;
+            if (track_layers[note.track] > JELLO_TRACK_MAX_LAYERS) {
+                return false;
+            }
         }
         if (!is_valid_loop_pitch(note.note)) {
             return false;
@@ -952,6 +1122,7 @@ bool jello_engine_load_loop(JelloEngine* engine, const JelloLoadedNote* notes, i
         }
 
         loaded[i].layer = note.layer;
+        loaded[i].track = note.track;
         loaded[i].note.note = note.note;
         loaded[i].note.velocity = note.velocity;
         loaded[i].note.start = note.start;
@@ -1186,7 +1357,10 @@ int jello_engine_sample_sets_kept(JelloEngine* engine) {
     return kept;
 }
 
-bool jello_engine_set_instrument(JelloEngine* engine, int index, int set) {
+bool jello_engine_set_instrument(JelloEngine* engine, int track, int index, int set) {
+    if (!is_valid_track(track)) {
+        return false;
+    }
     if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
         return false;
     }
@@ -1195,7 +1369,7 @@ bool jello_engine_set_instrument(JelloEngine* engine, int index, int set) {
             return false;
         }
     }
-    if (!engine->conductor.set_instrument(index, set_to_send(engine, set))) {
+    if (!engine->conductor.set_instrument(track, index, set_to_send(engine, set))) {
         return false;
     }
     if (set != -1) {
@@ -1204,13 +1378,16 @@ bool jello_engine_set_instrument(JelloEngine* engine, int index, int set) {
     return true;
 }
 
-bool jello_engine_set_drum_kit(JelloEngine* engine, int set) {
+bool jello_engine_set_drum_kit(JelloEngine* engine, int track, int set) {
+    if (!is_valid_track(track)) {
+        return false;
+    }
     if (set != -1) {
         if (!is_sendable_set(engine, set)) {
             return false;
         }
     }
-    if (!engine->conductor.set_drum_kit(set_to_send(engine, set))) {
+    if (!engine->conductor.set_drum_kit(track, set_to_send(engine, set))) {
         return false;
     }
     if (set != -1) {
@@ -1219,7 +1396,11 @@ bool jello_engine_set_drum_kit(JelloEngine* engine, int set) {
     return true;
 }
 
-void jello_engine_set_drum_pad(JelloEngine* engine, int pad, float level, int half_steps, float pan, int group) {
+void jello_engine_set_drum_pad(JelloEngine* engine, int track, int pad, float level, int half_steps, float pan,
+                               int group) {
+    if (!is_valid_track(track)) {
+        return;
+    }
     if (!is_within_int(pad, 0, JELLO_DRUM_PAD_COUNT - 1)) {
         return;
     }
@@ -1240,7 +1421,7 @@ void jello_engine_set_drum_pad(JelloEngine* engine, int pad, float level, int ha
     settings.half_steps = half_steps;
     settings.pan = pan;
     settings.group = group;
-    engine->conductor.set_drum_pad(pad, settings);
+    engine->conductor.set_drum_pad(track, pad, settings);
 }
 
 }  // extern "C"

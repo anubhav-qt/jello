@@ -50,6 +50,12 @@ enum class EventType {
     set_instrument,
     set_drum_kit,
     set_drum_pad,
+    set_track_volume,
+    layer_note_on,
+    layer_note_off,
+    set_slot_volume,
+    play_sequence,
+    stop_sequence,
 };
 
 // One message for the audio thread.
@@ -57,6 +63,11 @@ struct Event {
     EventType type;
     int note;      // which key, 0 to 127; middle C is 60
     int velocity;  // how hard the key was hit, 1 to 127; only for note_on
+
+    // Which track a note or a sound setting is for, from 0
+    // (docs/design.md#tracks-in-the-engine). Track 0 to start, so the other
+    // messages can leave it out.
+    int track = 0;
 
     // How notes sent after this one play an oscillator; only for
     // set_oscillator, which says which in `index`, below. It has a starting
@@ -72,9 +83,11 @@ struct Event {
     bool snap = true;
 
     // Which layer of the loop, from 0, or Looper::newest_layer; only for
-    // remove_layer, set_layer_volume and set_layer_playing. Its new volume,
-    // from 0 to 1; only for set_layer_volume. And whether it plays; only for
-    // set_layer_playing.
+    // remove_layer, set_layer_volume and set_layer_playing, and which of a
+    // track's layer slots for layer_note_on, layer_note_off and
+    // set_slot_volume. Its new volume, from 0 to 1; only for
+    // set_layer_volume, set_slot_volume and set_track_volume. And whether it
+    // plays; only for set_layer_playing.
     int layer = 0;
     float volume = 1.0f;
     bool playing = true;
@@ -126,6 +139,9 @@ struct Event {
     // messages can leave them out too.
     const SampleSet* set = nullptr;
     DrumPad pad{};
+
+    // Which sequence; only for play_sequence and stop_sequence.
+    std::uint64_t sequence = 0;
 };
 
 // Carries messages from one thread to another without locks

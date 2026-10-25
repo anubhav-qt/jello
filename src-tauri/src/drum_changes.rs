@@ -45,6 +45,8 @@ pub fn changed(drums: &Drums, changes: &Value) -> Result<Drums, String> {
         match name.as_str() {
             "kit" => drums.kit = instrument_named(value, "kit")?,
             "pads" => change_pads(&mut drums, value)?,
+            // Which track's drums change, which jello_drums picks first.
+            "track" => {}
             _ => return Err(format!("the drums have no part called {name}: they have kit and pads")),
         }
     }

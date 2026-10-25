@@ -18,6 +18,8 @@
     type ChordGuide,
     type ComposeView,
     type Fit,
+    type SectionEdit,
+    type SectionsView,
     type SongKeys,
   } from "./compose";
   import ComposeTape from "./ComposeTape.svelte";
@@ -40,6 +42,7 @@
   import type { Picked } from "./sound-scales";
   import type { Tab } from "./tabs";
   import TopBar from "./TopBar.svelte";
+  import TrackRow from "./TrackRow.svelte";
   import AgentPanel from "./AgentPanel.svelte";
   import PracticeView from "./PracticeView.svelte";
   import type { PracticeMark, PracticeView as Practice } from "./practice";
@@ -67,6 +70,8 @@
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
     onComposeEdit: (action: string, place: number) => void;
+    // One change to the song's sections (docs/design.md#tracks-and-sections).
+    onSectionEdit: (edit: SectionEdit) => void;
     // What the sound panel and the Songs panel send to Rust.
     soundSender: SoundSender;
     songSender: SongSender;
@@ -91,10 +96,14 @@
     onChordClick,
     onPlayClick,
     onComposeEdit,
+    onSectionEdit,
     soundSender,
     songSender,
     onSongChanged,
   }: Props = $props();
+
+  // The modifier that picks tracks and saves sections, as the keys say it.
+  let modifierName = $derived(platform === "mac" ? "Left ⌘" : "Left Alt");
 
   // How long the page takes to power on, in milliseconds, and how it moves:
   // slow, then fast, then slow.
@@ -216,6 +225,10 @@
   // What Compose shows, or null until Rust has said, and when it said, by
   // performance.now().
   let compose: ComposeView | null = $state(null);
+  // The song's sections, or null until Rust has said.
+  let sections: SectionsView | null = $state(null);
+  // Compose's tape, so Esc can close a section's details.
+  let tape: ComposeTape | undefined = $state();
   let composeAt = $state(0);
   // The chord key pressed last, by place, like "KeyX".
   let tried: string | null = $state(null);
@@ -521,6 +534,9 @@
       agentOpen = false;
       return true;
     }
+    if (tape !== undefined && tape.closeSection()) {
+      return true;
+    }
     return false;
   }
 
@@ -633,6 +649,10 @@
   export function showCompose(view: ComposeView) {
     compose = view;
     composeAt = performance.now();
+  }
+
+  export function showSections(view: SectionsView) {
+    sections = view;
   }
 
   export function showSongs(view: SongsView) {
@@ -780,6 +800,10 @@
               {onChordClick}
               {onPlayClick}
               onEdit={onComposeEdit}
+              {sections}
+              {modifierName}
+              {onSectionEdit}
+              bind:this={tape}
             />
           {/if}
           {#if tab === "produce"}
@@ -797,6 +821,14 @@
       <!-- The keyboard, with no box around it. -->
       <div class="stage-panel" bind:this={panel}>
         {#if sound !== null}
+          <TrackRow
+            {sound}
+            pickModifier={modifierName}
+            onPick={soundSender.pickTrack}
+            onRename={soundSender.renameTrack}
+            onVolume={soundSender.setTrackVolume}
+            onRemove={soundSender.removeTrack}
+          />
           <LoopTransport {sound} onRecord={onRecordClick} onTempo={onTempoChange} onExpression={onExpressionChange} onExport={onExportLoop} />
         {/if}
         <Keyboard

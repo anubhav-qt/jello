@@ -24,7 +24,7 @@ use crate::compose::Composer;
 use crate::engine::{Engine, LoopLayer, LoopNote, START_TEMPO};
 use crate::key_map::LAPTOP_VELOCITY;
 use crate::presets;
-use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, beats_of, samples_of, song_of, text_of};
+use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, SongTrack, beats_of, samples_of, song_of, text_of};
 use crate::songs::{self, SongView};
 use crate::sound_profile::SoundProfile;
 
@@ -108,26 +108,38 @@ impl OpenSong {
 
 // The song in `composer` and `engine` as it is now, as its file holds it.
 pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
-    let mut preset = None;
-    if let Some(name) = composer.lit_preset() {
-        preset = Some(String::from(name));
+    let tracks = composer.tracks();
+    let mut song_tracks = Vec::new();
+    for (number, track) in tracks.list().iter().enumerate() {
+        // A drums track's file keeps only its kit.
+        let mut song_track = SongTrack::new(&SoundProfile::new());
+        song_track.name = Some(track.name(number + 1));
+        song_track.volume = track.volume();
+        if track.is_drums() {
+            song_track.drums = Some(track.drums().clone());
+        } else {
+            song_track.preset = track.preset().map(String::from);
+            song_track.sound = track.sound_profile().sound();
+        }
+        song_tracks.push(song_track);
     }
     Song {
         key: composer.key(),
         tempo: composer.tempo(),
         snap: engine.snap(),
-        preset,
+        picked: tracks.picked(),
         chords: composer.held_chords(),
-        looped: loop_now(engine),
-        sound: composer.sound_profile().sound(),
-        drums: composer.drums().clone(),
+        looped: loop_kept(composer, engine),
+        tracks: song_tracks,
+        sections: composer.sections().to_vec(),
+        arrangement: composer.arrangement().to_vec(),
     }
 }
 
-// The loop as its file holds it, in beats at the tempo it plays at. A note
-// still held is left out until it is let go, and so is a layer left with
-// no notes.
-fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
+// The loop as its file holds it, in beats at the tempo it plays at, its
+// layers by track. A note still held is left out until it is let go, and so
+// is a layer left with no notes.
+pub(crate) fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
     let (bars, layers) = engine.loop_to_keep()?;
     let tempo = engine.tempo();
     let sample_rate = engine.sample_rate();
@@ -149,6 +161,7 @@ fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
             continue;
         }
         song_layers.push(SongLayer {
+            track: layer.track,
             bars: layer.bars,
             volume: layer.volume,
             playing: layer.playing,
@@ -159,17 +172,34 @@ fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
     if song_layers.is_empty() {
         return None;
     }
+    // Each track's in the order it recorded them, as the file lists them.
+    song_layers.sort_by_key(|layer| layer.track);
     Some(SongLoop {
         bars,
         layers: song_layers,
     })
 }
 
+// The loop as its file holds it: the one the arrangement put away while it
+// plays, or else the engine's.
+fn loop_kept(composer: &Composer, engine: &mut Engine) -> Option<SongLoop> {
+    if let Some(player) = composer.arranging() {
+        return Some(player.looped().clone());
+    }
+    loop_now(engine)
+}
+
 // Opens `song`'s loop on `engine`, paused, at its tempo, or with no loop,
-// forgets the one there is. The beats become samples at the song's tempo.
+// forgets the one there is.
 pub(crate) fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), String> {
-    let Some(looped) = &song.looped else {
-        return engine.open_loop(song.tempo, 0, &[], LAPTOP_VELOCITY);
+    open_song_loop(engine, song.tempo, song.looped.as_ref())
+}
+
+// Opens `looped` on `engine`, paused, at `tempo`, or with None, forgets the
+// loop there is. The beats become samples at that tempo.
+pub(crate) fn open_song_loop(engine: &mut Engine, tempo: u32, looped: Option<&SongLoop>) -> Result<(), String> {
+    let Some(looped) = looped else {
+        return engine.open_loop(tempo, 0, &[], LAPTOP_VELOCITY);
     };
 
     let sample_rate = engine.sample_rate();
@@ -179,8 +209,8 @@ pub(crate) fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), Strin
         for note in &layer.notes {
             notes.push(LoopNote {
                 note: note.note,
-                start: samples_of(note.start, song.tempo, sample_rate),
-                end: Some(samples_of(note.end, song.tempo, sample_rate)),
+                start: samples_of(note.start, tempo, sample_rate),
+                end: Some(samples_of(note.end, tempo, sample_rate)),
             });
         }
         layers.push(LoopLayer {
@@ -189,9 +219,10 @@ pub(crate) fn open_loop_of(engine: &mut Engine, song: &Song) -> Result<(), Strin
             volume: layer.volume,
             playing: layer.playing,
             recording: false,
+            track: layer.track,
         });
     }
-    engine.open_loop(song.tempo, looped.bars, &layers, LAPTOP_VELOCITY)
+    engine.open_loop(tempo, looped.bars, &layers, LAPTOP_VELOCITY)
 }
 
 // Saves the open song now if it changed since it was saved last.
@@ -260,12 +291,19 @@ pub fn open_song_named(
     let song = songs::read(&folders.songs, name, &SoundProfile::new())?;
 
     engine.stop_song();
+    // The arrangement goes with the song it played.
+    engine.stop_sequence();
+    // Layers removed from the song before were its sections' to forget.
+    engine.take_removed_layers();
     let loop_opened = open_loop_of(engine, &song);
     engine.set_snap(song.snap);
     *composer = Composer::opened(engine, &song, now);
-    if let Some(preset) = &song.preset {
+    for (number, track) in song.tracks.iter().enumerate() {
+        let Some(preset) = &track.preset else {
+            continue;
+        };
         if let Ok(sound) = presets::read(&folders.sounds, preset, &SoundProfile::new()) {
-            composer.remember_preset_if_same(preset, &sound);
+            composer.remember_preset_if_same(number, preset, &sound);
         }
     }
 
@@ -304,6 +342,9 @@ pub fn new_song(open: &mut OpenSong, composer: &mut Composer, engine: &mut Engin
     let name = songs::new_name(&folders.songs);
 
     engine.stop_song();
+    engine.stop_sequence();
+    // Layers removed from the song before were its sections' to forget.
+    engine.take_removed_layers();
     engine.open_loop(START_TEMPO, 0, &[], LAPTOP_VELOCITY)?;
     engine.set_snap(true);
     *composer = Composer::new();
@@ -435,7 +476,7 @@ mod tests {
     use crate::engine::{FULL_VOLUME, GLIDE_KEY_NOTE, Kind, LooperState, VIBRATO_KEY_NOTE};
     use crate::harmony::{Chord, Key, Mode, Quality};
     use crate::presets::{mark_starting, test_folder};
-    use crate::song_file::HeldChord;
+    use crate::song_file::{HeldChord, SectionLayer, SongSection};
     use crate::sound_file::Sound;
 
     // A4 and C5 by their MIDI numbers.
@@ -486,17 +527,41 @@ mod tests {
 
     // A song with every part moved away from a new song's, at 100 beats per
     // minute, where a beat is 28,800 samples, so its beats are whole
-    // samples.
+    // samples: a saw track and a drums track, picked, a layer on each, and
+    // a section playing both.
     fn night_drive() -> Song {
         let mut sound = saw_sound();
         sound.filter.cutoff_hz = 1234.5;
+        let saw = SongTrack {
+            name: Some(String::from("Track 1")),
+            volume: 70,
+            preset: None,
+            sound,
+            drums: None,
+        };
+        let mut kit = SongTrack::new(&SoundProfile::new());
+        kit.name = Some(String::from("Track 2"));
+        kit.drums = Some(crate::drums::Drums::new());
+        let verse = SongSection {
+            name: String::from("Verse"),
+            bars: 2,
+            tempo: 90,
+            key_shift: 2,
+            layers: vec![
+                SectionLayer { track: 0, layer: 0 },
+                SectionLayer { track: 1, layer: 0 },
+            ],
+            automation: Vec::new(),
+        };
         let first = SongLayer {
+            track: 0,
             bars: 0,
             volume: 80,
             playing: true,
             notes: vec![note(A4, 0.0, 0.5), note(VIBRATO_KEY_NOTE, 1.0, 2.0)],
         };
         let second = SongLayer {
+            track: 1,
             bars: 0,
             volume: 40,
             playing: false,
@@ -506,7 +571,7 @@ mod tests {
             key: Some(a_minor()),
             tempo: 100,
             snap: false,
-            preset: None,
+            picked: 1,
             chords: vec![
                 HeldChord {
                     chord: am(),
@@ -524,8 +589,9 @@ mod tests {
                 bars: 2,
                 layers: vec![first, second],
             }),
-            sound,
-            drums: crate::drums::Drums::new(),
+            tracks: vec![saw, kit],
+            sections: vec![verse],
+            arrangement: vec![0, 0],
         }
     }
 
@@ -574,8 +640,9 @@ mod tests {
         assert_eq!(composer.sound_profile().sound(), saw_sound());
         assert_eq!(composer.lit_preset(), Some("Saw"));
         let song = file_of(&open, "Untitled 1");
-        assert_eq!(song.sound, saw_sound());
-        assert_eq!(song.preset, Some(String::from("Saw")));
+        assert_eq!(song.tracks[0].sound, saw_sound());
+        assert_eq!(song.tracks[0].preset, Some(String::from("Saw")));
+        assert_eq!(song.tracks[0].name, Some(String::from("Saw")));
     }
 
     #[test]
@@ -687,10 +754,11 @@ mod tests {
     fn song_with_notes(count: usize) -> Song {
         let mut notes = Vec::new();
         for i in 0..count {
-            let start = i as f64 * 0.002;
-            notes.push(note(A4, start, start + 0.001));
+            let start = i as f64 * 0.0008;
+            notes.push(note(A4, start, start + 0.0004));
         }
         let layer = SongLayer {
+            track: 0,
             bars: 0,
             volume: FULL_VOLUME,
             playing: true,
@@ -706,11 +774,11 @@ mod tests {
 
     #[test]
     fn a_song_whose_loop_the_engine_refuses_is_never_saved_over() {
-        // The first loop's 3,000 notes still wait for the engine, so the
-        // second's 3,000 don't fit.
+        // The first loop's 9,000 notes still wait for the engine, so the
+        // second's 9,000 don't fit.
         let (mut open, mut composer, mut engine) = starting("session-refused");
-        put(&open, "Big one", &song_with_notes(3000));
-        put(&open, "Big two", &song_with_notes(3000));
+        put(&open, "Big one", &song_with_notes(9000));
+        put(&open, "Big two", &song_with_notes(9000));
         let big_two = open.folders().unwrap().songs.join("Big two.song");
         let text = std::fs::read_to_string(&big_two).unwrap();
         let now = Instant::now();
@@ -776,19 +844,24 @@ mod tests {
         let (mut open, mut composer, mut engine) = starting("session-preset");
         let folders = open.folders().unwrap();
         let mut song = night_drive();
-        song.preset = Some(String::from("Lead"));
+        song.tracks[0].preset = Some(String::from("Lead"));
+        song.tracks[0].name = Some(String::from("Lead"));
         put(&open, "Night drive", &song);
         let now = Instant::now();
 
-        presets::save(&folders.sounds, "Lead", &song.sound).unwrap();
+        presets::save(&folders.sounds, "Lead", &song.tracks[0].sound).unwrap();
         open_song_named(&mut open, &mut composer, &mut engine, "Night drive", now).unwrap();
-        assert_eq!(composer.lit_preset(), Some("Lead"));
+        let lead = composer.tracks().get(0).unwrap();
+        assert_eq!(lead.lit_preset(), Some("Lead"));
+        assert_eq!(lead.renamed(), None);
 
         presets::save(&folders.sounds, "Lead", &saw_sound()).unwrap();
         open_song_named(&mut open, &mut composer, &mut engine, "Night drive", now).unwrap();
-        assert_eq!(composer.lit_preset(), None);
-        // Saved without it, since the sound no longer matches it.
-        assert_eq!(song_now(&composer, &mut engine).preset, None);
+        let lead = composer.tracks().get(0).unwrap();
+        assert_eq!(lead.lit_preset(), None);
+        // Still named for it and saved with it, since its sound came from it.
+        assert_eq!(lead.name(1), "Lead");
+        assert_eq!(song_now(&composer, &mut engine).tracks[0].preset, Some(String::from("Lead")));
     }
 
     #[test]

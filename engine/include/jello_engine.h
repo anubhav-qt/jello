@@ -37,16 +37,32 @@ void jello_engine_stop_audio(JelloEngine* engine);
 // every 10 ms). If 1024 messages are already waiting, new ones are dropped
 // (docs/adr/0009-how-notes-become-sound.md).
 
+// Tracks (docs/design.md#tracks-in-the-engine): an engine has
+// JELLO_TRACK_COUNT, counted from 0, each an instrument with its own sound,
+// played only by the notes sent to it. Every function below that plays a
+// note or sets a sound takes the `track` it is for, and ignores a track
+// outside 0 to JELLO_TRACK_COUNT - 1. A track's loop layers play in its
+// sound, up to JELLO_TRACK_MAX_LAYERS of them.
+enum {
+    JELLO_TRACK_COUNT = 9,
+    JELLO_TRACK_MAX_LAYERS = 8,
+};
+
 // Starts `note` (0 to 127, middle C is 60, or a drum pad's from
 // JELLO_DRUM_FIRST_NOTE) at `velocity`, how hard the key was hit (1 to
 // 127). A note or velocity outside those ranges is ignored.
-void jello_engine_note_on(JelloEngine* engine, int note, int velocity);
+void jello_engine_note_on(JelloEngine* engine, int track, int note, int velocity);
 
 // Lets go of `note`, so it fades out. A note outside 0 to 127 is ignored.
-void jello_engine_note_off(JelloEngine* engine, int note);
+void jello_engine_note_off(JelloEngine* engine, int track, int note);
 
-// Lets go of every note.
+// Lets go of every live note on every track.
 void jello_engine_all_notes_off(JelloEngine* engine);
+
+// How loud track `track` plays, from 0 (silent) to 1 (as played), eased
+// over 10 ms so it never clicks. Every track starts at 1. A volume outside
+// that range is ignored.
+void jello_engine_set_track_volume(JelloEngine* engine, int track, float volume);
 
 // Oscillators (docs/adr/0035-oscillators-with-kinds.md): every note is
 // played by JELLO_OSCILLATOR_COUNT of them at once, counted from 0, added up
@@ -88,8 +104,8 @@ enum {
 // value outside the ranges above is ignored. A new engine plays oscillator
 // 0 as JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level
 // 0, all tuned right on the note and at a width of 0.5.
-void jello_engine_set_oscillator(JelloEngine* engine, int index, int kind, float level, int octaves, int half_steps,
-                                 float cents, float width);
+void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
+                                 int half_steps, float cents, float width);
 
 // Starts the click: a tick on every beat, higher on the first beat of each
 // bar. Its first tick is beat 1 of a bar. Does nothing if the click is
@@ -121,17 +137,20 @@ void jello_engine_set_tempo(JelloEngine* engine, int tempo);
 // of presses adds one. The first of the pair starts recording a layer at
 // once, with the click on, round and round: what is played joins the loop
 // from the next time around. The second stops it; a layer with no notes is
-// dropped. A loop holds at most JELLO_LOOP_MAX_LAYERS layers, and past that
-// the first of the pair does nothing.
-void jello_engine_press_looper(JelloEngine* engine);
+// dropped. Each layer belongs to `track`, the track of the press that started
+// it: it records only that track's notes and plays them in its sound. A track
+// holds at most JELLO_TRACK_MAX_LAYERS layers, and past that the first of the
+// pair does nothing.
+void jello_engine_press_looper(JelloEngine* engine, int track);
 
 // Stops every layer's notes and forgets the loop, or cancels the count-in or
 // the recording. Live notes play on.
 void jello_engine_clear_loop(JelloEngine* engine);
 
-// The most layers a loop holds, and the number for the layer recorded last.
+// The most layers a loop holds, on all its tracks, and the number for the
+// layer recorded last.
 enum {
-    JELLO_LOOP_MAX_LAYERS = 8,
+    JELLO_LOOP_MAX_LAYERS = 72,
     JELLO_NEWEST_LAYER = -1,
 };
 
@@ -199,8 +218,9 @@ typedef struct JelloSongChord {
 // the loop never cut them off, and the looper never records them. Returns
 // false and plays nothing if `count` is below 0 or above
 // JELLO_SONG_MAX_CHORDS, if any chord is outside the ranges above, or if the
-// mailbox has no room for all of it.
-bool jello_engine_play_song(JelloEngine* engine, const JelloSongChord* chords, int count);
+// mailbox has no room for all of it. It plays on track `track`, and false
+// is returned for a track out of range too.
+bool jello_engine_play_song(JelloEngine* engine, int track, const JelloSongChord* chords, int count);
 
 // Lets go of what the song is playing and forgets it. Live notes and the
 // loop play on.
@@ -237,7 +257,7 @@ enum {
 // those already sounding, each gliding there over 20 ms so it never clicks,
 // a change of type too. Values outside those ranges are ignored. A new
 // engine starts as an open low-pass, with no resonance.
-void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, float resonance);
+void jello_engine_set_filter(JelloEngine* engine, int track, int type, float cutoff_hz, float resonance);
 
 // The filter envelope: when a note starts, it opens the cutoff by up to
 // `amount` octaves, from 0 to JELLO_FILTER_MOST_OCTAVES. It rises over
@@ -248,8 +268,8 @@ void jello_engine_set_filter(JelloEngine* engine, int type, float cutoff_hz, flo
 // ranges are ignored. A new engine starts at an amount of 0, which changes
 // nothing, with an attack of 5 ms, a decay of 300 ms, a sustain of 0 and a
 // release of 300 ms.
-void jello_engine_set_filter_envelope(JelloEngine* engine, float amount, int attack_ms, int decay_ms, float sustain,
-                                      int release_ms);
+void jello_engine_set_filter_envelope(JelloEngine* engine, int track, float amount, int attack_ms, int decay_ms,
+                                      float sustain, int release_ms);
 
 // Unison's ranges (docs/adr/0029-unison.md): the most copies a note can
 // have, and the most cents the highest is tuned above the note.
@@ -269,7 +289,7 @@ enum {
 // before keep theirs. Values outside those ranges are ignored. A new engine
 // starts at 1 copy, which is off: notes sound exactly as without unison.
 // Its detune starts at 20 cents and its spread at 1.
-void jello_engine_set_unison(JelloEngine* engine, int copies, float detune_cents, float spread);
+void jello_engine_set_unison(JelloEngine* engine, int track, int copies, float detune_cents, float spread);
 
 // The shortest and longest any stage of the loudness envelope takes, in ms.
 // At 0 ms a stage would jump the loudness in one sample, which clicks.
@@ -286,7 +306,7 @@ enum {
 // started before keep theirs. Values outside those ranges are ignored. A new
 // engine starts with an attack of 5 ms, a decay of 300 ms, a sustain of 1
 // and a release of 300 ms.
-void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int decay_ms, float sustain,
+void jello_engine_set_loudness_envelope(JelloEngine* engine, int track, int attack_ms, int decay_ms, float sustain,
                                         int release_ms);
 
 // Key tracking: how much each note's filter cutoff follows middle C's, from
@@ -295,7 +315,7 @@ void jello_engine_set_loudness_envelope(JelloEngine* engine, int attack_ms, int 
 // middle C's cutoff, so higher notes sound darker. Notes started after this
 // use it, and notes started before keep theirs. A value outside 0 to 1 is
 // ignored. A new engine starts at 1.
-void jello_engine_set_key_tracking(JelloEngine* engine, float key_tracking);
+void jello_engine_set_key_tracking(JelloEngine* engine, int track, float key_tracking);
 
 // The lowest and highest A4 notes can be tuned to, in Hz: about a half step
 // below and above 440.
@@ -308,7 +328,7 @@ enum {
 // JELLO_TUNING_HIGHEST_HZ: every other note keeps its distance from A4.
 // Notes started after this use it, and notes started before keep their
 // pitch. A value outside that range is ignored. A new engine starts at 440.
-void jello_engine_set_tuning(JelloEngine* engine, float a4_hz);
+void jello_engine_set_tuning(JelloEngine* engine, int track, float a4_hz);
 
 // LFOs (docs/adr/0031-lfos-and-a-routing-list.md): low frequency
 // oscillators, slow waves that move settings up and down while notes play,
@@ -401,7 +421,7 @@ typedef struct JelloLfo {
 // per note, starting at 0 with a spread of 1, with no delay or fade-in, a
 // smoothing of 0.1, 8 steps of 0, a beat and 8 presses per cycle, and not
 // once.
-void jello_engine_set_lfo(JelloEngine* engine, int index, const JelloLfo* lfo);
+void jello_engine_set_lfo(JelloEngine* engine, int track, int index, const JelloLfo* lfo);
 
 // What moves a target. Read both ways, each goes from -1 to 1; read one way,
 // from 0 to 1. LFO number n (from 0) is JELLO_SOURCE_LFO_1 + n.
@@ -504,18 +524,18 @@ typedef struct JelloConnection {
 // note starts. An index, source, target or amount outside the ranges above
 // is ignored. A new engine's connections all have no source, so nothing
 // moves.
-void jello_engine_set_connection(JelloEngine* engine, int index, const JelloConnection* connection);
+void jello_engine_set_connection(JelloEngine* engine, int track, int index, const JelloConnection* connection);
 
 // How long the vibrato key takes to rise from 0 to 1 when held, and to fall
 // back when let go, each from 0 (at once) to JELLO_VIBRATO_KEY_LONGEST_MS.
 // Values outside that range are ignored. A new engine starts at 0 and 0.
-void jello_engine_set_vibrato_key_times(JelloEngine* engine, int rise_ms, int fall_ms);
+void jello_engine_set_vibrato_key_times(JelloEngine* engine, int track, int rise_ms, int fall_ms);
 
 // Holds or lets go of the vibrato key (docs/adr/0032-the-vibrato-key.md). It
 // only moves live notes, as far as the routing list connects it. The looper
 // records it with a layer's notes and plays it back, as that layer's own.
 // Letting go of every note lets go of it too.
-void jello_engine_set_vibrato_key(JelloEngine* engine, bool held);
+void jello_engine_set_vibrato_key(JelloEngine* engine, int track, bool held);
 
 // The longest a glide takes, in ms (docs/adr/0036-glide.md).
 enum {
@@ -530,12 +550,50 @@ enum {
 // only glides live notes. The looper records it with a layer's notes and
 // plays it back, as that layer's own. Letting go of every note lets go of
 // it too.
-void jello_engine_set_glide_key(JelloEngine* engine, bool held);
+void jello_engine_set_glide_key(JelloEngine* engine, int track, bool held);
 
 // How long a glide takes for notes started after this, from 0 (a jump) to
 // JELLO_GLIDE_LONGEST_MS, in a straight line through the half steps. A
 // value outside that range is ignored. A new engine starts at 100.
-void jello_engine_set_glide_time(JelloEngine* engine, int glide_ms);
+void jello_engine_set_glide_time(JelloEngine* engine, int track, int glide_ms);
+
+// The sequencer (docs/design.md#tracks-in-the-engine) plays the
+// arrangement: timed messages, each due on its own sample. Between
+// jello_engine_time_next and jello_engine_send_now, the note functions above,
+// jello_engine_set_track_volume, jello_engine_set_tempo, every sound setting
+// from jello_engine_set_oscillator to jello_engine_set_glide_time,
+// jello_engine_set_drum_pad and the three layer functions below leave their
+// message for the sequencer instead, due `sample` samples after the
+// sequence starts. The others are never timed. Keep it a few seconds ahead
+// of the sound: 8,192 messages fit, and once they are full new ones are
+// dropped.
+void jello_engine_time_next(JelloEngine* engine, uint64_t sample);
+void jello_engine_send_now(JelloEngine* engine);
+
+// Starts the sequence the timed messages since the last stop belong to,
+// from the start of the next chunk. A message that comes late plays at once.
+// Stopping lets go of every note the sequence's layers play and drops its
+// messages still waiting, and the timed messages sent after a stop belong to
+// the next sequence. Stop a sequence before playing the next.
+void jello_engine_play_sequence(JelloEngine* engine);
+void jello_engine_stop_sequence(JelloEngine* engine);
+
+// How many samples the sequence has played, as of the last chunk, or -1
+// when none plays. A play on its way counts as 0, and a stop as -1.
+int64_t jello_engine_sequence_position(JelloEngine* engine);
+
+// How many more timed messages fit right now.
+int jello_engine_sequence_room(JelloEngine* engine);
+
+// A layer's notes and volume, played straight on track `track`'s layer slot
+// `slot`, from 0 to JELLO_TRACK_MAX_LAYERS - 1, like the looper plays them.
+// The sequencer plays the arrangement's layers this way, while the loop is
+// cleared, since the looper plays on the same slots. A note may be
+// JELLO_VIBRATO_KEY_NOTE, JELLO_GLIDE_KEY_NOTE or a drum pad's. Anything out
+// of range is ignored.
+void jello_engine_layer_note_on(JelloEngine* engine, int track, int slot, int note, int velocity);
+void jello_engine_layer_note_off(JelloEngine* engine, int track, int slot, int note);
+void jello_engine_set_slot_volume(JelloEngine* engine, int track, int slot, float volume);
 
 // What the looper can be doing.
 enum {
@@ -584,8 +642,8 @@ enum {
     JELLO_LOOP_ENDED = 2,
     // The first loop closed, and layer 0 kept only its first `index` notes.
     JELLO_LOOP_KEPT = 3,
-    // Layer `layer` started recording, after the others. The first press
-    // starts layer 0, for the first loop.
+    // Layer `layer` started recording on track `track`, after the others.
+    // The first press starts layer 0, for the first loop.
     JELLO_LOOP_LAYER_STARTED = 4,
     // Layer `layer` stopped recording.
     JELLO_LOOP_LAYER_STOPPED = 5,
@@ -610,12 +668,14 @@ typedef struct JelloLoopChange {
     int note;
     // Counted from the loop's start.
     uint64_t sample;
+    // The layer's track; only for JELLO_LOOP_LAYER_STARTED.
+    int track;
 } JelloLoopChange;
 
 // Takes out the oldest change to the loop's layers and notes into `change`
 // and returns true, or returns false if none is waiting. Applying every
 // change in order keeps a copy of the loop's layers and notes. Call it from the same thread as the
-// functions above, and often: once 4,096 changes are waiting, newer ones are
+// functions above, and often: once 16,384 changes are waiting, newer ones are
 // dropped, since the sound never waits for the screen.
 bool jello_engine_next_loop_change(JelloEngine* engine, JelloLoopChange* change);
 
@@ -624,7 +684,7 @@ bool jello_engine_next_loop_change(JelloEngine* engine, JelloLoopChange* change)
 // the glide key, one past that. Past the most, new notes still sound live
 // but are not recorded.
 enum {
-    JELLO_LOOP_MAX_NOTES = 4096,
+    JELLO_LOOP_MAX_NOTES = 16384,
     JELLO_VIBRATO_KEY_NOTE = 128,
     JELLO_GLIDE_KEY_NOTE = 129,
 };
@@ -655,8 +715,9 @@ bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, in
 
 // One note of a loop opened from a song file, for jello_engine_load_loop.
 typedef struct JelloLoadedNote {
-    // Which layer it belongs to, from 0.
+    // Which layer it belongs to, from 0, and that layer's track.
     int layer;
+    int track;
     // Its pitch, 0 to 127, JELLO_VIBRATO_KEY_NOTE, JELLO_GLIDE_KEY_NOTE or
     // a drum pad's.
     int note;
@@ -671,12 +732,13 @@ typedef struct JelloLoadedNote {
 // loop there is, as jello_engine_clear_loop does, and takes `count` notes in
 // `layers` layers, `bars` bars long at the tempo asked for last, paused.
 // The notes come layer by layer, 0 first, each layer's in the order they
-// start, and every layer has at least one. Notes past the loop's end are
-// kept to it. Each layer plays at full volume until told otherwise. Returns
-// false and changes nothing if `layers` is below 1 or above
-// JELLO_LOOP_MAX_LAYERS, `count` is below 1 or above JELLO_LOOP_MAX_NOTES,
-// `bars` is below 1, a note is out of order or out of range, or too many
-// messages are waiting. Call it from the same thread as the functions above.
+// start, and every layer has at least one, all on its track. Notes past the
+// loop's end are kept to it. Each layer plays at full volume until told
+// otherwise. Returns false and changes nothing if `layers` is below 1 or
+// above JELLO_LOOP_MAX_LAYERS, `count` is below 1 or above
+// JELLO_LOOP_MAX_NOTES, `bars` is below 1, a note is out of order or out of
+// range, a layer's notes are on different tracks, a track has more than
+// JELLO_TRACK_MAX_LAYERS layers, or too many messages are waiting. Call it from the same thread as the functions above.
 bool jello_engine_load_loop(JelloEngine* engine, const JelloLoadedNote* notes, int count, int layers, int bars);
 
 // How many samples the song has played, counted from its first chord's
@@ -785,12 +847,12 @@ int jello_engine_sample_sets_kept(JelloEngine* engine);
 // Makes notes sent after this play oscillator `index`'s JELLO_KIND_SAMPLE
 // from set `set`, or from nothing for -1. Returns false, changing nothing,
 // for an odd index, a set that is not kept or is forgotten, or a full
-// mailbox.
-bool jello_engine_set_instrument(JelloEngine* engine, int index, int set);
+// mailbox, and for a track out of range.
+bool jello_engine_set_instrument(JelloEngine* engine, int track, int index, int set);
 
 // Makes drum hits after this play set `set`, its zones one per pad, or
 // nothing for -1. Returns false as jello_engine_set_instrument does.
-bool jello_engine_set_drum_kit(JelloEngine* engine, int set);
+bool jello_engine_set_drum_kit(JelloEngine* engine, int track, int set);
 
 // The drum pads, played with jello_engine_note_on as the notes from
 // JELLO_DRUM_FIRST_NOTE, each one shot to the end of its recording; the
@@ -808,7 +870,8 @@ enum {
 // `group`, from 0 (none) to JELLO_DRUM_MOST_GROUP: a hit cuts off every
 // other sounding in its group. Anything out of range is ignored. A new
 // engine's pads are all at level 1, untuned, in the middle, in no group.
-void jello_engine_set_drum_pad(JelloEngine* engine, int pad, float level, int half_steps, float pan, int group);
+void jello_engine_set_drum_pad(JelloEngine* engine, int track, int pad, float level, int half_steps, float pan,
+                               int group);
 
 // Makes sound without speakers, for writing files. Fills `out` with `frames`
 // frames of stereo, left and right taking turns (left, right, left, ...),

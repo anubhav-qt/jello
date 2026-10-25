@@ -144,8 +144,13 @@ pub fn undo_agent_reply(
 mod tests {
     use super::*;
 
+    use serde_json::json;
+
     use crate::harmony::{Key, key_of_name};
+    use crate::layer_notes;
     use crate::presets::test_folder;
+    use crate::sections::{self, SectionEdit};
+    use crate::tracks::Track;
     use crate::song_session::{Folders, new_song, rename_open_song};
     use crate::songs;
     use crate::sound_profile::SoundProfile;
@@ -185,6 +190,27 @@ mod tests {
 
         assert_eq!(composer.key(), None);
         assert_eq!(key_in_file(&open, "Untitled 1"), None);
+    }
+
+    #[test]
+    fn undo_puts_back_the_tracks_and_sections_too() {
+        let (mut open, mut composer, mut engine) = starting("undo-tracks");
+        let notes = layer_notes::notes_of(&json!({"notes": [{"note": "E4", "start": 0, "hold": 1}]})).unwrap();
+        layer_notes::write_layer(&mut engine, None, None, None, &notes).unwrap();
+        sections::edit(&mut composer, &mut engine, SectionEdit::Save).unwrap();
+        let mut replies = Replies::default();
+        let reply = start_reply(&mut replies, &open, &composer, &mut engine);
+
+        composer.tracks_mut().add(&mut engine, Track::new_drums());
+        sections::edit(&mut composer, &mut engine, SectionEdit::Save).unwrap();
+        assert_eq!(composer.tracks().len(), 2);
+        assert_eq!(composer.sections().len(), 2);
+
+        undo(&mut replies, &mut open, &mut composer, &mut engine, reply, Instant::now()).unwrap();
+        assert_eq!(composer.tracks().len(), 1);
+        assert_eq!(composer.sections().len(), 1);
+        let (_, layers) = engine.loop_to_keep().unwrap();
+        assert_eq!(layers.len(), 1);
     }
 
     #[test]

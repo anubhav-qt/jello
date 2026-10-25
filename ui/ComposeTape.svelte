@@ -15,7 +15,11 @@
     type ChordInSong,
     type ComposeView,
     type KeyChoice,
+    type SectionEdit,
+    type SectionsView,
   } from "./compose";
+  import SectionDetails from "./SectionDetails.svelte";
+  import SectionsLane from "./SectionsLane.svelte";
   import { noteName, type KeyLayout } from "./keyboard";
   import { clickThenLetGo } from "./dom";
   import { colorForNote } from "./note-colors";
@@ -39,6 +43,12 @@
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
     onEdit: (action: string, place: number) => void;
+    // The sections lane under the progression, and a section's details in
+    // the guidance's place while one is picked.
+    sections: SectionsView | null;
+    // Left Cmd on a Mac, left Alt on Windows.
+    modifierName: string;
+    onSectionEdit: (edit: SectionEdit) => void;
   }
 
   let {
@@ -52,7 +62,33 @@
     onChordClick,
     onPlayClick,
     onEdit,
+    sections,
+    modifierName,
+    onSectionEdit,
   }: Props = $props();
+
+  // The place in the sections' order picked, from 1, or null. Its section's
+  // details show in the guidance's place.
+  let pickedSection = $state<number | null>(null);
+  let openSection = $derived.by(() => {
+    if (sections === null || pickedSection === null) {
+      return null;
+    }
+    const number = sections.order[pickedSection - 1];
+    if (number === undefined) {
+      return null;
+    }
+    return number;
+  });
+
+  // Esc closes a section's details. Returns true if one was open.
+  export function closeSection(): boolean {
+    if (openSection === null) {
+      return false;
+    }
+    pickedSection = null;
+    return true;
+  }
 
   // How wide one second of a chord is drawn, in pixels.
   const PIXELS_PER_SECOND = 36;
@@ -438,6 +474,22 @@
       </div>
     {/if}
 
+    <SectionsLane
+      {sections}
+      {modifierName}
+      picked={pickedSection}
+      onPick={(place) => (pickedSection = place)}
+      onEdit={onSectionEdit}
+    />
+
+    {#if sections !== null && openSection !== null}
+      <SectionDetails
+        {sections}
+        number={openSection}
+        onEdit={onSectionEdit}
+        onClose={() => (pickedSection = null)}
+      />
+    {:else}
     <div class="exploration">
       <section class="exploration-history">
         <div class="exploration-heading">
@@ -518,6 +570,8 @@
         </div>
       </section>
     </div>
+
+    {/if}
 
     <p class="tape-hint" class:is-hidden={pickerShown}>
       Return adds the chord you're holding or just let go of. Delete takes the

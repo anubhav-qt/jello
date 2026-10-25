@@ -141,6 +141,7 @@ fn render(song: &Song, mut keys: KeyMap, what: &str, with_loop: bool, phrase: Op
     let sample_rate = engine.sample_rate();
     open_loop_of(&mut engine, &copy)?;
     let mut composer = Composer::opened(&mut engine, &copy, now);
+    engine.settle_volumes();
     if plays_loop {
         engine.play_loop();
     }
@@ -357,7 +358,7 @@ mod tests {
     use super::*;
 
     use crate::harmony::chord_of_name;
-    use crate::song_file::{BeatNote, HeldChord, SongLayer, SongLoop};
+    use crate::song_file::{BeatNote, HeldChord, SongLayer, SongLoop, SongTrack};
     use crate::sound_profile::SoundProfile;
 
     // A song at 120 beats a minute, so a beat is half a second, with two
@@ -382,24 +383,19 @@ mod tests {
                 end: 2.5,
             },
         ];
-        Song {
-            key: None,
-            tempo: 120,
-            snap: true,
-            preset: None,
-            chords,
-            looped: Some(SongLoop {
-                bars: 1,
-                layers: vec![SongLayer {
-                    bars: 0,
-                    volume: 100,
-                    playing: true,
-                    notes,
-                }],
-            }),
-            sound: SoundProfile::new().sound(),
-            drums: crate::drums::Drums::new(),
-        }
+        let mut song = Song::new(&SoundProfile::new());
+        song.chords = chords;
+        song.looped = Some(SongLoop {
+            bars: 1,
+            layers: vec![SongLayer {
+                track: 0,
+                bars: 0,
+                volume: 100,
+                playing: true,
+                notes,
+            }],
+        });
+        song
     }
 
     fn answer(what: &str, with_loop: bool, phrase: Option<&Phrase>) -> Value {
@@ -491,6 +487,22 @@ mod tests {
         let answer = answer_of(&render, 120);
         assert_eq!(answer["seconds"], json!(60.0));
         assert_eq!(answer["cut"], json!("it lasts 61.5 s, so only the first 60 s were rendered"));
+    }
+
+    #[test]
+    fn the_loop_renders_each_track_s_layers_at_its_volume() {
+        let mut two_tracks = song();
+        two_tracks.tracks.push(SongTrack::new(&SoundProfile::new()));
+        two_tracks.looped.as_mut().unwrap().layers[0].track = 1;
+
+        let at_full = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
+        let loud = answer_of(&at_full, 120);
+        assert!(loudness(&loud["beats"][0]).unwrap() > -30.0);
+
+        two_tracks.tracks[1].volume = 0;
+        let at_zero = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
+        let silent = answer_of(&at_zero, 120);
+        assert_eq!(loudness(&silent["beats"][0]), None);
     }
 }
 

@@ -615,6 +615,12 @@ export function toolTitle(step: ToolStep): string {
   if (step.tool === "jello_practice") {
     return "Practice";
   }
+  if (step.tool === "jello_tracks") {
+    return "Tracks";
+  }
+  if (step.tool === "jello_arrange") {
+    return "Sections";
+  }
   return step.tool.replace("jello_", "");
 }
 

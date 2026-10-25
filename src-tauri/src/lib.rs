@@ -2,7 +2,9 @@
 // commands to call.
 
 mod agent;
+mod arrange;
 mod attachments;
+mod automation;
 mod audio_file;
 mod cards;
 mod commands;
@@ -28,6 +30,7 @@ mod practice;
 mod practice_run;
 mod presets;
 mod scoring;
+mod sections;
 mod skills;
 mod song_file;
 mod song_session;
@@ -39,12 +42,13 @@ mod starters;
 mod theory;
 mod tool_server;
 mod tools;
+mod tracks;
 mod undo;
 mod wav;
 
 use std::sync::Mutex;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
@@ -52,6 +56,9 @@ use compose::Composer;
 use engine::Engine;
 use key_map::KeyMap;
 use song_session::{Folders, OpenSong, SAVE_CHECK};
+
+// How often the sections playing are kept ahead of the sound.
+const ARRANGE_CHECK: Duration = Duration::from_millis(50);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -113,6 +120,8 @@ pub fn run() {
             app.manage(tool_server);
             let handle = app.handle().clone();
             thread::spawn(move || keep_saving(handle));
+            let arranging = app.handle().clone();
+            thread::spawn(move || keep_arranging(arranging));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -157,6 +166,10 @@ pub fn run() {
             commands::set_oscillator,
             commands::set_instrument,
             commands::set_drum_kit,
+            commands::pick_track,
+            commands::rename_track,
+            commands::set_track_volume,
+            commands::remove_track,
             commands::set_drum_pad,
             commands::list_instruments,
             commands::open_instruments_folder,
@@ -201,6 +214,9 @@ pub fn run() {
             commands::remove_last_chord,
             commands::play_chord_in_song,
             commands::play_song,
+            commands::sections_view,
+            commands::edit_sections,
+            commands::render_wav,
             commands::stop_song,
             commands::render_test_note,
         ])
@@ -264,10 +280,36 @@ fn keep_saving(app: AppHandle) {
         let composer = app.state::<Mutex<Composer>>();
         let engine = app.state::<Mutex<Engine>>();
         let mut open = open.lock().unwrap();
-        let composer = composer.lock().unwrap();
+        let mut composer = composer.lock().unwrap();
         let mut engine = engine.lock().unwrap();
+        // A layer removed with Esc leaves the sections before they are saved.
+        sections::catch_up(&mut composer, &mut engine);
         song_session::save_if_settled(&mut open, &composer, &mut engine, now);
         engine.tidy_sample_sets();
+    }
+}
+
+// Keeps the sections playing (src/arrange.rs): every ARRANGE_CHECK, sends
+// the sequencer what is due soon, tells the page each time another section
+// starts, and once they have played.
+fn keep_arranging(app: AppHandle) {
+    let mut playing_before = None;
+    loop {
+        thread::sleep(ARRANGE_CHECK);
+        let composer = app.state::<Mutex<Composer>>();
+        let engine = app.state::<Mutex<Engine>>();
+        let mut composer = composer.lock().unwrap();
+        let mut engine = engine.lock().unwrap();
+        let stopped = arrange::keep_playing(&mut composer, &mut engine);
+        let playing = arrange::playing_now(&composer, &engine);
+        drop(engine);
+        drop(composer);
+        if stopped {
+            let _ = app.emit("arrangement-stopped", ());
+        } else if playing != playing_before && playing.is_some() {
+            let _ = app.emit("section-playing", ());
+        }
+        playing_before = playing;
     }
 }
 

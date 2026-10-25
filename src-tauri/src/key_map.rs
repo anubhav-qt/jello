@@ -214,7 +214,7 @@ enum KeyRole {
     Glide,
     // Hits this drum pad, from 0.
     Drum(usize),
-    // Switches drum mode on or off.
+    // Jumps to the drums track and back.
     DrumMode,
     // Moves new notes on to the next wave.
     Wave,
@@ -242,8 +242,9 @@ pub enum KeyAction {
     // Hits this drum pad, from 0. The hit plays out whole however long the
     // key is held, but the looper keeps how long it was.
     HitDrum(usize),
-    // Drum mode just went on or off: the key map has switched already.
-    SwitchDrumMode,
+    // Jumps to the drums track used last, or back to the track it came
+    // from (docs/design.md#tracks-and-sections). Drum mode follows.
+    JumpToDrums,
     // Moves new notes on to the next wave.
     SwitchWave,
     // Counts in, records or closes the loop, or starts or stops a layer,
@@ -381,6 +382,17 @@ impl KeyMap {
         }
     }
 
+    // Turns drum mode on or off: on, the letters hit drums. It follows the
+    // picked track, on for a drums track.
+    pub fn set_drum_mode(&mut self, on: bool) {
+        self.drum_mode = on;
+    }
+
+    #[cfg(test)]
+    pub fn drum_mode(&self) -> bool {
+        self.drum_mode
+    }
+
     // Whether `key` does anything at all.
     pub fn knows(&self, key: &str) -> bool {
         self.roles().contains_key(key)
@@ -429,10 +441,7 @@ impl KeyMap {
                 self.held.insert(String::from(key), vec![note]);
                 Some(KeyAction::HitDrum(pad))
             }
-            KeyRole::DrumMode => {
-                self.drum_mode = !self.drum_mode;
-                Some(KeyAction::SwitchDrumMode)
-            }
+            KeyRole::DrumMode => Some(KeyAction::JumpToDrums),
             KeyRole::Wave => Some(KeyAction::SwitchWave),
             KeyRole::Looper => Some(KeyAction::PressLooper),
             KeyRole::RemoveLayer => Some(KeyAction::RemoveLayer),
@@ -814,9 +823,12 @@ mod tests {
     fn drum_mode_turns_the_letters_into_drums_and_back() {
         let mut key_map = KeyMap::new();
         assert!(!key_map.drum_mode);
-        assert_eq!(key_map.press(DRUM_MODE_KEY), Some(KeyAction::SwitchDrumMode));
+        // The drum mode key asks for the drums track, which turns it on.
+        assert_eq!(key_map.press(DRUM_MODE_KEY), Some(KeyAction::JumpToDrums));
         key_map.release(DRUM_MODE_KEY);
-        assert!(key_map.drum_mode);
+        assert!(!key_map.drum_mode);
+        key_map.set_drum_mode(true);
+        assert!(key_map.drum_mode());
 
         // Space and the index fingers' keys hit drums, held with the pad's
         // note so letting go ends it.
@@ -848,9 +860,9 @@ mod tests {
             assert!(on_a_key, "no key hits {name}");
         }
 
-        // Pressed again, the keys play notes and chords again.
-        key_map.press(DRUM_MODE_KEY);
-        assert!(!key_map.drum_mode);
+        // Off again, the keys play notes and chords again.
+        assert_eq!(key_map.press(DRUM_MODE_KEY), Some(KeyAction::JumpToDrums));
+        key_map.set_drum_mode(false);
         assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
         assert!(key_map.layout_for_ui().drums.is_empty());
     }
