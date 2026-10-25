@@ -178,7 +178,6 @@ pub fn run() {
             commands::set_layer_volume,
             commands::set_layer_bars,
             commands::set_tempo,
-            commands::export_loop_wav,
             commands::pause_loop,
             commands::play_loop,
             commands::set_layer_playing,
@@ -218,7 +217,6 @@ pub fn run() {
             commands::edit_sections,
             commands::render_wav,
             commands::stop_song,
-            commands::render_test_note,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

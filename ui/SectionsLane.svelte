@@ -76,7 +76,8 @@
   }
 </script>
 
-<div class="sections-slot">
+<div class="tape-row sections-slot">
+  <span class="tape-row-label">Sections</span>
   {#if sections === null || isEmpty}
     <p class="tape-empty sections-empty">
       Sections go here. Turn on the layers you want in the looper, then press
@@ -109,7 +110,10 @@
               style:width={`${section.bars * PIXELS_PER_BAR}px`}
               onclick={(event) => clickThenLetGo(event, () => pick(place))}
             >
-              <span class="tape-block-name">{section.name}</span>
+              <span class="tape-block-name"
+                ><span class="section-number">{number}</span>
+                {section.name}</span
+              >
               <span class="tape-block-length"
                 >{sectionWords(section, sections.tempo)}</span
               >
@@ -119,36 +123,54 @@
       </div>
       <button
         type="button"
-        class="tape-play section-save"
-        title={`Save the layers playing now as a section (${modifierName} + Return)`}
+        class="section-save"
+        title="Save the layers playing now as a section"
         onclick={(event) => clickThenLetGo(event, () => onEdit({ action: "save" }))}
       >
-        +
+        + Save layers as section <kbd>{modifierName} Return</kbd>
       </button>
     </div>
   {/if}
 </div>
 
 {#if sections !== null && picked !== null && pickedName !== null}
-  <div class="progression-tools">
-    <span>Section: {pickedName}</span>
-    <button disabled={picked === 1} onclick={() => move(picked, picked - 1)}
-      >← Move</button
-    >
-    <button
-      disabled={picked === sections.order.length}
-      onclick={() => move(picked, picked + 1)}>Move →</button
-    >
-    <button onclick={() => useAgain(picked)}>Use again</button>
-    <button onclick={() => remove(picked)}>Remove</button>
+  <div class="tape-row tape-bottom">
+    <span class="tape-row-label">Section</span>
+    <span class="tape-chosen">{pickedName}</span>
+    <div class="tape-tools">
+      <button
+        type="button"
+        disabled={picked === 1}
+        onclick={(event) => clickThenLetGo(event, () => move(picked, picked - 1))}
+        >← Move</button
+      >
+      <button
+        type="button"
+        disabled={picked === sections.order.length}
+        onclick={(event) => clickThenLetGo(event, () => move(picked, picked + 1))}
+        >Move →</button
+      >
+      <button
+        type="button"
+        onclick={(event) => clickThenLetGo(event, () => useAgain(picked))}
+        >Use again</button
+      >
+      <button
+        type="button"
+        onclick={(event) => clickThenLetGo(event, () => remove(picked))}
+        >Remove</button
+      >
+    </div>
   </div>
 {/if}
 
 <style>
   .sections-slot {
-    flex: none;
     height: 46px;
-    margin-top: 6px;
+  }
+  /* The save button follows the last block. */
+  .sections-slot :global(.tape-scroller) {
+    flex: 0 1 auto;
   }
   .sections-empty {
     font-size: 11px;
@@ -177,7 +199,35 @@
   .section-block.is-playing {
     background: rgba(var(--ink), 0.16);
   }
+  .section-number {
+    font-family: "Doto", monospace;
+    font-weight: 800;
+    color: var(--text-3);
+  }
+  .section-block.is-selected .section-number {
+    color: rgba(var(--accent), 0.6);
+  }
+  /* Dashed, like a block still to come. */
   .section-save {
-    font-size: 16px;
+    flex: none;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px dashed rgba(var(--ink), 0.2);
+    border-radius: 4px;
+    background: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--text-2);
+    white-space: nowrap;
+    cursor: default;
+  }
+  .section-save:hover {
+    border-color: rgba(var(--ink), 0.45);
+    color: var(--text);
+  }
+  .section-save kbd {
+    margin-left: 5px;
+    font: 10px monospace;
+    color: var(--text-3);
   }
 </style>

@@ -57,7 +57,6 @@
     onSnapClick: () => void;
     onRecordClick: () => void;
     onExpressionChange: (key: string, held: boolean) => void;
-    onExportLoop: () => void;
     onTempoChange: (tempo: number) => void;
     onLayerBarsChange: (layer: number, bars: number) => void;
     onVolumeChange: (layer: number, volume: number) => void;
@@ -86,7 +85,6 @@
     onSnapClick,
     onRecordClick,
     onExpressionChange,
-    onExportLoop,
     onTempoChange,
     onLayerBarsChange,
     onVolumeChange,
@@ -227,8 +225,9 @@
   let compose: ComposeView | null = $state(null);
   // The song's sections, or null until Rust has said.
   let sections: SectionsView | null = $state(null);
-  // Compose's tape, so Esc can close a section's details.
-  let tape: ComposeTape | undefined = $state();
+  // Compose's tape, so Esc can close a section's details. Svelte sets it
+  // to null when another tab takes Compose's place.
+  let tape: ComposeTape | null | undefined = $state();
   let composeAt = $state(0);
   // The chord key pressed last, by place, like "KeyX".
   let tried: string | null = $state(null);
@@ -534,10 +533,10 @@
       agentOpen = false;
       return true;
     }
-    if (tape !== undefined && tape.closeSection()) {
-      return true;
+    if (tape === undefined || tape === null) {
+      return false;
     }
-    return false;
+    return tape.closeSection();
   }
 
   // The agent pressed or let go of `code`, playing a phrase. Its key lights
@@ -790,7 +789,6 @@
            designed. -->
           {#if tab === "compose"}
             <ComposeTape
-              {layout}
               view={compose}
               answeredAt={composeAt}
               tried={triedGuide}
@@ -821,15 +819,18 @@
       <!-- The keyboard, with no box around it. -->
       <div class="stage-panel" bind:this={panel}>
         {#if sound !== null}
-          <TrackRow
-            {sound}
-            pickModifier={modifierName}
-            onPick={soundSender.pickTrack}
-            onRename={soundSender.renameTrack}
-            onVolume={soundSender.setTrackVolume}
-            onRemove={soundSender.removeTrack}
-          />
-          <LoopTransport {sound} onRecord={onRecordClick} onTempo={onTempoChange} onExpression={onExpressionChange} onExport={onExportLoop} />
+          <!-- The track row and the transport, as wide as the keys. -->
+          <div class="stage-controls" style:--keys-across={keysAcross(platform)}>
+            <TrackRow
+              {sound}
+              pickModifier={modifierName}
+              onPick={soundSender.pickTrack}
+              onRename={soundSender.renameTrack}
+              onVolume={soundSender.setTrackVolume}
+              onRemove={soundSender.removeTrack}
+            />
+            <LoopTransport {sound} onRecord={onRecordClick} onTempo={onTempoChange} onExpression={onExpressionChange} />
+          </div>
         {/if}
         <Keyboard
           {platform}

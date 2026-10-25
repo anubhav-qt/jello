@@ -37,14 +37,15 @@ of Practice. Sound tabs and Compose's progression stay in place too.
 - Compose preserves the key-fit outlines and saved-song next-chord squares.
   Numbered keys show live next chords after every chord played, or after an
   explicit history selection. Dots show compatible chords sharing tones;
-  the guidance columns explain these suggestions. Playing another chord
-  returns to live following. Holding chords still fills their melody notes.
+  the Next line says why the chord numbered 1 follows. Playing another
+  chord returns to live following. Holding chords still fills their melody notes.
 - Every melody press refreshes three nearby in-key targets, favoring short
   steps and nearby reference-chord tones. Suggestions are possibilities,
   never blocked notes. Key fit and held-chord highlighting remain visible.
-- Tried chords keep their original press lengths in session history. Select
-  a try as the reference or explicitly add it to the progression. Select a
-  progression block to hear it, move it left/right, or remove it. Return
+- Tried chords keep their original press lengths in session history. Click
+  a try to guide from it (again to follow playing), or its + to add it to
+  the progression. Click a progression block to hear it, then move it
+  left/right, remove it, or let go of it with Done. Return
   still appends the last played chord; Backspace removes the last song chord.
   History and lessons reset on app restart; only chosen song content saves.
 
@@ -170,7 +171,8 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    note off and all notes off; Rust gains `play_note`, `release_note` and
    `release_all_notes`. The test tone goes away: Render WAV saves a held
    middle C to `Music/Jello/test-note.wav`, and the dev panel gets a button
-   that plays middle C while it is held. Done.
+   that plays middle C while it is held. Done. (Render WAV now renders the
+   song; see [tracks and sections](#tracks-and-sections).)
 3. **32 voices.** Finding a free voice, stealing, reusing a ringing note's
    voice, and the soft clip. The C API and the dev panel stay the same, so
    only the tests play chords until slice 5. Done.
@@ -1132,9 +1134,7 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   the strongest, one for the third). In the key: a solid outline. Can
   work: a dashed outline. Outside: dimmed. A best next key keeps its
   outline, so it still shows how it fits. Trying reads like "Am in the
-  key, best next." and then the best-next reason. The hint under the tape
-  says "Keys: lit is best next, solid in the key, dashed can work, dim
-  outside."
+  key, best next." and then the best-next reason.
 - **Melody keys** ([ADR 0023](adr/0023-guidance-on-the-melody-keys.md)).
   Guided quietly, with no outline, so the chord keys' outlines still stand
   out. A melody key whose note is outside the key dims, and still plays. A
@@ -1152,8 +1152,7 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   color, with a bright edge on top, full as that chord starts. The last
   chord fills nothing, and neither does a chord clicked on the tape, since
   it plays alone. Best next waits until the song stops; the outlines stay.
-  The hint under the tape says "Keys: glowing plays now, filling plays
-  next." Rust finds the keys that play each chord (`now_keys` and
+  Rust finds the keys that play each chord (`now_keys` and
   `next_keys` on the playhead), so chords played together would light
   together; today a song plays one chord at a time.
 - Highlights point at what a key already plays; they never change it. Music
@@ -1197,6 +1196,10 @@ Pointer recording and independent layer lengths extend this design in
 [ADR 0042](adr/0042-independent-layer-lengths.md). The transport offers
 record/finish, a free or fixed capture duration, exact tempo, vibrato and
 glide holds, and export of one common cycle as WAV (up to 60 seconds).
+It is one dark panel of segments under the track row, both as wide as the
+keys and sized in em from `--u` so they scale with them (2026-10-25,
+mockup A): values in white Doto digits stepped with ‹ ›, the tempo typed
+too (`DigitField.svelte`), vibrato and glide as lamps lit lavender.
 Each lane has an editable length of 1 to 64 bars. Changing it restarts
 playback. Original patterns stay in song files; `layer_cycles.rs` expands
 only playback onto their common cycle, within the existing 4096-note limit.
@@ -1476,13 +1479,18 @@ song, and the song built from sections in order. Roadmap step 5.
 - **Compose screen.** Under the progression lane, a sections lane: one
   block per use of a section, in order, with its name, bars, and tempo or
   key shift when they differ, and a play button for the arrangement. With
-  no sections, a dashed lane says how to save one. Clicking a section opens
-  its details in the guidance row's place: each track with its layers on
-  or off, its bars, tempo and key shift, and its automation; clicking it
-  again, or Esc, brings the guidance back. The lane reorders, reuses and
+  no sections, a dashed lane says how to save one; with some, a dashed
+  "+ Save layers as section" button follows the last block. Clicking a
+  section opens its details in the progression's and Tried row's place:
+  each track with its layers on or off, its bars, tempo and key shift, and
+  its automation; clicking it again, or Esc, brings them back. The lane reorders, reuses and
   removes sections by clicking, like the progression's blocks. Just above
   Record loop, the track row: a numbered tile per track with its name, the
-  picked one lavender, a drums track showing its kit.
+  picked one lavender, a drums track showing its kit, and a faint x that
+  removes it (none on the only track, dimmed while recording); at its
+  right end the picked track's volume (white dots, click or drag in 5%
+  steps, or type the number). Tiles shrink and cut long names with 9
+  tracks.
 - **Agent.** `jello_tracks` makes (an instrument or drums track), picks,
   names, sets the volume of and removes tracks. `jello_arrange` takes the
   same edits as the lane and details (save, save again, open, rename,
@@ -1514,8 +1522,12 @@ song, and the song built from sections in order. Roadmap step 5.
   expanded on their cycles (`layer_cycles.rs`), shifted by its key, timed
   by its tempo and tempo automation in samples, and each automated value
   sent as a step every 10 ms, which the engine's existing glides smooth.
-  Render WAV renders the arrangement to Music/Jello/Renders, or a held
-  middle C with no sections; the looper's cycle export plays every track.
+  Render WAV, the one WAV button (since 2026-10-25), renders the
+  arrangement to Music/Jello/Renders, or with no sections one cycle of the
+  loop with every track; with neither it says "record a loop or save a
+  section first". The transport's Export WAV and the middle C test tone
+  are gone; the transport keeps that room free for more lamps like Vibrato
+  and Glide.
   Both renders first throw away 20 ms of silence, so track volumes have
   eased to where they were set and a muted track is never heard.
 
@@ -1903,7 +1915,7 @@ comes before the sampler, and replaces the Tutor of
   left, the keyboard and looper below. The button at the right end of the
   tabs opens it and shows the job's name, one width in every tab. Top to bottom: Tutor's practice
   card when set, the messages in Markdown, each reply's change lines and
-  Undo, Stop while it works or plays, and the text field. Return sends;
+  Undo, then [the input box](#the-input-box). Return sends;
   Escape leaves the field. Escape closes the panel after Sound and Songs,
   before it can remove a loop layer.
 - **Shipping and sign-in.** Jello carries its own Node 22 and pi 1.4.0 (both
@@ -2084,6 +2096,33 @@ Beginner to Master, are the Tutor's path, in seven areas.
 - Until steps 4 to 6 exist, the Composer is only as good as one synth and
   the looper allow.
 
+#### The input box
+
+Picked from four mockups on 2026-10-25 (layout D,
+[canvas](https://claude.ai/artifact/T8taspEjURiSsXFoLdmMbH)).
+
+- One framed box at the bottom of the panel. On top, three tabs: Type,
+  Speak and Hum, the open one lit lavender. Under them the files waiting
+  to go, a row each with an x, then what the tab shows, then the message.
+- Under the box: Attach, the model (its list opens upward) and Send, which
+  turns into Stop (Escape) while the agent works. The header keeps only
+  Chats, Memory and New.
+- **Type** is the message field. Return sends, Shift+Return starts a line.
+- **Speak** opens with the mic off; only its Start button turns the mic
+  on (asking first, the first time, to download the speech model; after
+  the download it waits for Start again). Seven bars show the mic's level;
+  the words fill the message, which is read-only meanwhile. Done, or
+  another tab, keeps the words and opens Type to edit them; Return or Send
+  sends them once the last words are in.
+- **Hum** holds the whole hum, Ready to Done, inside the box; the mic
+  turns on only at its Start. While it
+  counts in, listens or reads, Type and Speak wait. Once read, the roll and
+  the key guess show, the message becomes "Describe it" with the vibe
+  words under it, and Send sends the hum with it. Removing the hummed tune
+  from the files ends the hum.
+- Send works once: a quick second click or Return does nothing until the
+  run starts.
+
 #### Attachments
 
 - The paperclip, or a drop on the panel. pi sends only text and images, so
@@ -2120,13 +2159,14 @@ Beginner to Master, are the Tutor's path, in seven areas.
   through `whisper-rs` (`dictation.rs`), at 16 kHz with a prompt of music
   words. Its model, `ggml-base.en.bin` (148 MB), downloads once from
   Hugging Face after asking, through curl, and its SHA-256 is checked. Words
-  appear in the field about every second; Return sends; 60 s at most. The
+  appear in the message about every second, on the input box's Speak tab;
+  Return sends; 60 s at most. The
   audio is never sent. Building it needs cmake.
-- **Hum.** The modal goes Ready, Count in, Listening, Done. The player picks
+- **Hum.** The input box's Hum tab goes Ready, Count in, Listening, Done. The player picks
   the count in, the click, a set or free tempo and the mic, and sees its
   level. Pitch detection (YIN) runs in Rust beside `measures.rs`; a note is
   a stretch of steady pitch, and the tempo and key are estimated. Below:
-  "Describe it", with its own dictate button, and vibe buttons. Send gives
+  "Describe it" (the message itself) and vibe buttons. Send gives
   the agent the notes, their times, the estimates and the words, never the
   audio. The Composer answers with three readings: as sung, on the beat,
   and with chords, each with Play, Use and Practice. The Tutor can take a
@@ -2231,6 +2271,15 @@ the keyboard's panel. At the default window (1100x720) there are only
 refitted side by side (approved 2026-10-20): about 125 px tall, 16 px of
 room above and below, and it still fits at 1000x640.
 
+- **Lean rows** (mockup C, picked 2026-10-25, when the taller track row
+  and transport left the guidance panels 11 px). Under the top row, each
+  row has a 92 px Doto label column: Progression (or Key while the picker
+  is open), Sections, then Tried. Tried holds the chords tried as chips,
+  newest at the right, and Next says the chord numbered 1 on the keys, its
+  key and why. A picked chord or section swaps that row for its buttons.
+  The guidance columns and the hint line are gone: the keys show the
+  numbers, dots and Return's ADD. At 1352x822 the rows end 19 px above the
+  track row.
 - **Rough timing.** The user composes by feel: not exact, and not fully on
   the beat. Each chord keeps the whole length it was held, in seconds, and
   is never snapped to the beat.
@@ -2243,8 +2292,8 @@ room above and below, and it still fits at 1000x640.
 - **Key.** Before a key is picked, it says "Pick a key" and the picker is
   open: two rows of 12, major above and minor below, each name in its home
   note's color (by pitch, so Db is C's purple and Bb is A's blue, like the
-  keys). The picker sits in the song lane's place, exactly its height, and
-  the hint line is hidden while it is open. Once picked, it folds into a
+  keys). The picker sits in the song lane's place, exactly its height.
+  Once picked, it folds into a
   readout ("C major" and a chevron); clicking that opens the picker again,
   and clicking it once more closes it.
 - **Song.** The number of chords and the total length ("4 chords, 9.2 s"),
