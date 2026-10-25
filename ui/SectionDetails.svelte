@@ -1,5 +1,5 @@
-<!-- A section's details, in the guidance's place on Compose's tape while
-     its block is picked (docs/design.md#tracks-and-sections): its name,
+<!-- A section's details, in the progression's place on Compose's tape
+     while its block is picked (docs/design.md#tracks-and-sections): its name,
      bars, tempo and key shift, each track's layers on or off, and the
      values it moves. Every change is the section's, so every place in the
      order that uses it changes too. -->
@@ -93,7 +93,7 @@
 </script>
 
 <section class="section-details">
-  <div class="exploration-heading">
+  <div class="details-heading">
     <input
       class="section-name"
       aria-label="The section's name"

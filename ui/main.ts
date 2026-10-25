@@ -1172,14 +1172,6 @@ async function start() {
           sendInOrder(() => releaseKey(key));
         }
       },
-      onExportLoop: () => sendInOrder(async () => {
-        try {
-          const path = await invoke<string>("export_loop_wav");
-          showStatus(`Saved ${path}`);
-        } catch (error) {
-          showStatus(`Could not export loop: ${error}`);
-        }
-      }),
       onTempoChange: (tempo: number) => sendInOrder(() => setTempo(tempo)),
       onLayerBarsChange: (layer: number, bars: number) => sendInOrder(() => setLayerBars(layer, bars)),
       onVolumeChange: (layer: number, volume: number) =>

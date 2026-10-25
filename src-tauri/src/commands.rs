@@ -34,10 +34,6 @@ use crate::wav::write_wav;
 // The test file holds middle C at velocity 100 for 2 seconds, then lets go.
 // It keeps going for 400 ms after that: the 300 ms fade-out plus a little
 // silence, so it ends cleanly.
-const MIDDLE_C: u8 = 60;
-const TEST_VELOCITY: u8 = 100;
-const HOLD_MS: u32 = 2000;
-const TAIL_MS: u32 = 400;
 
 // What the screen shows about the sound: the oscillators new notes play, the
 // song's tempo in beats per minute, whether loops snap to the beat, what the
@@ -1888,9 +1884,8 @@ pub fn stop_song(
     composer.view(&key_map, engine.song_place(), now)
 }
 
-// The top bar's Render WAV: renders the song's sections in order to
-// Music/Jello/Renders, or with none, a held middle C, and returns where it
-// went (docs/design.md#tracks-and-sections).
+// The top bar's Render WAV: renders the song to Music/Jello/Renders and
+// returns where it went (docs/design.md#tracks-and-sections).
 #[tauri::command]
 pub fn render_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
     let song = {
@@ -1898,44 +1893,30 @@ pub fn render_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, engine: 
         let mut engine = engine.lock().unwrap();
         crate::song_session::song_now(&composer, &mut engine)
     };
-    if song.arrangement.is_empty() {
-        return render_test_note(app);
-    }
-    let (samples, sample_rate) = arrange::render(&song)?;
     let folder = renders_folder(&app)?;
-    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     let since_1970 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     let stamp = since_1970.map_err(|error| error.to_string())?.as_millis();
-    let path = folder.join(format!("Jello-song-{stamp}.wav"));
-    write_wav(&path, &samples, sample_rate)?;
+    let path = render_song(&song, &folder, stamp)?;
     Ok(path.display().to_string())
 }
 
-// Renders a held middle C to Music/Jello/test-note.wav and returns where it
-// went.
-#[tauri::command]
-pub fn render_test_note(app: AppHandle) -> Result<String, String> {
-    // A second engine with no speakers, so the file never disturbs what is
-    // playing live. It runs the same code the speakers hear.
-    let mut engine = Engine::new()?;
-    let sample_rate = engine.sample_rate();
-
-    engine.note_on(MIDDLE_C, TEST_VELOCITY);
-    let mut samples = engine.render(frames_in_ms(sample_rate, HOLD_MS));
-
-    engine.note_off(MIDDLE_C);
-    let tail = engine.render(frames_in_ms(sample_rate, TAIL_MS));
-    samples.extend(tail);
-
-    let path = jello_music_folder(&app)?.join("test-note.wav");
-    write_wav(&path, &samples, sample_rate)?;
-
-    Ok(path.display().to_string())
-}
-
-fn frames_in_ms(sample_rate: u32, ms: u32) -> usize {
-    let frames = sample_rate * ms / 1000;
-    frames as usize
+// Renders `song` into `folder`, stamped with `stamp`: its sections in order
+// when it has some, otherwise one cycle of its loop. Returns the file.
+fn render_song(song: &crate::song_file::Song, folder: &Path, stamp: u128) -> Result<PathBuf, String> {
+    if !song.arrangement.is_empty() {
+        let (samples, sample_rate) = arrange::render(song)?;
+        fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+        let path = folder.join(format!("Jello-song-{stamp}.wav"));
+        write_wav(&path, &samples, sample_rate)?;
+        return Ok(path);
+    }
+    if song.looped.is_none() {
+        return Err(String::from("record a loop or save a section first"));
+    }
+    fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    let path = folder.join(format!("Jello-loop-{stamp}.wav"));
+    crate::listening::export_loop(song, &path)?;
+    Ok(path)
 }
 
 // The Jello folder inside the user's Music folder, made if it is missing.
@@ -2860,6 +2841,58 @@ mod tests {
 
     // An engine looping a 1-bar loop of `layers` layers, each holding one
     // A4, with the repeat after the last layer's just started.
+    // The files in `folder`, by name, or none when it was never made.
+    fn files_in(folder: &Path) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(folder) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            names.push(entry.unwrap().file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn render_wav_with_no_loop_and_no_sections_says_what_to_do() {
+        let folder = presets::test_folder("render-nothing");
+        let mut engine = Engine::new().unwrap();
+        let song = crate::song_session::song_now(&Composer::new(), &mut engine);
+        let rendered = render_song(&song, &folder, 7);
+        assert_eq!(rendered, Err(String::from("record a loop or save a section first")));
+        assert!(files_in(&folder).is_empty());
+    }
+
+    #[test]
+    fn render_wav_with_no_sections_renders_one_cycle_of_the_loop() {
+        let folder = presets::test_folder("render-loop");
+        let mut engine = engine_with_layers(2);
+        let song = crate::song_session::song_now(&Composer::new(), &mut engine);
+        let path = render_song(&song, &folder, 7).unwrap();
+        assert_eq!(files_in(&folder), vec![String::from("Jello-loop-7.wav")]);
+        let reader = hound::WavReader::open(&path).unwrap();
+        // One bar at 120 BPM is 2 seconds.
+        let seconds = reader.duration() as f64 / reader.spec().sample_rate as f64;
+        assert!((seconds - 2.0).abs() < 0.01, "{seconds} s");
+    }
+
+    #[test]
+    fn render_wav_with_sections_renders_them_and_not_the_loop() {
+        let folder = presets::test_folder("render-sections");
+        let mut engine = engine_with_layers(2);
+        let mut composer = Composer::new();
+        sections::edit(&mut composer, &mut engine, SectionEdit::Save).unwrap();
+        sections::edit(&mut composer, &mut engine, SectionEdit::UseAgain { place: 1 }).unwrap();
+        let song = crate::song_session::song_now(&composer, &mut engine);
+        let path = render_song(&song, &folder, 7).unwrap();
+        assert_eq!(files_in(&folder), vec![String::from("Jello-song-7.wav")]);
+        let reader = hound::WavReader::open(&path).unwrap();
+        // Two uses of a one-bar section, then the sound's tail.
+        let seconds = reader.duration() as f64 / reader.spec().sample_rate as f64;
+        assert!(seconds >= 4.0, "{seconds} s");
+    }
+
     fn engine_with_layers(layers: usize) -> Engine {
         let mut engine = Engine::new().unwrap();
         // The count-in, then the first loop, closed at the end of its bar.
@@ -3126,25 +3159,6 @@ pub fn set_layer_bars(composer: State<'_, Mutex<Composer>>, engine: State<'_, Mu
     let mut engine = engine.lock().unwrap();
     engine.set_layer_bars(layer, bars)?;
     Ok(sound_view_of(&mut engine, &composer, Instant::now()))
-}
-
-#[tauri::command]
-pub fn export_loop_wav(app: AppHandle, composer: State<'_, Mutex<Composer>>, engine: State<'_, Mutex<Engine>>) -> Result<String, String> {
-    let song = {
-        let composer = composer.lock().unwrap();
-        let mut engine = engine.lock().unwrap();
-        crate::song_session::song_now(&composer, &mut engine)
-    };
-    if song.looped.is_none() {
-        return Err(String::from("record a loop first"));
-    }
-    let folder = renders_folder(&app)?;
-    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    let since_1970 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-    let stamp = since_1970.map_err(|error| error.to_string())?.as_millis();
-    let path = folder.join(format!("Jello-loop-{stamp}.wav"));
-    crate::listening::export_loop(&song, &path)?;
-    Ok(path.display().to_string())
 }
 
 #[cfg(test)]

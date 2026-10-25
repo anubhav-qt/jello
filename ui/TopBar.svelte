@@ -99,7 +99,7 @@
       <button
         type="button"
         class="action top-button"
-        title="Save a held middle C as a WAV file"
+        title="Save the song as a WAV file: its sections, or the loop when there are none"
         onclick={(event) => clickThenLetGo(event, onRenderClick)}
       >
         <span class="action-name">Render WAV</span>

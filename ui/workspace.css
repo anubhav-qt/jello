@@ -31,8 +31,7 @@
     .agent-body,
     .sound-panel-content,
     .sound-module,
-    .history-list,
-    .guidance-columns
+    .tape-tried
   ) {
   overscroll-behavior: contain;
 }
@@ -43,6 +42,13 @@
 }
 .keyboard {
   margin: auto;
+}
+/* The track row and transport line up with the outer keys' edges, and
+   their sizes, in em, grow and shrink with the keys: 13px at the biggest. */
+.stage-controls {
+  width: calc(var(--u) * (var(--keys-across) - 0.1));
+  margin: 0 auto calc(var(--u) * 0.18);
+  font-size: calc(var(--u) * 0.24);
 }
 .looper-lane {
   height: 68px;
@@ -86,59 +92,76 @@
   min-height: 38px;
   gap: 28px;
 }
-.tape-hint {
-  flex: none;
-  margin: 0 0 6px;
-  line-height: 1.5;
-}
 .workspace .stage-readout {
   min-height: 100%;
   height: auto;
   flex-wrap: wrap;
 }
-.progression-tools {
+/* Compose's rows: a label column on the left, then the row's contents. */
+.tape-row {
+  flex: none;
   display: flex;
   align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tape-row > .tape-empty,
+.tape-row > .tape-lane,
+.tape-row > .tape-picker {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.tape-row-label {
+  flex: none;
+  width: 92px;
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(var(--ink), 0.38);
+}
+.tape-bottom {
+  height: 28px;
   gap: 8px;
   font-size: 11px;
   color: var(--text-2);
 }
-.progression-tools button,
-.exploration-heading button {
+.tape-quiet {
+  margin: 0;
+  color: var(--text-3);
+}
+/* A chord or section picked, and what can be done with it. */
+.tape-chosen {
+  font-family: "Doto", monospace;
+  font-size: 15px;
+  font-weight: 800;
+  color: rgb(var(--accent));
+}
+.tape-tools {
+  display: flex;
+  gap: 6px;
+  margin-left: 6px;
+}
+.tape-tools button,
+.details-heading button {
   font: inherit;
   border: 1px solid rgba(var(--ink), 0.2);
   background: transparent;
   color: var(--text);
   padding: 4px 8px;
   border-radius: 3px;
+  cursor: default;
 }
-.progression-tools button:disabled {
+.tape-tools button:hover:not(:disabled),
+.details-heading button:hover {
+  border-color: rgba(var(--ink), 0.45);
+}
+.tape-tools button:disabled {
   opacity: 0.3;
 }
-.tape-block.is-selected {
-  outline: 1px solid rgba(var(--accent), 0.9);
-  outline-offset: -2px;
-}
-.exploration {
-  flex: 1 1 0;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(0, 2.5fr);
-  gap: 12px;
-}
-.exploration-history,
-.exploration-guide {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  padding: 12px;
-  border: 1px solid rgba(var(--ink), 0.09);
-  border-radius: 5px;
-  background: var(--panel-bg);
-}
-.exploration-heading {
+/* A section's name and buttons, over its details. */
+.details-heading {
   flex: none;
   display: flex;
   align-items: center;
@@ -147,117 +170,96 @@
   min-height: 25px;
   margin-bottom: 8px;
 }
-.exploration-heading h2 {
-  margin: 0;
-  font:
-    800 14px Doto,
-    monospace;
-  text-transform: uppercase;
-  color: var(--text);
-}
-.exploration-heading > span {
-  font-size: 10px;
-  color: var(--text-3);
-}
-.exploration-heading button {
+.details-heading button {
   font-size: 10px;
 }
-.exploration-heading button.is-active {
-  color: rgb(var(--accent));
-  border-color: rgba(var(--accent), 0.5);
+.tape-block.is-selected {
+  outline: 1px solid rgba(var(--accent), 0.9);
+  outline-offset: -2px;
 }
-.history-list {
-  flex: 1;
-  min-height: 0;
+/* The chords tried, newest at the right end, scrolling without a bar. The
+   one the guidance follows is filled. */
+.tape-tried {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48%;
+  overflow-x: auto;
+}
+.tape-tried-track {
   display: flex;
-  flex-wrap: wrap;
   gap: 5px;
-  overflow: auto;
-  align-content: start;
+  width: max-content;
 }
-.history-chord {
+.tried-chord {
   display: flex;
-  border: 1px solid rgba(var(--accent), 0.25);
+  border: 1px solid rgba(var(--accent), 0.3);
   border-radius: 3px;
 }
-.history-chord.is-selected {
-  background: rgba(var(--accent), 0.16);
+.tried-chord.is-selected {
+  background: rgba(var(--accent), 0.14);
   border-color: rgb(var(--accent));
 }
-.history-chord button {
+.tried-chord button {
+  margin: 0;
   background: transparent;
-  color: var(--text);
+  color: var(--text-2);
   border: 0;
   font: inherit;
-  padding: 5px 7px;
+  font-size: 10px;
+  cursor: default;
 }
-.history-select {
+.tried-pick {
   display: flex;
   align-items: baseline;
   gap: 5px;
+  padding: 3px 4px 3px 8px;
 }
-.history-select strong {
+.tried-pick strong {
   font:
-    800 16px Doto,
+    800 14px Doto,
     monospace;
   color: rgb(var(--accent));
 }
-.history-select span {
-  font-size: 10px;
-  color: var(--text-2);
-}
-.history-chord .history-add {
-  font-size: 10px;
-  border-left: 1px solid rgba(var(--accent), 0.15);
-}
-.guidance-columns {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-.guidance-columns h3 {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--text);
-  font-weight: 600;
-}
-.guidance-columns h3 span {
-  display: block;
-  margin-top: 3px;
+.tried-chord .tried-add {
+  padding: 0 7px 0 4px;
   color: var(--text-3);
-  font-size: 10px;
-  font-weight: 400;
 }
-.guidance-columns p,
-.exploration-empty {
-  margin: 0 0 7px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-2);
-}
-.guidance-columns p > span {
-  display: block;
-  color: var(--text-3);
-  font-size: 10px;
-}
-.guidance-columns strong {
+.tried-chord .tried-add:hover {
   color: var(--text);
-  font-weight: 600;
 }
-.guidance-columns kbd {
-  font: 10px monospace;
-  margin-left: 6px;
+/* Why the chord numbered 1 on the keys follows; cut off at the end. */
+.tape-next {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: 16px;
+  white-space: nowrap;
+}
+.tape-next .tape-label {
+  margin-right: 4px;
+}
+.tape-next-rank {
+  font:
+    800 12px Doto,
+    monospace;
   color: rgb(var(--accent));
 }
-.companion-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 12px;
+.tape-next-name {
+  font-weight: 600;
   font-size: 12px;
   color: var(--text);
+}
+.tape-next kbd {
+  font: 10px monospace;
+  color: rgb(var(--accent));
+}
+.tape-next-why {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
 }
 .key-live-rank {
   position: absolute;
@@ -286,11 +288,6 @@
 .actions {
   gap: 10px;
 }
-@media (max-width: 1050px) {
-  .exploration {
-    grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
-  }
-}
 @media (max-height: 620px) {
   .screen {
     --u: 30px;
@@ -317,19 +314,6 @@
 }
 .workspace .tape {
   gap: 7px;
-}
-.tape-slot {
-  margin-top: 2px;
-}
-.guidance-columns {
-  gap: 12px;
-}
-.guidance-columns p {
-  margin-bottom: 5px;
-}
-.exploration-history,
-.exploration-guide {
-  padding: 9px;
 }
 .stage .key-best {
   top: auto;

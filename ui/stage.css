@@ -830,9 +830,7 @@
 
 /* The song lane, or the key picker in its place. */
 .tape-slot {
-  flex: none;
   height: 58px;
-  margin-top: 8px;
 }
 
 /* Two rows of 12 keys, major above minor, each in its home note's color. */
@@ -988,22 +986,6 @@
   left: calc(var(--played) * (100% - 2px));
   width: 2px;
   background: rgba(var(--ink), 0.9);
-}
-
-.tape-hint {
-  flex: none;
-  margin: 8px 0 0;
-  font-size: 11px;
-  line-height: 15px;
-  color: rgba(var(--ink), 0.35);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* While the picker is open, the hint keeps its room but isn't shown. */
-.tape-hint.is-hidden {
-  visibility: hidden;
 }
 
 /* The looper's lane under the keyboard
