@@ -11,6 +11,7 @@ use crate::automation::part_at;
 use crate::compose::Composer;
 use crate::harmony::{Key, key_name};
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, TRACK_COUNT};
+use crate::mix_automation::{forget_bus, is_song_wide, is_track_mix_value, mix_part_at};
 use crate::song_file::{
     Automation, MOST_ARRANGED, MOST_AUTOMATION, MOST_KEY_SHIFT, MOST_SECTIONS, SECTION_MOST_BARS, SectionLayer,
     SongLoop, SongSection, TEMPO_WORD,
@@ -402,6 +403,13 @@ impl Sections {
             }
         }
     }
+
+    // Removes moves of bus `removed`, from 0, and renumbers later buses.
+    pub fn forget_bus(&mut self, removed: usize) {
+        for section in &mut self.list {
+            section.automation.retain_mut(|moved| forget_bus(moved.track, &mut moved.value, removed));
+        }
+    }
 }
 
 // `number`, counted from 1 among `count` of `what`, from 0.
@@ -595,12 +603,16 @@ fn track_index_of(composer: &Composer, track: Option<usize>) -> Result<Option<us
     Ok(Some(index))
 }
 
-// The word a move keeps for `value`: the tempo's own with no track.
+// The word a move keeps for `value`. With no track it is the tempo's own,
+// unless it names a value of the song's mix, like "bus 1 volume".
 fn value_word(track: Option<usize>, value: &str) -> String {
+    let value = value.trim();
     if track.is_none() {
-        return String::from(TEMPO_WORD);
+        if !is_song_wide(value) {
+            return String::from(TEMPO_WORD);
+        }
     }
-    String::from(value.trim())
+    String::from(value)
 }
 
 // The move of `value` of track `track` from `from` to `to`, or why it
@@ -618,6 +630,21 @@ fn automation_of(
     }
     let track_index = track_index_of(composer, track)?;
     let word = value_word(track_index, value);
+    let mut moves_mix = is_track_mix_value(&word);
+    if track_index.is_none() {
+        moves_mix = word != TEMPO_WORD;
+    }
+    if moves_mix {
+        let mix = composer.mix_now();
+        mix_part_at(track_index, &word, from, &mix)?;
+        mix_part_at(track_index, &word, to, &mix)?;
+        return Ok(Automation {
+            track: track_index,
+            value: word,
+            from,
+            to,
+        });
+    }
     match track_index {
         None => {
             let slowest = SLOWEST_TEMPO as f64;
@@ -779,6 +806,138 @@ mod tests {
 
     fn used(track: usize, layer: usize) -> SectionLayer {
         SectionLayer { track, layer }
+    }
+
+    fn move_of(track: Option<usize>, value: &str, from: f64, to: f64) -> Automation {
+        Automation { track, value: value.to_string(), from, to }
+    }
+
+    #[test]
+    fn removing_each_bus_updates_automation_in_every_section() {
+        let original = vec![
+            move_of(None, "bus 1 volume", 1.0, 2.0),
+            move_of(None, "bus 2 pan", 3.0, 4.0),
+            move_of(None, "bus 3 effect 2 mix", 5.0, 6.0),
+            move_of(Some(0), "send 1", 7.0, 8.0),
+            move_of(Some(1), "send 2", 9.0, 10.0),
+            move_of(Some(0), "send 3", 11.0, 12.0),
+            move_of(Some(0), "effect 3 mix", 13.0, 14.0),
+            move_of(None, "master effect 3 mix", 15.0, 16.0),
+            move_of(None, "limiter boost_db", 17.0, 18.0),
+            move_of(None, "tempo", 19.0, 20.0),
+            move_of(Some(0), "pan", 21.0, 22.0),
+        ];
+        let section = SongSection {
+            name: String::from("Verse"), bars: 1, tempo: 120, key_shift: 0,
+            layers: Vec::new(), automation: original.clone(),
+        };
+        for removed in 0..3 {
+            let mut sections = Sections::new(vec![section.clone(), section.clone()], vec![0, 1]);
+            sections.forget_bus(removed);
+            let mut expected = original.clone();
+            if removed == 0 {
+                expected.remove(3);
+                expected.remove(0);
+                expected[0].value = String::from("bus 1 pan");
+                expected[1].value = String::from("bus 2 effect 2 mix");
+                expected[2].value = String::from("send 1");
+                expected[3].value = String::from("send 2");
+            } else if removed == 1 {
+                expected.remove(4);
+                expected.remove(1);
+                expected[1].value = String::from("bus 2 effect 2 mix");
+                expected[3].value = String::from("send 2");
+            } else {
+                expected.remove(5);
+                expected.remove(2);
+            }
+            assert_eq!(sections.list()[0].automation, expected);
+            assert_eq!(sections.list()[1].automation, expected);
+            assert_eq!(sections.order(), &[0, 1]);
+        }
+    }
+
+    #[test]
+    fn bus_removal_stops_an_arrangement_only_after_validation() {
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.send_all(&mut engine);
+        composer.mix_mut().add_bus(&mut engine, None).unwrap();
+        let looped = looped();
+        open_song_loop(&mut engine, 120, Some(&looped)).unwrap();
+        engine.render(512);
+        let section = SongSection {
+            name: String::from("Verse"), bars: 2, tempo: 120, key_shift: 0,
+            layers: vec![used(0, 0)],
+            automation: vec![move_of(None, "bus 1 volume", 50.0, 80.0)],
+        };
+        composer.set_sections(vec![section], vec![0]);
+        arrange::play(&mut composer, &mut engine).unwrap();
+        engine.render(512);
+        assert!(composer.arranging().is_some());
+        assert!(engine.sequence_position().is_some());
+        let before_mix = composer.mix_now();
+        let before_sections = composer.sections().to_vec();
+        assert!(composer.remove_bus(&mut engine, 1).is_err());
+        assert!(composer.arranging().is_some());
+        assert!(engine.sequence_position().is_some());
+        assert_eq!(composer.mix_now(), before_mix);
+        assert_eq!(composer.sections(), before_sections);
+        composer.remove_bus(&mut engine, 0).unwrap();
+        assert!(composer.arranging().is_none());
+        assert_eq!(engine.sequence_position(), None);
+        assert!(composer.sections()[0].automation.is_empty());
+        assert!(composer.mix_now().buses.is_empty());
+    }
+
+    // Play a send on a track made after the mix was last fitted. The
+    // reference explicitly clears the engine's send after removal.
+    fn sound_after_removing_bus(send: Option<u32>) -> Vec<f32> {
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.send_all(&mut engine);
+        composer.mix_mut().add_bus(&mut engine, None).unwrap();
+        composer.mix_mut().add_bus(&mut engine, None).unwrap();
+        composer.tracks_mut().add(&mut engine, crate::tracks::Track::new()).unwrap();
+        let looped = looped();
+        open_song_loop(&mut engine, 120, Some(&looped)).unwrap();
+        engine.render(512);
+        let section = SongSection {
+            name: String::from("Verse"), bars: 2, tempo: 120, key_shift: 0,
+            layers: vec![used(1, 0)],
+            automation: vec![move_of(Some(1), "send 1", 100.0, 100.0)],
+        };
+        composer.set_sections(vec![section], vec![0]);
+        arrange::play(&mut composer, &mut engine).unwrap();
+        engine.render(512);
+        composer.remove_bus(&mut engine, 0).unwrap();
+        assert!(composer.arranging().is_none());
+        assert_eq!(engine.sequence_position(), None);
+        assert!(composer.sections()[0].automation.is_empty());
+        if let Some(send) = send {
+            engine.set_send(1, 0, send);
+        }
+        engine.render(48_000);
+        engine.on_track(1, |engine| engine.note_on(60, 40));
+        engine.render(4_800)
+    }
+
+    #[test]
+    fn removing_a_bus_clears_an_automated_send_on_a_new_track() {
+        let actual = sound_after_removing_bus(None);
+        let reference = sound_after_removing_bus(Some(0));
+        let with_send = sound_after_removing_bus(Some(100));
+        let mut difference = 0.0f64;
+        let mut send_difference = 0.0f64;
+        let mut level = 0.0f64;
+        for ((sample, expected), sent) in actual.iter().zip(&reference).zip(&with_send) {
+            difference += f64::from((sample - expected).abs());
+            send_difference += f64::from((sent - expected).abs());
+            level += f64::from(expected.abs());
+        }
+        assert!(level > 0.0);
+        assert!(difference < level * 0.01);
+        assert!(send_difference > level * 0.1);
     }
 
     #[test]
@@ -987,6 +1146,31 @@ mod tests {
         let shown = view(&mut composer, &mut engine);
         assert_eq!(shown.sections[0].layers, vec![(1, 1)]);
         assert_eq!(shown.tracks[0].layers, 1);
+    }
+
+    #[test]
+    fn mix_values_are_automated_on_a_track_or_with_no_track() {
+        let (mut composer, mut engine) = playing();
+        edit(&mut composer, &mut engine, SectionEdit::Save).unwrap();
+        let automate = |track: Option<usize>, value: &str| SectionEdit::Automate {
+            section: 1,
+            track,
+            value: String::from(value),
+            from: 0.0,
+            to: 50.0,
+        };
+        let refused = edit(&mut composer, &mut engine, automate(None, "bus 1 volume"));
+        assert_eq!(refused.unwrap_err(), "the song has no bus 1");
+        composer.mix_mut().add_bus(&mut engine, None).unwrap();
+        edit(&mut composer, &mut engine, automate(None, "bus 1 volume")).unwrap();
+        edit(&mut composer, &mut engine, automate(Some(1), "pan")).unwrap();
+        edit(&mut composer, &mut engine, automate(Some(1), "send 1")).unwrap();
+        let refused = edit(&mut composer, &mut engine, automate(Some(1), "effect 1 mix"));
+        assert_eq!(refused.unwrap_err(), "slot 1 on track 1 is empty");
+
+        let shown = view(&mut composer, &mut engine);
+        let values: Vec<&str> = shown.sections[0].automation.iter().map(|moved| moved.value.as_str()).collect();
+        assert_eq!(values, vec!["bus 1 volume", "pan", "send 1"]);
     }
 
     #[test]

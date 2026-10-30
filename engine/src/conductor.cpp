@@ -4,40 +4,6 @@
 
 namespace {
 
-// The soft clip leaves samples between -0.8 and 0.8 exactly as they are.
-constexpr float clip_start = 0.8f;
-
-// The room between clip_start and 1.0, the most speakers can play.
-constexpr float clip_room = 1.0f - clip_start;
-
-// Keeps the added-up sound below 1.0, so it never clips (gets cut flat at
-// the speakers' limit, which sounds harsh and crackly). Quiet samples pass
-// through untouched. Louder ones are squeezed into the room above
-// clip_start, harder the further they go, so they get ever closer to 1.0
-// without reaching it: 1.0 comes out as 0.9, 1.4 as 0.95, and even all 32
-// voices at their loudest, 11.2, only reach about 0.996. The master limiter
-// takes over this job in step 6.
-float soft_clip(float sample) {
-    // How far the sample is from zero, whether above or below it.
-    float size = std::fabs(sample);
-    if (size <= clip_start) {
-        return sample;
-    }
-
-    // How much of the room the sample gets: none right at clip_start, then
-    // more and more the further past it the sample goes, but never all of it.
-    float over = size - clip_start;
-    float share = over / (over + clip_room);
-    float squeezed = clip_start + share * clip_room;
-
-    // Below zero it works the same way, mirrored.
-    if (sample < 0.0f) {
-        return -squeezed;
-    } else {
-        return squeezed;
-    }
-}
-
 // How many beats pass each sample at the tempo `beat` says.
 double beats_per_sample(BeatLength beat) {
     return static_cast<double>(beat.tempo) / static_cast<double>(beat.samples_per_minute);
@@ -51,12 +17,27 @@ constexpr int glide_key_velocity = 127;
 }  // namespace
 
 Conductor::Conductor(int sample_rate)
-    : tracks_(sample_rate),
+    : sample_rate_(sample_rate),
+      tracks_(sample_rate),
+      mixer_(sample_rate),
+      limiter_(sample_rate),
       clock_(sample_rate),
       click_(sample_rate),
       looper_(loop_changes_),
       sequencer_(timed_events_) {
-    tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
+    count_beats_while_stopped();
+}
+
+Conductor::~Conductor() {
+    // Effects the audio thread never took in. The ones in the chains go
+    // with the mixer.
+    Event event{};
+    while (mailbox_.receive(event)) {
+        if (event.type == EventType::set_effect) {
+            delete event.effect;
+        }
+    }
+    free_replaced_effects();
 }
 
 void Conductor::note_on(int track, int note, int velocity) {
@@ -72,7 +53,7 @@ void Conductor::note_off(int track, int note) {
 }
 
 void Conductor::all_notes_off() {
-    mailbox_.send(Event{EventType::all_notes_off, 0, 0});
+    send_counted(Event{EventType::all_notes_off, 0, 0});
 }
 
 void Conductor::set_oscillator(int track, int index, const OscillatorSettings& oscillator) {
@@ -84,11 +65,11 @@ void Conductor::set_oscillator(int track, int index, const OscillatorSettings& o
 }
 
 void Conductor::start_click() {
-    mailbox_.send(Event{EventType::start_click, 0, 0});
+    send_counted(Event{EventType::start_click, 0, 0});
 }
 
 void Conductor::stop_click() {
-    mailbox_.send(Event{EventType::stop_click, 0, 0});
+    send_counted(Event{EventType::stop_click, 0, 0});
 }
 
 void Conductor::set_tempo(int tempo) {
@@ -100,14 +81,14 @@ void Conductor::set_tempo(int tempo) {
 void Conductor::press_looper(int track) {
     Event event{EventType::press_looper, 0, 0};
     event.track = track;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         looper_messages_sent_ += 1;
     }
 }
 
 void Conductor::clear_loop() {
-    bool sent = mailbox_.send(Event{EventType::clear_loop, 0, 0});
+    bool sent = send_counted(Event{EventType::clear_loop, 0, 0});
     if (sent) {
         looper_messages_sent_ += 1;
     }
@@ -116,7 +97,7 @@ void Conductor::clear_loop() {
 void Conductor::remove_layer(int layer) {
     Event event{EventType::remove_layer, 0, 0};
     event.layer = layer;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         looper_messages_sent_ += 1;
     }
@@ -126,18 +107,18 @@ void Conductor::set_layer_volume(int layer, float volume) {
     Event event{EventType::set_layer_volume, 0, 0};
     event.layer = layer;
     event.volume = volume;
-    mailbox_.send(event);
+    send_counted(event);
 }
 
 void Conductor::pause_loop() {
-    bool sent = mailbox_.send(Event{EventType::pause_loop, 0, 0});
+    bool sent = send_counted(Event{EventType::pause_loop, 0, 0});
     if (sent) {
         looper_messages_sent_ += 1;
     }
 }
 
 void Conductor::play_loop() {
-    bool sent = mailbox_.send(Event{EventType::play_loop, 0, 0});
+    bool sent = send_counted(Event{EventType::play_loop, 0, 0});
     if (sent) {
         looper_messages_sent_ += 1;
     }
@@ -147,7 +128,7 @@ void Conductor::set_layer_playing(int layer, bool playing) {
     Event event{EventType::set_layer_playing, 0, 0};
     event.layer = layer;
     event.playing = playing;
-    mailbox_.send(event);
+    send_counted(event);
 }
 
 bool Conductor::load_loop(const LoadedNote* notes, int count, int layers, int bars) {
@@ -166,7 +147,7 @@ bool Conductor::load_loop(const LoadedNote* notes, int count, int layers, int ba
     event.loaded_count = count;
     event.loaded_layers = layers;
     event.loaded_bars = bars;
-    mailbox_.send(event);
+    send_counted(event);
     looper_messages_sent_ += 1;
     return true;
 }
@@ -174,7 +155,7 @@ bool Conductor::load_loop(const LoadedNote* notes, int count, int layers, int ba
 void Conductor::set_snap(bool snap) {
     Event event{EventType::set_snap, 0, 0};
     event.snap = snap;
-    mailbox_.send(event);
+    send_counted(event);
 }
 
 void Conductor::set_filter(int track, const FilterSettings& settings) {
@@ -221,7 +202,13 @@ void Conductor::set_tuning(int track, float a4_hz) {
 
 void Conductor::set_lfo(int track, int index, const LfoSettings& settings) {
     Event event{EventType::set_lfo, 0, 0};
-    event.track = track;
+    // A bus's or the master's are the mixer's.
+    if (track < Tracks::count) {
+        event.track = track;
+    } else {
+        event.type = EventType::set_chain_lfo;
+        event.chain = track;
+    }
     event.index = index;
     event.lfo = settings;
     send(event);
@@ -229,7 +216,12 @@ void Conductor::set_lfo(int track, int index, const LfoSettings& settings) {
 
 void Conductor::set_connection(int track, int index, const Connection& connection) {
     Event event{EventType::set_connection, 0, 0};
-    event.track = track;
+    if (track < Tracks::count) {
+        event.track = track;
+    } else {
+        event.type = EventType::set_chain_connection;
+        event.chain = track;
+    }
     event.index = index;
     event.connection = connection;
     send(event);
@@ -269,7 +261,7 @@ bool Conductor::set_instrument(int track, int index, const SampleSet* set) {
     event.track = track;
     event.index = index;
     event.set = set;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         sample_messages_sent_ += 1;
     }
@@ -280,7 +272,7 @@ bool Conductor::set_drum_kit(int track, const SampleSet* set) {
     Event event{EventType::set_drum_kit, 0, 0};
     event.track = track;
     event.set = set;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         sample_messages_sent_ += 1;
     }
@@ -300,6 +292,132 @@ void Conductor::set_track_volume(int track, float volume) {
     event.track = track;
     event.volume = volume;
     send(event);
+}
+
+void Conductor::set_track_pan(int track, float pan) {
+    Event event{EventType::set_track_pan, 0, 0};
+    event.track = track;
+    event.pan = pan;
+    send(event);
+}
+
+void Conductor::set_send(int track, int bus, float amount) {
+    Event event{EventType::set_send, 0, 0};
+    event.track = track;
+    event.bus = bus;
+    event.volume = amount;
+    send(event);
+}
+
+void Conductor::set_bus_volume(int bus, float volume) {
+    Event event{EventType::set_bus_volume, 0, 0};
+    event.bus = bus;
+    event.volume = volume;
+    send(event);
+}
+
+void Conductor::set_bus_pan(int bus, float pan) {
+    Event event{EventType::set_bus_pan, 0, 0};
+    event.bus = bus;
+    event.pan = pan;
+    send(event);
+}
+
+void Conductor::set_limiter(const LimiterSettings& settings) {
+    Event event{EventType::set_limiter, 0, 0};
+    event.limiter = settings;
+    send(event);
+}
+
+bool Conductor::set_effect(int chain, int slot, EffectKind kind) {
+    free_replaced_effects();
+
+    Event event{EventType::set_effect, 0, 0};
+    event.chain = chain;
+    event.slot = slot;
+    bool on_bus = false;
+    if (chain >= Mixer::first_bus_chain) {
+        on_bus = chain < Mixer::master_chain;
+    }
+    event.effect = make_effect(kind, sample_rate_, on_bus);
+    bool sent = send_counted(event);
+    if (!sent) {
+        delete event.effect;
+        return false;
+    }
+    if (event.effect != nullptr) {
+        effects_made_ += 1;
+    }
+    return true;
+}
+
+bool Conductor::move_effect(int chain, int from, int to) {
+    Event event{EventType::move_effect, 0, 0};
+    event.chain = chain;
+    event.slot = from;
+    event.to = to;
+    return send_counted(event);
+}
+
+void Conductor::set_effect_on(int chain, int slot, bool on) {
+    Event event{EventType::set_effect_on, 0, 0};
+    event.chain = chain;
+    event.slot = slot;
+    event.on = on;
+    send(event);
+}
+
+void Conductor::set_effect_value(int chain, int slot, int value, float number) {
+    Event event{EventType::set_effect_value, 0, 0};
+    event.chain = chain;
+    event.slot = slot;
+    event.value = value;
+    event.number = number;
+    send(event);
+}
+
+bool Conductor::set_chain_order(const std::array<int, Mixer::master_chain>& order) {
+    Event event{EventType::set_chain_order, 0, 0};
+    event.order = order;
+    return send_counted(event);
+}
+
+std::uint64_t Conductor::message_room() const {
+    return mailbox_.room();
+}
+
+std::uint64_t Conductor::dropped_messages() const {
+    return dropped_messages_;
+}
+
+void Conductor::take_waiting_messages() {
+    take_messages();
+}
+
+float Conductor::effect_reduction_db(int chain, int slot) const {
+    return shown_reductions_[chain][slot].load();
+}
+
+int Conductor::effect_count() {
+    free_replaced_effects();
+    return effects_made_ - effects_freed_;
+}
+
+void Conductor::free_replaced_effects() {
+    Effect* effect = nullptr;
+    while (freed_effects_.receive(effect)) {
+        delete effect;
+        effects_freed_ += 1;
+    }
+}
+
+int Conductor::use_lookahead() {
+    limiter_.use_lookahead();
+    return limiter_.lookahead_frames();
+}
+
+float Conductor::limiter_reduction_db() const {
+    return shown_limiter_reduction_.load();
 }
 
 void Conductor::layer_note_on(int track, int slot, int note, int velocity) {
@@ -336,7 +454,7 @@ void Conductor::send_now() {
 void Conductor::play_sequence() {
     Event event{EventType::play_sequence, 0, 0};
     event.sequence = sequence_sent_;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         sequence_messages_sent_ += 1;
         sequence_will_play_ = true;
@@ -346,7 +464,7 @@ void Conductor::play_sequence() {
 void Conductor::stop_sequence() {
     Event event{EventType::stop_sequence, 0, 0};
     event.sequence = sequence_sent_;
-    bool sent = mailbox_.send(event);
+    bool sent = send_counted(event);
     if (sent) {
         sequence_messages_sent_ += 1;
         sequence_will_play_ = false;
@@ -373,16 +491,27 @@ std::uint64_t Conductor::sequence_room() const {
     return timed_events_.room();
 }
 
+bool Conductor::send_counted(const Event& event) {
+    bool sent = mailbox_.send(event);
+    if (!sent) {
+        dropped_messages_ += 1;
+    }
+    return sent;
+}
+
 void Conductor::send(const Event& event) {
     if (!timing_) {
-        mailbox_.send(event);
+        send_counted(event);
         return;
     }
     TimedEvent timed;
     timed.sequence = sequence_sent_;
     timed.sample = timed_sample_;
     timed.event = event;
-    timed_events_.send(timed);
+    bool sent = timed_events_.send(timed);
+    if (!sent) {
+        dropped_messages_ += 1;
+    }
 }
 
 std::uint32_t Conductor::sets_in_use() const {
@@ -404,15 +533,15 @@ bool Conductor::play_song(int track, const SongChord* chords, int count) {
         return false;
     }
 
-    mailbox_.send(Event{EventType::stop_song, 0, 0});
+    send_counted(Event{EventType::stop_song, 0, 0});
     for (int i = 0; i < count; i++) {
         Event event{EventType::add_song_chord, 0, 0};
         event.chord = chords[i];
-        mailbox_.send(event);
+        send_counted(event);
     }
     Event play{EventType::play_song, 0, 0};
     play.track = track;
-    mailbox_.send(play);
+    send_counted(play);
 
     song_messages_sent_ += needed;
     song_will_play_ = true;
@@ -420,7 +549,7 @@ bool Conductor::play_song(int track, const SongChord* chords, int count) {
 }
 
 void Conductor::stop_song() {
-    bool sent = mailbox_.send(Event{EventType::stop_song, 0, 0});
+    bool sent = send_counted(Event{EventType::stop_song, 0, 0});
     if (sent) {
         song_messages_sent_ += 1;
         song_will_play_ = false;
@@ -474,12 +603,12 @@ void Conductor::render(float* out, int frames) {
     int rendered = 0;
     for (int i = 0; i < frames; i++) {
         if (looper_.has_something_now(clock_)) {
-            tracks_.render(out + 2 * rendered, i - rendered);
+            mixer_.render(tracks_, out + 2 * rendered, i - rendered);
             rendered = i;
             looper_.act_now(clock_, tracks_);
         }
         if (song_player_.has_something_now(clock_.now())) {
-            tracks_.render(out + 2 * rendered, i - rendered);
+            mixer_.render(tracks_, out + 2 * rendered, i - rendered);
             rendered = i;
             song_player_.act_now(clock_.now(), tracks_.synth(song_track_));
         }
@@ -490,9 +619,7 @@ void Conductor::render(float* out, int frames) {
         // is stopped, the LFOs in beats count at the tempo asked for.
         if (i == 0) {
             take_messages();
-            if (!clock_.is_beat_running()) {
-                tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
-            }
+            count_beats_while_stopped();
         }
 
         // The sequencer's messages due by now, each like a message from the
@@ -501,24 +628,24 @@ void Conductor::render(float* out, int frames) {
         bool rendered_here = false;
         while (sequencer_.next_due(clock_.now(), due)) {
             if (!rendered_here) {
-                tracks_.render(out + 2 * rendered, i - rendered);
+                mixer_.render(tracks_, out + 2 * rendered, i - rendered);
                 rendered = i;
                 rendered_here = true;
             }
             handle(due);
         }
         if (rendered_here) {
-            if (!clock_.is_beat_running()) {
-                tracks_.set_beats_per_sample(beats_per_sample(clock_.asked_beat_length()));
-            }
+            count_beats_while_stopped();
         }
 
-        // The LFOs in beats hear each beat on its own sample, at the tempo
-        // it plays at.
+        // The LFOs in beats, and the effects that follow the beat, hear
+        // each beat on its own sample, at the tempo it plays at.
         if (clock_.beat_starts_now()) {
-            tracks_.render(out + 2 * rendered, i - rendered);
+            mixer_.render(tracks_, out + 2 * rendered, i - rendered);
             rendered = i;
-            tracks_.on_beat(clock_.beat_number(), beats_per_sample(clock_.asked_beat_length()));
+            double beat_speed = beats_per_sample(clock_.asked_beat_length());
+            tracks_.on_beat(clock_.beat_number(), beat_speed);
+            mixer_.on_beat(clock_.beat_number(), beat_speed);
 
             if (wants_click()) {
                 click_.start(clock_.bar_starts_now());
@@ -530,13 +657,14 @@ void Conductor::render(float* out, int frames) {
 
         clock_.step();
     }
-    tracks_.render(out + 2 * rendered, frames - rendered);
+    mixer_.render(tracks_, out + 2 * rendered, frames - rendered);
 
-    // Notes and click together can add up to more than speakers can play.
-    for (int i = 0; i < 2 * frames; i++) {
-        out[i] = soft_clip(out[i]);
-    }
+    // The tracks, the buses and the click together can add up to more than
+    // speakers can play, so the limiter holds them under its ceiling.
+    limiter_.process(out, frames);
+    shown_limiter_reduction_.store(limiter_.reduction_db());
 
+    publish_reductions();
     publish_looper_status();
     publish_song_position();
     publish_sequence_position();
@@ -663,7 +791,35 @@ void Conductor::handle(const Event& event) {
     } else if (event.type == EventType::set_drum_pad) {
         synth.set_drum_pad(event.index, event.pad);
     } else if (event.type == EventType::set_track_volume) {
-        tracks_.set_volume(event.track, event.volume);
+        mixer_.set_volume(event.track, event.volume);
+    } else if (event.type == EventType::set_track_pan) {
+        mixer_.set_pan(event.track, event.pan);
+    } else if (event.type == EventType::set_send) {
+        mixer_.set_send(event.track, event.bus, event.volume);
+    } else if (event.type == EventType::set_bus_volume) {
+        mixer_.set_bus_volume(event.bus, event.volume);
+    } else if (event.type == EventType::set_bus_pan) {
+        mixer_.set_bus_pan(event.bus, event.pan);
+    } else if (event.type == EventType::set_limiter) {
+        limiter_.set(event.limiter);
+    } else if (event.type == EventType::set_effect) {
+        // The replaced effect goes back to be freed off the audio thread.
+        Effect* replaced = mixer_.chain(event.chain).swap(event.slot, event.effect);
+        if (replaced != nullptr) {
+            freed_effects_.send(replaced);
+        }
+    } else if (event.type == EventType::move_effect) {
+        mixer_.chain(event.chain).move(event.slot, event.to);
+    } else if (event.type == EventType::set_effect_on) {
+        mixer_.chain(event.chain).set_on(event.slot, event.on);
+    } else if (event.type == EventType::set_effect_value) {
+        mixer_.chain(event.chain).set_value(event.slot, event.value, event.number);
+    } else if (event.type == EventType::set_chain_order) {
+        mixer_.set_order(event.order);
+    } else if (event.type == EventType::set_chain_lfo) {
+        mixer_.set_lfo(event.chain, event.index, event.lfo);
+    } else if (event.type == EventType::set_chain_connection) {
+        mixer_.set_connection(event.chain, event.index, event.connection);
     } else if (event.type == EventType::layer_note_on) {
         synth.loop_note_on(event.note, event.velocity, event.layer);
     } else if (event.type == EventType::layer_note_off) {
@@ -755,4 +911,22 @@ void Conductor::publish_sequence_position() {
     shown_sequence_position_.store(sequencer_.position(clock_.now()));
     // Last: see sequence_position.
     shown_sequence_handled_.store(sequence_messages_handled_);
+}
+
+void Conductor::count_beats_while_stopped() {
+    if (clock_.is_beat_running()) {
+        return;
+    }
+    double beat_speed = beats_per_sample(clock_.asked_beat_length());
+    tracks_.set_beats_per_sample(beat_speed);
+    mixer_.set_beats_per_sample(beat_speed);
+}
+
+void Conductor::publish_reductions() {
+    for (int chain = 0; chain < Mixer::chain_count; chain++) {
+        for (int slot = 0; slot < Chain::slot_count; slot++) {
+            float reduction = mixer_.chain(chain).take_reduction_db(slot);
+            shown_reductions_[chain][slot].store(reduction);
+        }
+    }
 }

@@ -1,6 +1,6 @@
 // Measuring rendered sound (docs/design.md#the-agent-harness), so the agent
 // can check what it made without ears: how loud it is, whether it reaches
-// the soft clip, how bright it is, how its sound splits between lows, mids
+// the limiter's ceiling, how bright it is, how its sound splits between lows, mids
 // and highs, how wide it is, and where it falls silent.
 //
 // Samples come as the engine renders them: left, right, left, right, ...
@@ -9,11 +9,11 @@ use std::f32::consts::PI;
 
 use serde_json::{Value, json};
 
-use crate::engine::CHANNELS;
+use crate::engine::{CHANNELS, START_LIMITER};
 
-// Where the engine's soft clip starts bending samples (`clip_start` in
-// engine/src/conductor.cpp).
-const CLIP_START: f32 = 0.8;
+// A peak within 0.1 dB of the master limiter's ceiling has reached it: the
+// limiter is holding the sound down there.
+const LIMITER_REACHED_WITHIN_DB: f32 = 0.1;
 
 // A stretch whose loudest sample is quieter than this, -60 dB, is silent.
 pub const SILENCE_LEVEL: f32 = 0.001;
@@ -39,8 +39,9 @@ pub struct Measures {
     pub loudness_db: Option<f32>,
     // Its loudest sample, in dB below full scale. None for silence.
     pub peak_db: Option<f32>,
-    // Whether a sample went past CLIP_START, where the soft clip bends them.
-    pub soft_clip_reached: bool,
+    // Whether a sample reached the limiter's ceiling, where it holds the
+    // sound down.
+    pub limiter_reached: bool,
     // The middle of its spectrum, weighted by strength (its spectral
     // centroid), in Hz: higher sounds brighter. None for silence.
     pub brightness_hz: Option<f32>,
@@ -58,8 +59,22 @@ pub struct Measures {
     pub balance_db: f32,
 }
 
-// Measures `samples`, rendered at `sample_rate` frames a second.
+// True when `peak` is within LIMITER_REACHED_WITHIN_DB of the limiter's
+// ceiling, `ceiling_db`, or past it.
+fn reaches_limiter(peak: f32, ceiling_db: f32) -> bool {
+    let reached_db = ceiling_db - LIMITER_REACHED_WITHIN_DB;
+    let reached = 10.0_f32.powf(reached_db / 20.0);
+    peak >= reached
+}
+
+// Measures `samples`, rendered at `sample_rate` frames a second. The
+// limiter is taken to be where a new song's is.
 pub fn measure(samples: &[f32], sample_rate: u32) -> Measures {
+    measure_under(samples, sample_rate, START_LIMITER.ceiling_db)
+}
+
+// The same, with the master limiter's ceiling at `ceiling_db`.
+pub fn measure_under(samples: &[f32], sample_rate: u32, ceiling_db: f32) -> Measures {
     let mut sum_of_squares = 0.0_f64;
     let mut peak = 0.0_f32;
     let mut left_power = 0.0_f64;
@@ -99,7 +114,7 @@ pub fn measure(samples: &[f32], sample_rate: u32) -> Measures {
     Measures {
         loudness_db,
         peak_db,
-        soft_clip_reached: peak > CLIP_START,
+        limiter_reached: reaches_limiter(peak, ceiling_db),
         brightness_hz: brightness_of(&spectrum, sample_rate),
         lows_percent: bands[0],
         mids_percent: bands[1],
@@ -347,7 +362,7 @@ pub fn json_of(measures: &Measures) -> Value {
     json!({
         "loudness_db": rounded(measures.loudness_db, 10.0),
         "peak_db": rounded(measures.peak_db, 10.0),
-        "soft_clip_reached": measures.soft_clip_reached,
+        "limiter_reached": measures.limiter_reached,
         "brightness_hz": rounded(measures.brightness_hz, 1.0),
         "lows_percent": tenths(measures.lows_percent),
         "mids_percent": tenths(measures.mids_percent),
@@ -401,7 +416,7 @@ mod tests {
         let measures = measure(&sine(1000.0, 0.5, 1.0), RATE);
         near(measures.peak_db.unwrap(), -6.02, 0.05);
         near(measures.loudness_db.unwrap(), -9.03, 0.05);
-        assert!(!measures.soft_clip_reached);
+        assert!(!measures.limiter_reached);
     }
 
     #[test]
@@ -423,9 +438,14 @@ mod tests {
     }
 
     #[test]
-    fn past_0_8_the_soft_clip_is_reached() {
-        let measures = measure(&sine(440.0, 0.9, 0.2), RATE);
-        assert!(measures.soft_clip_reached);
+    fn at_the_ceiling_the_limiter_is_reached() {
+        // -1 dB is about 0.891; 0.1 dB under it, about 0.881, still counts.
+        let at_ceiling = measure(&sine(440.0, 0.891, 0.2), RATE);
+        assert!(at_ceiling.limiter_reached);
+        let just_under = measure(&sine(440.0, 0.885, 0.2), RATE);
+        assert!(just_under.limiter_reached);
+        let below = measure(&sine(440.0, 0.87, 0.2), RATE);
+        assert!(!below.limiter_reached);
     }
 
     #[test]

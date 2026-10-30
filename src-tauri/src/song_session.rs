@@ -111,12 +111,14 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
     let tracks = composer.tracks();
     let mut song_tracks = Vec::new();
     for (number, track) in tracks.list().iter().enumerate() {
-        // A drums track's file keeps only its kit.
         let mut song_track = SongTrack::new(&SoundProfile::new());
         song_track.name = Some(track.name(number + 1));
         song_track.volume = track.volume();
         if track.is_drums() {
             song_track.drums = Some(track.drums().clone());
+            let sound = track.sound_profile().sound();
+            song_track.sound.lfos = sound.lfos;
+            song_track.sound.connections = sound.connections;
         } else {
             song_track.preset = track.preset().map(String::from);
             song_track.sound = track.sound_profile().sound();
@@ -133,6 +135,7 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
         tracks: song_tracks,
         sections: composer.sections().to_vec(),
         arrangement: composer.arrangement().to_vec(),
+        mix: composer.mix_now(),
     }
 }
 
@@ -289,7 +292,20 @@ pub fn open_song_named(
     let folders = open.folders()?;
     save_now(open, composer, engine)?;
     let song = songs::read(&folders.songs, name, &SoundProfile::new())?;
+    open_read_song(open, composer, engine, name, now, song)
+}
 
+fn open_read_song(
+    open: &mut OpenSong,
+    composer: &mut Composer,
+    engine: &mut Engine,
+    name: &str,
+    now: Instant,
+    song: Song,
+) -> Result<(), String> {
+    let folders = open.folders()?;
+    let dropped_before = engine.dropped_messages();
+    engine.make_room();
     engine.stop_song();
     // The arrangement goes with the song it played.
     engine.stop_sequence();
@@ -312,7 +328,11 @@ pub fn open_song_named(
     open.changed = None;
     open.saves = loop_opened.is_ok();
     let _ = songs::remember_last_song(&folders.settings, name);
-    loop_opened
+    loop_opened?;
+    if engine.dropped_messages() > dropped_before {
+        return Err(String::from("the engine was too busy to take all of the song: open it again"));
+    }
+    Ok(())
 }
 
 // Puts song `name` back as `text`, its file text kept earlier, and opens it
@@ -423,8 +443,11 @@ pub fn open_song(
     let mut open = open.lock().unwrap();
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    let folders = open.folders()?;
+    save_now(&mut open, &composer, &mut engine)?;
+    let song = songs::read(&folders.songs, &name, &SoundProfile::new())?;
     engine.start_audio()?;
-    open_song_named(&mut open, &mut composer, &mut engine, &name, now)?;
+    open_read_song(&mut open, &mut composer, &mut engine, &name, now, song)?;
     Ok(songs_view_of(&open))
 }
 
@@ -473,7 +496,11 @@ pub fn song_name_problem(open: State<'_, Mutex<OpenSong>>, name: String) -> Opti
 mod tests {
     use super::*;
 
-    use crate::engine::{FULL_VOLUME, GLIDE_KEY_NOTE, Kind, LooperState, VIBRATO_KEY_NOTE};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::mix::{Mix, Place, Slot};
+    use crate::engine::{EffectKind, TRACK_COUNT, FULL_VOLUME, GLIDE_KEY_NOTE, Kind, LooperState, VIBRATO_KEY_NOTE};
     use crate::harmony::{Chord, Key, Mode, Quality};
     use crate::presets::{mark_starting, test_folder};
     use crate::song_file::{HeldChord, SectionLayer, SongSection};
@@ -592,6 +619,7 @@ mod tests {
             tracks: vec![saw, kit],
             sections: vec![verse],
             arrangement: vec![0, 0],
+            mix: Mix::new(2),
         }
     }
 
@@ -774,8 +802,7 @@ mod tests {
 
     #[test]
     fn a_song_whose_loop_the_engine_refuses_is_never_saved_over() {
-        // The first loop's 9,000 notes still wait for the engine, so the
-        // second's 9,000 don't fit.
+        // 9,000 notes still wait for audio, so 9,000 more do not fit.
         let (mut open, mut composer, mut engine) = starting("session-refused");
         put(&open, "Big one", &song_with_notes(9000));
         put(&open, "Big two", &song_with_notes(9000));
@@ -783,6 +810,8 @@ mod tests {
         let text = std::fs::read_to_string(&big_two).unwrap();
         let now = Instant::now();
         open_song_named(&mut open, &mut composer, &mut engine, "Big one", now).unwrap();
+        engine.render(1);
+        open_loop_of(&mut engine, &song_with_notes(9000)).unwrap();
         assert!(open_song_named(&mut open, &mut composer, &mut engine, "Big two", now).is_err());
 
         composer.pick_key(Key {
@@ -837,6 +866,58 @@ mod tests {
         save_now(&mut open, &composer, &mut engine).unwrap();
         assert_eq!(file_of(&open, "Night drive").tempo, START_TEMPO + 5);
         assert_eq!(songs::list(&folders.songs).len(), 1);
+    }
+
+    // Night drive's first track on every track, with an effect on the last
+    // track and on the master, the last things a song sends.
+    fn every_track_song() -> Song {
+        let mut song = night_drive();
+        song.tracks.truncate(1);
+        song.sections = Vec::new();
+        song.arrangement = Vec::new();
+        while song.tracks.len() < TRACK_COUNT {
+            let copy = song.tracks[0].clone();
+            song.tracks.push(copy);
+        }
+        song.mix = Mix::new(TRACK_COUNT);
+        let last = TRACK_COUNT - 1;
+        song.mix.tracks[last].chain[0] = Some(Slot::new(EffectKind::Eq, Place::Track(last)));
+        song.mix.master[0] = Some(Slot::new(EffectKind::Eq, Place::Master));
+        song
+    }
+
+    #[test]
+    fn opening_a_song_on_every_track_loses_nothing_with_no_audio() {
+        let (mut open, mut composer, mut engine) = starting("session-every-track");
+        put(&open, "Every track", &every_track_song());
+        open_song_named(&mut open, &mut composer, &mut engine, "Every track", Instant::now()).unwrap();
+        assert_eq!(engine.dropped_messages(), 0);
+        assert_eq!(engine.effect_count(), 2);
+    }
+
+    #[test]
+    fn opening_a_song_on_every_track_loses_nothing_while_audio_takes_chunks() {
+        let (mut open, mut composer, mut engine) = starting("session-every-track-audio");
+        put(&open, "Every track", &every_track_song());
+        let stop = Arc::new(AtomicBool::new(false));
+        let audio = engine.pretend_audio_runs(stop.clone());
+        let opened = open_song_named(&mut open, &mut composer, &mut engine, "Every track", Instant::now());
+        // Audio stops first: a failed check would free the engine it renders.
+        stop.store(true, Ordering::Relaxed);
+        audio.join().unwrap();
+        opened.unwrap();
+        assert_eq!(engine.dropped_messages(), 0);
+        assert_eq!(engine.effect_count(), 2);
+    }
+
+    #[test]
+    fn opening_a_song_says_so_when_stalled_audio_loses_part_of_it() {
+        let (mut open, mut composer, mut engine) = starting("session-stalled");
+        put(&open, "Every track", &every_track_song());
+        engine.pretend_audio_stalls();
+        let opened = open_song_named(&mut open, &mut composer, &mut engine, "Every track", Instant::now());
+        assert!(opened.is_err());
+        assert!(engine.dropped_messages() > 0);
     }
 
     #[test]

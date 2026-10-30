@@ -4,13 +4,24 @@
 // picked: the keys play it and the Sound panel edits it. The drums track
 // used last is kept, so right Option can jump to it and back.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, Drums};
 use crate::engine::{Engine, FULL_VOLUME, Kind, OSCILLATOR_COUNT, TRACK_COUNT};
 use crate::sound_file::Sound;
 use crate::sound_profile::SoundProfile;
 
+// A track's identity lasts only while this process holds it. It lets a
+// temporary sound preview find its track after the list is reordered.
+static NEXT_TRACK_ID: AtomicU64 = AtomicU64::new(1);
+
+fn new_track_id() -> u64 {
+    NEXT_TRACK_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 #[derive(Clone)]
 pub struct Track {
+    id: u64,
     // How its notes sound. A drums track keeps one too, unused.
     sound_profile: SoundProfile,
     // Its drum kit's instrument and how each pad sounds.
@@ -35,6 +46,7 @@ impl Track {
     // An instrument track on a new song's sound, at full volume.
     pub fn new() -> Track {
         Track {
+            id: new_track_id(),
             sound_profile: SoundProfile::new(),
             drums: Drums::new(),
             is_drums: false,
@@ -43,6 +55,10 @@ impl Track {
             preset: None,
             preset_profile: None,
         }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     // A drums track with no kit picked yet, at full volume.
@@ -149,6 +165,11 @@ impl Track {
     // track, which must be this one.
     fn send_all(&self, engine: &mut Engine) {
         self.sound_profile.send_all(engine);
+        self.send_all_but_sound(engine);
+    }
+
+    // Its kit, pads and volume, for a track whose sound was just sent.
+    fn send_all_but_sound(&self, engine: &mut Engine) {
         engine.set_drum_kit(self.drums.kit.as_deref());
         for (pad, settings) in self.drums.pads.iter().enumerate() {
             engine.set_drum_pad(pad, *settings);
@@ -277,7 +298,21 @@ impl Tracks {
     // own track there, and picks the picked one there too.
     pub fn send_all(&self, engine: &mut Engine) {
         for (number, track) in self.list.iter().enumerate() {
+            engine.make_room();
             engine.on_track(number, |engine| track.send_all(engine));
+        }
+        for number in self.list.len()..TRACK_COUNT {
+            engine.on_track(number, let_go_of_instruments);
+        }
+        engine.set_track(self.picked);
+    }
+
+    // The same as send_all, for tracks whose sounds were just sent as they
+    // were made.
+    pub fn send_all_but_sounds(&self, engine: &mut Engine) {
+        for (number, track) in self.list.iter().enumerate() {
+            engine.make_room();
+            engine.on_track(number, |engine| track.send_all_but_sound(engine));
         }
         for number in self.list.len()..TRACK_COUNT {
             engine.on_track(number, let_go_of_instruments);
@@ -315,11 +350,12 @@ impl Tracks {
 
     // Adds `track` after the last and sends it to `engine`, without picking
     // it. Returns its number, from 0, or None with TRACK_COUNT already.
-    pub fn add(&mut self, engine: &mut Engine, track: Track) -> Option<usize> {
+    pub fn add(&mut self, engine: &mut Engine, mut track: Track) -> Option<usize> {
         if self.list.len() == TRACK_COUNT {
             return None;
         }
         let number = self.list.len();
+        track.id = new_track_id();
         engine.on_track(number, |engine| track.send_all(engine));
         self.list.push(track);
         Some(number)

@@ -311,7 +311,7 @@
         <span class="agent-meter-bar"><span style:width={`${shareOf(card.whole.loudness_db, -60, 0) * 100}%`}></span></span>
         <span class="agent-meter-value">{decibels(card.whole.loudness_db)}</span>
       </div>
-      <div class="agent-meter-row" class:is-over={card.whole.soft_clip_reached}>
+      <div class="agent-meter-row" class:is-over={card.whole.limiter_reached}>
         <span class="agent-meter-name">Peak</span>
         <span class="agent-meter-bar"><span style:width={`${shareOf(card.whole.peak_db, -60, 0) * 100}%`}></span></span>
         <span class="agent-meter-value">{decibels(card.whole.peak_db)}</span>

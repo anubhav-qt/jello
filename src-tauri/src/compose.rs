@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::arrange::Player;
+use crate::arrange::{self, Player};
 use crate::sections::Sections;
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
 use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, chord_name, guide_after, key_name, note_fit};
@@ -17,6 +17,7 @@ use crate::song_file::{HeldChord, Song, SongSection};
 use crate::sound_file::Sound;
 use crate::drums::{DrumPad, Drums};
 use crate::sound_profile::SoundProfile;
+use crate::mix::{Mix, Place, check_track_routing, send_track_routing};
 use crate::tracks::{Track, Tracks};
 
 // How much slowing down or speeding up changes the song's tempo.
@@ -55,6 +56,10 @@ pub struct Composer {
     // The arrangement while it plays (src/arrange.rs), holding the loop it
     // put away. None otherwise.
     arranging: Option<Player>,
+    // The song's mix (src/mix.rs): pan, sends, effects, buses and the
+    // master. It may have fewer strips than there are tracks; mix_mut and
+    // mix_now fit it.
+    mix: Mix,
 }
 
 // A press as practice reads it.
@@ -218,6 +223,7 @@ impl Composer {
             tracks: Tracks::new(),
             sections: Sections::default(),
             arranging: None,
+            mix: Mix::new(1),
         }
     }
 
@@ -246,6 +252,7 @@ impl Composer {
             let sound = &song_track.sound;
             let drums = song_track.drums.as_ref();
             let preset = song_track.preset.as_deref();
+            engine.make_room();
             let track = engine.on_track(number, |engine| {
                 Track::of_song(engine, sound, drums, song_track.volume, preset)
             });
@@ -261,8 +268,12 @@ impl Composer {
             }
         }
         composer.tracks = Tracks::of_list(tracks, song.picked);
-        composer.tracks.send_all(engine);
+        composer.tracks.send_all_but_sounds(engine);
         composer.sections = Sections::new(song.sections.clone(), song.arrangement.clone());
+        composer.mix = song.mix.clone();
+        composer.mix.fit_tracks(song.tracks.len());
+        composer.mix.send_all(engine);
+        composer.send_track_routings(engine);
         composer
     }
 
@@ -301,6 +312,75 @@ impl Composer {
     pub fn send_all(&self, engine: &mut Engine) {
         engine.set_tempo(self.tempo);
         self.tracks.send_all(engine);
+        self.mix_now().send_all(engine);
+        self.send_track_routings(engine);
+    }
+
+    pub fn send_track_routings(&self, engine: &mut Engine) {
+        for (number, track) in self.tracks.list().iter().enumerate() {
+            let Some(links) = self.mix.links(Place::Track(number)) else {
+                continue;
+            };
+            engine.make_room();
+            send_track_routing(engine, number, track.sound_profile().connections(), links);
+        }
+    }
+
+    pub fn check_picked_routing(&self, connections: &[crate::modulation::Connection; crate::modulation::CONNECTION_COUNT]) -> Result<(), String> {
+        self.check_track_routing(self.tracks.picked(), connections)
+    }
+
+    pub fn check_track_routing(&self, number: usize, connections: &[crate::modulation::Connection; crate::modulation::CONNECTION_COUNT]) -> Result<(), String> {
+        let links = self.mix.links(Place::Track(number)).unwrap_or(&[]);
+        check_track_routing(connections, links)
+    }
+
+    pub fn send_picked_routing(&self, engine: &mut Engine) {
+        let number = self.tracks.picked();
+        let links = self.mix.links(Place::Track(number)).unwrap_or(&[]);
+        send_track_routing(engine, number, self.sound_profile().connections(), links);
+    }
+
+    fn prepare_picked_routing(&mut self, engine: &mut Engine, connections: &[crate::modulation::Connection; crate::modulation::CONNECTION_COUNT]) -> Result<(), String> {
+        self.check_picked_routing(connections)?;
+        let current = self.sound_profile().connections();
+        let mut changed = false;
+        for (before, after) in current.iter().zip(connections) {
+            let was_used = before.source != crate::modulation::Source::None;
+            let will_be_used = after.source != crate::modulation::Source::None;
+            if was_used != will_be_used {
+                changed = true;
+                break;
+            }
+        }
+        if changed {
+            crate::arrange::stop(self, engine);
+        }
+        Ok(())
+    }
+
+    // Applies a complete candidate sound after checking the shared routing
+    // limit. Sound edits and temporary previews use the same path.
+    pub fn apply_sound(&mut self, engine: &mut Engine, wanted: &Sound) -> Result<Sound, String> {
+        self.prepare_picked_routing(engine, &wanted.connections)?;
+        let before = self.sound_profile().sound();
+        crate::sound_changes::take_changes(self.sound_profile_mut(), engine, &before, wanted);
+        self.send_picked_routing(engine);
+        Ok(self.sound_profile().sound())
+    }
+
+    // The song's mix as it is now, with a strip for every track.
+    pub fn mix_now(&self) -> Mix {
+        let mut mix = self.mix.clone();
+        mix.fit_tracks(self.tracks.len());
+        mix
+    }
+
+    // For changing the mix, with a strip for every track. Each change goes
+    // on to the engine.
+    pub fn mix_mut(&mut self) -> &mut Mix {
+        self.mix.fit_tracks(self.tracks.len());
+        &mut self.mix
     }
 
     pub fn tracks(&self) -> &Tracks {
@@ -348,10 +428,24 @@ impl Composer {
         std::mem::replace(&mut self.arranging, arranging)
     }
 
-    // Takes track `removed`, from 0, out of the sections: its layers and
-    // values go, and the later tracks' move one track down.
-    pub fn forget_track(&mut self, removed: usize) {
+    // Takes track `removed`, from 0, out of the sections and the mix, on
+    // `engine` too: its layers, values and strip go, and the later tracks'
+    // move one track down.
+    pub fn forget_track(&mut self, engine: &mut Engine, removed: usize) {
         self.sections.forget_track(removed);
+        self.mix.remove_track(engine, removed);
+        self.send_track_routings(engine);
+    }
+
+    // Stop the arrangement before changing the bus numbers in the song.
+    pub fn remove_bus(&mut self, engine: &mut Engine, bus: usize) -> Result<(), String> {
+        if bus >= self.mix.buses.len() {
+            return Err(format!("the song has no {}", Place::Bus(bus).name()));
+        }
+        arrange::stop(self, engine);
+        self.mix_mut().remove_bus(engine, bus)?;
+        self.sections.forget_bus(bus);
+        Ok(())
     }
 
     // The picked track's drums.
@@ -421,8 +515,11 @@ impl Composer {
 
     // Copies preset `name`'s `sound` into the picked track, on `engine`
     // too, and remembers it as the preset the track sounds like.
-    pub fn take_preset(&mut self, engine: &mut Engine, name: &str, sound: &Sound) {
+    pub fn take_preset(&mut self, engine: &mut Engine, name: &str, sound: &Sound) -> Result<(), String> {
+        self.prepare_picked_routing(engine, &sound.connections)?;
         self.tracks.picked_track_mut().take_preset(engine, name, sound);
+        self.send_picked_routing(engine);
+        Ok(())
     }
 
     // Remembers that the picked track's sound was just saved as preset
@@ -846,6 +943,32 @@ mod tests {
     // speakers ask for.
     const CHUNK: usize = 480;
 
+    #[test]
+    fn preset_routing_capacity_preserves_mix_and_the_previous_sound() {
+        use crate::engine::{EffectConnection, EQ_OUTPUT};
+        use crate::modulation::{CONNECTION_COUNT, Source};
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.mix_mut().add_bus(&mut engine, None).unwrap();
+        composer.mix_mut().set_send(&mut engine, 0, 0, 37).unwrap();
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: 1.0, one_way: false, scaled_by: Source::None };
+        composer.mix_mut().tracks[0].links.push(link);
+        let original = composer.sound_profile().sound();
+        let mix = composer.mix_now();
+        let mut preset = original.clone();
+        preset.connections = [original.connections[0]; CONNECTION_COUNT];
+        assert!(composer.take_preset(&mut engine, "full", &preset).is_err());
+        assert_eq!(composer.sound_profile().sound(), original);
+        assert_eq!(composer.mix_now(), mix);
+
+        preset.connections[CONNECTION_COUNT - 1].source = Source::None;
+        preset.lfos[0].hz = 2.0;
+        composer.take_preset(&mut engine, "fits", &preset).unwrap();
+        assert_eq!(composer.sound_profile().lfos()[0].hz, 2.0);
+        assert_eq!(composer.mix_now(), mix);
+    }
+
     const C_MAJOR: Key = Key {
         tonic: 0,
         mode: Mode::Major,
@@ -979,7 +1102,7 @@ mod tests {
 
         let mut sound = SoundProfile::new().sound();
         sound.tuning_hz = 432.0;
-        composer.take_preset(&mut engine, "Low", &sound);
+        composer.take_preset(&mut engine, "Low", &sound).unwrap();
         assert_eq!(composer.lit_preset(), Some("Low"));
 
         // Changed, it no longer sounds like the preset...

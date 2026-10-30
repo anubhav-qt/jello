@@ -14,8 +14,9 @@
 //   within them, as it does for the sound panel.
 // Only the connections work differently: the file lists every one the
 // sound uses, so a file with none has none. A connection whose source or
-// target Jello does not know is left out. Text that is not TOML at all
-// can't be read.
+// target Jello does not know is left out. Explicit connection indices keep
+// their positions; old entries without one fill the list in order. Duplicate
+// or out-of-range indices and text that is not TOML can't be read.
 
 use toml::{Table, Value};
 
@@ -122,15 +123,22 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
     write_number(text, "rise_ms", key_times.rise_ms);
     write_number(text, "fall_ms", key_times.fall_ms);
 
+    write_routing(text, sound, under);
+}
+
+// Writes the LFOs and ordinary connections under an existing table. Drum
+// tracks keep this part of their sound for their shared effect routing.
+pub fn write_routing(text: &mut String, sound: &Sound, under: &str) {
     for lfo in &sound.lfos {
         write_lfo(text, lfo, under);
     }
 
-    for connection in &sound.connections {
+    for (index, connection) in sound.connections.iter().enumerate() {
         if connection.source == Source::None {
             continue;
         }
         start_group(text, &heading(under, "[[connections]]"));
+        write_number(text, "index", index + 1);
         write_word(text, "source", &connection.source.name());
         write_word(text, "target", &connection.target.name());
         write_number(text, "amount", connection.amount);
@@ -140,7 +148,7 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
     }
 }
 
-fn write_lfo(text: &mut String, lfo: &Lfo, under: &str) {
+pub fn write_lfo(text: &mut String, lfo: &Lfo, under: &str) {
     start_group(text, &heading(under, "[[lfos]]"));
     write_word(text, "shape", lfo.shape.name());
     write_flag(text, "per_note", lfo.per_note);
@@ -223,18 +231,18 @@ pub fn write_flag(text: &mut String, name: &str, flag: bool) {
 }
 
 // The sound `text` describes, starting from `new_song`'s and changing what
-// the text says. Fails only on text that is not TOML.
+// the text says. Fails on invalid TOML or invalid connection indices.
 pub fn sound_of(text: &str, new_song: &SoundProfile) -> Result<Sound, String> {
     let table = match text.parse::<Table>() {
         Ok(table) => table,
         Err(error) => return Err(format!("it is not a sound file: {}", error.message())),
     };
-    Ok(sound_of_table(&table, new_song))
+    sound_of_table(&table, new_song)
 }
 
 // The sound the names and values in `table` describe, starting from
 // `new_song`'s, as for sound_of. A song file's [sound] is such a table.
-pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Sound {
+pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Result<Sound, String> {
     let mut sound = new_song.sound();
     sound.tuning_hz = read_f32(&table, "tuning_hz", sound.tuning_hz);
     sound.glide_ms = read_count(&table, "glide_ms", sound.glide_ms);
@@ -293,20 +301,42 @@ pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Sound {
         *lfo = read_lfo(group, *lfo);
     }
 
-    // The connections the file lists fill the routing list from the top, in
-    // order. Any past the list's 64 are left out.
+    // Older files list connections without indices. Each readable row's
+    // ordinal is its fallback, preserving their previous compact order.
     sound.connections = [NO_CONNECTION; CONNECTION_COUNT];
-    let mut filled = 0;
+    let mut ordinal = 0;
+    let mut claimed = [false; CONNECTION_COUNT];
     for group in groups(&table, "connections") {
-        if filled == CONNECTION_COUNT {
-            break;
+        let explicit = match group.get("index") {
+            None => None,
+            Some(Value::Integer(number)) if *number >= 1 && *number <= CONNECTION_COUNT as i64 => {
+                Some(*number as usize - 1)
+            }
+            Some(_) => return Err(format!("connection index must be from 1 to {CONNECTION_COUNT}")),
+        };
+        let connection = read_connection(group);
+        let index = match explicit {
+            Some(index) => index,
+            None => {
+                if connection.is_none() {
+                    continue;
+                }
+                if ordinal >= CONNECTION_COUNT {
+                    continue;
+                }
+                ordinal
+            }
+        };
+        if claimed[index] {
+            return Err(format!("connection index {} is used more than once", index + 1));
         }
-        if let Some(connection) = read_connection(group) {
-            sound.connections[filled] = connection;
-            filled += 1;
+        claimed[index] = true;
+        if let Some(connection) = connection {
+            sound.connections[index] = connection;
+            ordinal += 1;
         }
     }
-    sound
+    Ok(sound)
 }
 
 // The oscillator `group` describes, with `missing`'s values for what it
@@ -484,6 +514,36 @@ fn read_choice<T>(group: &Table, name: &str, from_name: fn(&str) -> Option<T>, m
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_connection_indices_round_trip_and_mixed_rows_refuse_collisions() {
+        let profile = SoundProfile::new();
+        let mut sound = profile.sound();
+        sound.connections[63] = sound.connections[0];
+        sound.connections[0] = NO_CONNECTION;
+        let text = text_of(&sound);
+        assert!(text.contains("index = 64"));
+        assert_eq!(sound_of(&text, &profile).unwrap(), sound);
+
+        let mixed = "[[connections]]\nindex = 5\nsource = 'random'\ntarget = 'pan'\n\
+                     [[connections]]\nsource = 'random'\ntarget = 'pitch'\n";
+        let read = sound_of(mixed, &profile).unwrap();
+        assert_eq!(read.connections[4].source, Source::Random);
+        assert_eq!(read.connections[1].source, Source::Random);
+        assert_eq!(read.connections[1].target, Target::Pitch);
+        assert_eq!(read.connections[0], NO_CONNECTION);
+
+        let collision = "[[connections]]\nindex = 2\nsource = 'random'\ntarget = 'pan'\n\
+                         [[connections]]\nsource = 'random'\ntarget = 'pitch'\n";
+        assert!(sound_of(collision, &profile).unwrap_err().contains("used more than once"));
+        for index in ["0", "65", "-1", "'bad'"] {
+            let bad = format!("[[connections]]\nindex = {index}\nsource = 'random'\ntarget = 'pitch'\n");
+            assert!(sound_of(&bad, &profile).unwrap_err().contains("connection index"));
+        }
+        let duplicate = "[[connections]]\nindex = 1\nsource = 'random'\ntarget = 'pan'\n\
+                         [[connections]]\nindex = 1\nsource = 'random'\ntarget = 'pitch'\n";
+        assert!(sound_of(duplicate, &profile).is_err());
+    }
 
     use crate::engine::{Engine, TUNING_HIGHEST_HZ, UNISON_MOST_COPIES};
 

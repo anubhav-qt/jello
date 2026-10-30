@@ -5,9 +5,11 @@
 #include <cstdint>
 
 #include "drum_kit.h"
+#include "effect.h"
 #include "envelope.h"
 #include "filter.h"
 #include "lfo.h"
+#include "limiter.h"
 #include "oscillator.h"
 #include "routing.h"
 #include "sample_set.h"
@@ -56,6 +58,18 @@ enum class EventType {
     set_slot_volume,
     play_sequence,
     stop_sequence,
+    set_track_pan,
+    set_send,
+    set_bus_volume,
+    set_bus_pan,
+    set_limiter,
+    set_effect,
+    move_effect,
+    set_effect_on,
+    set_effect_value,
+    set_chain_order,
+    set_chain_lfo,
+    set_chain_connection,
 };
 
 // One message for the audio thread.
@@ -120,7 +134,8 @@ struct Event {
     float a4_hz = 440.0f;
 
     // Which oscillator, LFO or connection, from 0, for set_oscillator,
-    // set_lfo and set_connection, and the LFO's or connection's settings.
+    // set_lfo, set_connection, set_chain_lfo and set_chain_connection, and
+    // the LFO's or connection's settings.
     // Whether the vibrato or glide key is held; only for set_vibrato_key and
     // set_glide_key. How long the vibrato key takes to rise and fall; only
     // for set_vibrato_key_times. And how long a glide takes; only for
@@ -142,6 +157,35 @@ struct Event {
 
     // Which sequence; only for play_sequence and stop_sequence.
     std::uint64_t sequence = 0;
+
+    // Which bus, from 0; only for set_send, set_bus_volume and set_bus_pan.
+    // set_send carries its amount in `volume`, and set_bus_volume the bus's
+    // volume. A pan, from -1 to 1; only for set_track_pan and set_bus_pan.
+    // And the limiter's settings; only for set_limiter. The other messages
+    // can leave them out.
+    int bus = 0;
+    float pan = 0.0f;
+    LimiterSettings limiter{};
+
+    // Which chain, from 0 to Mixer::chain_count - 1, and which of its slots;
+    // only for set_effect, move_effect, set_effect_on and set_effect_value,
+    // and the chain alone for set_chain_lfo and set_chain_connection.
+    // The effect to put in the slot, or nullptr for none; only for
+    // set_effect. The slot to move to; only for move_effect. Whether the
+    // effect is on; only for set_effect_on. And which value, and its new
+    // number; only for set_effect_value. The other messages can leave them
+    // out.
+    int chain = 0;
+    int slot = 0;
+    Effect* effect = nullptr;
+    int to = 0;
+    bool on = true;
+    int value = 0;
+    float number = 0.0f;
+
+    // The order the chains before the master run in (Mixer::set_order);
+    // only for set_chain_order. The other messages can leave it out.
+    std::array<int, most_chains - 1> order{};
 };
 
 // Carries messages from one thread to another without locks
@@ -214,3 +258,9 @@ private:
 
 // The mailbox that carries events to the audio thread.
 using EventMailbox = Mailbox<Event, 1024>;
+
+// The mailbox that carries effects the audio thread swapped out back to the
+// thread that sent them, to be freed there. It holds as many as the events'
+// mailbox, so it is never full: at most that many effects can be on their
+// way at once.
+using FreedEffects = Mailbox<Effect*, 1024>;

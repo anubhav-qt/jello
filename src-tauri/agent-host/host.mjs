@@ -17,7 +17,8 @@
 // it went through.
 
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -874,6 +875,18 @@ export class Host {
     this.tellStatus(available);
   }
 
+  // The ID OpenAI asks each installation for when signing in with ChatGPT.
+  // It is made the first time and kept in agentDir, so it never changes.
+  deviceId() {
+    const path = join(this.agentDir, "device-id");
+    if (existsSync(path)) {
+      return readFileSync(path, "utf8").trim();
+    }
+    const id = randomUUID();
+    writeFileSync(path, id, { mode: 0o600 });
+    return id;
+  }
+
   // Signs in to `providerId`, by "oauth" (the browser) or "api_key". pi
   // asks its questions through Jello's panel and keeps the login in
   // agentDir.
@@ -889,7 +902,7 @@ export class Host {
       notify: (event) => this.notifyPlayer(event),
     };
     try {
-      await this.runtime.login(providerId, method, interaction);
+      await this.runtime.login(providerId, method, interaction, { getDeviceId: () => this.deviceId() });
       this.tell({ type: "sign_in_done", ok: true });
       await this.refresh();
     } catch (error) {

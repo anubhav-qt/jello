@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use crate::compose::Composer;
 use crate::engine::{BEATS_PER_BAR, CHANNELS, Engine, SONG_MAX_CHORDS};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY};
-use crate::measures::{SILENCE_LEVEL, json_of, measure, peak_of, silences};
+use crate::loudness::{integrated_lufs, true_peak_db};
+use crate::measures::{SILENCE_LEVEL, json_of, measure_under, peak_of, silences};
 use crate::phrases::{self, Phrase};
 use crate::presets::name_problem;
 use crate::song_file::Song;
@@ -73,7 +74,7 @@ pub fn listen(studio: &Studio, arguments: &Value) -> Result<Value, String> {
     let (song, key_map, phrase) = copies_of(studio, &what, arguments)?;
     let render = render(&song, key_map, &what, with_loop, phrase.as_ref())?;
 
-    let mut answer = answer_of(&render, song.tempo);
+    let mut answer = answer_of(&render, song.tempo, song.mix.limiter.ceiling_db);
     answer["rendered"] = json!(what);
     answer["with_loop"] = json!(with_loop);
     if let Some(path) = wav_path {
@@ -137,7 +138,7 @@ fn render(song: &Song, mut keys: KeyMap, what: &str, with_loop: bool, phrase: Op
 
     // The loop opens first: it sets the tempo the song plays at.
     let now = Instant::now();
-    let mut engine = Engine::new()?;
+    let mut engine = Engine::for_render()?;
     let sample_rate = engine.sample_rate();
     open_loop_of(&mut engine, &copy)?;
     let mut composer = Composer::opened(&mut engine, &copy, now);
@@ -162,6 +163,7 @@ fn render(song: &Song, mut keys: KeyMap, what: &str, with_loop: bool, phrase: Op
     if what == "chords" {
         composer.play_song(&mut engine, now)?;
     }
+    engine.trim_lookahead();
     if let Some(phrase) = phrase {
         for event in &phrase.events {
             render_until(&mut engine, &mut samples, frames_of(event.at_ms, sample_rate));
@@ -300,7 +302,7 @@ fn release(keys: &mut KeyMap, engine: &mut Engine, key: &str) {
 
 // The measures of `render`, for the whole of it and beat by beat at
 // `tempo`, with its silences and how long it rang on.
-fn answer_of(render: &Render, tempo: u32) -> Value {
+fn answer_of(render: &Render, tempo: u32, ceiling_db: f32) -> Value {
     let played = &render.samples[..render.played_frames * CHANNELS];
     let beat_frames = f64::from(render.sample_rate) * 60.0 / f64::from(tempo);
 
@@ -315,7 +317,8 @@ fn answer_of(render: &Render, tempo: u32) -> Value {
         if end > render.played_frames {
             end = render.played_frames;
         }
-        let mut measured = json_of(&measure(&played[start * CHANNELS..end * CHANNELS], render.sample_rate));
+        let beat_samples = &played[start * CHANNELS..end * CHANNELS];
+        let mut measured = json_of(&measure_under(beat_samples, render.sample_rate, ceiling_db));
         measured["beat"] = json!(beat + 1);
         beats.push(measured);
         beat += 1;
@@ -333,7 +336,9 @@ fn answer_of(render: &Render, tempo: u32) -> Value {
     let mut answer = json!({
         "seconds": (seconds * 10.0).round() / 10.0,
         "tempo": tempo,
-        "whole": json_of(&measure(played, render.sample_rate)),
+        "whole": json_of(&measure_under(played, render.sample_rate, ceiling_db)),
+        "lufs": rounded_lufs(integrated_lufs(played, render.sample_rate)),
+        "true_peak_db": rounded_lufs(true_peak_db(played)),
         "beats": beats,
         "silences": silent,
         "rings_on_ms": render.rings_on_ms,
@@ -344,6 +349,14 @@ fn answer_of(render: &Render, tempo: u32) -> Value {
         answer["cut"] = json!(format!("it lasts {full:.1} s, so only the first 60 s were rendered"));
     }
     answer
+}
+
+// A loudness to a tenth, or null for None.
+fn rounded_lufs(number: Option<f64>) -> Value {
+    match number {
+        Some(number) => json!((number * 10.0).round() / 10.0),
+        None => Value::Null,
+    }
 }
 
 // Which beat frame `frame` falls on, counted from 1 at the start, to a
@@ -357,7 +370,9 @@ fn beat_at(frame: usize, beat_frames: f64) -> f64 {
 mod tests {
     use super::*;
 
+    use crate::engine::{EffectKind, START_LIMITER};
     use crate::harmony::chord_of_name;
+    use crate::mix::{Bus, Place, Slot};
     use crate::song_file::{BeatNote, HeldChord, SongLayer, SongLoop, SongTrack};
     use crate::sound_profile::SoundProfile;
 
@@ -400,7 +415,7 @@ mod tests {
 
     fn answer(what: &str, with_loop: bool, phrase: Option<&Phrase>) -> Value {
         let render = render(&song(), KeyMap::new(), what, with_loop, phrase).unwrap();
-        let mut answer = answer_of(&render, 120);
+        let mut answer = answer_of(&render, 120, START_LIMITER.ceiling_db);
         answer["frames"] = json!(render.samples.len() / CHANNELS);
         answer
     }
@@ -424,6 +439,19 @@ mod tests {
         let last = silences.last().unwrap();
         assert!(last["from_beat"].as_f64().unwrap() > 3.5);
         assert_eq!(last["to_beat"], json!(5.0));
+    }
+
+    #[test]
+    fn a_render_starts_on_its_first_sample() {
+        // The limiter's lookahead is trimmed, so the loop's A4 on beat 1
+        // sounds within the first 1 ms instead of after it.
+        let render = render(&song(), KeyMap::new(), "loop", false, None).unwrap();
+        let lookahead = CHANNELS * render.sample_rate as usize / 1000;
+        let mut loudest: f32 = 0.0;
+        for sample in &render.samples[..lookahead] {
+            loudest = loudest.max(sample.abs());
+        }
+        assert!(loudest > 0.0);
     }
 
     #[test]
@@ -484,7 +512,7 @@ mod tests {
         long.chords[0].held_ms = 61_000;
         long.looped = None;
         let render = render(&long, KeyMap::new(), "chords", false, None).unwrap();
-        let answer = answer_of(&render, 120);
+        let answer = answer_of(&render, 120, START_LIMITER.ceiling_db);
         assert_eq!(answer["seconds"], json!(60.0));
         assert_eq!(answer["cut"], json!("it lasts 61.5 s, so only the first 60 s were rendered"));
     }
@@ -496,13 +524,67 @@ mod tests {
         two_tracks.looped.as_mut().unwrap().layers[0].track = 1;
 
         let at_full = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
-        let loud = answer_of(&at_full, 120);
+        let loud = answer_of(&at_full, 120, START_LIMITER.ceiling_db);
         assert!(loudness(&loud["beats"][0]).unwrap() > -30.0);
 
         two_tracks.tracks[1].volume = 0;
         let at_zero = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
-        let silent = answer_of(&at_zero, 120);
+        let silent = answer_of(&at_zero, 120, START_LIMITER.ceiling_db);
         assert_eq!(loudness(&silent["beats"][0]), None);
+    }
+
+    #[test]
+    fn the_song_s_mix_is_heard_and_measured_in_lufs_and_true_peak() {
+        let plain = answer("loop", false, None);
+        let plain_lufs = plain["lufs"].as_f64().unwrap();
+        let true_peak = plain["true_peak_db"].as_f64().unwrap();
+        let sample_peak = plain["whole"]["peak_db"].as_f64().unwrap();
+        assert!(true_peak >= sample_peak - 0.1, "{true_peak} under {sample_peak}");
+
+        // The master's EQ turns everything down by 12 dB.
+        let mut quieter = song();
+        let mut eq = Slot::new(EffectKind::Eq, Place::Master);
+        let output = eq.values.len() - 1;
+        eq.values[output] = -12.0;
+        quieter.mix.master[0] = Some(eq);
+        let rendered = render(&quieter, KeyMap::new(), "loop", false, None).unwrap();
+        let answer = answer_of(&rendered, 120, quieter.mix.limiter.ceiling_db);
+        let lufs = answer["lufs"].as_f64().unwrap();
+        assert!((plain_lufs - lufs - 12.0).abs() < 0.3, "{plain_lufs} then {lufs}");
+    }
+
+    #[test]
+    fn a_send_to_a_bus_adds_the_track_again_through_it() {
+        let mut sending = song();
+        sending.mix.buses.push(Bus::new(None));
+        let rendered = render(&sending, KeyMap::new(), "loop", false, None).unwrap();
+        let alone = answer_of(&rendered, 120, START_LIMITER.ceiling_db)["lufs"].as_f64().unwrap();
+        sending.mix.tracks[0].sends[0] = 100;
+        let rendered = render(&sending, KeyMap::new(), "loop", false, None).unwrap();
+        let doubled = answer_of(&rendered, 120, START_LIMITER.ceiling_db)["lufs"].as_f64().unwrap();
+        // The same sound twice is 6 dB louder.
+        assert!((doubled - alone - 6.0).abs() < 0.5, "{alone} then {doubled}");
+    }
+
+    #[test]
+    fn the_limiter_is_reached_at_the_song_s_own_ceiling() {
+        let mut held_down = song();
+        held_down.mix.limiter.boost_db = 24.0;
+        held_down.mix.limiter.ceiling_db = -6.0;
+        let rendered = render(&held_down, KeyMap::new(), "loop", false, None).unwrap();
+        let answer = answer_of(&rendered, 120, held_down.mix.limiter.ceiling_db);
+        assert_eq!(answer["whole"]["limiter_reached"], true);
+        assert_eq!(answer["beats"][0]["limiter_reached"], true);
+    }
+
+    #[test]
+    fn silence_has_no_lufs_or_true_peak() {
+        let mut silent = song();
+        silent.tracks[0].volume = 0;
+        let rendered = render(&silent, KeyMap::new(), "loop", false, None).unwrap();
+        let answer = answer_of(&rendered, 120, START_LIMITER.ceiling_db);
+        assert_eq!(answer["lufs"], Value::Null);
+        assert_eq!(answer["true_peak_db"], Value::Null);
     }
 }
 

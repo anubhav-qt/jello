@@ -12,7 +12,9 @@ use crate::automation::{Part, own_part, part_at, send_part};
 use crate::compose::Composer;
 use crate::engine::{Engine, FASTEST_TEMPO, LooperState, SLOWEST_TEMPO, VIBRATO_KEY_NOTE};
 use crate::key_map::LAPTOP_VELOCITY;
-use crate::song_file::{Song, SongLayer, SongLoop, SongSection};
+use crate::mix::Mix;
+use crate::mix_automation::{MixPart, is_track_mix_value, mix_part_at, own_mix_part, send_mix_part};
+use crate::song_file::{Automation, Song, SongLayer, SongLoop, SongSection, TEMPO_WORD};
 use crate::sound_file::Sound;
 use crate::song_session::{loop_now, open_song_loop};
 
@@ -42,6 +44,8 @@ pub enum Message {
     Tempo(u32),
     // A part of track `track`'s sound, or its volume, as automation moves it.
     Part { track: usize, part: Part },
+    // A value of the mix, as automation moves it.
+    Mix(MixPart),
 }
 
 // A track as the arrangement plays it: drums never shift key, and each
@@ -75,7 +79,7 @@ impl Clock {
         let mut from = section.tempo as f64;
         let mut to = from;
         for moved in &section.automation {
-            if moved.track.is_none() {
+            if is_tempo(moved) {
                 from = moved.from;
                 to = moved.to;
                 break;
@@ -125,6 +129,8 @@ pub struct Player {
     // the sections play.
     looped: SongLoop,
     tracks: Vec<TrackSound>,
+    // The song's mix, which automation moves and puts back.
+    mix: Mix,
     sample_rate: u32,
     uses: Vec<Use>,
     // The next use whose messages are not planned yet.
@@ -144,6 +150,7 @@ impl Player {
         arrangement: &[usize],
         looped: SongLoop,
         tracks: Vec<TrackSound>,
+        mix: Mix,
         sample_rate: u32,
     ) -> Result<Player, String> {
         if arrangement.is_empty() {
@@ -161,7 +168,7 @@ impl Player {
                     section.name, MOST_SECTION_NOTES
                 ));
             }
-            if let Err(problem) = automation_problem(section, &tracks) {
+            if let Err(problem) = automation_problem(section, &tracks, &mix) {
                 return Err(format!("{}: {}", section.name, problem));
             }
             let clock = Clock::of(section);
@@ -180,6 +187,7 @@ impl Player {
             sections: sections.to_vec(),
             looped,
             tracks,
+            mix,
             sample_rate,
             uses,
             next_use: 0,
@@ -253,11 +261,39 @@ impl Player {
         }
     }
 
+    // Puts every value the sections' automation moves back to its own, for
+    // an arrangement stopped before its sections could. `tracks` and `mix`
+    // are the song's as they are now.
+    fn put_back_moved(&self, engine: &mut Engine, tracks: &[TrackSound], mix: &Mix) {
+        for section in &self.sections {
+            for moved in &section.automation {
+                if is_tempo(moved) {
+                    continue;
+                }
+                if moves_mix(moved) {
+                    if let Ok(part) = mix_part_at(moved.track, &moved.value, moved.from, mix) {
+                        send_mix_part(engine, own_mix_part(&part, mix));
+                    }
+                    continue;
+                }
+                let Some(track) = moved.track else {
+                    continue;
+                };
+                let Some(own) = tracks.get(track) else {
+                    continue;
+                };
+                if let Ok(part) = part_at(&moved.value, moved.from, &own.sound) {
+                    send_part(engine, track, own_part(&part, &own.sound, own.volume));
+                }
+            }
+        }
+    }
+
     fn plan_next_use(&mut self) {
         let used = self.uses[self.next_use];
         self.next_use += 1;
         let section = &self.sections[used.section];
-        let messages = section_messages(section, used.start, &self.looped, &self.tracks, self.sample_rate);
+        let messages = section_messages(section, used.start, &self.looped, &self.tracks, &self.mix, self.sample_rate);
         self.waiting.extend(messages);
     }
 }
@@ -271,6 +307,7 @@ fn send(engine: &mut Engine, timed: Timed) {
         Message::SlotVolume { track, slot, percent } => engine.set_slot_volume(track, slot, percent),
         Message::Tempo(tempo) => engine.send_tempo(tempo),
         Message::Part { track, part } => send_part(engine, track, part),
+        Message::Mix(part) => send_mix_part(engine, part),
     }
     engine.send_now();
 }
@@ -287,6 +324,7 @@ pub fn section_messages(
     start: u64,
     looped: &SongLoop,
     tracks: &[TrackSound],
+    mix: &Mix,
     sample_rate: u32,
 ) -> Vec<Timed> {
     let clock = Clock::of(section);
@@ -320,6 +358,13 @@ pub fn section_messages(
 
     let length = clock.seconds_at(clock.beats);
     for moved in &section.automation {
+        if is_tempo(moved) {
+            continue;
+        }
+        if moves_mix(moved) {
+            messages.extend(mix_messages(moved, start, length, mix, sample_rate));
+            continue;
+        }
         let Some(track) = moved.track else {
             continue;
         };
@@ -416,6 +461,57 @@ pub fn section_messages(
     messages
 }
 
+// True for the tempo's automation, which the section's clock plays.
+fn is_tempo(moved: &Automation) -> bool {
+    if moved.track.is_some() {
+        return false;
+    }
+    moved.value == TEMPO_WORD
+}
+
+// True for automation of the mix: the song's own values, with no track, or
+// a track's pan, sends and effects.
+fn moves_mix(moved: &Automation) -> bool {
+    if moved.track.is_none() {
+        return true;
+    }
+    is_track_mix_value(&moved.value)
+}
+
+// The steps of `moved`, a value of `mix`, across a section `length` seconds
+// long starting `start` samples in, then the step back to the mix's own.
+fn mix_messages(moved: &Automation, start: u64, length: f64, mix: &Mix, sample_rate: u32) -> Vec<Timed> {
+    let mut messages = Vec::new();
+    let mut last: Option<MixPart> = None;
+    let mut step = 0;
+    loop {
+        let seconds = (step * STEP_MS) as f64 / 1000.0;
+        if seconds >= length {
+            break;
+        }
+        let value = moved.from + (moved.to - moved.from) * seconds / length;
+        step += 1;
+        let Ok(part) = mix_part_at(moved.track, &moved.value, value, mix) else {
+            continue;
+        };
+        if last == Some(part) {
+            continue;
+        }
+        last = Some(part);
+        messages.push(Timed {
+            sample: start + samples_of_seconds(seconds, sample_rate),
+            message: Message::Mix(part),
+        });
+    }
+    if let Some(part) = last {
+        messages.push(Timed {
+            sample: start + samples_of_seconds(length, sample_rate),
+            message: Message::Mix(own_mix_part(&part, mix)),
+        });
+    }
+    messages
+}
+
 // Which comes first among messages due on the same sample.
 fn order_of(message: &Message) -> u8 {
     match message {
@@ -423,6 +519,7 @@ fn order_of(message: &Message) -> u8 {
         Message::Tempo(_) => 1,
         Message::SlotVolume { .. } => 1,
         Message::Part { .. } => 1,
+        Message::Mix(_) => 1,
         Message::NoteOn { .. } => 2,
     }
 }
@@ -459,8 +556,16 @@ fn period_beats(layer: &SongLayer, looped: &SongLoop) -> f64 {
 
 // Why `section`'s automation can't play on `tracks`, if it can't: a track
 // it doesn't have, or a value it can't move to its start or end.
-fn automation_problem(section: &SongSection, tracks: &[TrackSound]) -> Result<(), String> {
+fn automation_problem(section: &SongSection, tracks: &[TrackSound], mix: &Mix) -> Result<(), String> {
     for moved in &section.automation {
+        if is_tempo(moved) {
+            continue;
+        }
+        if moves_mix(moved) {
+            mix_part_at(moved.track, &moved.value, moved.from, mix)?;
+            mix_part_at(moved.track, &moved.value, moved.to, mix)?;
+            continue;
+        }
         let Some(track) = moved.track else {
             continue;
         };
@@ -520,6 +625,7 @@ pub fn play(composer: &mut Composer, engine: &mut Engine) -> Result<(), String> 
         composer.arrangement(),
         looped,
         track_sounds(composer),
+        composer.mix_now(),
         engine.sample_rate(),
     )?;
 
@@ -551,6 +657,8 @@ pub fn stop(composer: &mut Composer, engine: &mut Engine) {
         return;
     };
     engine.stop_sequence();
+    let tracks = track_sounds(composer);
+    player.put_back_moved(engine, &tracks, &composer.mix_now());
     let _ = open_song_loop(engine, composer.tempo(), Some(player.looped()));
 }
 
@@ -585,15 +693,19 @@ pub fn render(song: &Song) -> Result<(Vec<f32>, u32), String> {
     let Some(looped) = &song.looped else {
         return Err(String::from("there is no loop: sections play its layers"));
     };
-    let mut engine = Engine::new()?;
+    let mut engine = Engine::for_render()?;
     let sample_rate = engine.sample_rate();
     let composer = Composer::opened(&mut engine, song, Instant::now());
+    if engine.dropped_messages() > 0 {
+        return Err(String::from("the engine could not take all of the song"));
+    }
     engine.settle_volumes();
     let mut player = Player::new(
         &song.sections,
         &song.arrangement,
         looped.clone(),
         track_sounds(&composer),
+        composer.mix_now(),
         sample_rate,
     )?;
     let longest = RENDER_LONGEST_SECONDS * sample_rate as u64;
@@ -608,6 +720,7 @@ pub fn render(song: &Song) -> Result<(Vec<f32>, u32), String> {
     let frames = player.end() + TAIL_SECONDS * sample_rate as u64;
     player.feed(&mut engine, 0);
     engine.play_sequence();
+    engine.trim_lookahead();
     let mut samples = Vec::new();
     let mut rendered: u64 = 0;
     while rendered < frames {
@@ -729,7 +842,7 @@ mod tests {
     fn a_layer_repeats_on_its_samples_across_the_section() {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let verse = section("Verse", 2, 120, &[(0, 0)]);
-        let messages = section_messages(&verse, 0, &looped, &one_track(), RATE);
+        let messages = section_messages(&verse, 0, &looped, &one_track(), &Mix::new(1), RATE);
         assert_eq!(
             notes_of(&messages),
             vec![(0, true, 60), (24_000, false, 60), (BAR_AT_120, true, 60), (BAR_AT_120 + 24_000, false, 60)]
@@ -748,7 +861,7 @@ mod tests {
             layers: vec![layer(0, 1, &[(60, 2.0, 3.0)])],
         };
         let verse = section("Verse", 2, 120, &[(0, 0)]);
-        let messages = section_messages(&verse, 0, &looped, &one_track(), RATE);
+        let messages = section_messages(&verse, 0, &looped, &one_track(), &Mix::new(1), RATE);
         let ons: Vec<u64> = notes_of(&messages).iter().filter(|note| note.1).map(|note| note.0).collect();
         assert_eq!(ons, vec![48_000, BAR_AT_120 + 48_000]);
     }
@@ -757,7 +870,7 @@ mod tests {
     fn notes_still_sounding_let_go_at_the_section_end() {
         let looped = one_layer_loop(2, &[(60, 2.0, 8.0)]);
         let short = section("Short", 1, 120, &[(0, 0)]);
-        let messages = section_messages(&short, 1_000, &looped, &one_track(), RATE);
+        let messages = section_messages(&short, 1_000, &looped, &one_track(), &Mix::new(1), RATE);
         assert_eq!(notes_of(&messages), vec![(49_000, true, 60), (1_000 + BAR_AT_120, false, 60)]);
     }
 
@@ -765,7 +878,7 @@ mod tests {
     fn a_repeated_note_lets_go_before_it_plays_again() {
         let looped = one_layer_loop(1, &[(60, 0.0, 4.0)]);
         let verse = section("Verse", 2, 120, &[(0, 0)]);
-        let notes = notes_of(&section_messages(&verse, 0, &looped, &one_track(), RATE));
+        let notes = notes_of(&section_messages(&verse, 0, &looped, &one_track(), &Mix::new(1), RATE));
         assert_eq!(notes[1], (BAR_AT_120, false, 60));
         assert_eq!(notes[2], (BAR_AT_120, true, 60));
     }
@@ -774,7 +887,7 @@ mod tests {
     fn a_note_with_no_length_still_lets_go_after_it_starts() {
         let looped = one_layer_loop(1, &[(60, 1.0, 1.0)]);
         let verse = section("Verse", 1, 120, &[(0, 0)]);
-        let notes = notes_of(&section_messages(&verse, 0, &looped, &one_track(), RATE));
+        let notes = notes_of(&section_messages(&verse, 0, &looped, &one_track(), &Mix::new(1), RATE));
         assert_eq!(notes, vec![(24_000, true, 60), (24_001, false, 60)]);
     }
 
@@ -789,13 +902,13 @@ mod tests {
         };
         let mut lifted = section("Lifted", 1, 120, &[(0, 0), (1, 0)]);
         lifted.key_shift = 2;
-        let notes = notes_of(&section_messages(&lifted, 0, &looped, &with_drums(), RATE));
+        let notes = notes_of(&section_messages(&lifted, 0, &looped, &with_drums(), &Mix::new(2), RATE));
         let ons: Vec<u8> = notes.iter().filter(|note| note.1).map(|note| note.2).collect();
         // 126 + 2 is past the highest note, so it is left out.
         assert_eq!(ons, vec![62, 130, 60, VIBRATO_KEY_NOTE]);
 
         lifted.key_shift = -12;
-        let notes = notes_of(&section_messages(&lifted, 0, &looped, &with_drums(), RATE));
+        let notes = notes_of(&section_messages(&lifted, 0, &looped, &with_drums(), &Mix::new(2), RATE));
         assert_eq!(notes[0], (0, true, 48));
     }
 
@@ -803,7 +916,7 @@ mod tests {
     fn sections_play_one_after_another_at_their_own_tempos() {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let sections = vec![section("Fast", 1, 120, &[(0, 0)]), section("Slow", 1, 60, &[(0, 0)])];
-        let mut player = Player::new(&sections, &[0, 1, 0], looped, one_track(), RATE).unwrap();
+        let mut player = Player::new(&sections, &[0, 1, 0], looped, one_track(), Mix::new(1), RATE).unwrap();
         assert_eq!(player.end(), BAR_AT_120 + 2 * BAR_AT_120 + BAR_AT_120);
         let all = player.take_due(u64::MAX, usize::MAX);
         assert_eq!(
@@ -832,11 +945,11 @@ mod tests {
         let looped = one_layer_loop(1, &[(60, 0.0, 0.5), (62, 2.0, 2.5)]);
         let mut ramp = section("Ramp", 1, 90, &[(0, 0)]);
         ramp.automation.push(tempo_ramp(60.0, 120.0));
-        let player = Player::new(&[ramp.clone()], &[0], looped.clone(), one_track(), RATE).unwrap();
+        let player = Player::new(&[ramp.clone()], &[0], looped.clone(), one_track(), Mix::new(1), RATE).unwrap();
         let seconds = 4.0 * 2f64.ln();
         assert_eq!(player.end(), (seconds * RATE as f64).round() as u64);
 
-        let messages = section_messages(&ramp, 0, &looped, &one_track(), RATE);
+        let messages = section_messages(&ramp, 0, &looped, &one_track(), &Mix::new(1), RATE);
         // Beat 2 is halfway in tempo, at 90: 4 ln 1.5 seconds in.
         let beat_2 = (4.0 * 1.5f64.ln() * RATE as f64).round() as u64;
         assert_eq!(notes_of(&messages)[2], (beat_2, true, 62));
@@ -855,16 +968,68 @@ mod tests {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let mut held = section("Held", 1, 120, &[(0, 0)]);
         held.automation.push(tempo_ramp(60.0, 60.0));
-        let messages = section_messages(&held, 0, &looped, &one_track(), RATE);
+        let messages = section_messages(&held, 0, &looped, &one_track(), &Mix::new(1), RATE);
         assert_eq!(tempos_of(&messages), vec![(0, 60)]);
         assert_eq!(notes_of(&messages)[1], (48_000, false, 60));
+    }
+
+    // Moves of mix values across a section.
+    fn moving(track: Option<usize>, value: &str, from: f64, to: f64) -> Automation {
+        Automation {
+            track,
+            value: String::from(value),
+            from,
+            to,
+        }
+    }
+
+    // The mix messages among `messages`, with their samples.
+    fn mix_parts_of(messages: &[Timed]) -> Vec<(u64, MixPart)> {
+        let mut parts = Vec::new();
+        for timed in messages {
+            if let Message::Mix(part) = timed.message {
+                parts.push((timed.sample, part));
+            }
+        }
+        parts
+    }
+
+    #[test]
+    fn a_section_moves_mix_values_and_puts_them_back_at_its_end() {
+        let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
+        let mut engine = Engine::for_render().unwrap();
+        let mut mix = Mix::new(1);
+        mix.add_bus(&mut engine, None).unwrap();
+        mix.set_bus_volume(&mut engine, 0, 80).unwrap();
+        let mut swept = section("Swept", 1, 120, &[(0, 0)]);
+        swept.automation.push(moving(Some(0), "pan", -100.0, 100.0));
+        swept.automation.push(moving(None, "bus 1 volume", 0.0, 100.0));
+        let messages = section_messages(&swept, 0, &looped, &one_track(), &mix, RATE);
+        let parts = mix_parts_of(&messages);
+
+        assert!(parts.contains(&(0, MixPart::TrackPan(0, -100))));
+        assert!(parts.contains(&(0, MixPart::BusVolume(0, 0))));
+        // Back to the mix's own at the end of the bar.
+        assert!(parts.contains(&(BAR_AT_120, MixPart::TrackPan(0, 0))));
+        assert!(parts.contains(&(BAR_AT_120, MixPart::BusVolume(0, 80))));
+        // The tempo stays the section's.
+        assert_eq!(tempos_of(&messages), vec![(0, 120)]);
+    }
+
+    #[test]
+    fn a_mix_value_the_song_lacks_refuses_the_arrangement() {
+        let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
+        let mut swept = section("Swept", 1, 120, &[(0, 0)]);
+        swept.automation.push(moving(None, "bus 1 volume", 0.0, 100.0));
+        let refused = Player::new(&[swept], &[0], looped, one_track(), Mix::new(1), RATE);
+        assert_eq!(refused.err(), Some(String::from("Swept: the song has no bus 1")));
     }
 
     #[test]
     fn a_section_layer_the_loop_no_longer_has_plays_nothing() {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let verse = section("Verse", 1, 120, &[(0, 3), (2, 0)]);
-        let messages = section_messages(&verse, 0, &looped, &one_track(), RATE);
+        let messages = section_messages(&verse, 0, &looped, &one_track(), &Mix::new(1), RATE);
         assert_eq!(messages, vec![Timed { sample: 0, message: Message::Tempo(120) }]);
     }
 
@@ -872,7 +1037,7 @@ mod tests {
     fn sections_are_planned_only_as_they_come_due() {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let sections = vec![section("Verse", 1, 120, &[(0, 0)])];
-        let mut player = Player::new(&sections, &[0, 0, 0], looped, one_track(), RATE).unwrap();
+        let mut player = Player::new(&sections, &[0, 0, 0], looped, one_track(), Mix::new(1), RATE).unwrap();
         let first = player.take_due(BAR_AT_120 - 1, usize::MAX);
         assert_eq!(first.len(), 4);
         assert_eq!(player.next_use, 1);
@@ -890,7 +1055,7 @@ mod tests {
     fn nothing_to_play_or_too_many_notes_is_refused() {
         let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
         let sections = vec![section("Verse", 1, 120, &[(0, 0)])];
-        let empty = Player::new(&sections, &[], looped.clone(), one_track(), RATE);
+        let empty = Player::new(&sections, &[], looped.clone(), one_track(), Mix::new(1), RATE);
         assert_eq!(empty.err(), Some(String::from("there are no sections to play")));
 
         let mut many = Vec::new();
@@ -900,7 +1065,7 @@ mod tests {
         }
         let dense = one_layer_loop(1, &many);
         let long = vec![section("Long", 64, 120, &[(0, 0)])];
-        let refused = Player::new(&long, &[0], dense, one_track(), RATE);
+        let refused = Player::new(&long, &[0], dense, one_track(), Mix::new(1), RATE);
         assert_eq!(
             refused.err(),
             Some(String::from("Long plays more than 65536 notes; use fewer or longer layers"))
@@ -956,6 +1121,85 @@ mod tests {
         engine.render(512);
         assert_eq!(engine.looper_status().state, LooperState::Paused);
         assert_eq!(song_now(&composer, &mut engine).looped, Some(looped));
+    }
+
+    #[test]
+    fn routing_edits_stop_only_after_valid_occupied_slots_change() {
+        use crate::engine::{EffectConnection, EQ_OUTPUT};
+        use crate::modulation::{CONNECTION_COUNT, NO_CONNECTION, Source};
+        let looped = one_layer_loop(1, &[(60, 0.0, 2.0)]);
+        let (mut composer, mut engine) = arranged(&looped, vec![section("Verse", 4, 120, &[(0, 0)])], vec![0]);
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: 0.0, one_way: false, scaled_by: Source::None };
+        composer.mix_mut().tracks[0].links = vec![link; 63];
+        composer.send_picked_routing(&mut engine);
+        play(&mut composer, &mut engine).unwrap();
+
+        let mut full = composer.sound_profile().sound();
+        full.connections[CONNECTION_COUNT - 1] = full.connections[0];
+        assert!(composer.apply_sound(&mut engine, &full).is_err());
+        assert!(composer.arranging().is_some());
+
+        let mut changed = composer.sound_profile().sound();
+        changed.connections[0].amount = 10.0;
+        composer.apply_sound(&mut engine, &changed).unwrap();
+        assert!(composer.arranging().is_some());
+
+        changed.connections[0] = NO_CONNECTION;
+        composer.apply_sound(&mut engine, &changed).unwrap();
+        assert!(composer.arranging().is_none());
+        assert_eq!(composer.sound_profile().connections()[0], NO_CONNECTION);
+        assert_eq!(composer.mix_now().tracks[0].links.len(), 63);
+
+        engine.render(512);
+        play(&mut composer, &mut engine).unwrap();
+        let mut preset = composer.sound_profile().sound();
+        preset.lfos[0].hz = 2.0;
+        composer.take_preset(&mut engine, "same slots", &preset).unwrap();
+        assert!(composer.arranging().is_some());
+        preset.connections[0] = full.connections[0];
+        composer.take_preset(&mut engine, "new slot", &preset).unwrap();
+        assert!(composer.arranging().is_none());
+    }
+
+    #[test]
+    fn stopping_for_routing_change_discards_queued_ordinary_connection_writes() {
+        use crate::engine::{EffectConnection, EffectKind, EQ_OUTPUT};
+        use crate::mix::Place;
+        use crate::modulation::{LfoShape, NO_CONNECTION, Source};
+        let looped = one_layer_loop(1, &[(60, 3.0, 3.5)]);
+        let mut verse = section("Verse", 4, 120, &[(0, 0)]);
+        verse.automation.push(moving(Some(0), "connection 1 amount", 10.0, 20.0));
+        let (mut composer, mut engine) = arranged(&looped, vec![verse], vec![0]);
+        composer.mix_mut().place_effect(&mut engine, Place::Track(0), 0, EffectKind::Eq).unwrap();
+        let mut lfo = composer.sound_profile().lfos()[0];
+        lfo.per_note = false;
+        lfo.shape = LfoShape::Steps;
+        lfo.step_count = 1;
+        lfo.steps[0] = 100.0;
+        composer.sound_profile_mut().set_lfo(&mut engine, 0, lfo);
+        composer.mix_mut().tracks[0].links.push(EffectConnection { source: Source::Lfo(0), slot: 0,
+            value: EQ_OUTPUT, amount: -6.0, one_way: false, scaled_by: Source::None });
+        composer.send_picked_routing(&mut engine);
+        play(&mut composer, &mut engine).unwrap();
+        let mut wanted = composer.sound_profile().sound();
+        wanted.connections[0] = NO_CONNECTION;
+        composer.apply_sound(&mut engine, &wanted).unwrap();
+        assert!(composer.arranging().is_none());
+
+        // The old automation had already been queued for slot 1, which is
+        // now the effect link's slot. Let its former deadline pass.
+        engine.render(96_000);
+        // Live like `engine`, whose limiter does not look ahead.
+        let mut expected = Engine::new().unwrap();
+        composer.send_all(&mut expected);
+        expected.render(96_000);
+        engine.note_on(69, 100);
+        expected.note_on(69, 100);
+        let actual = engine.render(4096);
+        let reference = expected.render(4096);
+        assert!(reference.iter().any(|sample| sample.abs() > 0.001));
+        assert_eq!(actual, reference);
     }
 
     #[test]
@@ -1021,6 +1265,78 @@ mod tests {
         assert!(first.len().abs_diff(frames * 2) <= 4);
         assert!(loudest(&first) > 0.01);
         assert!(first == second);
+    }
+
+    #[test]
+    fn stopping_puts_back_what_automation_moved() {
+        let looped = one_layer_loop(1, &[(60, 3.0, 3.5)]);
+        let mut verse = section("Verse", 4, 120, &[(0, 0)]);
+        verse.automation.push(moving(Some(0), "pan", -100.0, -100.0));
+        let (mut composer, mut engine) = arranged(&looped, vec![verse], vec![0]);
+        play(&mut composer, &mut engine).unwrap();
+        engine.render(24_000);
+        stop(&mut composer, &mut engine);
+        engine.render(24_000);
+
+        engine.note_on(69, 100);
+        let samples = engine.render(8192);
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        for frame in samples.chunks(2) {
+            left = left.max(frame[0].abs());
+            right = right.max(frame[1].abs());
+        }
+        assert!(left > 0.01);
+        assert!((left - right).abs() < 0.001);
+    }
+
+    #[test]
+    fn stopping_puts_back_the_volume_automation_moved() {
+        let looped = one_layer_loop(1, &[(60, 3.0, 3.5)]);
+        let mut verse = section("Verse", 4, 120, &[(0, 0)]);
+        verse.automation.push(moving(Some(0), "volume", 0.0, 0.0));
+        let (mut composer, mut engine) = arranged(&looped, vec![verse], vec![0]);
+        play(&mut composer, &mut engine).unwrap();
+        engine.render(24_000);
+        stop(&mut composer, &mut engine);
+        engine.render(24_000);
+
+        engine.note_on(69, 100);
+        let samples = engine.render(8192);
+        assert!(loudest(&samples) > 0.01);
+    }
+
+    #[test]
+    fn a_render_of_every_track_keeps_the_whole_mix() {
+        use crate::effects::Written;
+        use crate::engine::{EffectKind, TRACK_COUNT};
+        use crate::mix::{Mix, Place};
+        let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
+        let mut song = song_of(Some(looped), vec![section("Verse", 1, 120, &[(0, 0)])], vec![0]);
+        while song.tracks.len() < TRACK_COUNT {
+            let copy = song.tracks[0].clone();
+            song.tracks.push(copy);
+        }
+        song.mix = Mix::new(TRACK_COUNT);
+        let (open, _) = render(&song).unwrap();
+
+        let mut engine = Engine::for_render().unwrap();
+        song.mix.place_effect(&mut engine, Place::Master, 0, EffectKind::Eq).unwrap();
+        song.mix.set_effect_value(&mut engine, Place::Master, 0, "output_db", &Written::Number(-24.0)).unwrap();
+        let (quieter, _) = render(&song).unwrap();
+        assert!(loudest(&quieter) < loudest(&open) * 0.1);
+    }
+
+    #[test]
+    fn a_render_starts_on_its_first_sample() {
+        // The limiter's lookahead is trimmed, so a note on beat 1 sounds
+        // within the first 1 ms instead of after it.
+        let looped = one_layer_loop(1, &[(60, 0.0, 1.0)]);
+        let sections = vec![section("Verse", 1, 120, &[(0, 0)])];
+        let song = song_of(Some(looped), sections, vec![0]);
+        let (samples, rate) = render(&song).unwrap();
+        let lookahead = 2 * rate as usize / 1000;
+        assert!(loudest(&samples[..lookahead]) > 0.0);
     }
 
     #[test]

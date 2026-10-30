@@ -394,6 +394,11 @@
   }
 
   async function unattach(card: AttachmentCard) {
+    // Removing the hummed tune from the files ends the hum too.
+    if (humRead !== null && humRead.card.id === card.id) {
+      humRead = null;
+      humStep = "off";
+    }
     try {
       waiting = await invoke<AttachmentCard[]>("agent_unattach", { id: card.id });
     } catch (error) {
@@ -424,19 +429,23 @@
     };
   });
 
+  // How the player asks (docs/design.md#the-input-box): typing, speaking
+  // or humming, one tab each at the top of the input box.
+  type Mode = "type" | "speak" | "hum";
+  let mode: Mode = $state("type");
+  let field: HTMLTextAreaElement | undefined = $state();
+
   // Dictation (docs/design.md#voice): the player speaks, and the words heard
-  // so far fill the field after what was typed before: the message, or a
-  // hum's description. "asking" is the first time, before the speech model
-  // is downloaded.
-  type Speech = "off" | "asking" | "downloading" | "listening" | "finishing";
-  type SpeechField = "draft" | "describe";
+  // so far fill the message after what was typed before. "asking" is the
+  // first time, before the speech model is downloaded; "starting" waits for
+  // the mic to turn on.
+  type Speech = "off" | "starting" | "asking" | "downloading" | "listening" | "finishing";
   let speech: Speech = $state("off");
-  let speechField: SpeechField = $state("draft");
   let speechModelMegabytes = $state(148);
   let downloaded = $state(0);
   let micLevel = $state(0);
   let micSeconds = $state(0);
-  // What the field held before speaking began.
+  // What the message held before speaking began.
   let typedBefore = "";
   // Return while listening sends once the last words are in.
   let sendWhenHeard = false;
@@ -451,39 +460,11 @@
     return `${typedBefore} ${words}`;
   }
 
-  function fieldText(field: SpeechField): string {
-    if (field === "describe") {
-      return describe;
-    }
-    return draft;
-  }
-
-  function putSpoken(words: string) {
-    const text = withSpoken(words);
-    if (speechField === "describe") {
-      describe = text;
-    } else {
-      draft = text;
-    }
-  }
-
-  // Done only on the button of the field being spoken into.
-  function speakLabel(field: SpeechField): string {
-    if (speech === "listening" && speechField === field) {
-      return "Done";
-    }
-    return "Speak";
-  }
-
-  async function speak(field: SpeechField) {
-    if (speech === "listening") {
-      await finishSpeaking();
-      return;
-    }
+  async function speak() {
     if (speech !== "off") {
       return;
     }
-    speechField = field;
+    speech = "starting";
     try {
       const status = await invoke<{ ready: boolean; downloading: boolean; megabytes: number }>(
         "dictation_status",
@@ -500,6 +481,8 @@
       await startListening();
     } catch (error) {
       problem = String(error);
+      speech = "off";
+      mode = "type";
     }
   }
 
@@ -509,15 +492,23 @@
     try {
       await invoke("download_dictation_model");
       problem = "";
-      await startListening();
     } catch (error) {
       problem = String(error);
       speech = "off";
+      mode = "type";
+      return;
     }
+    // Back to the Speak tab's Start: the mic waits for the player.
+    speech = "off";
+  }
+
+  function notNow() {
+    speech = "off";
+    pickType();
   }
 
   async function startListening() {
-    typedBefore = fieldText(speechField).trim();
+    typedBefore = draft.trim();
     sendWhenHeard = false;
     micLevel = 0;
     micSeconds = 0;
@@ -528,9 +519,18 @@
     } catch (error) {
       problem = String(error);
       speech = "off";
+      mode = "type";
+      return;
+    }
+    // Focused, so Return sends instead of reaching the keys.
+    await tick();
+    if (field !== undefined) {
+      field.focus();
     }
   }
 
+  // Done: the words stay in the message, and the Type tab opens to edit
+  // them, unless Return asked to send them.
   async function finishSpeaking() {
     if (speech !== "listening") {
       return;
@@ -538,26 +538,25 @@
     speech = "finishing";
     try {
       const words = await invoke<string>("stop_dictation");
-      putSpoken(words);
+      draft = withSpoken(words);
     } catch (error) {
       problem = String(error);
     }
     speech = "off";
+    if (mode === "speak") {
+      mode = "type";
+    }
     if (!sendWhenHeard) {
       return;
     }
     sendWhenHeard = false;
-    if (speechField === "describe") {
-      sendHum();
-    } else {
-      send(draft);
-    }
+    sendFromBox();
   }
 
   $effect(() => {
     const unlistenWords = listen<{ words: string }>("dictation-words", (event) => {
       if (speech === "listening") {
-        putSpoken(event.payload.words);
+        draft = withSpoken(event.payload.words);
       }
     });
     const unlistenLevel = listen<{ peak: number; seconds: number }>("mic-level", (event) => {
@@ -581,8 +580,20 @@
     };
   });
 
-  // How loud the mic is, as the meter's width.
-  let levelWidth = $derived(`${Math.round(Math.sqrt(micLevel) * 100)}%`);
+  // How loud the mic is, as the meter's seven bars: each bar's share of the
+  // level, so the row peaks in the middle.
+  const BAR_SHARES = [0.3, 0.6, 1, 0.5, 0.8, 0.45, 0.2];
+  const TALLEST_BAR_PX = 22;
+  const SHORTEST_BAR_PX = 3;
+  let barHeights = $derived.by(() => {
+    const level = Math.sqrt(micLevel);
+    const heights = [];
+    for (const share of BAR_SHARES) {
+      const height = Math.round(TALLEST_BAR_PX * level * share);
+      heights.push(`${Math.max(SHORTEST_BAR_PX, height)}px`);
+    }
+    return heights;
+  });
 
   // The mics there are, and the one picked: "" is the system's pick.
   let mics: string[] = $state([]);
@@ -626,7 +637,6 @@
   let humBeat = $state(0);
   let humRead: HumRead | null = $state(null);
   let humProblem = $state("");
-  let describe = $state("");
   let countInTimer: ReturnType<typeof setInterval> | null = null;
 
   async function openHum() {
@@ -635,7 +645,6 @@
     }
     humStep = "ready";
     humProblem = "";
-    describe = "";
     try {
       mics = await invoke<string[]>("mic_inputs");
     } catch (error) {
@@ -733,8 +742,8 @@
       await invoke("cancel_hum");
     }
     await forgetHum();
-    describe = "";
     humStep = "off";
+    pickType();
   }
 
   async function humAgain() {
@@ -743,44 +752,14 @@
     humStep = "ready";
   }
 
+  // A vibe word goes on the end of the message, which describes the hum.
   function addVibe(word: string) {
-    const now = describe.trim();
+    const now = draft.trim();
     if (now === "") {
-      describe = word;
+      draft = word;
     } else {
-      describe = `${now}, ${word}`;
+      draft = `${now}, ${word}`;
     }
-  }
-
-  // The hum is already waiting with the files; the description is the
-  // message.
-  async function sendHum() {
-    if (humStep !== "done" || working) {
-      return;
-    }
-    const words = describe;
-    humRead = null;
-    describe = "";
-    humStep = "off";
-    await send(words);
-  }
-
-  function onDescribeKey(event: KeyboardEvent) {
-    if (event.code !== "Enter" && event.code !== "NumpadEnter") {
-      return;
-    }
-    event.stopPropagation();
-    if (event.shiftKey) {
-      return;
-    }
-    event.preventDefault();
-    (event.currentTarget as HTMLElement).blur();
-    if (speech === "listening") {
-      sendWhenHeard = true;
-      finishSpeaking();
-      return;
-    }
-    sendHum();
   }
 
   // Where each note heard sits on the little roll: across by time, up by
@@ -817,14 +796,19 @@
     return "";
   }
 
+  // True from Send until the run starts, so a quick second click or
+  // Return doesn't send the message twice.
+  let sending = false;
+
   async function send(text: string) {
     const said = text.trim();
-    if (working || attaching) {
+    if (working || attaching || sending) {
       return;
     }
     if (said === "" && waiting.length === 0) {
       return;
     }
+    sending = true;
     // Before the agent acts, Jello keeps the song, so the reply can be
     // undone.
     let reply: number | null = null;
@@ -841,8 +825,14 @@
       attached.push({ name: card.name, kind: card.kind });
     }
     turns.push(newTurn(said, job, jobChanged, reply, attached));
+    sending = false;
     draft = "";
     waiting = [];
+    // A hum that was read went with the files, so the Hum tab starts over.
+    if (humStep === "done") {
+      humRead = null;
+      humStep = "off";
+    }
     await tick();
     if (list !== undefined) {
       list.scrollTop = list.scrollHeight;
@@ -1017,6 +1007,93 @@
     }
   }
 
+  // While the mic counts in, listens or reads a hum, the other tabs wait
+  // for Done or Cancel.
+  let humBusy = $derived.by(() => {
+    const busySteps: HumStep[] = ["counting", "listening", "reading"];
+    return busySteps.includes(humStep);
+  });
+
+  // While the mic turns on or off, the tabs wait.
+  let micSwitching = $derived.by(() => {
+    const switchingSteps: Speech[] = ["starting", "finishing"];
+    return switchingSteps.includes(speech);
+  });
+
+  async function pickType() {
+    if (speech === "listening") {
+      await finishSpeaking();
+    }
+    if (speech === "asking") {
+      speech = "off";
+    }
+    mode = "type";
+    await tick();
+    if (field !== undefined) {
+      field.focus();
+    }
+  }
+
+  // Opening Speak never turns the mic on; its Start button does.
+  function pickSpeak() {
+    mode = "speak";
+  }
+
+  async function pickHum() {
+    if (mode === "hum") {
+      return;
+    }
+    if (speech === "listening") {
+      await finishSpeaking();
+    }
+    if (speech === "asking") {
+      speech = "off";
+    }
+    mode = "hum";
+    await openHum();
+  }
+
+  // Send, or Return: while listening, once the last words are in; on the
+  // Hum tab, only once the hum is read.
+  function sendFromBox() {
+    if (speech === "listening") {
+      sendWhenHeard = true;
+      finishSpeaking();
+      return;
+    }
+    if (mode === "hum" && humStep !== "done") {
+      return;
+    }
+    if (mode !== "type") {
+      mode = "type";
+    }
+    send(draft);
+  }
+
+  // Send's state: off while there is nothing to send or something is
+  // still being read or heard.
+  let canSend = $derived.by(() => {
+    if (status === null || needsSignIn || working || attaching) {
+      return false;
+    }
+    if (speech === "starting" || speech === "finishing") {
+      return false;
+    }
+    if (speech === "asking" || speech === "downloading") {
+      return false;
+    }
+    if (mode === "hum" && humStep !== "done") {
+      return false;
+    }
+    if (speech === "listening") {
+      return true;
+    }
+    if (draft.trim() === "" && waiting.length === 0) {
+      return false;
+    }
+    return true;
+  });
+
   // Return sends; Shift+Return starts a new line. Neither reaches the keys.
   function onFieldKey(event: KeyboardEvent) {
     if (event.code !== "Enter" && event.code !== "NumpadEnter") {
@@ -1027,13 +1104,11 @@
       return;
     }
     event.preventDefault();
-    (event.currentTarget as HTMLElement).blur();
-    if (speech === "listening") {
-      sendWhenHeard = true;
-      finishSpeaking();
+    if (!canSend) {
       return;
     }
-    send(draft);
+    (event.currentTarget as HTMLElement).blur();
+    sendFromBox();
   }
 
   function seconds(ms: number | null): string {
@@ -1068,17 +1143,6 @@
   <header class="agent-top">
     <h2>{jobName(job)}</h2>
     <div class="agent-top-buttons">
-      {#if status !== null && status.model !== null}
-        <button
-          type="button"
-          class="agent-button-plain agent-model-button"
-          class:is-open={modelsOpen}
-          title="The model the agent uses"
-          onclick={() => (modelsOpen = !modelsOpen)}
-        >
-          {status.model.name}
-        </button>
-      {/if}
       <button
         type="button"
         class="agent-button-plain"
@@ -1100,25 +1164,6 @@
         onclick={newChat}>New</button
       >
     </div>
-    {#if modelsOpen && status !== null}
-      <div class="agent-models">
-        {#each status.models as model (model.provider + model.id)}
-          <button
-            type="button"
-            class:is-picked={status.model !== null &&
-              status.model.provider === model.provider &&
-              status.model.id === model.id}
-            onclick={() => pickModel(model)}
-          >
-            <span>{model.name}</span>
-            <span class="agent-quiet">{model.provider}</span>
-          </button>
-        {/each}
-        <button type="button" class="agent-models-more" onclick={openSignIn}>
-          Sign in to another provider
-        </button>
-      </div>
-    {/if}
   </header>
 
   <div class="agent-body" bind:this={list} aria-live="polite">
@@ -1408,204 +1453,126 @@
   </div>
 
   <footer class="agent-bottom">
-    {#if working}
-      <button type="button" class="agent-stop" onclick={stop}>
-        <span>Stop</span><kbd>esc</kbd>
-      </button>
-    {/if}
-    {#if waiting.length > 0 || attaching || dropping}
-      <div class="agent-waiting" class:is-dropping={dropping}>
-        {#each waiting as card (card.id)}
-          <div class="agent-waiting-file">
-            <b>{attachmentKindWord(card.kind)}</b>
-            <span class="agent-waiting-name">{card.name}</span>
-            <span class="agent-quiet">{card.taken}</span>
-            <button type="button" class="agent-button-plain" onclick={() => unattach(card)}>Remove</button>
-          </div>
-        {/each}
-        {#if attaching}
-          <p class="agent-quiet">Reading the files…</p>
-        {:else if dropping}
-          <p class="agent-quiet">Drop to attach to your next message</p>
-        {/if}
+    <div class="agent-box" class:is-dropping={dropping}>
+      <div class="agent-modes" role="tablist" aria-label="How to ask">
+        <button
+          type="button"
+          role="tab"
+          class="agent-mode"
+          class:is-on={mode === "type"}
+          aria-selected={mode === "type"}
+          disabled={status === null || needsSignIn || humBusy || micSwitching}
+          onclick={pickType}>Type</button
+        >
+        <button
+          type="button"
+          role="tab"
+          class="agent-mode"
+          class:is-on={mode === "speak"}
+          aria-selected={mode === "speak"}
+          disabled={status === null || needsSignIn || humBusy || micSwitching}
+          onclick={pickSpeak}>Speak</button
+        >
+        <button
+          type="button"
+          role="tab"
+          class="agent-mode"
+          class:is-on={mode === "hum"}
+          aria-selected={mode === "hum"}
+          disabled={status === null || needsSignIn || micSwitching}
+          onclick={pickHum}>Hum</button
+        >
       </div>
-    {/if}
-    {#if speech !== "off"}
-      <div class="agent-waiting agent-speech">
-        {#if speech === "asking"}
+
+      {#if waiting.length > 0 || attaching || dropping}
+        <div class="agent-files">
+          {#each waiting as card (card.id)}
+            <div class="agent-file">
+              <b>{attachmentKindWord(card.kind)}</b>
+              <span class="agent-file-name">{card.name}</span>
+              <span class="agent-quiet">{card.taken}</span>
+              <button
+                type="button"
+                class="agent-button-plain agent-file-remove"
+                aria-label={`Remove ${card.name}`}
+                onclick={() => unattach(card)}>x</button
+              >
+            </div>
+          {/each}
+          {#if attaching}
+            <p class="agent-quiet">Reading the files…</p>
+          {:else if dropping}
+            <p class="agent-quiet">Drop to attach to your next message</p>
+          {/if}
+        </div>
+      {/if}
+
+      {#if mode === "speak" && speech === "off"}
+        <div class="agent-box-part agent-row">
+          <span class="agent-quiet agent-grow">The mic turns on when you press Start.</span>
+          <button type="button" class="agent-button-plain is-lit" onclick={speak}>Start</button>
+        </div>
+      {:else if mode === "speak" && speech === "starting"}
+        <div class="agent-box-part">
+          <p class="agent-quiet">Turning the mic on…</p>
+        </div>
+      {:else if mode === "speak" && speech === "asking"}
+        <div class="agent-box-part">
           <p>
             Dictation turns your speech into words on this computer; the sound is never sent. It needs a
             speech model of {speechModelMegabytes} MB from Hugging Face, downloaded once.
           </p>
-          <div class="agent-waiting-file">
+          <div class="agent-row">
             <button type="button" class="agent-button-plain is-lit" onclick={downloadSpeechModel}>Download</button>
-            <button type="button" class="agent-button-plain" onclick={() => (speech = "off")}>Not now</button>
+            <button type="button" class="agent-button-plain" onclick={notNow}>Not now</button>
           </div>
-        {:else if speech === "downloading"}
+        </div>
+      {:else if mode === "speak" && speech === "downloading"}
+        <div class="agent-box-part">
           <p class="agent-quiet">
             Downloading the speech model, {Math.floor(downloaded / 1_000_000)} of {speechModelMegabytes} MB…
           </p>
-        {:else if speech === "listening"}
-          <div class="agent-waiting-file">
-            <b>Listening</b>
-            <span class="agent-mic-meter"><span style:width={levelWidth}></span></span>
-            <span class="agent-quiet">{micSeconds.toFixed(0)} s</span>
-          </div>
-          <p class="agent-quiet">Speak, then Done, or Return to send.</p>
-        {:else}
+        </div>
+      {:else if mode === "speak" && speech === "listening"}
+        <div class="agent-box-part agent-row">
+          {@render meter()}
+          <span class="agent-quiet agent-grow">Listening, {micSeconds.toFixed(0)} s</span>
+          <button type="button" class="agent-button-plain is-lit" onclick={finishSpeaking}>Done</button>
+        </div>
+      {:else if mode === "speak" && speech === "finishing"}
+        <div class="agent-box-part">
           <p class="agent-quiet">Hearing the last words…</p>
-        {/if}
-      </div>
-    {/if}
-    {#if humStep !== "off"}
-      <div class="agent-waiting agent-hum">
-        {#if humStep === "ready"}
-          <div class="agent-waiting-file">
-            <b>Tempo</b>
-            <button type="button" class="agent-button-plain" class:is-lit={!humFree} onclick={() => (humFree = false)}
-              >The song's</button
-            >
-            <button type="button" class="agent-button-plain" class:is-lit={humFree} onclick={() => (humFree = true)}
-              >Free</button
-            >
-          </div>
-          {#if !humFree}
-            <div class="agent-waiting-file">
-              <b>Count in</b>
-              {#each [0, 1, 2] as bars (bars)}
-                <button
-                  type="button"
-                  class="agent-button-plain"
-                  class:is-lit={humCountIn === bars}
-                  onclick={() => (humCountIn = bars)}>{bars === 1 ? "1 bar" : `${bars} bars`}</button
-                >
-              {/each}
-            </div>
-            <div class="agent-waiting-file">
-              <b>Click</b>
-              <button type="button" class="agent-button-plain" class:is-lit={humClick} onclick={() => (humClick = true)}
-                >On</button
-              >
-              <button
-                type="button"
-                class="agent-button-plain"
-                class:is-lit={!humClick}
-                onclick={() => (humClick = false)}>Off</button
-              >
-            </div>
-          {/if}
-          <div class="agent-waiting-file">
-            <b>Mic</b>
-            <select class="agent-mic-pick" bind:value={micChoice} aria-label="Mic">
-              <option value="">The system's pick</option>
-              {#each mics as name, place (place)}
-                <option value={String(place)}>{name}</option>
-              {/each}
-            </select>
-          </div>
-          {#if humProblem !== ""}
-            <p class="agent-error">{humProblem}</p>
-          {/if}
-          <div class="agent-waiting-file">
-            <button type="button" class="agent-button-plain is-lit" onclick={startHum}>Start</button>
-            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
-          </div>
-        {:else if humStep === "counting" && humStarted !== null}
-          <div class="agent-waiting-file">
-            <b>Count in</b>
-            <span class="agent-hum-beat">{humBeat}</span>
-            <span class="agent-quiet">of {humStarted.count_in_beats}, at {humStarted.tempo} BPM</span>
-          </div>
-          <div class="agent-waiting-file">
-            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
-          </div>
-        {:else if humStep === "listening"}
-          <div class="agent-waiting-file">
-            <b>Listening</b>
-            <span class="agent-mic-meter"><span style:width={levelWidth}></span></span>
-            <span class="agent-quiet">{humSeconds().toFixed(0)} s</span>
-          </div>
-          <p class="agent-quiet">Hum one note at a time, then Done.</p>
-          <div class="agent-waiting-file">
-            <button type="button" class="agent-button-plain is-lit" onclick={finishHum}>Done</button>
-            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
-          </div>
-        {:else if humStep === "reading"}
-          <p class="agent-quiet">Reading the notes…</p>
-        {:else if humRead !== null}
-          <div class="agent-hum-roll" aria-label="The notes heard">
-            {#each rollOf(humRead.notes) as drawn, place (place)}
-              <span
-                title={drawn.name}
-                style:left={drawn.left}
-                style:width={drawn.width}
-                style:bottom={drawn.bottom}
-                style:background={drawn.color}
-              ></span>
-            {/each}
-          </div>
-          <div class="agent-waiting-file">
-            <b>Hum</b>
-            <span class="agent-waiting-name">{humRead.card.taken}</span>
-            <span class="agent-quiet">{keyGuessOf(humRead.reading)}</span>
-          </div>
-          <div class="agent-hum-describe">
-            <textarea
-              bind:value={describe}
-              rows="2"
-              maxlength="2000"
-              placeholder="Describe it"
-              aria-label="Describe the hum"
-              onkeydown={onDescribeKey}
-            ></textarea>
-            <button
-              type="button"
-              class="agent-button-plain"
-              class:is-lit={speech === "listening" && speechField === "describe"}
-              title="Speak instead of typing"
-              disabled={speech === "downloading" || speech === "finishing" || (speech === "listening" && speechField !== "describe")}
-              onclick={() => speak("describe")}>{speakLabel("describe")}</button
-            >
-          </div>
-          <div class="agent-hum-vibes">
-            {#each VIBES as vibe (vibe)}
-              <button type="button" class="agent-button-plain" onclick={() => addVibe(vibe)}>{vibe}</button>
-            {/each}
-          </div>
-          <div class="agent-waiting-file">
-            <button
-              type="button"
-              class="agent-button-plain is-lit"
-              disabled={working || speech === "listening" || speech === "finishing"}
-              onclick={sendHum}>Send</button
-            >
-            <button type="button" class="agent-button-plain" onclick={humAgain}>Hum again</button>
-            <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
-          </div>
-        {/if}
-      </div>
-    {/if}
-    <form
-      class="agent-field"
-      onsubmit={(event) => {
-        event.preventDefault();
-        if (speech === "listening") {
-          sendWhenHeard = true;
-          finishSpeaking();
-          return;
-        }
-        send(draft);
-      }}
-    >
-      <textarea
-        bind:value={draft}
-        rows="2"
-        maxlength="12000"
-        placeholder={`Ask your ${jobName(job)}…`}
-        aria-label={`Ask your ${jobName(job)}`}
-        disabled={needsSignIn || status === null}
-        onkeydown={onFieldKey}
-      ></textarea>
+        </div>
+      {/if}
+
+      {#if mode === "hum"}
+        {@render humming()}
+      {/if}
+
+      {#if mode !== "hum" || humStep === "done"}
+        <textarea
+          class="agent-message"
+          bind:this={field}
+          bind:value={draft}
+          rows="3"
+          maxlength="12000"
+          readonly={speech === "listening"}
+          placeholder={mode === "hum" ? "Describe it" : `Ask your ${jobName(job)}…`}
+          aria-label={mode === "hum" ? "Describe the hum" : `Ask your ${jobName(job)}`}
+          disabled={needsSignIn || status === null}
+          onkeydown={onFieldKey}
+        ></textarea>
+      {/if}
+      {#if mode === "hum" && humStep === "done"}
+        <div class="agent-box-part agent-hum-vibes">
+          {#each VIBES as vibe (vibe)}
+            <button type="button" class="agent-button-plain" onclick={() => addVibe(vibe)}>{vibe}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <div class="agent-under">
       <button
         type="button"
         class="agent-button-plain"
@@ -1613,27 +1580,147 @@
         disabled={attaching || needsSignIn || status === null}
         onclick={pickFiles}>Attach</button
       >
-      <button
-        type="button"
-        class="agent-button-plain"
-        class:is-lit={speech === "listening" && speechField === "draft"}
-        title="Speak instead of typing"
-        disabled={needsSignIn || status === null || speech === "downloading" || speech === "finishing" || humStep !== "off"}
-        onclick={() => speak("draft")}>{speakLabel("draft")}</button
-      >
-      <button
-        type="button"
-        class="agent-button-plain"
-        class:is-lit={humStep !== "off"}
-        title="Hum a tune for the agent"
-        disabled={needsSignIn || status === null || speech !== "off" || humStep !== "off"}
-        onclick={openHum}>Hum</button
-      >
-      <button
-        type="submit"
-        class="agent-button-plain is-lit"
-        disabled={working || attaching || speech === "finishing" || (draft.trim() === "" && waiting.length === 0) || needsSignIn}>Send</button
-      >
-    </form>
+      {#if status !== null && status.model !== null}
+        <button
+          type="button"
+          class="agent-button-plain agent-model-button"
+          class:is-open={modelsOpen}
+          title="The model the agent uses"
+          onclick={() => (modelsOpen = !modelsOpen)}
+        >
+          {status.model.name}
+        </button>
+      {/if}
+      <span class="agent-grow"></span>
+      {#if working}
+        <button type="button" class="agent-button-plain is-lit agent-send" onclick={stop}>
+          Stop <kbd>esc</kbd>
+        </button>
+      {:else}
+        <button type="button" class="agent-button-plain is-lit agent-send" disabled={!canSend} onclick={sendFromBox}>
+          Send <kbd>return</kbd>
+        </button>
+      {/if}
+    </div>
+    {#if modelsOpen && status !== null}
+      <div class="agent-models">
+        {#each status.models as model (model.provider + model.id)}
+          <button
+            type="button"
+            class:is-picked={status.model !== null &&
+              status.model.provider === model.provider &&
+              status.model.id === model.id}
+            onclick={() => pickModel(model)}
+          >
+            <span>{model.name}</span>
+            <span class="agent-quiet">{model.provider}</span>
+          </button>
+        {/each}
+        <button type="button" class="agent-models-more" onclick={openSignIn}>
+          Sign in to another provider
+        </button>
+      </div>
+    {/if}
   </footer>
 </section>
+
+<!-- The mic's level as seven bars. -->
+{#snippet meter()}
+  <span class="agent-meter" aria-hidden="true">
+    {#each barHeights as height, place (place)}
+      <span style:height></span>
+    {/each}
+  </span>
+{/snippet}
+
+<!-- The Hum tab: Ready, Count in, Listening, Reading, then the notes read,
+     described in the message below. -->
+{#snippet humming()}
+  <div class="agent-box-part agent-hum">
+    {#if humStep === "ready"}
+      <div class="agent-row">
+        <b>Tempo</b>
+        <button type="button" class="agent-button-plain" class:is-lit={!humFree} onclick={() => (humFree = false)}
+          >The song's</button
+        >
+        <button type="button" class="agent-button-plain" class:is-lit={humFree} onclick={() => (humFree = true)}
+          >Free</button
+        >
+      </div>
+      {#if !humFree}
+        <div class="agent-row">
+          <b>Count in</b>
+          {#each [0, 1, 2] as bars (bars)}
+            <button
+              type="button"
+              class="agent-button-plain"
+              class:is-lit={humCountIn === bars}
+              onclick={() => (humCountIn = bars)}>{bars === 1 ? "1 bar" : `${bars} bars`}</button
+            >
+          {/each}
+        </div>
+        <div class="agent-row">
+          <b>Click</b>
+          <button type="button" class="agent-button-plain" class:is-lit={humClick} onclick={() => (humClick = true)}
+            >On</button
+          >
+          <button type="button" class="agent-button-plain" class:is-lit={!humClick} onclick={() => (humClick = false)}
+            >Off</button
+          >
+        </div>
+      {/if}
+      <div class="agent-row">
+        <b>Mic</b>
+        <select class="agent-mic-pick" bind:value={micChoice} aria-label="Mic">
+          <option value="">The system's pick</option>
+          {#each mics as name, place (place)}
+            <option value={String(place)}>{name}</option>
+          {/each}
+        </select>
+      </div>
+      {#if humProblem !== ""}
+        <p class="agent-error">{humProblem}</p>
+      {/if}
+      <div class="agent-row">
+        <button type="button" class="agent-button-plain is-lit" onclick={startHum}>Start</button>
+        <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+      </div>
+    {:else if humStep === "counting" && humStarted !== null}
+      <div class="agent-row">
+        <b>Count in</b>
+        <span class="agent-hum-beat">{humBeat}</span>
+        <span class="agent-quiet agent-grow">of {humStarted.count_in_beats}, at {humStarted.tempo} BPM</span>
+        <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+      </div>
+    {:else if humStep === "listening"}
+      <div class="agent-row">
+        {@render meter()}
+        <span class="agent-quiet agent-grow">Hum one note at a time, {humSeconds().toFixed(0)} s</span>
+        <button type="button" class="agent-button-plain is-lit" onclick={finishHum}>Done</button>
+        <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+      </div>
+    {:else if humStep === "reading"}
+      <p class="agent-quiet">Reading the notes…</p>
+    {:else if humRead !== null}
+      <div class="agent-hum-roll" aria-label="The notes heard">
+        {#each rollOf(humRead.notes) as drawn, place (place)}
+          <span
+            title={drawn.name}
+            style:left={drawn.left}
+            style:width={drawn.width}
+            style:bottom={drawn.bottom}
+            style:background={drawn.color}
+          ></span>
+        {/each}
+      </div>
+      <div class="agent-row">
+        <span class="agent-file-name">{humRead.card.taken}</span>
+        <span class="agent-quiet">{keyGuessOf(humRead.reading)}</span>
+      </div>
+      <div class="agent-row">
+        <button type="button" class="agent-button-plain" onclick={humAgain}>Hum again</button>
+        <button type="button" class="agent-button-plain" onclick={cancelHum}>Cancel</button>
+      </div>
+    {/if}
+  </div>
+{/snippet}

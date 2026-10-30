@@ -120,7 +120,7 @@ export interface PressesCard {
 export interface Measures {
   loudness_db: number | null;
   peak_db: number | null;
-  soft_clip_reached: boolean;
+  limiter_reached: boolean;
   brightness_hz: number | null;
   lows_percent: number | null;
   mids_percent: number | null;
@@ -620,6 +620,9 @@ export function toolTitle(step: ToolStep): string {
   }
   if (step.tool === "jello_arrange") {
     return "Sections";
+  }
+  if (step.tool === "jello_mix") {
+    return "Mix";
   }
   return step.tool.replace("jello_", "");
 }

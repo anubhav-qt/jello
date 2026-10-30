@@ -497,6 +497,10 @@ void Synth::set_vibrato_key_times(int rise_ms, int fall_ms) {
     routing_.set_vibrato_key_times(rise_ms, fall_ms);
 }
 
+const Routing& Synth::routing() const {
+    return routing_;
+}
+
 void Synth::set_beats_per_sample(double beats_per_sample) {
     routing_.set_beats_per_sample(beats_per_sample);
 }

@@ -214,6 +214,72 @@ mod tests {
     }
 
     #[test]
+    fn undo_restores_drum_shared_lfos_and_all_effect_connections() {
+        use crate::engine::{EffectConnection, EQ_OUTPUT};
+        use crate::modulation::{CONNECTION_COUNT, NO_CONNECTION, Source};
+        let (mut open, mut composer, mut engine) = starting("undo-drum-routing");
+        let track = composer.tracks_mut().add(&mut engine, Track::new_drums()).unwrap();
+        assert!(composer.tracks_mut().pick(&mut engine, track));
+        let mut lfo = composer.sound_profile().lfos()[0];
+        lfo.per_note = false;
+        lfo.hz = 2.0;
+        composer.sound_profile_mut().set_lfo(&mut engine, 0, lfo);
+        composer.sound_profile_mut().set_connection(&mut engine, 0, NO_CONNECTION);
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: 1.0, one_way: false, scaled_by: Source::None };
+        composer.mix_mut().tracks[track].links = vec![link; CONNECTION_COUNT];
+        composer.send_picked_routing(&mut engine);
+
+        let snapshot = song_now(&composer, &mut engine);
+        let written = text_of(&snapshot);
+        let read = crate::song_file::song_of(&written, &SoundProfile::new()).unwrap();
+        assert_eq!(read.tracks[track].sound.lfos[0], lfo);
+        assert_eq!(read.tracks[track].sound.connections, [NO_CONNECTION; CONNECTION_COUNT]);
+        assert_eq!(read.mix.tracks[track].links.len(), CONNECTION_COUNT);
+
+        let mut replies = Replies::default();
+        let reply = start_reply(&mut replies, &open, &composer, &mut engine);
+        composer.mix_mut().tracks[track].links.clear();
+        composer.sound_profile_mut().set_lfo(&mut engine, 0, crate::modulation::START_LFO);
+        undo(&mut replies, &mut open, &mut composer, &mut engine, reply, Instant::now()).unwrap();
+        assert_eq!(composer.sound_profile().lfos()[0], lfo);
+        assert_eq!(*composer.sound_profile().connections(), [NO_CONNECTION; CONNECTION_COUNT]);
+        assert_eq!(composer.mix_now().tracks[track].links.len(), CONNECTION_COUNT);
+        let saved = songs::read(&open.folders().unwrap().songs, open.name(), &SoundProfile::new()).unwrap();
+        assert_eq!(saved.tracks[track].sound.lfos[0], lfo);
+        assert_eq!(saved.mix.tracks[track].links.len(), CONNECTION_COUNT);
+    }
+
+    #[test]
+    fn undo_restores_sparse_sound_connections_on_tracks_and_drums() {
+        use crate::modulation::{CONNECTION_COUNT, NO_CONNECTION};
+        let (mut open, mut composer, mut engine) = starting("undo-sparse-routing");
+        let drums = composer.tracks_mut().add(&mut engine, Track::new_drums()).unwrap();
+        for track in [0, drums] {
+            composer.tracks_mut().pick(&mut engine, track);
+            let connection = composer.sound_profile().connections()[0];
+            composer.sound_profile_mut().set_connection(&mut engine, 0, NO_CONNECTION);
+            composer.sound_profile_mut().set_connection(&mut engine, CONNECTION_COUNT - 1, connection);
+        }
+        let snapshot = song_now(&composer, &mut engine);
+        let read = crate::song_file::song_of(&text_of(&snapshot), &SoundProfile::new()).unwrap();
+        for track in [0, drums] {
+            assert_eq!(read.tracks[track].sound.connections[0], NO_CONNECTION);
+            assert_ne!(read.tracks[track].sound.connections[CONNECTION_COUNT - 1], NO_CONNECTION);
+        }
+
+        let mut replies = Replies::default();
+        let reply = start_reply(&mut replies, &open, &composer, &mut engine);
+        composer.sound_profile_mut().set_connection(&mut engine, CONNECTION_COUNT - 1, NO_CONNECTION);
+        undo(&mut replies, &mut open, &mut composer, &mut engine, reply, Instant::now()).unwrap();
+        for track in [0, drums] {
+            let sound = composer.tracks().list()[track].sound_profile();
+            assert_eq!(sound.connections()[0], NO_CONNECTION);
+            assert_ne!(sound.connections()[CONNECTION_COUNT - 1], NO_CONNECTION);
+        }
+    }
+
+    #[test]
     fn undoing_a_reply_takes_back_every_later_one_too() {
         let (mut open, mut composer, mut engine) = starting("undo-later");
         let mut replies = Replies::default();

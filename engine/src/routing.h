@@ -93,11 +93,12 @@ enum class RoutingTarget {
     filter_decay,
     filter_release,
     glide_time,  // octaves of time: 1 is twice as long
+    effect,      // one value of the effect in one slot of the chain, in the value's own units
 };
 
 // How many sources and targets there are, `none` included.
 constexpr int source_count = 14;
-constexpr int target_count = 40;
+constexpr int target_count = 41;
 
 // One connection: `source` moves `target` by `amount`, in the target's own
 // units, up to most_amount(target) either way.
@@ -114,6 +115,18 @@ struct Connection {
     // Another source the amount is multiplied by, read one way, from 0
     // (no move at all) to 1 (the full amount). None leaves it at full.
     RoutingSource scaled_by = RoutingSource::none;
+    // For the effect target: the slot, from 0 to 7, and which of its
+    // effect's values, from 0 to effect_most_values - 1.
+    int effect_slot = 0;
+    int effect_value = 0;
+};
+
+// How far the connections move one value of one slot's effect, worked out
+// every 32 samples.
+struct EffectMove {
+    int slot = 0;
+    int value = 0;
+    double move = 0.0;
 };
 
 // The most a connection can move `target` either way.
@@ -215,8 +228,16 @@ public:
     double fade(int index, double age_ms, double age_beats) const;
 
     // Moves everything shared on to sample `block_end`, the end of the
-    // next 32 samples: shared LFOs, vibrato keys and slides between presses.
+    // next 32 samples: shared LFOs, vibrato keys, slides between presses
+    // and the moves of effects.
     void tick(std::uint64_t block_end);
+
+    // The moves of effects as of the last tick, one for each connection
+    // to an effect that moves it: only LFOs that run for every note, in Hz
+    // or beats, move effects, since an effect hears every note at once.
+    // Connections to the same value each have their own.
+    int effect_move_count() const;
+    const EffectMove& effect_move(int place) const;
 
 private:
     // How one shared LFO in presses moves for one player: from where it was
@@ -233,6 +254,14 @@ private:
 
     // Works out how far the shared LFOs move each other's speeds.
     void move_shared_speeds();
+
+    // Works out the moves of effects.
+    void move_effects();
+
+    // How far `connection`, from a shared LFO, moves its target with no
+    // fade-in, into `move`. False if its source or scaled-by source is not
+    // a shared LFO running, so it moves nothing.
+    bool shared_move(const Connection& connection, double& move) const;
 
     // True for an LFO that runs for every note, in Hz or beats.
     bool is_shared_running(int index) const;
@@ -273,6 +302,10 @@ private:
     std::array<double, lfo_count> gap_samples_left_{};
     // Its height now.
     std::array<Slide, lfo_count> readings_{};
+
+    // The moves of effects, the first effect_move_count_ of them.
+    std::array<EffectMove, connection_count> effect_moves_{};
+    int effect_move_count_ = 0;
 
     std::array<bool, player_count> key_held_{};
     std::array<double, player_count> key_values_{};

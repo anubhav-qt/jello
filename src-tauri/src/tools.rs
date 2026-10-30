@@ -24,6 +24,7 @@ use crate::key_map::KeyMap;
 use crate::layer_notes;
 use crate::listening;
 use crate::memory::{self, Memory};
+use crate::mix_tool;
 use crate::phrases::{self, Phrase, Phrases};
 use crate::practice::{self, Practice};
 use crate::presets;
@@ -112,14 +113,14 @@ impl ToolAnswer {
 }
 
 // The parts jello_look can read.
-const LOOK_PARTS: [&str; 14] = [
+const LOOK_PARTS: [&str; 15] = [
     "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory", "drums",
-    "instruments", "tracks", "sections",
+    "instruments", "tracks", "sections", "mix",
 ];
 
 // Every tool, as MCP's tools/list names and describes them.
 pub fn list() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "jello_look",
             "description": "Reads any parts of what Jello is doing now. sound: every sound value, as \
@@ -134,8 +135,9 @@ pub fn list() -> Value {
                 kit's instrument, whether it is ready, and every pad. instruments: the instruments \
                 in Music/Jello/Instruments, by name. tracks: the song's tracks, which is picked, \
                 and each one's layers. sections: the song's sections, the order it plays them \
-                in, and the place playing now. Sound and drums are the picked track's. With no \
-                parts it reads them all.",
+                in, and the place playing now. mix: each track's pan, sends and effects, the \
+                buses and the master, as jello_mix answers. Sound and drums are the picked \
+                track's. With no parts it reads them all.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -304,12 +306,15 @@ pub fn list() -> Value {
                 song's chords, each as long as it was held) or phrase (presses and unit as for \
                 jello_play, one you are thinking of playing; the wave and looper keys do nothing \
                 here). with_loop: true plays the loop under the chords or the phrase. Answers for \
-                the whole render and beat by beat: loudness_db (RMS), peak_db, soft_clip_reached \
-                (a sample past 0.8, where the soft clip bends them), brightness_hz (the spectral \
+                the whole render and beat by beat: loudness_db (RMS), peak_db, limiter_reached \
+                (a peak at the song's master limiter ceiling, where it holds the sound down), brightness_hz (the spectral \
                 centroid), lows, mids and highs percent of the power (below 250 Hz, to 4000 Hz, \
                 above), width_percent (0 the same on both sides, 50 one side only, 100 opposite) \
                 and balance_db (positive when the left is louder); silences of 0.2 s or more, in \
-                beats from 1; and rings_on_ms, how long sound goes on after the end. A render \
+                beats from 1; lufs, the whole render's integrated loudness as streaming services \
+                measure it (about -14 for a released song); true_peak_db, its loudest point \
+                between samples too (keep it under -1); and rings_on_ms, how long sound goes on \
+                after the end. It plays the song's mix. A render \
                 lasts at most 60 s. save_as also saves it, ringing included, as a WAV in \
                 Music/Jello/Renders under a new name.",
             "inputSchema": {
@@ -537,7 +542,10 @@ pub fn list() -> Value {
                 64. tempo: section, tempo 40 to 240. key_shift: section, key_shift -12 to 12 half \
                 steps. layer: section, track, layer, on. automate: section moves value of track \
                 from from to to across its bars (value named as jello_sound's, like \"filter \
-                cutoff_hz\"), or with no track the tempo. stop_automating: section, track, value. \
+                cutoff_hz\", or the track's mix: \"pan\", \"send 1\", \"effect 2 mix\"), or with \
+                no track the tempo or the song's own mix (\"bus 1 volume\", \"bus 1 effect 1 \
+                mix\", \"master effect 1 mix\", \"limiter boost_db\"); effect values move in \
+                jello_mix's units. stop_automating: section, track, value. \
                 move: the place in the order place goes to place to. use_again: plays place again \
                 just after it. remove_use: takes place out of the order. remove_last: takes the \
                 last place out. play: plays the order from the start, putting the loop away until \
@@ -566,7 +574,11 @@ pub fn list() -> Value {
                 "required": ["action"],
             },
         },
-    ])
+    ]);
+    if let Some(list) = tools.as_array_mut() {
+        list.push(mix_tool::description());
+    }
+    tools
 }
 
 // A phrase's presses, as jello_play and jello_listen take them.
@@ -614,6 +626,7 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_memory" => memory::answer(studio, arguments),
         "jello_tracks" => use_tracks(studio, arguments),
         "jello_arrange" => arrange_sections(studio, arguments),
+        "jello_mix" => mix_tool::answer(studio, arguments),
         _ => Err(format!("Jello has no tool called {name}")),
     };
     match answer {
@@ -674,6 +687,7 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
             "instruments" => json!({ "names": instruments::list() }),
             "tracks" => tracks_json(&composer, &mut engine),
             "sections" => to_json(&sections::view(&mut composer, &mut engine)),
+            "mix" => mix_tool::mix_json(&composer),
             _ => Value::Null,
         };
         state.insert(part, value);
@@ -732,7 +746,7 @@ fn change_sound(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String
 fn change_sound_on(composer: &mut Composer, engine: &mut Engine, changes: &Value) -> Result<ToolAnswer, String> {
     let before = composer.sound_profile().sound();
     let wanted = sound_changes::changed(&before, changes)?;
-    sound_changes::take_changes(composer.sound_profile_mut(), engine, &before, &wanted);
+    composer.apply_sound(engine, &wanted)?;
 
     // The lines say what the sound became, which is what the engine took.
     let after = composer.sound_profile().sound();
@@ -1145,7 +1159,7 @@ fn use_presets(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String>
             let mut composer = studio.composer.lock().unwrap();
             let mut engine = studio.engine.lock().unwrap();
             let before = composer.sound_profile().sound();
-            composer.take_preset(&mut engine, &name, &sound);
+            composer.take_preset(&mut engine, &name, &sound)?;
             let after = composer.sound_profile().sound();
             lines.push(format!("Loaded preset {name}"));
             lines.extend(sound_changes::change_lines(&before, &after));
@@ -1908,6 +1922,214 @@ mod tests {
         assert_eq!(test.call("jello_notes", late).text, "E4 ends on beat 9, after the layer's 2 bars (8 beats)");
         let missing = json!({"layer": 3, "notes": [{"note": "E4", "start": 0, "hold": 1}]});
         assert_eq!(test.call("jello_notes", missing).text, "there is no layer 3: track 1 has 1");
+    }
+
+    #[test]
+    fn jello_sound_refuses_a_connection_that_would_displace_an_effect_link() {
+        use crate::engine::{EffectConnection, EQ_OUTPUT};
+        use crate::modulation::Source;
+        let test = TestStudio::new();
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: 0.0, one_way: false, scaled_by: Source::None };
+        {
+            let mut composer = test.composer.lock().unwrap();
+            composer.mix_mut().tracks[0].links = vec![link; 63];
+        }
+        let before = test.composer.lock().unwrap().sound_profile().sound();
+        let result = test.call("jello_sound", json!({"changes": {"connections": [
+            {"number": 64, "source": "lfo 1", "target": "pitch", "amount": 0}
+        ]}}));
+        assert!(result.failed, "{}", result.text);
+        let composer = test.composer.lock().unwrap();
+        assert_eq!(composer.sound_profile().sound(), before);
+        assert_eq!(composer.mix_now().tracks[0].links.len(), 63);
+    }
+
+    #[test]
+    fn jello_mix_edits_and_removes_effect_connections() {
+        let test = TestStudio::new();
+        test.call("jello_mix", json!({"action": "effect", "place": "master", "slot": 1, "kind": "eq"}));
+        let lfo = test.call("jello_mix", json!({"action": "lfo", "place": "master", "number": 1,
+            "values": {"per_note": false, "hz": 2.0}}));
+        assert!(!lfo.failed, "{}", lfo.text);
+        let link = test.call("jello_mix", json!({"action": "connect", "place": "master", "number": 1,
+            "source": "lfo 1", "slot": 1, "value": "output_db", "amount": -4.0}));
+        assert!(!link.failed, "{}", link.text);
+        assert_eq!(json_text(&link)["master"]["effect_connections"][0]["source"], "lfo 1");
+        let dormant = test.call("jello_mix", json!({"action": "lfo", "place": "master", "number": 1,
+            "values": {"per_note": true}}));
+        assert_eq!(json_text(&dormant)["master"]["effect_connections"][0]["inactive_reason"], "lfo 1 is per-note");
+        let active = test.call("jello_mix", json!({"action": "lfo", "place": "master", "number": 1,
+            "values": {"per_note": false}}));
+        assert!(json_text(&active)["master"]["effect_connections"][0]["inactive_reason"].is_null());
+        let invalid = test.call("jello_mix", json!({"action": "connect", "place": "master", "number": 1,
+            "source": "lfo 1", "slot": 1, "value": "band_1_shape", "amount": 4.0}));
+        assert!(invalid.failed);
+        let removed = test.call("jello_mix", json!({"action": "disconnect", "place": "master", "number": 1}));
+        assert_eq!(json_text(&removed)["master"]["effect_connections"], json!([]));
+    }
+
+    #[test]
+    fn jello_mix_effect_connection_amounts_follow_current_effect_units() {
+        let test = TestStudio::new();
+        test.call("jello_mix", json!({"action": "effect", "place": "master", "slot": 1, "kind": "reverb"}));
+        let made = test.call("jello_mix", json!({"action": "connect", "place": "master", "number": 1,
+            "source": "lfo 1", "slot": 1, "value": "mix", "amount": 10}));
+        assert!(!made.failed, "{}", made.text);
+        let shown = &json_text(&made)["master"]["effect_connections"][0];
+        assert_eq!(shown["amount"], 10.0);
+        assert_eq!(shown["amount_unit"], "percentage points");
+        assert!((shown["native_amount"].as_f64().unwrap() - 0.1).abs() < 0.00001);
+
+        let replaced = test.call("jello_mix", json!({"action": "effect", "place": "master", "slot": 1, "kind": "delay"}));
+        let shown = &json_text(&replaced)["master"]["effect_connections"][0];
+        assert_eq!(shown["value"], "high_cut_hz");
+        assert_eq!(shown["amount_unit"], "units of high_cut_hz");
+        assert!((shown["amount"].as_f64().unwrap() - 0.1).abs() < 0.00001);
+
+        let empty = test.call("jello_mix", json!({"action": "effect", "place": "master", "slot": 1, "kind": "none"}));
+        let shown = &json_text(&empty)["master"]["effect_connections"][0];
+        assert!(shown["amount"].is_null());
+        assert!(shown["amount_unit"].is_null());
+        assert_eq!(shown["inactive_reason"], "the effect target is unavailable");
+        assert!((shown["native_amount"].as_f64().unwrap() - 0.1).abs() < 0.00001);
+    }
+
+    #[test]
+    fn jello_mix_places_and_sets_effects_by_word() {
+        let test = TestStudio::new();
+        let placed = test.call("jello_mix", json!({"action": "effect", "place": "track 1", "slot": 2, "kind": "eq"}));
+        assert_eq!(placed.changes, vec![String::from("Placed eq in slot 2 on track 1")]);
+        let effect = &json_text(&placed)["tracks"][0]["effects"][0];
+        assert_eq!(effect["slot"], 2);
+        assert_eq!(effect["kind"], "eq");
+        assert_eq!(effect["values"], json!({}));
+
+        let values = json!({"band_2_on": true, "band_2_shape": "low-shelf", "band_2_gain_db": -3.5});
+        let set = test.call("jello_mix", json!({"action": "set", "place": "track 1", "slot": 2, "values": values}));
+        assert!(!set.failed, "{}", set.text);
+        assert_eq!(set.changes.len(), 3);
+        let values = &json_text(&set)["tracks"][0]["effects"][0]["values"];
+        assert_eq!(values["band_2_gain_db"], -3.5);
+        assert_eq!(values["band_2_shape"], "low-shelf");
+
+        let off = test.call("jello_mix", json!({"action": "on", "place": "track 1", "slot": 2, "on": false}));
+        assert_eq!(json_text(&off)["tracks"][0]["effects"][0]["on"], false);
+        let moved = test.call("jello_mix", json!({"action": "move", "place": "track 1", "slot": 2, "to": 8}));
+        assert_eq!(json_text(&moved)["tracks"][0]["effects"][0]["slot"], 8);
+        let emptied = test.call("jello_mix", json!({"action": "effect", "place": "track 1", "slot": 8, "kind": "none"}));
+        assert_eq!(json_text(&emptied)["tracks"][0]["effects"], json!([]));
+    }
+
+    #[test]
+    fn jello_mix_refuses_a_whole_set_when_one_value_is_wrong() {
+        let test = TestStudio::new();
+        test.call("jello_mix", json!({"action": "effect", "place": "master", "slot": 1, "kind": "reverb"}));
+        let refuse = |values: Value| {
+            let answer = test.call("jello_mix", json!({"action": "set", "place": "master", "slot": 1, "values": values}));
+            assert!(answer.failed);
+            answer.text
+        };
+        assert_eq!(refuse(json!({"size": 80, "decay_s": 99})), "decay_s takes a number from 0.1 to 30, not 99");
+        assert_eq!(refuse(json!({"size": 101})), "size takes a percent from 0 to 100, not 101");
+        assert!(refuse(json!({"size": 80, "sparkle": 1})).starts_with("this effect has no sparkle: it has size, "));
+        assert_eq!(refuse(json!({"freeze": "yes"})), "freeze takes true or false");
+        assert_eq!(refuse(json!({})), "values is empty: name at least one, like {\"mix\": 40}");
+        let look = test.call("jello_mix", json!({"action": "look"}));
+        assert_eq!(json_text(&look)["master"]["effects"][0]["values"], json!({}));
+    }
+
+    #[test]
+    fn jello_mix_refuses_places_slots_and_kinds_the_song_does_not_have() {
+        let test = TestStudio::new();
+        let refuse = |arguments: Value| {
+            let answer = test.call("jello_mix", arguments);
+            assert!(answer.failed);
+            answer.text
+        };
+        let effect = |place: &str, slot: i64, kind: &str| json!({"action": "effect", "place": place, "slot": slot, "kind": kind});
+        assert_eq!(refuse(effect("track 2", 1, "eq")), "the song has no track 2");
+        assert_eq!(refuse(effect("bus 1", 1, "eq")), "the song has no bus 1");
+        assert_eq!(refuse(effect("drums", 1, "eq")), "place is \"track 2\", \"bus 1\" or \"master\", not \"drums\"");
+        assert_eq!(refuse(effect("track 0", 1, "eq")), "place is \"track 2\", \"bus 1\" or \"master\", not \"track 0\"");
+        assert_eq!(refuse(effect("master", 0, "eq")), "slot is 1 to 8, not 0");
+        assert_eq!(refuse(effect("master", 9, "eq")), "slot is 1 to 8, not 9");
+        assert!(refuse(effect("master", 1, "banjo")).starts_with("kind is one of eq, filter, "));
+        assert_eq!(refuse(json!({"action": "on", "place": "master", "slot": 1, "on": true})), "slot 1 on master is empty");
+        assert_eq!(refuse(json!({"action": "dance"})).split(':').next(), Some("jello_mix has no action dance"));
+        assert_eq!(refuse(json!({"action": "pan", "place": "master", "pan": 0})), "the master has no pan");
+        assert_eq!(refuse(json!({"action": "pan", "place": "track 1", "pan": 101})), "pan is -100 to 100, not 101");
+        assert_eq!(refuse(json!({"action": "pan", "place": "track 1", "pan": 2.5})), "pan is a whole number, not 2.5");
+        assert_eq!(refuse(json!({"action": "limiter"})), "limiter needs boost_db, ceiling_db or release_ms");
+        assert_eq!(refuse(json!({"action": "limiter", "ceiling_db": 1})), "ceiling_db is -12 to 0, not 1");
+    }
+
+    #[test]
+    fn jello_mix_makes_buses_sends_and_sidechains() {
+        let test = TestStudio::new();
+        test.call("jello_tracks", json!({"action": "make"}));
+        let added = test.call("jello_mix", json!({"action": "add_bus", "name": "Room"}));
+        assert_eq!(added.changes, vec![String::from("Added bus 1 (Room)")]);
+        test.call("jello_mix", json!({"action": "effect", "place": "bus 1", "slot": 1, "kind": "reverb"}));
+        let sent = test.call("jello_mix", json!({"action": "send", "track": 2, "bus": 1, "amount": 30}));
+        let state = json_text(&sent);
+        assert_eq!(state["tracks"][1]["sends"], json!([30]));
+        assert_eq!(state["buses"][0]["name"], "Room");
+        // A reverb on a bus starts fully wet, so its mix is not listed.
+        assert_eq!(state["buses"][0]["effects"][0]["values"], json!({}));
+
+        test.call("jello_mix", json!({"action": "effect", "place": "track 1", "slot": 1, "kind": "compressor"}));
+        let listening = json!({"listens_to": "track 2", "threshold_db": -30});
+        let ducked = test.call("jello_mix", json!({"action": "set", "place": "track 1", "slot": 1, "values": listening}));
+        assert_eq!(json_text(&ducked)["tracks"][0]["effects"][0]["values"]["listens_to"], "track 2");
+        test.call("jello_mix", json!({"action": "effect", "place": "track 2", "slot": 1, "kind": "gate"}));
+        let looped = json!({"action": "set", "place": "track 2", "slot": 1, "values": {"listens_to": "track 1"}});
+        let refused = test.call("jello_mix", looped);
+        assert_eq!(refused.text, "that would make a loop: track 1 already hears track 2");
+
+        let quieter = test.call("jello_mix", json!({"action": "bus_volume", "bus": 1, "volume": 60}));
+        assert_eq!(json_text(&quieter)["buses"][0]["volume"], 60);
+        let limited = test.call("jello_mix", json!({"action": "limiter", "ceiling_db": -0.5}));
+        assert_eq!(json_text(&limited)["master"]["ceiling_db"], -0.5);
+        assert_eq!(json_text(&limited)["master"]["release_ms"], 100);
+        let removed = test.call("jello_mix", json!({"action": "remove_bus", "bus": 1}));
+        assert_eq!(json_text(&removed)["buses"], json!([]));
+        assert_eq!(json_text(&removed)["tracks"][1]["sends"], json!([]));
+
+        // The mix is part of the song, so jello_look reads it too.
+        let look = test.call("jello_look", json!({"parts": ["mix"]}));
+        assert_eq!(json_text(&look)["mix"]["tracks"][0]["effects"][0]["kind"], "compressor");
+    }
+
+    #[test]
+    fn the_mix_is_saved_with_the_song_and_follows_its_tracks() {
+        let test = TestStudio::new();
+        test.call("jello_tracks", json!({"action": "make"}));
+        test.call("jello_mix", json!({"action": "effect", "place": "track 2", "slot": 1, "kind": "eq"}));
+        test.call("jello_mix", json!({"action": "pan", "place": "track 2", "pan": 50}));
+        let song = test.call("jello_look", json!({"parts": ["song"]}));
+        assert!(song.text.contains("kind = \\\"eq\\\""), "{}", song.text);
+
+        test.call("jello_tracks", json!({"action": "remove", "track": 1}));
+        let look = test.call("jello_mix", json!({"action": "look"}));
+        let tracks = &json_text(&look)["tracks"];
+        assert_eq!(tracks.as_array().unwrap().len(), 1);
+        assert_eq!(tracks[0]["pan"], 50);
+        assert_eq!(tracks[0]["effects"][0]["kind"], "eq");
+    }
+
+    #[test]
+    fn jello_mix_describes_a_kind_s_values() {
+        let test = TestStudio::new();
+        let described = test.call("jello_mix", json!({"action": "describe", "kind": "delay"}));
+        let state = json_text(&described);
+        let first = &state["values"][0];
+        assert_eq!(first["value"], "left_ms");
+        assert_eq!(first["takes"], "a number from 1 to 8000");
+        assert_eq!(first["start"], 250.0);
+        let feedback = state["values"].as_array().unwrap().iter().find(|value| value["value"] == "feedback").unwrap();
+        assert_eq!(feedback["start"], 35.0);
+        assert!(test.call("jello_mix", json!({"action": "describe", "kind": "none"})).failed);
     }
 
     #[test]

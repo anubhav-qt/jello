@@ -4,6 +4,7 @@
 
 #include "jello_engine.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -15,6 +16,15 @@
 #include "miniaudio_settings.h"
 #include "capture.h"
 #include "conductor.h"
+#include "compressor.h"
+#include "eq.h"
+#include "chorus.h"
+#include "delay.h"
+#include "filter_effect.h"
+#include "reverb.h"
+#include "gate.h"
+#include "saturation.h"
+#include "volume_shaper.h"
 
 namespace {
 
@@ -189,6 +199,141 @@ bool is_within_int(int value, int lowest, int highest) {
     return value <= highest;
 }
 
+// A pan: from -1 (fully left) to 1 (fully right).
+bool is_valid_pan(float pan) {
+    return is_within(pan, -1.0f, 1.0f);
+}
+
+// The C API and the mixer agree on how many buses there are, and on the
+// limiter's limits.
+static_assert(JELLO_BUS_COUNT == Mixer::bus_count, "the C API and the mixer have the same buses");
+static_assert(JELLO_LIMITER_MOST_BOOST_DB == static_cast<int>(limiter_most_boost_db), "the same most boost");
+static_assert(JELLO_LIMITER_LOWEST_CEILING_DB == static_cast<int>(limiter_lowest_ceiling_db), "the same lowest ceiling");
+static_assert(JELLO_LIMITER_SHORTEST_RELEASE_MS == limiter_shortest_release_ms, "the same shortest release");
+static_assert(JELLO_LIMITER_LONGEST_RELEASE_MS == limiter_longest_release_ms, "the same longest release");
+
+// The C API and the engine agree on the chains and every effect's values.
+static_assert(JELLO_EFFECT_SLOTS == Chain::slot_count, "the same slots");
+static_assert(JELLO_FIRST_BUS_CHAIN == Mixer::first_bus_chain, "the same first bus chain");
+static_assert(JELLO_MASTER_CHAIN == Mixer::master_chain, "the same master chain");
+static_assert(JELLO_CHAIN_COUNT == Mixer::chain_count, "the same chains");
+static_assert(JELLO_EFFECT_VOLUME_SHAPER == static_cast<int>(EffectKind::volume_shaper), "the same kinds");
+static_assert(JELLO_EFFECT_REVERB == static_cast<int>(EffectKind::reverb), "the same kinds");
+static_assert(JELLO_EFFECT_REVERB + 1 == effect_kind_count, "every kind has a number");
+static_assert(JELLO_EFFECT_START_MIX_PERCENT == static_cast<int>(effect_start_mix * 100.0 + 0.5), "the same start mix");
+static_assert(JELLO_LISTEN_TO_OWN == listen_to_own, "the same own input");
+static_assert(JELLO_EQ_BAND_COUNT == eq_band_count, "the same bands");
+static_assert(JELLO_EQ_BAND_SLOPE == eq_band_slope, "the same band values");
+static_assert(JELLO_EQ_BAND_VALUES == eq_band_values, "the same band values");
+static_assert(JELLO_EQ_OUTPUT == eq_output, "the same output");
+static_assert(JELLO_EQ_NOTCH == static_cast<int>(EqShape::notch), "the same shapes");
+static_assert(JELLO_EQ_NOTCH + 1 == eq_shape_count, "every shape has a number");
+static_assert(JELLO_EQ_LOWEST_HZ == static_cast<int>(eq_lowest_hz), "the same lowest frequency");
+static_assert(JELLO_EQ_HIGHEST_HZ == static_cast<int>(eq_highest_hz), "the same highest frequency");
+static_assert(JELLO_EQ_MOST_GAIN_DB == static_cast<int>(eq_most_gain_db), "the same most gain");
+static_assert(JELLO_EQ_WIDEST_WIDTH == static_cast<int>(eq_widest_width), "the same widest width");
+static_assert(JELLO_FILTER_EFFECT_LISTENS_TO == filter_effect_listens_to, "the same filter values");
+static_assert(JELLO_FILTER_EFFECT_LISTENS_TO + 1 == filter_effect_value_count, "every filter value has a number");
+static_assert(JELLO_FOLLOW_LONGEST_ATTACK_MS == static_cast<int>(follow_longest_attack_ms), "the same attack");
+static_assert(JELLO_FOLLOW_SHORTEST_RELEASE_MS == static_cast<int>(follow_shortest_release_ms), "the same release");
+static_assert(JELLO_FOLLOW_LONGEST_RELEASE_MS == static_cast<int>(follow_longest_release_ms), "the same release");
+static_assert(JELLO_SATURATION_MIX == saturation_mix, "the same saturation values");
+static_assert(JELLO_SATURATION_MIX + 1 == saturation_value_count, "every saturation value has a number");
+static_assert(JELLO_SATURATION_FOLD == static_cast<int>(SaturationCurve::fold), "the same curves");
+static_assert(JELLO_SATURATION_FOLD + 1 == saturation_curve_count, "every curve has a number");
+static_assert(JELLO_SATURATION_MOST_DRIVE_DB == static_cast<int>(saturation_most_drive_db), "the same drive");
+static_assert(JELLO_SATURATION_MOST_OUTPUT_DB == static_cast<int>(saturation_most_output_db), "the same output");
+static_assert(JELLO_COMPRESSOR_LOW_CUT == compressor_low_cut, "the same compressor values");
+static_assert(JELLO_COMPRESSOR_LOW_CUT + 1 == compressor_value_count, "every compressor value has a number");
+static_assert(JELLO_COMPRESSOR_LISTENS_TO == compressor_listens_to, "the same compressor values");
+static_assert(JELLO_COMPRESSOR_LOWEST_THRESHOLD_DB == static_cast<int>(compressor_lowest_threshold_db), "the same threshold");
+static_assert(JELLO_COMPRESSOR_MOST_RATIO == static_cast<int>(compressor_most_ratio), "the same ratio");
+static_assert(JELLO_COMPRESSOR_LIMIT == static_cast<int>(compressor_limit), "the same limit");
+static_assert(JELLO_COMPRESSOR_LONGEST_ATTACK_MS == static_cast<int>(compressor_longest_attack_ms), "the same attack");
+static_assert(JELLO_COMPRESSOR_SHORTEST_RELEASE_MS == static_cast<int>(compressor_shortest_release_ms), "the same release");
+static_assert(JELLO_COMPRESSOR_LONGEST_RELEASE_MS == static_cast<int>(compressor_longest_release_ms), "the same release");
+static_assert(JELLO_COMPRESSOR_WIDEST_KNEE_DB == static_cast<int>(compressor_widest_knee_db), "the same knee");
+static_assert(JELLO_COMPRESSOR_MOST_MAKEUP_DB == static_cast<int>(compressor_most_makeup_db), "the same makeup");
+static_assert(JELLO_COMPRESSOR_LOWEST_CUT_HZ == static_cast<int>(compressor_lowest_cut_hz), "the same low cut");
+static_assert(JELLO_COMPRESSOR_HIGHEST_CUT_HZ == static_cast<int>(compressor_highest_cut_hz), "the same low cut");
+static_assert(JELLO_GATE_LISTENS_TO == gate_listens_to, "the same gate values");
+static_assert(JELLO_GATE_LISTENS_TO + 1 == gate_value_count, "every gate value has a number");
+static_assert(JELLO_GATE_LOWEST_THRESHOLD_DB == static_cast<int>(gate_lowest_threshold_db), "the same threshold");
+static_assert(JELLO_GATE_SILENT_RANGE_DB == static_cast<int>(gate_silent_range_db), "the same range");
+static_assert(JELLO_GATE_SILENT_REDUCTION_DB == -JELLO_GATE_SILENT_RANGE_DB, "silent reads as the range");
+static_assert(JELLO_GATE_LONGEST_ATTACK_MS == static_cast<int>(gate_longest_attack_ms), "the same attack");
+static_assert(JELLO_GATE_LONGEST_HOLD_MS == static_cast<int>(gate_longest_hold_ms), "the same hold");
+static_assert(JELLO_GATE_SHORTEST_RELEASE_MS == static_cast<int>(gate_shortest_release_ms), "the same release");
+static_assert(JELLO_GATE_LONGEST_RELEASE_MS == static_cast<int>(gate_longest_release_ms), "the same release");
+static_assert(JELLO_SHAPER_MOST_POINTS == shaper_most_points, "the same points");
+static_assert(JELLO_SHAPER_POINT_BEND == shaper_point_bend, "the same point values");
+static_assert(JELLO_SHAPER_POINT_VALUES == shaper_point_values, "the same point values");
+static_assert(JELLO_SHAPER_CYCLE == shaper_cycle, "the same shaper values");
+static_assert(JELLO_SHAPER_DEPTH == shaper_depth, "the same shaper values");
+static_assert(JELLO_SHAPER_POINTS + 1 == shaper_value_count, "every shaper value has a number");
+static_assert(JELLO_SHAPER_LONGEST_CYCLE == static_cast<int>(shaper_longest_cycle), "the same cycle");
+static_assert(JELLO_CHORUS_MIX == chorus_mix, "the same chorus values");
+static_assert(JELLO_CHORUS_MIX + 1 == chorus_value_count, "every chorus value has a number");
+static_assert(JELLO_CHORUS_MOST_COPIES == chorus_most_copies, "the same copies");
+static_assert(JELLO_CHORUS_FASTEST_HZ == static_cast<int>(chorus_fastest_hz), "the same speed");
+static_assert(JELLO_CHORUS_LONGEST_CYCLE == static_cast<int>(chorus_longest_cycle), "the same cycle");
+static_assert(JELLO_CHORUS_SHORTEST_DELAY_MS == static_cast<int>(chorus_shortest_delay_ms), "the same delay");
+static_assert(JELLO_CHORUS_LONGEST_DELAY_MS == static_cast<int>(chorus_longest_delay_ms), "the same delay");
+static_assert(JELLO_CHORUS_MOST_FEEDBACK_PERCENT == static_cast<int>(chorus_most_feedback * 100.0f + 0.5f),
+              "the same feedback");
+static_assert(JELLO_DELAY_MIX == delay_mix, "the same delay values");
+static_assert(JELLO_DELAY_MIX + 1 == delay_value_count, "every delay value has a number");
+static_assert(JELLO_DELAY_SHORTEST_MS == static_cast<int>(delay_shortest_ms), "the same time");
+static_assert(JELLO_DELAY_LONGEST_MS == static_cast<int>(delay_longest_ms), "the same time");
+static_assert(JELLO_DELAY_LONGEST_BEATS == static_cast<int>(delay_longest_beats), "the same beats");
+static_assert(JELLO_DELAY_LOWEST_HZ == static_cast<int>(delay_lowest_hz), "the same cuts");
+static_assert(JELLO_DELAY_HIGHEST_HZ == static_cast<int>(delay_highest_hz), "the same cuts");
+static_assert(JELLO_DELAY_FASTEST_WOBBLE_HZ == static_cast<int>(delay_fastest_wobble_hz), "the same wobble");
+static_assert(JELLO_REVERB_MIX == reverb_mix, "the same reverb values");
+static_assert(JELLO_REVERB_MIX + 1 == reverb_value_count, "every reverb value has a number");
+static_assert(JELLO_REVERB_LONGEST_DECAY == static_cast<int>(reverb_longest_decay), "the same decay");
+static_assert(JELLO_REVERB_LONGEST_PRE_DELAY_MS == static_cast<int>(reverb_longest_pre_delay_ms), "the same pre-delay");
+static_assert(JELLO_REVERB_LOWEST_DAMPING_HZ == static_cast<int>(reverb_lowest_damping_hz), "the same damping");
+static_assert(JELLO_REVERB_HIGHEST_DAMPING_HZ == static_cast<int>(reverb_highest_damping_hz), "the same damping");
+static_assert(JELLO_REVERB_LOWEST_CUT_HZ == static_cast<int>(reverb_lowest_cut_hz), "the same low cut");
+static_assert(JELLO_REVERB_HIGHEST_CUT_HZ == static_cast<int>(reverb_highest_cut_hz), "the same low cut");
+
+// A chain's number, and an effect slot's.
+bool is_valid_chain(int chain) {
+    return is_within_int(chain, 0, JELLO_CHAIN_COUNT - 1);
+}
+
+bool is_valid_effect_slot(int slot) {
+    return is_within_int(slot, 0, JELLO_EFFECT_SLOTS - 1);
+}
+
+// True if chain `chain` may listen to `source`, a "listens to": its own
+// input, or another track. A bus or the master may listen to a bus too,
+// but never to itself, and no one to the master.
+bool can_listen_to(int chain, int source) {
+    if (source == JELLO_LISTEN_TO_OWN) {
+        return true;
+    }
+    if (source == chain) {
+        return false;
+    }
+    if (source == JELLO_MASTER_CHAIN) {
+        return false;
+    }
+    if (chain < JELLO_FIRST_BUS_CHAIN) {
+        return source < JELLO_FIRST_BUS_CHAIN;
+    }
+    return true;
+}
+
+// A bus's number: from 0, below JELLO_BUS_COUNT.
+bool is_valid_bus(int bus) {
+    if (bus < 0) {
+        return false;
+    }
+    return bus < JELLO_BUS_COUNT;
+}
+
 // How long a filter envelope's stage takes, in ms.
 bool is_valid_stage_ms(int ms) {
     if (ms < 0) {
@@ -238,7 +383,10 @@ static_assert(JELLO_TARGET_COPIES == static_cast<int>(RoutingTarget::copies), "t
 static_assert(JELLO_TARGET_FILTER_RELEASE == static_cast<int>(RoutingTarget::filter_release),
               "the filter release is the same target");
 static_assert(JELLO_TARGET_GLIDE_TIME == static_cast<int>(RoutingTarget::glide_time), "the glide time is the same target");
-static_assert(JELLO_TARGET_GLIDE_TIME + 1 == target_count, "every target has a number");
+static_assert(JELLO_TARGET_EFFECT == static_cast<int>(RoutingTarget::effect), "an effect is the same target");
+static_assert(JELLO_TARGET_EFFECT + 1 == target_count, "every target has a number");
+static_assert(JELLO_EFFECT_MOST_VALUES == effect_most_values, "the C API and the effects have as many values");
+static_assert(JELLO_EFFECT_MOST_MOVE == effect_most_move, "the C API and the routing list move effects as far");
 
 // An LFO's settings from the C API, checked: false if any is out of range.
 bool lfo_of_api(const JelloLfo& api, LfoSettings& lfo) {
@@ -339,7 +487,7 @@ bool connection_of_api(const JelloConnection& api, Connection& connection) {
     if (api.target < JELLO_TARGET_PITCH) {
         return false;
     }
-    if (api.target > JELLO_TARGET_GLIDE_TIME) {
+    if (api.target > JELLO_TARGET_EFFECT) {
         return false;
     }
 
@@ -347,6 +495,21 @@ bool connection_of_api(const JelloConnection& api, Connection& connection) {
     float most = most_amount(target);
     if (!is_within(api.amount, -most, most)) {
         return false;
+    }
+
+    // An effect's slot and value. Whether the effect there has that value
+    // is only known when it moves, since the slot may change.
+    connection.effect_slot = 0;
+    connection.effect_value = 0;
+    if (target == RoutingTarget::effect) {
+        if (!is_within_int(api.effect_slot, 0, JELLO_EFFECT_SLOTS - 1)) {
+            return false;
+        }
+        if (!is_within_int(api.effect_value, 0, JELLO_EFFECT_MOST_VALUES - 1)) {
+            return false;
+        }
+        connection.effect_slot = api.effect_slot;
+        connection.effect_value = api.effect_value;
     }
 
     connection.source = static_cast<RoutingSource>(api.source);
@@ -462,6 +625,10 @@ struct JelloEngine {
     std::array<std::unique_ptr<SampleSet>, sample_set_most> sets;
     std::array<bool, sample_set_most> forgotten{};
     std::array<std::uint64_t, sample_set_most> last_sent{};
+
+    // The kind of effect in every chain's slots, as sent, so values can be
+    // checked against it before they go.
+    std::array<std::array<EffectKind, Chain::slot_count>, Mixer::chain_count> effect_kinds{};
 };
 
 namespace {
@@ -593,6 +760,207 @@ void jello_engine_set_track_volume(JelloEngine* engine, int track, float volume)
         return;
     }
     engine->conductor.set_track_volume(track, volume);
+}
+
+void jello_engine_set_track_pan(JelloEngine* engine, int track, float pan) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_pan(pan)) {
+        return;
+    }
+    engine->conductor.set_track_pan(track, pan);
+}
+
+void jello_engine_set_send(JelloEngine* engine, int track, int bus, float amount) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_valid_bus(bus)) {
+        return;
+    }
+    if (!is_valid_volume(amount)) {
+        return;
+    }
+    engine->conductor.set_send(track, bus, amount);
+}
+
+void jello_engine_set_bus_volume(JelloEngine* engine, int bus, float volume) {
+    if (!is_valid_bus(bus)) {
+        return;
+    }
+    if (!is_valid_volume(volume)) {
+        return;
+    }
+    engine->conductor.set_bus_volume(bus, volume);
+}
+
+void jello_engine_set_bus_pan(JelloEngine* engine, int bus, float pan) {
+    if (!is_valid_bus(bus)) {
+        return;
+    }
+    if (!is_valid_pan(pan)) {
+        return;
+    }
+    engine->conductor.set_bus_pan(bus, pan);
+}
+
+void jello_engine_set_limiter(JelloEngine* engine, float boost_db, float ceiling_db, int release_ms) {
+    if (!is_within(boost_db, 0.0f, limiter_most_boost_db)) {
+        return;
+    }
+    if (!is_within(ceiling_db, limiter_lowest_ceiling_db, limiter_highest_ceiling_db)) {
+        return;
+    }
+    if (!is_within_int(release_ms, limiter_shortest_release_ms, limiter_longest_release_ms)) {
+        return;
+    }
+    LimiterSettings settings;
+    settings.boost_db = boost_db;
+    settings.ceiling_db = ceiling_db;
+    settings.release_ms = release_ms;
+    engine->conductor.set_limiter(settings);
+}
+
+int jello_engine_use_lookahead(JelloEngine* engine) {
+    return engine->conductor.use_lookahead();
+}
+
+float jello_engine_limiter_reduction(JelloEngine* engine) {
+    return engine->conductor.limiter_reduction_db();
+}
+
+bool jello_engine_set_effect(JelloEngine* engine, int chain, int slot, int kind) {
+    if (!is_valid_chain(chain)) {
+        return false;
+    }
+    if (!is_valid_effect_slot(slot)) {
+        return false;
+    }
+    if (!is_within_int(kind, JELLO_EFFECT_NONE, JELLO_EFFECT_REVERB)) {
+        return false;
+    }
+    EffectKind effect_kind = static_cast<EffectKind>(kind);
+    if (!engine->conductor.set_effect(chain, slot, effect_kind)) {
+        return false;
+    }
+    engine->effect_kinds[chain][slot] = effect_kind;
+    return true;
+}
+
+bool jello_engine_move_effect(JelloEngine* engine, int chain, int from, int to) {
+    if (!is_valid_chain(chain)) {
+        return false;
+    }
+    if (!is_valid_effect_slot(from)) {
+        return false;
+    }
+    if (!is_valid_effect_slot(to)) {
+        return false;
+    }
+    if (!engine->conductor.move_effect(chain, from, to)) {
+        return false;
+    }
+
+    // The kinds move the same way as the slots (Chain::move).
+    auto first = engine->effect_kinds[chain].begin();
+    if (from < to) {
+        std::rotate(first + from, first + from + 1, first + to + 1);
+    } else if (from > to) {
+        std::rotate(first + to, first + from, first + from + 1);
+    }
+    return true;
+}
+
+void jello_engine_set_effect_on(JelloEngine* engine, int chain, int slot, bool on) {
+    if (!is_valid_chain(chain)) {
+        return;
+    }
+    if (!is_valid_effect_slot(slot)) {
+        return;
+    }
+    if (engine->effect_kinds[chain][slot] == EffectKind::none) {
+        return;
+    }
+    engine->conductor.set_effect_on(chain, slot, on);
+}
+
+void jello_engine_set_effect_value(JelloEngine* engine, int chain, int slot, int value, float number) {
+    if (!is_valid_chain(chain)) {
+        return;
+    }
+    if (!is_valid_effect_slot(slot)) {
+        return;
+    }
+    EffectKind kind = engine->effect_kinds[chain][slot];
+    if (!is_valid_effect_value(kind, value, number)) {
+        return;
+    }
+    if (is_listens_to_value(kind, value)) {
+        if (!can_listen_to(chain, static_cast<int>(number))) {
+            return;
+        }
+    }
+    engine->conductor.set_effect_value(chain, slot, value, number);
+}
+
+int jello_engine_effect_count(JelloEngine* engine) {
+    return engine->conductor.effect_count();
+}
+
+int jello_engine_message_room(JelloEngine* engine) {
+    return static_cast<int>(engine->conductor.message_room());
+}
+
+void jello_engine_take_messages(JelloEngine* engine) {
+    if (engine->audio_running) {
+        return;
+    }
+    engine->conductor.take_waiting_messages();
+}
+
+uint64_t jello_engine_dropped_messages(JelloEngine* engine) {
+    return engine->conductor.dropped_messages();
+}
+
+bool jello_engine_set_chain_order(JelloEngine* engine, const int* order, int count) {
+    if (order == nullptr) {
+        return false;
+    }
+    if (count != JELLO_MASTER_CHAIN) {
+        return false;
+    }
+    std::array<int, Mixer::master_chain> sent{};
+    std::array<bool, Mixer::master_chain> seen{};
+    for (int place = 0; place < count; place++) {
+        int chain = order[place];
+        if (!is_within_int(chain, 0, JELLO_MASTER_CHAIN - 1)) {
+            return false;
+        }
+        if (seen[chain]) {
+            return false;
+        }
+        // Every track before every bus, since a bus needs all the tracks
+        // send it.
+        if (chain < JELLO_FIRST_BUS_CHAIN) {
+            if (place >= JELLO_FIRST_BUS_CHAIN) {
+                return false;
+            }
+        }
+        seen[chain] = true;
+        sent[place] = chain;
+    }
+    return engine->conductor.set_chain_order(sent);
+}
+
+float jello_engine_gain_reduction(JelloEngine* engine, int chain, int slot) {
+    if (!is_valid_chain(chain)) {
+        return 0.0f;
+    }
+    if (!is_valid_effect_slot(slot)) {
+        return 0.0f;
+    }
+    return engine->conductor.effect_reduction_db(chain, slot);
 }
 
 void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
@@ -849,7 +1217,8 @@ void jello_engine_set_tuning(JelloEngine* engine, int track, float a4_hz) {
 }
 
 void jello_engine_set_lfo(JelloEngine* engine, int track, int index, const JelloLfo* lfo) {
-    if (!is_valid_track(track)) {
+    // A bus's or the master's chain number for its own LFOs.
+    if (!is_valid_chain(track)) {
         return;
     }
     if (!is_within_int(index, 0, JELLO_LFO_COUNT - 1)) {
@@ -863,7 +1232,7 @@ void jello_engine_set_lfo(JelloEngine* engine, int track, int index, const Jello
 }
 
 void jello_engine_set_connection(JelloEngine* engine, int track, int index, const JelloConnection* connection) {
-    if (!is_valid_track(track)) {
+    if (!is_valid_chain(track)) {
         return;
     }
     if (!is_within_int(index, 0, JELLO_CONNECTION_COUNT - 1)) {

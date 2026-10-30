@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 
 use crate::engine::{Engine, Filter, FilterEnvelope, LoudnessEnvelope, Oscillator, Unison};
-use crate::modulation::{Connection, Lfo, VibratoKeyTimes};
+use crate::modulation::{Connection, Lfo, Source, VibratoKeyTimes};
 use crate::sound_changes::changed;
 use crate::sound_file::Sound;
 
@@ -187,6 +187,13 @@ pub fn send_part(engine: &mut Engine, track: usize, part: Part) {
         engine.set_track_volume(track, percent);
         return;
     }
+    // An unused sound connection does not own an engine slot. That slot
+    // may currently hold an effect link, so there is nothing to send.
+    if let Part::Connection(_, connection) = part {
+        if connection.source == Source::None {
+            return;
+        }
+    }
     engine.on_track(track, |engine| match part {
         Part::Volume(_) => {}
         Part::Oscillator(index, oscillator) => {
@@ -232,6 +239,30 @@ mod tests {
 
     fn sound() -> Sound {
         SoundProfile::new().sound()
+    }
+
+    #[test]
+    fn an_unused_sound_connection_does_not_clear_an_effect_link() {
+        use crate::engine::{EffectConnection, EffectKind, EQ_OUTPUT};
+        use crate::modulation::{LfoShape, NO_CONNECTION, START_LFO};
+        let mut actual = Engine::for_render().unwrap();
+        let mut expected = Engine::for_render().unwrap();
+        let mut lfo = START_LFO;
+        lfo.per_note = false;
+        lfo.shape = LfoShape::Steps;
+        lfo.step_count = 1;
+        lfo.steps[0] = 100.0;
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: -6.0, one_way: false, scaled_by: Source::None };
+        for engine in [&mut actual, &mut expected] {
+            engine.set_effect(0, 0, EffectKind::Eq);
+            engine.set_chain_lfo(0, 0, lfo);
+            engine.set_effect_connection(0, 3, link);
+        }
+        send_part(&mut actual, 0, Part::Connection(3, NO_CONNECTION));
+        actual.note_on(69, 100);
+        expected.note_on(69, 100);
+        assert_eq!(actual.render(4096), expected.render(4096));
     }
 
     #[test]

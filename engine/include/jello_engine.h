@@ -64,6 +64,402 @@ void jello_engine_all_notes_off(JelloEngine* engine);
 // that range is ignored.
 void jello_engine_set_track_volume(JelloEngine* engine, int track, float volume);
 
+// The mix (docs/design.md#mix-in-the-engine). Each track has a pan, and a
+// send to each of JELLO_BUS_COUNT buses, counted from 0. A bus adds up what
+// the tracks send it and plays it at its own volume and pan. Everything
+// meets in the master, and the master limiter is the last step before the
+// speakers. Every volume, pan and send eases over 10 ms, so it never
+// clicks, and anything out of range is ignored.
+enum {
+    JELLO_BUS_COUNT = 4,
+};
+
+// Where track `track` sits between the speakers, from -1 (fully left) to 1
+// (fully right), at equal loudness: in the middle, both play it as it is.
+// Every track starts at 0.
+void jello_engine_set_track_pan(JelloEngine* engine, int track, float pan);
+
+// How much of track `track`'s sound, after its volume and pan, goes to bus
+// `bus`, from 0 to 1. Every send starts at 0.
+void jello_engine_set_send(JelloEngine* engine, int track, int bus, float amount);
+
+// A bus's volume, from 0 to 1, starting at 1, and its pan, from -1 to 1,
+// starting at 0.
+void jello_engine_set_bus_volume(JelloEngine* engine, int bus, float volume);
+void jello_engine_set_bus_pan(JelloEngine* engine, int bus, float pan);
+
+// The master limiter's limits.
+enum {
+    JELLO_LIMITER_MOST_BOOST_DB = 24,
+    JELLO_LIMITER_LOWEST_CEILING_DB = -12,
+    JELLO_LIMITER_SHORTEST_RELEASE_MS = 1,
+    JELLO_LIMITER_LONGEST_RELEASE_MS = 1000,
+};
+
+// The master limiter: the sound is made `boost_db` louder, from 0 to
+// JELLO_LIMITER_MOST_BOOST_DB, then held under `ceiling_db`, from
+// JELLO_LIMITER_LOWEST_CEILING_DB to 0, and comes back up two thirds of the
+// way in `release_ms`. The boost and the ceiling ease over 10 ms. A new
+// engine starts at 0 dB, -1 dB and 100 ms.
+void jello_engine_set_limiter(JelloEngine* engine, float boost_db, float ceiling_db, int release_ms);
+
+// Makes the limiter look 1 ms ahead, for WAV renders: cleaner, and it
+// catches the peaks between samples too, but every sound comes out that
+// much later. Returns how many frames that is; throw them away right after
+// starting what plays, and the render lines up again. Call it before the
+// first render, on an engine whose audio never runs.
+int jello_engine_use_lookahead(JelloEngine* engine);
+
+// The most the limiter turned the sound down in the last chunk, in dB, 0
+// for not at all.
+float jello_engine_limiter_reduction(JelloEngine* engine);
+
+// Effects. Every track, bus and the master has a chain of JELLO_EFFECT_SLOTS
+// slots, and the sound goes through them in order. Chains are numbered:
+// the tracks' from 0, the buses' from JELLO_FIRST_BUS_CHAIN, and the
+// master's, JELLO_MASTER_CHAIN, which comes before the click and the
+// limiter. A chain or slot out of range is ignored.
+enum {
+    JELLO_EFFECT_SLOTS = 8,
+    JELLO_FIRST_BUS_CHAIN = 9,
+    JELLO_MASTER_CHAIN = 13,
+    JELLO_CHAIN_COUNT = 14,
+};
+
+// The kinds of effect.
+enum {
+    JELLO_EFFECT_NONE = 0,
+    JELLO_EFFECT_EQ = 1,
+    JELLO_EFFECT_FILTER = 2,
+    JELLO_EFFECT_SATURATION = 3,
+    JELLO_EFFECT_COMPRESSOR = 4,
+    JELLO_EFFECT_GATE = 5,
+    JELLO_EFFECT_VOLUME_SHAPER = 6,
+    JELLO_EFFECT_CHORUS = 7,
+    JELLO_EFFECT_DELAY = 8,
+    JELLO_EFFECT_REVERB = 9,
+};
+
+// Puts a new effect of `kind`, at its starting values, switched on, or
+// none, in a slot. A new effect changes the sound little or not at all,
+// but chorus, delay and reverb are heard: fully wet on a bus, and at
+// JELLO_EFFECT_START_MIX_PERCENT elsewhere.
+// The effect it replaces is freed on a later call. Returns false if the
+// kind is unknown or the mailbox is full. Never timed.
+enum {
+    JELLO_EFFECT_START_MIX_PERCENT = 30,
+};
+bool jello_engine_set_effect(JelloEngine* engine, int chain, int slot, int kind);
+
+// Moves slot `from`'s effect, with everything it remembers, to slot `to`,
+// shifting the slots between by one. Returns false if out of range or the
+// mailbox is full. Never timed.
+bool jello_engine_move_effect(JelloEngine* engine, int chain, int from, int to);
+
+// Switches a slot's effect on or off; off passes the sound untouched. It
+// crossfades over 10 ms. An empty slot ignores it.
+void jello_engine_set_effect_on(JelloEngine* engine, int chain, int slot, bool on);
+
+// Sets value `value` of a slot's effect to `number`. Each kind's values are
+// below. A value the effect doesn't have, a number out of its range, or an
+// empty slot is ignored. Numbers glide there over 20 ms; choices and
+// switches crossfade over 10 ms.
+void jello_engine_set_effect_value(JelloEngine* engine, int chain, int slot, int value, float number);
+
+// How many effects the engine holds, after freeing the replaced ones that
+// are ready to go.
+int jello_engine_effect_count(JelloEngine* engine);
+
+// How many more messages the audio thread's mailbox holds right now.
+int jello_engine_message_room(JelloEngine* engine);
+
+// Acts on every waiting message now, on the calling thread, without moving
+// the sound on. Only on an engine whose audio is not running: a render
+// otherwise takes them only as it starts.
+void jello_engine_take_messages(JelloEngine* engine);
+
+// How many messages were ever lost to a full mailbox.
+uint64_t jello_engine_dropped_messages(JelloEngine* engine);
+
+// The sidechain. The compressor, the gate and the filter's follower have a
+// "listens to" value: JELLO_LISTEN_TO_OWN for their own input, or a
+// chain's number for that chain's sound after its effects, volume and pan.
+// A track may listen to the other tracks, a bus to the tracks and the
+// other buses, and the master to every track and bus; anything else is
+// ignored. A chain hears another from the same samples only if that one
+// runs first, so the chains run in an order: `order` holds every track's
+// and bus's chain once, `count` of them, which must be
+// JELLO_MASTER_CHAIN, every track before every bus; the master runs last.
+// A chain listening to one that runs after it hears silence. A new engine
+// runs them in number order. Returns false and changes nothing if the
+// order is not one of those, or the mailbox is full. Never timed.
+enum {
+    JELLO_LISTEN_TO_OWN = -1,
+};
+bool jello_engine_set_chain_order(JelloEngine* engine, const int* order, int count);
+
+// The most a slot's effect, a compressor or a gate, turned the sound down
+// in the last chunk, in dB, 0 for not at all or another kind. A gate closed
+// to silence reads JELLO_GATE_SILENT_REDUCTION_DB.
+float jello_engine_gain_reduction(JelloEngine* engine, int chain, int slot);
+
+// The EQ: JELLO_EQ_BAND_COUNT bands, each with JELLO_EQ_BAND_VALUES values
+// numbered band * JELLO_EQ_BAND_VALUES + one of the JELLO_EQ_BAND_ ones,
+// then JELLO_EQ_OUTPUT. On: 0 or 1. Shape: one of the shapes below.
+// Frequency: JELLO_EQ_LOWEST_HZ to JELLO_EQ_HIGHEST_HZ. Gain, for shelves
+// and bells, and the output: -JELLO_EQ_MOST_GAIN_DB to
+// JELLO_EQ_MOST_GAIN_DB. Width, the Q, for shelves, bells and notches: 0.1
+// to JELLO_EQ_WIDEST_WIDTH. Slope, for cuts: 12, 24 or 48 dB an octave. A
+// new EQ has every band off.
+enum {
+    JELLO_EQ_BAND_COUNT = 8,
+    JELLO_EQ_BAND_ON = 0,
+    JELLO_EQ_BAND_SHAPE = 1,
+    JELLO_EQ_BAND_FREQUENCY = 2,
+    JELLO_EQ_BAND_GAIN = 3,
+    JELLO_EQ_BAND_WIDTH = 4,
+    JELLO_EQ_BAND_SLOPE = 5,
+    JELLO_EQ_BAND_VALUES = 6,
+    JELLO_EQ_OUTPUT = 48,
+    JELLO_EQ_LOWEST_HZ = 20,
+    JELLO_EQ_HIGHEST_HZ = 20000,
+    JELLO_EQ_MOST_GAIN_DB = 24,
+    JELLO_EQ_WIDEST_WIDTH = 18,
+};
+
+enum {
+    JELLO_EQ_LOW_CUT = 0,
+    JELLO_EQ_LOW_SHELF = 1,
+    JELLO_EQ_BELL = 2,
+    JELLO_EQ_HIGH_SHELF = 3,
+    JELLO_EQ_HIGH_CUT = 4,
+    JELLO_EQ_NOTCH = 5,
+};
+
+// The filter effect. Type: one of the filter types (JELLO_FILTER_LOW_PASS
+// and on). Slope: 12 or 24 dB an octave. Cutoff: JELLO_FILTER_LOWEST_HZ to
+// JELLO_FILTER_OPEN_HZ. Resonance, drive and mix: 0 to 1. Follow, how far
+// full loudness moves the cutoff: -JELLO_FILTER_MOST_OCTAVES to
+// JELLO_FILTER_MOST_OCTAVES octaves. Follow attack: 0.1 to
+// JELLO_FOLLOW_LONGEST_ATTACK_MS. Follow release:
+// JELLO_FOLLOW_SHORTEST_RELEASE_MS to JELLO_FOLLOW_LONGEST_RELEASE_MS. A new
+// one is an open low-pass, which changes nothing. Listens to: what the
+// follower hears (JELLO_LISTEN_TO_OWN, to start).
+enum {
+    JELLO_FILTER_EFFECT_TYPE = 0,
+    JELLO_FILTER_EFFECT_SLOPE = 1,
+    JELLO_FILTER_EFFECT_CUTOFF = 2,
+    JELLO_FILTER_EFFECT_RESONANCE = 3,
+    JELLO_FILTER_EFFECT_DRIVE = 4,
+    JELLO_FILTER_EFFECT_FOLLOW = 5,
+    JELLO_FILTER_EFFECT_FOLLOW_ATTACK = 6,
+    JELLO_FILTER_EFFECT_FOLLOW_RELEASE = 7,
+    JELLO_FILTER_EFFECT_MIX = 8,
+    JELLO_FILTER_EFFECT_LISTENS_TO = 9,
+    JELLO_FOLLOW_LONGEST_ATTACK_MS = 100,
+    JELLO_FOLLOW_SHORTEST_RELEASE_MS = 5,
+    JELLO_FOLLOW_LONGEST_RELEASE_MS = 2000,
+};
+
+// Saturation. Drive: 0 to JELLO_SATURATION_MOST_DRIVE_DB. Curve: one of the
+// curves below. Tone: -1 (darker) to 1 (brighter). Output:
+// -JELLO_SATURATION_MOST_OUTPUT_DB to JELLO_SATURATION_MOST_OUTPUT_DB.
+// Match: 0, or 1 to keep it as loud as its input instead of the output.
+// Mix: 0 to 1. A new one has no drive.
+enum {
+    JELLO_SATURATION_DRIVE = 0,
+    JELLO_SATURATION_CURVE = 1,
+    JELLO_SATURATION_TONE = 2,
+    JELLO_SATURATION_OUTPUT = 3,
+    JELLO_SATURATION_MATCH = 4,
+    JELLO_SATURATION_MIX = 5,
+    JELLO_SATURATION_MOST_DRIVE_DB = 36,
+    JELLO_SATURATION_MOST_OUTPUT_DB = 24,
+};
+
+enum {
+    JELLO_SATURATION_TAPE = 0,
+    JELLO_SATURATION_TUBE = 1,
+    JELLO_SATURATION_HARD = 2,
+    JELLO_SATURATION_FOLD = 3,
+};
+
+// The compressor. Threshold: JELLO_COMPRESSOR_LOWEST_THRESHOLD_DB to 0 dB.
+// Ratio: 1 to JELLO_COMPRESSOR_MOST_RATIO, or JELLO_COMPRESSOR_LIMIT, so
+// nothing passes the threshold. Attack: 0.1 to
+// JELLO_COMPRESSOR_LONGEST_ATTACK_MS. Release:
+// JELLO_COMPRESSOR_SHORTEST_RELEASE_MS to
+// JELLO_COMPRESSOR_LONGEST_RELEASE_MS. Knee, how gently it starts: 0 to
+// JELLO_COMPRESSOR_WIDEST_KNEE_DB. Makeup: 0 to
+// JELLO_COMPRESSOR_MOST_MAKEUP_DB. Mix: 0 to 1, under 1 for parallel
+// compression. Listens to: see the sidechain. Low cut, on what it listens
+// to: JELLO_COMPRESSOR_LOWEST_CUT_HZ to JELLO_COMPRESSOR_HIGHEST_CUT_HZ. A
+// new one: 0 dB, 4:1, 10 ms, 100 ms, no knee, no makeup, all wet, its own
+// input and 20 Hz, so it changes nothing under 0 dB.
+enum {
+    JELLO_COMPRESSOR_THRESHOLD = 0,
+    JELLO_COMPRESSOR_RATIO = 1,
+    JELLO_COMPRESSOR_ATTACK = 2,
+    JELLO_COMPRESSOR_RELEASE = 3,
+    JELLO_COMPRESSOR_KNEE = 4,
+    JELLO_COMPRESSOR_MAKEUP = 5,
+    JELLO_COMPRESSOR_MIX = 6,
+    JELLO_COMPRESSOR_LISTENS_TO = 7,
+    JELLO_COMPRESSOR_LOW_CUT = 8,
+    JELLO_COMPRESSOR_LOWEST_THRESHOLD_DB = -60,
+    JELLO_COMPRESSOR_MOST_RATIO = 20,
+    JELLO_COMPRESSOR_LIMIT = 0,
+    JELLO_COMPRESSOR_LONGEST_ATTACK_MS = 100,
+    JELLO_COMPRESSOR_SHORTEST_RELEASE_MS = 5,
+    JELLO_COMPRESSOR_LONGEST_RELEASE_MS = 2000,
+    JELLO_COMPRESSOR_WIDEST_KNEE_DB = 24,
+    JELLO_COMPRESSOR_MOST_MAKEUP_DB = 24,
+    JELLO_COMPRESSOR_LOWEST_CUT_HZ = 20,
+    JELLO_COMPRESSOR_HIGHEST_CUT_HZ = 500,
+};
+
+// The gate. Threshold: JELLO_GATE_LOWEST_THRESHOLD_DB to 0 dB; at the
+// lowest it never closes. Range, how far down it closes:
+// JELLO_GATE_SILENT_RANGE_DB, silent, to 0 dB. Attack: 0.1 to
+// JELLO_GATE_LONGEST_ATTACK_MS. Hold: 0 to JELLO_GATE_LONGEST_HOLD_MS.
+// Release: JELLO_GATE_SHORTEST_RELEASE_MS to JELLO_GATE_LONGEST_RELEASE_MS.
+// Listens to: see the sidechain. A new one: the lowest threshold, silent,
+// 1 ms, 20 ms, 100 ms and its own input, so it never closes.
+enum {
+    JELLO_GATE_THRESHOLD = 0,
+    JELLO_GATE_RANGE = 1,
+    JELLO_GATE_ATTACK = 2,
+    JELLO_GATE_HOLD = 3,
+    JELLO_GATE_RELEASE = 4,
+    JELLO_GATE_LISTENS_TO = 5,
+    JELLO_GATE_LOWEST_THRESHOLD_DB = -80,
+    JELLO_GATE_SILENT_RANGE_DB = -80,
+    JELLO_GATE_SILENT_REDUCTION_DB = 80,
+    JELLO_GATE_LONGEST_ATTACK_MS = 50,
+    JELLO_GATE_LONGEST_HOLD_MS = 500,
+    JELLO_GATE_SHORTEST_RELEASE_MS = 5,
+    JELLO_GATE_LONGEST_RELEASE_MS = 2000,
+};
+
+// The volume shaper: a volume curve repeating every cycle, on the beat.
+// JELLO_SHAPER_MOST_POINTS points, each with JELLO_SHAPER_POINT_VALUES
+// values numbered point * JELLO_SHAPER_POINT_VALUES + one of the
+// JELLO_SHAPER_POINT_ ones, then the rest. Place, in the cycle, and level:
+// 0 to 1. Bend into the next point: -1 (waits, then moves late) to 1
+// (moves early, then settles). The curve goes through the first
+// JELLO_SHAPER_POINTS points in order, then round to the first again; a
+// place lower than the one before it counts as that one. Cycle: 1/16 to
+// JELLO_SHAPER_LONGEST_CYCLE beats. Depth, how much of the curve is heard:
+// 0 to 1. Points: 1 to JELLO_SHAPER_MOST_POINTS. A new one is the classic
+// pump, down at each beat and back up by half way, at 0 depth.
+enum {
+    JELLO_SHAPER_MOST_POINTS = 16,
+    JELLO_SHAPER_POINT_PLACE = 0,
+    JELLO_SHAPER_POINT_LEVEL = 1,
+    JELLO_SHAPER_POINT_BEND = 2,
+    JELLO_SHAPER_POINT_VALUES = 3,
+    JELLO_SHAPER_CYCLE = 48,
+    JELLO_SHAPER_DEPTH = 49,
+    JELLO_SHAPER_POINTS = 50,
+    JELLO_SHAPER_LONGEST_CYCLE = 16,
+};
+
+// The chorus: copies of the sound, each a little late, the lateness
+// swinging so each copy's pitch wobbles. Copies: 1 to
+// JELLO_CHORUS_MOST_COPIES. Speed: 0.01 to JELLO_CHORUS_FASTEST_HZ. Cycle:
+// 1/16 to JELLO_CHORUS_LONGEST_CYCLE beats. On beat: 0 swings at the
+// speed, 1 once a cycle, on the beat. Depth, how far the lateness swings
+// as a share of the delay, up to 90% of it: 0 to 1. Delay:
+// JELLO_CHORUS_SHORTEST_DELAY_MS to JELLO_CHORUS_LONGEST_DELAY_MS.
+// Feedback: 0 to JELLO_CHORUS_MOST_FEEDBACK_PERCENT / 100. Spread, how
+// wide the copies sit: 0 to 1. Mix: 0 to 1. A new one: 2 copies, 0.8 Hz,
+// 1 beat, at the speed, 0.25 deep, 7 ms, no feedback, fully spread.
+enum {
+    JELLO_CHORUS_COPIES = 0,
+    JELLO_CHORUS_SPEED = 1,
+    JELLO_CHORUS_CYCLE = 2,
+    JELLO_CHORUS_ON_BEAT = 3,
+    JELLO_CHORUS_DEPTH = 4,
+    JELLO_CHORUS_DELAY = 5,
+    JELLO_CHORUS_FEEDBACK = 6,
+    JELLO_CHORUS_SPREAD = 7,
+    JELLO_CHORUS_MIX = 8,
+    JELLO_CHORUS_MOST_COPIES = 4,
+    JELLO_CHORUS_FASTEST_HZ = 10,
+    JELLO_CHORUS_LONGEST_CYCLE = 32,
+    JELLO_CHORUS_SHORTEST_DELAY_MS = 1,
+    JELLO_CHORUS_LONGEST_DELAY_MS = 40,
+    JELLO_CHORUS_MOST_FEEDBACK_PERCENT = 95,
+};
+
+// The delay. Left and right time: JELLO_DELAY_SHORTEST_MS to
+// JELLO_DELAY_LONGEST_MS, or in beats, 1/16 to JELLO_DELAY_LONGEST_BEATS,
+// never longer than JELLO_DELAY_LONGEST_MS. A new time slides there over
+// 100 ms like tape, bending the echoes' pitch. On beat: 0 uses the ms, 1
+// the beats. Linked: 1 gives the right side the left's time. Ping-pong: 1
+// bounces the echoes from side to side, starting on the left. Feedback: 0
+// to 1. Low cut and high cut, on every echo: JELLO_DELAY_LOWEST_HZ to
+// JELLO_DELAY_HIGHEST_HZ. Wobble, a tape-like swing in the time: 0 to 1, at
+// a wobble speed of 0.1 to JELLO_DELAY_FASTEST_WOBBLE_HZ. Grit, saturation
+// on the echoes: 0 to 1. Duck, how far the echoes quieten while the dry
+// sound plays: 0 to 1. Mix: 0 to 1. A new one: 250 ms or half a beat a
+// side, on the beat, linked, straight, 35% feedback, nothing cut, no
+// wobble at 0.5 Hz, no grit or duck.
+enum {
+    JELLO_DELAY_LEFT_MS = 0,
+    JELLO_DELAY_RIGHT_MS = 1,
+    JELLO_DELAY_LEFT_BEATS = 2,
+    JELLO_DELAY_RIGHT_BEATS = 3,
+    JELLO_DELAY_ON_BEAT = 4,
+    JELLO_DELAY_LINKED = 5,
+    JELLO_DELAY_PING_PONG = 6,
+    JELLO_DELAY_FEEDBACK = 7,
+    JELLO_DELAY_LOW_CUT = 8,
+    JELLO_DELAY_HIGH_CUT = 9,
+    JELLO_DELAY_WOBBLE = 10,
+    JELLO_DELAY_WOBBLE_SPEED = 11,
+    JELLO_DELAY_GRIT = 12,
+    JELLO_DELAY_DUCK = 13,
+    JELLO_DELAY_MIX = 14,
+    JELLO_DELAY_SHORTEST_MS = 1,
+    JELLO_DELAY_LONGEST_MS = 8000,
+    JELLO_DELAY_LONGEST_BEATS = 16,
+    JELLO_DELAY_LOWEST_HZ = 20,
+    JELLO_DELAY_HIGHEST_HZ = 20000,
+    JELLO_DELAY_FASTEST_WOBBLE_HZ = 10,
+};
+
+// The reverb: eight delays feeding each other, the usual way to build a
+// room. Size: 0 to 1, sliding there over 200 ms. Decay, how long the tail
+// takes to fall 60 dB: 0.1 to JELLO_REVERB_LONGEST_DECAY seconds.
+// Pre-delay, the gap before the room answers: 0 to
+// JELLO_REVERB_LONGEST_PRE_DELAY_MS. Damping, a high cut on the tail:
+// JELLO_REVERB_LOWEST_DAMPING_HZ to JELLO_REVERB_HIGHEST_DAMPING_HZ. Low
+// cut: JELLO_REVERB_LOWEST_CUT_HZ to JELLO_REVERB_HIGHEST_CUT_HZ.
+// Diffusion, how fast the echoes smear into a wash, modulation, a slow
+// wobble in the tail, and width: 0 to 1. Freeze: 1 holds the tail forever
+// and lets nothing new in. Mix: 0 to 1. A new one: half size, 1.5 s, no
+// pre-delay, 8 kHz damping, nothing cut, 0.7 diffusion, 0.3 modulation,
+// full width, not frozen.
+enum {
+    JELLO_REVERB_SIZE = 0,
+    JELLO_REVERB_DECAY = 1,
+    JELLO_REVERB_PRE_DELAY = 2,
+    JELLO_REVERB_DAMPING = 3,
+    JELLO_REVERB_LOW_CUT = 4,
+    JELLO_REVERB_DIFFUSION = 5,
+    JELLO_REVERB_MODULATION = 6,
+    JELLO_REVERB_WIDTH = 7,
+    JELLO_REVERB_FREEZE = 8,
+    JELLO_REVERB_MIX = 9,
+    JELLO_REVERB_LONGEST_DECAY = 30,
+    JELLO_REVERB_LONGEST_PRE_DELAY_MS = 500,
+    JELLO_REVERB_LOWEST_DAMPING_HZ = 1000,
+    JELLO_REVERB_HIGHEST_DAMPING_HZ = 20000,
+    JELLO_REVERB_LOWEST_CUT_HZ = 20,
+    JELLO_REVERB_HIGHEST_CUT_HZ = 1000,
+};
+
 // Oscillators (docs/adr/0035-oscillators-with-kinds.md): every note is
 // played by JELLO_OSCILLATOR_COUNT of them at once, counted from 0, added up
 // before the filter. Each is tuned from the note by up to
@@ -332,8 +728,12 @@ void jello_engine_set_tuning(JelloEngine* engine, int track, float a4_hz);
 
 // LFOs (docs/adr/0031-lfos-and-a-routing-list.md): low frequency
 // oscillators, slow waves that move settings up and down while notes play,
-// as the routing list below connects them. An engine has JELLO_LFO_COUNT,
-// counted from 0, and JELLO_CONNECTION_COUNT connections.
+// as the routing list below connects them. Each track has JELLO_LFO_COUNT,
+// counted from 0, and JELLO_CONNECTION_COUNT connections, which move its
+// sound and its effects. Each bus and the master has as many of its own,
+// which only move its effects: jello_engine_set_lfo and
+// jello_engine_set_connection take its chain number, from
+// JELLO_FIRST_BUS_CHAIN to JELLO_MASTER_CHAIN, for `track`.
 enum {
     JELLO_LFO_COUNT = 8,
     JELLO_LFO_MOST_STEPS = 32,
@@ -443,7 +843,8 @@ enum {
 
 // What a connection moves, each in its own units, up to the amount given
 // either way. The ones before JELLO_TARGET_OSCILLATOR_1_KIND move live,
-// while a note sounds; the rest are read once as each note starts. LFO
+// while a note sounds; the rest up to JELLO_TARGET_GLIDE_TIME are read once
+// as each note starts; JELLO_TARGET_EFFECT moves an effect. LFO
 // number n's speed (from 0) is JELLO_TARGET_LFO_1_SPEED + n, and oscillator
 // number n's level, pitch, width and kind are
 // JELLO_TARGET_OSCILLATOR_1_LEVEL + n and so on. Connections to one target add up, and the sum is kept within
@@ -497,6 +898,21 @@ enum {
     JELLO_TARGET_FILTER_RELEASE = 38,
     // Octaves of time, up to 14, as each melody note starts to glide.
     JELLO_TARGET_GLIDE_TIME = 39,
+    // Value `effect_value` of the effect in slot `effect_slot` of the
+    // connection's chain, in that value's own units, up to
+    // JELLO_EFFECT_MOST_MOVE. Only LFOs that run for every note, in Hz or
+    // beats, move it, and only they scale it; any other source leaves it
+    // be. The move is added to what the value is set to and kept within its
+    // range, a whole number's rounded. "Listens to", a cut's slope, and a
+    // compressor at its limit never move. It glides like any new value.
+    JELLO_TARGET_EFFECT = 40,
+};
+
+// How many values an effect can have, numbered from 0, and the most a
+// connection moves one either way.
+enum {
+    JELLO_EFFECT_MOST_VALUES = 64,
+    JELLO_EFFECT_MOST_MOVE = 20000,
 };
 
 // One connection of the routing list: `source` moves `target` by `amount`,
@@ -517,6 +933,12 @@ typedef struct JelloConnection {
     // Another JELLO_SOURCE_ the amount is multiplied by, read one way, from
     // 0 (no move) to 1 (the full amount). JELLO_SOURCE_NONE leaves it full.
     int scaled_by;
+    // For JELLO_TARGET_EFFECT only: the slot, from 0 to
+    // JELLO_EFFECT_SLOTS - 1, and which value of its effect, from 0 to
+    // JELLO_EFFECT_MOST_VALUES - 1. A value the effect there doesn't have
+    // moves nothing.
+    int effect_slot;
+    int effect_value;
 } JelloConnection;
 
 // Sets connection `index`, from 0 to JELLO_CONNECTION_COUNT - 1. Every note
@@ -560,7 +982,10 @@ void jello_engine_set_glide_time(JelloEngine* engine, int track, int glide_ms);
 // The sequencer (docs/design.md#tracks-in-the-engine) plays the
 // arrangement: timed messages, each due on its own sample. Between
 // jello_engine_time_next and jello_engine_send_now, the note functions above,
-// jello_engine_set_track_volume, jello_engine_set_tempo, every sound setting
+// jello_engine_set_track_volume, the mix functions from
+// jello_engine_set_track_pan to jello_engine_set_limiter,
+// jello_engine_set_effect_on, jello_engine_set_effect_value,
+// jello_engine_set_tempo, every sound setting
 // from jello_engine_set_oscillator to jello_engine_set_glide_time,
 // jello_engine_set_drum_pad and the three layer functions below leave their
 // message for the sequencer instead, due `sample` samples after the
