@@ -1046,6 +1046,88 @@ Then each key press gets the next note. Details:
 - Laptop keyboards drop some 3+ key chords (ghosting). Mechanical keyboards
   with NKRO do not.
 
+### Song key mappings
+
+Approved 2026-10-30 ([ADR 0047](adr/0047-song-key-mappings.md)); not built.
+The agent reaches mappings through one tool of its own, `jello_keys`.
+
+**What other tools do.**
+
+| Tool | Mapping | Song-specific? |
+|---|---|---|
+| [Melody Explorer](https://store.steampowered.com/app/4947600/Melody_Explorer_Demo/) | Keys follow the scale and triad: left to right 1st, 3rd, 5th, then tensions. Shift gives chromatic rows, Alt a piano. 46 scales in the full version. Its exact key table is not published. | No |
+| [QwertyZen](https://qwertyzen.com/) | "Any musical scale", key table not published. Plays along with MIDI files. | No |
+| [KeyScale](https://www.renoise.com/tools/keyscale) | Shortcuts move a note by scale degree. No note sits on a set key. | No |
+| [aQWERTYon](https://www.ethanhein.com/wp/2016/inside-the-aqwertyon/) | Rows start on degrees 1, 3, 5 and 1 up, so each column is a chord. Every key fits the scale. A blues mode repeats the scale in octaves for melody. | No |
+| [US 6,444,888](https://patents.google.com/patent/US6444888) (expired) | Tonic triad on the home row, then notes by how often they are used, then by how often they combine with those. | No |
+| [US 2013/0157761](https://patents.google.com/patent/US20130157761A1/en) (abandoned) | Each song segment gets its own 3 to 11 keys, unused pitches are left off, and lit keys prompt the player. Comfort is mentioned only in passing. | Yes, but no optimizing |
+
+Patent statuses are as Google Patents lists them, not legal conclusions.
+
+**What notes real music uses.**
+
+- Rock melodies, the ten most common note sets across 105 of 194 songs
+  ([Temperley and de Clercq 2013](https://www.midside.com/publications/temperley_declercq_2013.pdf),
+  table 4). Outside the major scale, b3 appears in 69 of those songs, b7 in
+  54, #4 in 25, b6 in 5 and b2 in none. The major scale alone is 24 songs;
+  1 2 b3 3 4 5 6 b7 is second with 18.
+- That paper's two melody profiles: in its major one, the major pentatonic
+  (1 2 3 5 6) leads. In its minor one, b7 beats 7 and 6 beats b6, unlike
+  classical minor. The tonic triad is most common in both.
+- [Kostka-Payne classical profile](https://raw.githubusercontent.com/CPJKU/partitura/main/partitura/utils/globals.py):
+  in major, the outside notes are b6 .104, #4 .096, b3 .082, b2 .060, b7
+  .057. In minor, 7 .330, b7 .133, b5 .105, 6 .067, 3 .049, b2 .048.
+- [Blues](https://en.wikipedia.org/wiki/Blues_scale) adds b3 to the major
+  pentatonic and b5 to the minor. [Bebop](https://en.wikipedia.org/wiki/Bebop_scale)
+  adds a passing tone so chord tones land on the beat.
+- Gaps: no corpus here covers electronic, hip-hop or Indian music, and only
+  major and minor have numbers. Every other scale below rests on theory.
+
+**Notes per scale (approved 2026-10-30).** Core is the scale; color is what works anyway.
+A song that needs a left-out note gets it through its own mapping.
+
+| Scale | Core | Color | Left out |
+|---|---|---|---|
+| Major | 1 2 3 4 5 6 7 | b3 b7 b5 | b2 b6 |
+| Minor (today's, with both sevenths) | 1 2 b3 4 5 b6 b7 7 | 6 b5 | b2 3 |
+| Dorian | 1 2 b3 4 5 6 b7 | 3 7 b5 | b2 b6 |
+| Mixolydian | 1 2 3 4 5 6 b7 | 7 b3 b5 | b2 b6 |
+| Lydian | 1 2 3 #4 5 6 7 | 4 b7 b3 | b2 b6 |
+| Harmonic minor | 1 2 b3 4 5 b6 7 | b7 6 b5 | b2 3 |
+| Melodic minor | 1 2 b3 4 5 6 7 | b7 b6 b5 | b2 3 |
+| Phrygian | 1 b2 b3 4 5 b6 b7 | 3 b5 | 2 6 7 |
+| Major pentatonic | 1 2 3 5 6 | b3 4 b7 | b2 b5 b6 7 |
+| Minor pentatonic | 1 b3 4 5 b7 | b5 2 6 | b2 3 b6 7 |
+| Blues | 1 b3 4 b5 5 b7 | 3 6 2 | b2 b6 7 |
+
+Close calls: b6 in major (classical's top outside note, rare in rock melody,
+and the Ab chord still has a key) and 3 in minor (common in rock, rarest in
+classical, and the harshest clash over a minor tonic).
+
+**First melody shape, on paper only, tuned by ear once playable.** Corpus-backed best notes go under
+resting fingers, leftover keys repeat them in octaves as decided, and color
+notes sit on the upper row, placed so a note and the note it resolves to
+never share a finger.
+
+| Row | C major | A minor |
+|---|---|---|
+| Number 6 7 8 9 0 | A4 C5 D5 E5 G5 | G4 A4 C5 D5 E5 |
+| Upper Y U I O P | F#4 Eb4 F4 B3 Bb3 | F#4 Eb4 F4 B3 G#3 |
+| Upper end [ ] \ | C5 D5 E5 | A4 C5 D5 |
+| Home H J K L ; ' | A3 C4 D4 E4 G4 A4 | G3 A3 C4 D4 E4 G4 |
+| Bottom N M , . / | A2 C3 D3 E3 G3 | G2 A2 C3 D3 E3 |
+
+**The song optimizer.** Same-finger pairs, stretches and travel come from
+keyboard-layout analyzers
+([Kühlmak](https://github.com/fxkuehl/kuehlmak), MIT, simulated annealing,
+with a soft pull towards a reference layout). They score text, so Jello
+scores note pairs and chord changes instead. The rules are only the start:
+Jello measures the player's time and misses between each key pair, kept on
+their machine, and the score follows that.
+
+**Next-key marks.** Compose and practice light the next key, melody too, and
+the ones after it. Play has no song to look ahead in, so it stays unguided.
+
 ### Chord guidance
 
 [ADR 0013](adr/0013-highlight-next-chords-on-the-existing-layout.md) set the
