@@ -14,6 +14,14 @@ export interface LayoutChord {
 // What each key does, as Rust's `key_layout` command answers.
 export interface KeyLayout {
   octave: number;
+  // The scale the Play tab's keys follow, or null until one is picked, and
+  // whether the Play tab's keys are showing.
+  play_scale: string | null;
+  on_play_tab: boolean;
+  // The keys the optimizer leaves alone.
+  locked: string[];
+  // Whether an optimized mapping is being tried, unsaved.
+  trying: boolean;
   // Each key that plays one note, with its note: "KeyM" plays 60.
   notes: Record<string, number>;
   // Each key that plays a chord, with its chord: "KeyX" plays Cm.

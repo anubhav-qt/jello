@@ -20,7 +20,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0009](0009-how-notes-become-sound.md) | How notes become sound | Accepted; fixed envelope superseded by 0030, Ctrl as a shortcut key by 0032, one wave per note by 0035, Option/Alt as a shortcut key by 0036 |
 | [0010](0010-stage-look-for-the-start-page.md) | Stage look for the start page | Accepted; colors superseded by 0014; dot grid and beams dropped (design.md) |
 | [0011](0011-svelte-5-for-the-ui.md) | Svelte 5 for the UI | Accepted |
-| [0012](0012-chords-left-melody-right.md) | Chords on the left, melody on the right | Accepted |
+| [0012](0012-chords-left-melody-right.md) | Chords on the left, melody on the right | Fixed layout superseded by 0047, whose defaults keep chords left |
 | [0013](0013-highlight-next-chords-on-the-existing-layout.md) | Highlight next chords on the existing layout | Accepted; guidance groups superseded by 0017 |
 | [0014](0014-one-color-per-note-family.md) | One color per note family | Accepted |
 | [0015](0015-minor-on-space-sharp-on-right-shift.md) | Minor on Space, sharp on right Shift | Superseded by 0020 |
@@ -28,7 +28,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0017](0017-guided-compose.md) | Guided Compose | Accepted; following the key only superseded by 0034 |
 | [0018](0018-ai-harness-on-a-fork-of-pi.md) | AI harness on a fork of pi | Superseded in part by 0040 |
 | [0019](0019-instruments-built-from-scratch-no-guitar.md) | Instruments built from scratch, no guitar | Accepted |
-| [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Accepted; F#m on left Shift superseded by 0032 |
+| [0020](0020-every-chord-on-its-own-key.md) | Every chord on its own key | Superseded by 0047; F#m on left Shift earlier by 0032 |
 | [0021](0021-a-looper-on-a-beat.md) | A looper on a beat | Accepted; Esc superseded by 0026 |
 | [0022](0022-compose-as-a-tape.md) | Compose as a tape | Accepted |
 | [0023](0023-guidance-on-the-melody-keys.md) | Guidance on the melody keys | Accepted |

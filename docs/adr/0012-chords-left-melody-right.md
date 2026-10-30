@@ -1,6 +1,6 @@
 # 0012: Chords on the left, melody on the right
 
-- Status: Accepted
+- Status: Fixed layout superseded by 0047, whose defaults keep chords left
 - Date: 2026-10-20
 
 The default laptop layout splits the hands, like an accordion. The left hand

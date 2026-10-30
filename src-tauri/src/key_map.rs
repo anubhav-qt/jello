@@ -10,19 +10,21 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::drums::{DRUM_FIRST_NOTE, PAD_NAMES, pad_named};
-use crate::harmony::{Chord, Quality, chord_name};
+use crate::harmony::{Chord, chord_name, chord_of_notes};
+#[cfg(test)]
+use crate::harmony::Quality;
+use crate::key_mapping::KeyMapping;
+use crate::scales::Scale;
+use crate::song_file::note_name;
 
 // Laptop keys can't feel how hard they are hit, so every note they play uses
 // this velocity (1 to 127).
 pub const LAPTOP_VELOCITY: u8 = 100;
 
-// The default layout (docs/design.md, "Computer keyboard"): the left hand
-// plays chords and the right hand plays the melody, like on an accordion.
-
-// The left hand's chords: all 24 major and minor chords, each on a key of
-// its own (docs/adr/0020-every-chord-on-its-own-key.md), so no chord needs
-// a key held down first. Each chord's root, the note it is named after, is
-// in octave 3, from C3 up to B3.
+// Which notes the keys play comes from a mapping (src/key_mapping.rs). The
+// tests keep the old fixed layout as a known set of keys to play: the left
+// hand plays chords and the right hand plays the melody.
+#[cfg(test)]
 const CHORDS: [(&str, Chord); 24] = [
     // Each letter key from A to G plays the major chord with its name, so a
     // chord chart like "C G F" is played by typing it. In touch typing, all
@@ -61,6 +63,7 @@ const CHORDS: [(&str, Chord); 24] = [
     ("Space", minor(58)),       // Bbm
 ];
 
+#[cfg(test)]
 const fn major(root: u8) -> Chord {
     Chord {
         root,
@@ -68,6 +71,7 @@ const fn major(root: u8) -> Chord {
     }
 }
 
+#[cfg(test)]
 const fn minor(root: u8) -> Chord {
     Chord {
         root,
@@ -81,6 +85,7 @@ const fn minor(root: u8) -> Chord {
 // there. So an octave is always the same row, three fingers over: M is
 // middle C and / is the C above it. The keys play G#3 to G5. Listed finger
 // by finger, bottom row first.
+#[cfg(test)]
 const MELODY_NOTES: [(&str, u8); 24] = [
     // Index reaching in.
     ("KeyN", 56),   // G#3
@@ -202,12 +207,10 @@ pub fn layer_number_of(key: &str) -> Option<u32> {
 }
 
 // What a key in the layout is for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum KeyRole {
-    // Plays this note.
-    Note(u8),
-    // Plays this chord.
-    Chord(Chord),
+    // Plays these notes: one, or any set, lowest first.
+    Notes(Vec<u8>),
     // Holds the vibrato key.
     Vibrato,
     // Holds the glide key.
@@ -229,12 +232,12 @@ enum KeyRole {
 }
 
 // What pressing a key does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum KeyAction {
     // Plays this note until the key is let go.
     PlayNote(u8),
-    // Plays this chord's notes together until the key is let go.
-    PlayChord(Chord),
+    // Plays these notes together until the key is let go.
+    PlayNotes(Vec<u8>),
     // Holds the vibrato key until the key is let go.
     HoldVibratoKey,
     // Holds the glide key until the key is let go.
@@ -270,6 +273,18 @@ pub struct KeyMap {
     drum_mode: bool,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
+    // The mapping the keys play, at no octave shift.
+    mapping: KeyMapping,
+    // Which mapping to follow. On the Play tab, the last scale's default;
+    // anywhere else, the song's. An optimized mapping being tried comes first.
+    on_play_tab: bool,
+    play_scale: Option<Scale>,
+    trying: Option<KeyMapping>,
+    // The song's mapping when the try began. Any change to it ends the try.
+    trying_over: KeyMapping,
+    // For tests that play a known layout whatever the song's mapping is.
+    #[cfg(test)]
+    fixed: bool,
 }
 
 // A chord as the UI draws it on its key.
@@ -278,13 +293,22 @@ pub struct ChordForUi {
     // Its name the way chord charts write it, like "Bb" or "F#m".
     name: String,
     // Its notes, lowest first.
-    notes: [u8; 3],
+    pub(crate) notes: Vec<u8>,
 }
 
 // What each key in the layout does, for the UI to draw on the keys.
 #[derive(Serialize)]
 pub struct LayoutForUi {
     pub octave: i8,
+    // The name of the scale the Play tab's keys follow, or None.
+    play_scale: Option<String>,
+    // Whether the Play tab's keys are showing, so the page knows to ask for
+    // a scale there.
+    on_play_tab: bool,
+    // The keys an optimizer leaves alone.
+    locked: Vec<String>,
+    // Whether an optimized mapping is being tried, unsaved.
+    trying: bool,
     // Each key that plays one note, with its note: "KeyM" plays 60.
     notes: HashMap<String, u8>,
     // Each key that plays a chord, with its chord: "KeyX" plays Cm.
@@ -306,15 +330,9 @@ pub struct LayoutForUi {
 }
 
 impl KeyMap {
-    // The default layout, with no keys held.
+    // No notes on any key until a scale is picked, and no keys held.
     pub fn new() -> KeyMap {
         let mut layout = HashMap::new();
-        for (key, chord) in CHORDS {
-            layout.insert(String::from(key), KeyRole::Chord(chord));
-        }
-        for (key, note) in MELODY_NOTES {
-            layout.insert(String::from(key), KeyRole::Note(note));
-        }
         layout.insert(String::from(WAVE_KEY), KeyRole::Wave);
         layout.insert(String::from(VIBRATO_KEY), KeyRole::Vibrato);
         layout.insert(String::from(GLIDE_KEY), KeyRole::Glide);
@@ -325,16 +343,7 @@ impl KeyMap {
         layout.insert(String::from(DRUM_MODE_KEY), KeyRole::DrumMode);
 
         // Drum mode keeps every key that is not a note or a chord.
-        let mut drum_layout = HashMap::new();
-        for (key, role) in &layout {
-            match role {
-                KeyRole::Note(_) => {}
-                KeyRole::Chord(_) => {}
-                _ => {
-                    drum_layout.insert(key.clone(), *role);
-                }
-            }
-        }
+        let mut drum_layout = layout.clone();
         for (key, name) in DRUM_KEYS {
             if let Some(pad) = pad_named(name) {
                 drum_layout.insert(String::from(key), KeyRole::Drum(pad));
@@ -347,7 +356,99 @@ impl KeyMap {
             drum_layout,
             drum_mode: false,
             held: HashMap::new(),
+            mapping: KeyMapping::default(),
+            on_play_tab: false,
+            play_scale: None,
+            trying: None,
+            trying_over: KeyMapping::default(),
+            #[cfg(test)]
+            fixed: false,
         }
+    }
+
+    // The old fixed layout, for tests that only need keys that play.
+    #[cfg(test)]
+    pub fn with_test_layout() -> KeyMap {
+        let mut key_map = KeyMap::new();
+        let mut mapping = KeyMapping::default();
+        for (key, chord) in CHORDS {
+            mapping.keys.insert(String::from(key), chord.notes().to_vec());
+        }
+        for (key, note) in MELODY_NOTES {
+            mapping.keys.insert(String::from(key), vec![note]);
+        }
+        key_map.use_mapping(mapping);
+        key_map.fixed = true;
+        key_map
+    }
+
+    // Plays `mapping` from now on, at the same octave shift if every note
+    // stays in range, or else at none. Held keys keep the notes they started,
+    // so they keep sounding until they are let go.
+    fn use_mapping(&mut self, mapping: KeyMapping) {
+        self.layout.retain(|_, role| !matches!(role, KeyRole::Notes(_)));
+        let shift = i16::from(self.octave) * 12;
+        if !fits_when_shifted(&mapping, shift) {
+            self.octave = 0;
+        }
+        let shift = i16::from(self.octave) * 12;
+        for (key, notes) in &mapping.keys {
+            let mut shifted = Vec::new();
+            for note in notes {
+                shifted.push((i16::from(*note) + shift) as u8);
+            }
+            self.layout.insert(key.clone(), KeyRole::Notes(shifted));
+        }
+        self.mapping = mapping;
+    }
+
+    // Follows `song`, the song's mapping now, unless the Play tab or a
+    // mapping being tried comes first. Does nothing if the keys already play
+    // the right one.
+    pub fn follow(&mut self, song: &KeyMapping) {
+        #[cfg(test)]
+        if self.fixed {
+            return;
+        }
+        if self.trying.is_some() && *song != self.trying_over {
+            if self.trying_over.is_empty() {
+                self.trying_over = song.clone();
+            } else {
+                self.trying = None;
+            }
+        }
+        let wanted = self.wanted(song);
+        if wanted != self.mapping {
+            self.use_mapping(wanted);
+        }
+    }
+
+    fn wanted(&self, song: &KeyMapping) -> KeyMapping {
+        if let Some(trying) = &self.trying {
+            return trying.clone();
+        }
+        if !self.on_play_tab {
+            return song.clone();
+        }
+        match self.play_scale {
+            Some(scale) => KeyMapping::default_for(scale),
+            None => KeyMapping::default(),
+        }
+    }
+
+    // Whether the Play tab's keys come first, for the page to say.
+    pub fn set_on_play_tab(&mut self, on: bool) {
+        self.on_play_tab = on;
+    }
+
+    pub fn set_play_scale(&mut self, scale: Option<Scale>) {
+        self.play_scale = scale;
+    }
+
+    // Plays `mapping`, unsaved, until None ends it.
+    pub fn set_trying(&mut self, mapping: Option<KeyMapping>) {
+        self.trying = mapping;
+        self.trying_over = KeyMapping::default();
     }
 
     // Move the whole layout, preserving each held key's original notes.
@@ -357,15 +458,12 @@ impl KeyMap {
         if !(-4..=4).contains(&next) {
             return;
         }
-        let shift = i16::from(next - self.octave) * 12;
-        for role in self.layout.values_mut() {
-            match role {
-                KeyRole::Note(note) => *note = (i16::from(*note) + shift) as u8,
-                KeyRole::Chord(chord) => chord.root = (i16::from(chord.root) + shift) as u8,
-                _ => {}
-            }
+        if !fits_when_shifted(&self.mapping, i16::from(next) * 12) {
+            return;
         }
         self.octave = next;
+        let mapping = self.mapping.clone();
+        self.use_mapping(mapping);
     }
 
     // How many octaves the keys are shifted, from -4 to 4.
@@ -408,7 +506,7 @@ impl KeyMap {
 
         // A key that isn't in the layout does nothing.
         let role = match self.roles().get(key) {
-            Some(role) => *role,
+            Some(role) => role.clone(),
             None => return None,
         };
 
@@ -416,13 +514,12 @@ impl KeyMap {
         // another held key is already playing one of them, the engine plays
         // it again on the voice it already has, so the note sounds once.
         match role {
-            KeyRole::Note(note) => {
-                self.held.insert(String::from(key), vec![note]);
-                Some(KeyAction::PlayNote(note))
-            }
-            KeyRole::Chord(chord) => {
-                self.held.insert(String::from(key), chord.notes().to_vec());
-                Some(KeyAction::PlayChord(chord))
+            KeyRole::Notes(notes) => {
+                self.held.insert(String::from(key), notes.clone());
+                if notes.len() == 1 {
+                    return Some(KeyAction::PlayNote(notes[0]));
+                }
+                Some(KeyAction::PlayNotes(notes))
             }
             // Held with no notes, so letting go of it is known.
             KeyRole::Vibrato => {
@@ -502,12 +599,19 @@ impl KeyMap {
         self.held.clear();
     }
 
-    // Each chord key, with the chord it plays.
+    // Each key that plays a major or a minor chord, in any voicing, with
+    // that chord.
     pub fn chord_keys(&self) -> HashMap<String, Chord> {
         let mut chord_keys = HashMap::new();
         for (key, role) in &self.layout {
-            if let KeyRole::Chord(chord) = role {
-                chord_keys.insert(key.clone(), *chord);
+            let KeyRole::Notes(notes) = role else {
+                continue;
+            };
+            if notes.len() < 2 {
+                continue;
+            }
+            if let Some(chord) = chord_of_notes(notes) {
+                chord_keys.insert(key.clone(), chord);
             }
         }
         chord_keys
@@ -517,11 +621,58 @@ impl KeyMap {
     pub fn note_keys(&self) -> HashMap<String, u8> {
         let mut note_keys = HashMap::new();
         for (key, role) in &self.layout {
-            if let KeyRole::Note(note) = role {
-                note_keys.insert(key.clone(), *note);
+            let KeyRole::Notes(notes) = role else {
+                continue;
+            };
+            if notes.len() == 1 {
+                note_keys.insert(key.clone(), notes[0]);
             }
         }
         note_keys
+    }
+
+    // The keys that play exactly `notes` now, in order by name.
+    pub fn keys_playing(&self, notes: &[u8]) -> Vec<String> {
+        let mut keys = Vec::new();
+        for (key, role) in &self.layout {
+            if let KeyRole::Notes(played) = role {
+                if played == notes {
+                    keys.push(key.clone());
+                }
+            }
+        }
+        keys.sort();
+        keys
+    }
+
+    // The keys that play `chord`, in any octave or voicing, in order by name,
+    // those playing it from its root first.
+    pub fn keys_for_chord(&self, chord: Chord) -> Vec<String> {
+        let mut from_root = Vec::new();
+        let mut others = Vec::new();
+        for (key, played) in self.chord_keys() {
+            if played.pitch() != chord.pitch() || played.quality != chord.quality {
+                continue;
+            }
+            let lowest = self.notes_of(&key).first().copied();
+            if lowest == Some(played.root) {
+                from_root.push(key);
+            } else {
+                others.push(key);
+            }
+        }
+        from_root.sort();
+        others.sort();
+        from_root.extend(others);
+        from_root
+    }
+
+    // The notes `key` plays now. Empty for a key that plays none.
+    pub fn notes_of(&self, key: &str) -> Vec<u8> {
+        match self.layout.get(key) {
+            Some(KeyRole::Notes(notes)) => notes.clone(),
+            _ => Vec::new(),
+        }
     }
 
     // What every key in the layout does right now, for the UI to draw.
@@ -536,11 +687,12 @@ impl KeyMap {
         let mut drums = HashMap::new();
         for (key, role) in self.roles() {
             match role {
-                KeyRole::Note(note) => {
-                    notes.insert(key.clone(), *note);
-                }
-                KeyRole::Chord(chord) => {
-                    chords.insert(key.clone(), chord_for_ui(*chord));
+                KeyRole::Notes(played) => {
+                    if played.len() == 1 {
+                        notes.insert(key.clone(), played[0]);
+                    } else {
+                        chords.insert(key.clone(), chord_for_ui(played));
+                    }
                 }
                 KeyRole::Vibrato => {
                     vibrato_keys.push(key.clone());
@@ -578,8 +730,16 @@ impl KeyMap {
         vibrato_keys.sort();
         glide_keys.sort();
 
+        let mut play_scale = None;
+        if let Some(scale) = self.play_scale {
+            play_scale = Some(scale.name());
+        }
         LayoutForUi {
             octave: self.octave,
+            play_scale,
+            on_play_tab: self.on_play_tab,
+            locked: self.mapping.locked.iter().cloned().collect(),
+            trying: self.trying.is_some(),
             notes,
             chords,
             wave_keys,
@@ -593,12 +753,44 @@ impl KeyMap {
     }
 }
 
-// With no song key to follow, chords get the names chord charts use most.
-fn chord_for_ui(chord: Chord) -> ChordForUi {
-    ChordForUi {
-        name: chord_name(chord, None),
-        notes: chord.notes(),
+// Whether every note of `mapping` stays from 0 to 127, moved by `shift`.
+fn fits_when_shifted(mapping: &KeyMapping, shift: i16) -> bool {
+    for notes in mapping.keys.values() {
+        for note in notes {
+            let moved = i16::from(*note) + shift;
+            if !(0..=127).contains(&moved) {
+                return false;
+            }
+        }
     }
+    true
+}
+
+// With no song key to follow, chords get the names chord charts use most. A
+// voicing not on its root says its lowest note, and notes that spell no major
+// or minor chord are named one by one.
+fn chord_for_ui(notes: &[u8]) -> ChordForUi {
+    ChordForUi {
+        name: name_of_notes(notes),
+        notes: notes.to_vec(),
+    }
+}
+
+pub fn name_of_notes(notes: &[u8]) -> String {
+    let Some(chord) = chord_of_notes(notes) else {
+        let mut names = Vec::new();
+        for note in notes {
+            names.push(note_name(*note));
+        }
+        return names.join(" ");
+    };
+    let name = chord_name(chord, None);
+    if notes[0] % 12 == chord.pitch() {
+        return name;
+    }
+    let bass = note_name(notes[0]);
+    let bass = bass.trim_end_matches(|letter: char| letter.is_ascii_digit() || letter == '-');
+    format!("{name}/{bass}")
 }
 
 // These tests only ask the key map what keys do. They make no sound.
@@ -609,7 +801,7 @@ mod tests {
     // The notes a press played, if it played a chord.
     fn chord_notes(action: Option<KeyAction>) -> Option<[u8; 3]> {
         match action {
-            Some(KeyAction::PlayChord(chord)) => Some(chord.notes()),
+            Some(KeyAction::PlayNotes(notes)) => notes.try_into().ok(),
             _ => None,
         }
     }
@@ -618,7 +810,7 @@ mod tests {
     // and checks they play every note from `lowest` up, each one half step
     // above the last.
     fn assert_plays_in_order(fingers: &[[&str; 4]], lowest: u8) {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         let mut note = lowest;
         for finger in fingers {
             for key in finger {
@@ -633,7 +825,7 @@ mod tests {
     // notes, given as (key, notes).
     fn assert_chords(chords: &[(&str, [u8; 3])]) {
         for (key, notes) in chords {
-            let mut key_map = KeyMap::new();
+            let mut key_map = KeyMap::with_test_layout();
             assert_eq!(chord_notes(key_map.press(key)), Some(*notes), "key {key}");
         }
     }
@@ -703,7 +895,7 @@ mod tests {
 
     #[test]
     fn all_24_chords_are_playable_each_on_one_key() {
-        let chord_keys = KeyMap::new().chord_keys();
+        let chord_keys = KeyMap::with_test_layout().chord_keys();
         assert_eq!(chord_keys.len(), 24);
 
         // Every root from C3 to B3, once as a major chord and once as a
@@ -727,7 +919,7 @@ mod tests {
         // Space and left Control play chords of their own now, and left
         // Shift holds the vibrato key, so holding them leaves C a C chord
         // and M middle C.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("Space");
         key_map.press("ControlLeft");
         key_map.press("ShiftLeft");
@@ -737,7 +929,7 @@ mod tests {
 
     #[test]
     fn left_shift_holds_the_vibrato_key_until_it_is_let_go() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert!(!key_map.holds_vibrato_key("ShiftLeft"));
         assert_eq!(key_map.press("ShiftLeft"), Some(KeyAction::HoldVibratoKey));
         assert!(key_map.holds_vibrato_key("ShiftLeft"));
@@ -755,7 +947,7 @@ mod tests {
 
     #[test]
     fn left_option_holds_the_glide_key_until_it_is_let_go() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert!(!key_map.holds_glide_key(GLIDE_KEY));
         assert_eq!(key_map.press(GLIDE_KEY), Some(KeyAction::HoldGlideKey));
         assert!(key_map.holds_glide_key(GLIDE_KEY));
@@ -775,20 +967,20 @@ mod tests {
 
     #[test]
     fn f12_switches_the_wave() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_map.press("F12"), Some(KeyAction::SwitchWave));
     }
 
     #[test]
     fn right_shift_runs_the_looper_and_esc_removes_a_layer() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_map.press("ShiftRight"), Some(KeyAction::PressLooper));
         assert_eq!(key_map.press("Escape"), Some(KeyAction::RemoveLayer));
     }
 
     #[test]
     fn minus_and_equal_slow_the_beat_down_and_speed_it_up() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_map.press("Minus"), Some(KeyAction::SlowDown));
         assert_eq!(key_map.press("Equal"), Some(KeyAction::SpeedUp));
     }
@@ -797,7 +989,7 @@ mod tests {
     fn keys_outside_the_layout_do_nothing() {
         // The keys past the right pinky, and the keys every tab keeps for
         // itself.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         let keys = [
             "CapsLock",
             "Enter",
@@ -821,7 +1013,7 @@ mod tests {
 
     #[test]
     fn drum_mode_turns_the_letters_into_drums_and_back() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert!(!key_map.drum_mode);
         // The drum mode key asks for the drums track, which turns it on.
         assert_eq!(key_map.press(DRUM_MODE_KEY), Some(KeyAction::JumpToDrums));
@@ -869,7 +1061,7 @@ mod tests {
 
     #[test]
     fn pressing_a_held_key_again_does_nothing() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_map.press("KeyM"), Some(KeyAction::PlayNote(60)));
         assert_eq!(key_map.press("KeyM"), None);
 
@@ -886,7 +1078,7 @@ mod tests {
 
     #[test]
     fn letting_go_stops_the_notes_the_key_started() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("KeyM");
         key_map.press("KeyC");
         assert_eq!(key_map.release("KeyC"), vec![48, 52, 55]);
@@ -897,7 +1089,7 @@ mod tests {
     fn a_note_a_chord_and_a_held_key_share_stops_when_both_are_let_go() {
         // The A chord (A3 C#4 E4) and H both play A3. The second press plays
         // it again.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(chord_notes(key_map.press("KeyA")), Some([57, 61, 64]));
         assert_eq!(key_map.press("KeyH"), Some(KeyAction::PlayNote(57)));
 
@@ -910,7 +1102,7 @@ mod tests {
     #[test]
     fn a_note_two_held_chords_share_stops_when_both_are_let_go() {
         // The C chord (C3 E3 G3) and the E chord (E3 G#3 B3) both play E3.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("KeyC");
         key_map.press("KeyE");
 
@@ -925,7 +1117,7 @@ mod tests {
     fn a_chord_and_its_minor_share_notes_until_both_are_let_go() {
         // C (C3 E3 G3) and Cm (C3 Eb3 G3), on C and X side by side, both play
         // C3 and G3.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("KeyC");
         key_map.press("KeyX");
         assert_eq!(key_map.release("KeyC"), vec![52]);
@@ -934,7 +1126,7 @@ mod tests {
 
     #[test]
     fn letting_go_of_a_key_that_started_no_note_does_nothing() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         let nothing: Vec<u8> = Vec::new();
 
         // Never pressed.
@@ -956,9 +1148,9 @@ mod tests {
     fn letting_go_stops_the_started_notes_even_after_the_layout_changes() {
         // Hold M, then move M to D4 while it's held. Letting go still stops
         // middle C, the note M started, so it can't get stuck.
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("KeyM");
-        key_map.layout.insert(String::from("KeyM"), KeyRole::Note(62));
+        key_map.layout.insert(String::from("KeyM"), KeyRole::Notes(vec![62]));
         assert_eq!(key_map.release("KeyM"), vec![60]);
 
         // The next press plays the new note.
@@ -966,13 +1158,13 @@ mod tests {
 
         // The same goes for a chord: hold C, then move C to the D chord.
         key_map.press("KeyC");
-        key_map.layout.insert(String::from("KeyC"), KeyRole::Chord(major(50)));
+        key_map.layout.insert(String::from("KeyC"), KeyRole::Notes(major(50).notes().to_vec()));
         assert_eq!(key_map.release("KeyC"), vec![48, 52, 55]);
     }
 
     #[test]
     fn letting_go_of_everything_forgets_every_held_key() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press("KeyM");
         key_map.press("KeyC");
         key_map.press("Space");
@@ -992,27 +1184,27 @@ mod tests {
     fn the_chord_keys_list_what_each_press_plays() {
         // Compose shows guidance for each of these, so each must be what
         // the key really plays.
-        let chord_keys = KeyMap::new().chord_keys();
+        let chord_keys = KeyMap::with_test_layout().chord_keys();
         for (key, chord) in chord_keys {
-            let mut key_map = KeyMap::new();
-            assert_eq!(key_map.press(&key), Some(KeyAction::PlayChord(chord)), "key {key}");
+            let mut key_map = KeyMap::with_test_layout();
+            assert_eq!(key_map.press(&key), Some(KeyAction::PlayNotes(chord.notes().to_vec())), "key {key}");
         }
     }
 
     #[test]
     fn the_note_keys_list_what_each_press_plays() {
         // Compose shows guidance for each of these too.
-        let note_keys = KeyMap::new().note_keys();
+        let note_keys = KeyMap::with_test_layout().note_keys();
         assert_eq!(note_keys.len(), 24);
         for (key, note) in note_keys {
-            let mut key_map = KeyMap::new();
+            let mut key_map = KeyMap::with_test_layout();
             assert_eq!(key_map.press(&key), Some(KeyAction::PlayNote(note)), "key {key}");
         }
     }
 
     #[test]
     fn the_ui_is_told_every_note_chord_wave_and_beat_key() {
-        let key_map = KeyMap::new();
+        let key_map = KeyMap::with_test_layout();
         let layout = key_map.layout_for_ui();
 
         assert_eq!(layout.notes.len(), 24);
@@ -1021,7 +1213,7 @@ mod tests {
         }
         assert_eq!(layout.chords.len(), 24);
         for (key, chord) in CHORDS {
-            assert_eq!(layout.chords[key].notes, chord.notes(), "key {key}");
+            assert_eq!(layout.chords[key].notes, chord.notes().to_vec(), "key {key}");
         }
         assert_eq!(layout.wave_keys, vec![String::from("F12")]);
         assert_eq!(layout.beat_keys.len(), 4);
@@ -1033,7 +1225,7 @@ mod tests {
 
     #[test]
     fn the_ui_is_told_each_chord_by_its_common_name() {
-        let chords = KeyMap::new().layout_for_ui().chords;
+        let chords = KeyMap::with_test_layout().layout_for_ui().chords;
         let names = [
             ("KeyC", "C"),
             ("KeyX", "Cm"),
@@ -1057,8 +1249,8 @@ mod tests {
     #[test]
     fn the_ui_is_told_the_layout_as_it_is_now() {
         // Move M to D4, and the UI is told M plays D4.
-        let mut key_map = KeyMap::new();
-        key_map.layout.insert(String::from("KeyM"), KeyRole::Note(62));
+        let mut key_map = KeyMap::with_test_layout();
+        key_map.layout.insert(String::from("KeyM"), KeyRole::Notes(vec![62]));
 
         let layout = key_map.layout_for_ui();
         assert_eq!(layout.notes.get("KeyM"), Some(&62));
@@ -1068,7 +1260,7 @@ mod tests {
     fn the_ui_reads_the_layout_by_these_names() {
         // The UI reads these names (KeyLayout in ui/keyboard.ts), so
         // renaming them here would leave keys blank.
-        let key_map = KeyMap::new();
+        let key_map = KeyMap::with_test_layout();
         let json = serde_json::to_value(key_map.layout_for_ui()).unwrap();
         assert_eq!(json["notes"]["KeyM"], 60);
         assert_eq!(json["chords"]["KeyC"]["name"], "C");
@@ -1082,12 +1274,12 @@ mod tests {
     }
     #[test]
     fn shifting_changes_all_future_notes_but_releases_original_pitches() {
-        let mut map = KeyMap::new();
+        let mut map = KeyMap::with_test_layout();
         map.press("KeyM");
         map.press("KeyC");
         map.shift_octave(2);
         assert_eq!(map.layout_for_ui().notes["KeyM"], 84);
-        assert_eq!(map.layout_for_ui().chords["KeyC"].notes, [72, 76, 79]);
+        assert_eq!(map.layout_for_ui().chords["KeyC"].notes, vec![72, 76, 79]);
         // C4 is shared with neither C3 chord note, so both releases keep their pitches.
         assert_eq!(map.release("KeyM"), vec![60]);
         assert_eq!(map.release("KeyC"), vec![48, 52, 55]);
@@ -1096,7 +1288,7 @@ mod tests {
 
     #[test]
     fn octave_limits_keep_the_complete_mapping_in_midi_range() {
-        let mut map = KeyMap::new();
+        let mut map = KeyMap::with_test_layout();
         map.shift_octave(-4);
         assert_eq!(map.layout_for_ui().octave, -4);
         assert_eq!(map.layout_for_ui().chords["KeyC"].notes[0], 0);
@@ -1108,4 +1300,148 @@ mod tests {
         assert_eq!(map.layout_for_ui().octave, 4);
     }
 
+    #[test]
+    fn with_no_scale_picked_no_key_plays_a_note() {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&KeyMapping::default());
+        assert_eq!(key_map.press("KeyM"), None);
+        assert_eq!(key_map.press("KeyC"), None);
+        assert_eq!(key_map.press("ShiftRight"), Some(KeyAction::PressLooper));
+        assert!(key_map.note_keys().is_empty());
+        assert!(key_map.chord_keys().is_empty());
+    }
+
+    fn c_major() -> KeyMapping {
+        KeyMapping::default_for(Scale {
+            tonic: 0,
+            kind: crate::scales::ScaleKind::Major,
+        })
+    }
+
+    #[test]
+    fn the_keys_follow_the_songs_mapping() {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        assert_eq!(key_map.press("KeyJ"), Some(KeyAction::PlayNote(60)));
+        key_map.release("KeyJ");
+        assert_eq!(key_map.press("KeyF"), Some(KeyAction::PlayNotes(vec![48, 52, 55])));
+    }
+
+    #[test]
+    fn a_key_can_play_any_set_of_notes() {
+        let mut mapping = KeyMapping::default();
+        mapping.set_key("KeyJ", &[60, 64, 67, 71]).unwrap();
+        mapping.set_key("KeyK", &[60, 67]).unwrap();
+        let mut key_map = KeyMap::new();
+        key_map.follow(&mapping);
+        assert_eq!(key_map.press("KeyJ"), Some(KeyAction::PlayNotes(vec![60, 64, 67, 71])));
+        assert_eq!(key_map.release("KeyJ"), vec![60, 64, 67, 71]);
+
+        let layout = key_map.layout_for_ui();
+        assert_eq!(layout.chords["KeyJ"].name, "C");
+        assert_eq!(layout.chords["KeyK"].name, "C4 G4");
+        assert_eq!(key_map.chord_keys().len(), 1);
+        assert!(key_map.note_keys().is_empty());
+    }
+
+    #[test]
+    fn a_voicing_says_its_lowest_note() {
+        assert_eq!(name_of_notes(&[52, 55, 60]), "C/E");
+        assert_eq!(name_of_notes(&[48, 52, 55]), "C");
+        assert_eq!(name_of_notes(&[55, 60, 64]), "C/G");
+    }
+
+    #[test]
+    fn a_section_change_keeps_held_notes_sounding() {
+        let mut other = KeyMapping::default();
+        other.set_key("KeyJ", &[70]).unwrap();
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        assert_eq!(key_map.press("KeyJ"), Some(KeyAction::PlayNote(60)));
+        key_map.follow(&other);
+        // Still held, then it stops the note it started.
+        assert_eq!(key_map.press("KeyJ"), None);
+        assert_eq!(key_map.release("KeyJ"), vec![60]);
+        assert_eq!(key_map.press("KeyJ"), Some(KeyAction::PlayNote(70)));
+    }
+
+    #[test]
+    fn the_play_tab_follows_its_own_scale_and_trying_comes_first() {
+        let mut key_map = KeyMap::new();
+        let song = c_major();
+        key_map.set_on_play_tab(true);
+        key_map.follow(&song);
+        assert!(key_map.note_keys().is_empty());
+
+        let a_minor = Scale {
+            tonic: 9,
+            kind: crate::scales::ScaleKind::Minor,
+        };
+        key_map.set_play_scale(Some(a_minor));
+        key_map.follow(&song);
+        assert_eq!(key_map.note_keys()["KeyJ"], 57);
+
+        key_map.set_on_play_tab(false);
+        key_map.follow(&song);
+        assert_eq!(key_map.note_keys()["KeyJ"], 60);
+
+        let mut tried = KeyMapping::default();
+        tried.set_key("KeyJ", &[72]).unwrap();
+        key_map.set_trying(Some(tried));
+        key_map.follow(&song);
+        assert_eq!(key_map.note_keys()["KeyJ"], 72);
+        assert!(key_map.layout_for_ui().trying);
+
+        key_map.set_trying(None);
+        key_map.follow(&song);
+        assert_eq!(key_map.note_keys()["KeyJ"], 60);
+    }
+
+    #[test]
+    fn any_change_to_the_songs_keys_ends_a_try() {
+        let song = c_major();
+        let mut key_map = KeyMap::new();
+        key_map.follow(&song);
+        let mut tried = KeyMapping::default();
+        tried.set_key("KeyJ", &[72]).unwrap();
+        key_map.set_trying(Some(tried));
+        key_map.follow(&song);
+        key_map.follow(&song);
+        assert_eq!(key_map.note_keys()["KeyJ"], 72);
+
+        // Another song opened, say.
+        let mut other = song.clone();
+        other.set_key("KeyJ", &[61]).unwrap();
+        key_map.follow(&other);
+        assert!(!key_map.layout_for_ui().trying);
+        assert_eq!(key_map.note_keys()["KeyJ"], 61);
+    }
+
+    #[test]
+    fn an_octave_shift_is_kept_across_mappings_and_refused_past_the_range() {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        key_map.shift_octave(1);
+        assert_eq!(key_map.note_keys()["KeyJ"], 72);
+
+        let mut high = KeyMapping::default();
+        high.set_key("KeyJ", &[120]).unwrap();
+        key_map.follow(&high);
+        // 132 is past the top, so the shift goes.
+        assert_eq!(key_map.octave(), 0);
+        assert_eq!(key_map.note_keys()["KeyJ"], 120);
+        key_map.shift_octave(1);
+        assert_eq!(key_map.octave(), 0);
+    }
+
+    #[test]
+    fn the_keys_for_a_chord_put_the_one_on_its_root_first() {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        let chord = chord_of_notes(&[48, 52, 55]).unwrap();
+        let keys = key_map.keys_for_chord(chord);
+        assert_eq!(keys[0], "KeyF");
+        assert!(keys.contains(&String::from("KeyB")));
+        assert_eq!(key_map.keys_playing(&[52, 55, 60]), vec![String::from("KeyB")]);
+    }
 }

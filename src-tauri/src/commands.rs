@@ -20,6 +20,7 @@ use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
 use crate::instruments::{self, Status};
 use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
+use crate::key_stats::KeyStats;
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
     VibratoKeyTimes,
@@ -1332,12 +1333,15 @@ pub fn load_starting_sound(sounds: &Path, settings: &Path, composer: &mut Compos
 #[tauri::command]
 pub fn press_key(
     engine: State<'_, Mutex<Engine>>,
+    key_stats: State<'_, Mutex<KeyStats>>,
     key_map: State<'_, Mutex<KeyMap>>,
     composer: State<'_, Mutex<Composer>>,
     key: String,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
     let mut key_map = key_map.lock().unwrap();
+    // Only the player's own presses teach the optimizer, never the agent's.
+    teach_timing(&mut key_stats.lock().unwrap(), &key_map, &key, now);
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
 
@@ -1346,6 +1350,13 @@ pub fn press_key(
     engine.start_audio()?;
     press_key_on(&mut key_map, &mut composer, &mut engine, &key, now);
     Ok(sound_view_of(&mut engine, &composer, now))
+}
+
+// A key that plays notes counts toward the player's timing; others don't.
+fn teach_timing(key_stats: &mut KeyStats, key_map: &KeyMap, key: &str, now: Instant) {
+    if !key_map.notes_of(key).is_empty() {
+        key_stats.heard(key, now);
+    }
 }
 
 // What `key` going down at `now` does, for the player's keys and the
@@ -1372,6 +1383,7 @@ pub(crate) fn press_key_on(key_map: &mut KeyMap, composer: &mut Composer, engine
 pub(crate) fn follow_picked_track(key_map: &mut KeyMap, composer: &Composer) {
     let on = composer.tracks().picked_track().is_drums();
     key_map.set_drum_mode(on);
+    key_map.follow(composer.keys_now());
 }
 
 // Right Option's jump: to the drums track used last, made if there is
@@ -1408,8 +1420,8 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::PlayNote(note) => {
             engine.note_on(note, LAPTOP_VELOCITY);
         }
-        KeyAction::PlayChord(chord) => {
-            for note in chord.notes() {
+        KeyAction::PlayNotes(notes) => {
+            for note in notes {
                 engine.note_on(note, LAPTOP_VELOCITY);
             }
         }
@@ -1497,9 +1509,9 @@ pub(crate) fn key_down(key_map: &mut KeyMap, composer: &mut Composer, key: &str,
     };
     // Compose times every chord, so a chord added to the song keeps how long
     // it was held.
-    match action {
-        KeyAction::PlayChord(chord) => composer.chord_pressed(key, chord, now),
-        KeyAction::PlayNote(note) => composer.note_pressed(key, note, now),
+    match &action {
+        KeyAction::PlayNotes(notes) => composer.notes_pressed(key, notes, now),
+        KeyAction::PlayNote(note) => composer.note_pressed(key, *note, now),
         _ => {}
     }
     Some(action)
@@ -1766,10 +1778,11 @@ pub fn pick_key(
         return Err(format!("no key has home note {tonic}: it goes from 0 (C) to 11 (B)"));
     }
     let now = Instant::now();
-    let key_map = key_map.lock().unwrap();
+    let mut key_map = key_map.lock().unwrap();
     let mut composer = composer.lock().unwrap();
     let engine = engine.lock().unwrap();
     composer.pick_key(Key { tonic, mode });
+    key_map.follow(composer.keys_now());
     Ok(composer.view(&key_map, engine.song_place(), now))
 }
 
@@ -1990,9 +2003,21 @@ mod tests {
 
     use crate::modulation::{NO_CONNECTION, START_LFO};
 
+    #[test]
+    fn only_keys_that_play_notes_teach_the_players_timing() {
+        let key_map = KeyMap::with_test_layout();
+        let mut stats = KeyStats::default();
+        let now = Instant::now();
+        teach_timing(&mut stats, &key_map, "KeyF", now);
+        teach_timing(&mut stats, &key_map, "Minus", now);
+        teach_timing(&mut stats, &key_map, "KeyJ", now);
+        assert_eq!(stats.pair("KeyF", "KeyJ").unwrap().count, 1);
+        assert_eq!(stats.pair("KeyF", "Minus"), None);
+    }
+
     // What key `key` does in the default layout.
     fn action_of(key: &str) -> KeyAction {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         key_map.press(key).unwrap()
     }
 
@@ -3186,7 +3211,7 @@ mod track_tests {
         presets::save(&folders.sounds, "Low saw", &sound).unwrap();
         presets::mark_starting(&folders.settings, Some("Low saw")).unwrap();
         let open = OpenSong::new(Some(folders));
-        (open, KeyMap::new(), Composer::new(), Engine::new().unwrap())
+        (open, KeyMap::with_test_layout(), Composer::new(), Engine::new().unwrap())
     }
 
     fn layer_on(track: usize, note: u8) -> LoopLayer {

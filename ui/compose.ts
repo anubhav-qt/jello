@@ -91,6 +91,8 @@ export interface ComposeView {
   keys: KeyChoice[];
   // The key picked, or null before one is.
   key: KeyChoice | null;
+  // The scale picked (docs/adr/0047-song-key-mappings.md), or null.
+  scale: { tonic: number; kind: string; name: string } | null;
   // The chords added so far.
   progression: ChordInSong[];
   // The chord being held that isn't in the song yet, or null. The tape

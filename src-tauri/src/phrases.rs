@@ -187,12 +187,9 @@ pub(crate) fn key_of_press(fields: &Map<String, Value>, key_map: &KeyMap, place:
         let Some(chord) = chord_of_name(name) else {
             return Err(format!("{place}: {name} is not a chord, like \"Am\" or \"Bb\""));
         };
-        // The chord keys play every root once, at the current octave.
-        for (key, played) in key_map.chord_keys() {
-            let same_root = played.root % 12 == chord.root % 12;
-            if same_root && played.quality == chord.quality {
-                return Ok((key, String::from(name)));
-            }
+        // The key on its root comes first, whatever the octave.
+        if let Some(key) = key_map.keys_for_chord(chord).into_iter().next() {
+            return Ok((key, String::from(name)));
         }
         return Err(format!("{place}: no chord key plays {name}"));
     }
@@ -331,7 +328,7 @@ mod tests {
     use serde_json::json;
 
     fn phrase(arguments: Value) -> Result<Phrase, String> {
-        phrase_of(&arguments, &KeyMap::new(), 120)
+        phrase_of(&arguments, &KeyMap::with_test_layout(), 120)
     }
 
     fn event(at_ms: u64, key: &str, down: bool) -> KeyEvent {
@@ -373,7 +370,7 @@ mod tests {
 
     #[test]
     fn a_shifted_octave_moves_where_a_note_is() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         let arguments = json!({"presses": [{"note": "C4", "start": 0, "hold": 1}]});
         let before = phrase_of(&arguments, &key_map, 120).unwrap();
         key_map.shift_octave(-1);

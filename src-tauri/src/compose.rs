@@ -10,9 +10,11 @@ use serde::Serialize;
 
 use crate::arrange::{self, Player};
 use crate::sections::Sections;
-use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
-use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, chord_name, guide_after, key_name, note_fit};
+use crate::engine::{Engine, LooperState, FASTEST_TEMPO, SLOWEST_TEMPO, SONG_MAX_CHORDS, START_TEMPO, SongChord, SongPlace};
+use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, chord_name, chord_of_notes, guide_after, key_name, note_fit};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
+use crate::key_mapping::KeyMapping;
+use crate::scales::Scale;
 use crate::song_file::{HeldChord, Song, SongSection};
 use crate::sound_file::Sound;
 use crate::drums::{DrumPad, Drums};
@@ -24,8 +26,17 @@ use crate::tracks::{Track, Tracks};
 const TEMPO_STEP: u32 = 5;
 
 pub struct Composer {
-    // The song's key, picked before starting. None until then.
+    // The song's key, picked before starting. None until then. It is the
+    // key `scale` reads as.
     key: Option<Key>,
+    // The scale the keys follow, and the song's main mapping
+    // (docs/adr/0047-song-key-mappings.md). Keys play nothing until a scale
+    // is picked.
+    scale: Option<Scale>,
+    keys: KeyMapping,
+    // The section whose mapping the keys follow while the arrangement plays
+    // it, from 0.
+    section_playing: Option<usize>,
     // The chord played last, as it was played. None until a chord is.
     tried: Option<PlayedChord>,
     // The chords added so far, in order, each as it was played. Trying a
@@ -86,6 +97,9 @@ pub struct PerformanceEvent {
 #[derive(Clone)]
 struct PlayedChord {
     chord: Chord,
+    // The notes it played, lowest first: the chord's plain three, or the
+    // voicing its key plays.
+    notes: Vec<u8>,
     // The laptop key that played it, like "KeyC", so letting go of that key
     // ends it.
     key: String,
@@ -127,7 +141,7 @@ impl PlayedChord {
     // it still is. The same milliseconds the tape shows.
     fn to_play(&self, now: Instant) -> SongChord {
         SongChord {
-            notes: self.chord.notes().to_vec(),
+            notes: self.notes.clone(),
             velocity: LAPTOP_VELOCITY,
             length_ms: self.length(now).as_millis() as u64,
         }
@@ -140,6 +154,16 @@ pub struct KeyChoice {
     tonic: u8,
     mode: Mode,
     // Like "Db major".
+    name: String,
+}
+
+// The scale picked, for the UI to draw.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ScaleInSong {
+    tonic: u8,
+    // Like "dorian".
+    kind: &'static str,
+    // Like "A dorian".
     name: String,
 }
 
@@ -180,6 +204,8 @@ pub struct ComposeView {
     keys: Vec<KeyChoice>,
     // The key picked, or None before one is.
     key: Option<KeyChoice>,
+    // The scale picked.
+    scale: Option<ScaleInSong>,
     // The chords added so far.
     progression: Vec<ChordInSong>,
     // The chord being held that isn't in the song yet, or None. The tape
@@ -209,6 +235,9 @@ impl Composer {
     pub fn new() -> Composer {
         Composer {
             key: None,
+            scale: None,
+            keys: KeyMapping::default(),
+            section_playing: None,
             tried: None,
             progression: Vec::new(),
             history: Vec::new(),
@@ -235,10 +264,26 @@ impl Composer {
     pub fn opened(engine: &mut Engine, song: &Song, now: Instant) -> Composer {
         let mut composer = Composer::new();
         composer.key = song.key;
+        composer.scale = song.scale;
+        composer.keys = song.keys.clone();
+        // A key picked with no scale yet is its major or minor scale.
+        if composer.scale.is_none() {
+            composer.scale = song.key.map(Scale::of_key);
+        }
+        if composer.keys.is_empty() {
+            if let Some(scale) = composer.scale {
+                composer.keys = KeyMapping::default_for(scale);
+            }
+        }
         // No laptop key holds them, so none lets go of them.
         for held in &song.chords {
+            let notes = match &held.notes {
+                Some(notes) => notes.clone(),
+                None => held.chord.notes().to_vec(),
+            };
             let played = PlayedChord {
                 chord: held.chord,
+                notes,
                 key: String::new(),
                 pressed_at: now,
                 held_for: Some(Duration::from_millis(held.held_ms)),
@@ -288,9 +333,14 @@ impl Composer {
         let mut chords = Vec::new();
         for played in &self.progression {
             if let Some(held_for) = played.held_for {
+                let mut notes = None;
+                if played.notes != played.chord.notes() {
+                    notes = Some(played.notes.clone());
+                }
                 chords.push(HeldChord {
                     chord: played.chord,
                     held_ms: held_for.as_millis() as u64,
+                    notes,
                 });
             }
         }
@@ -533,18 +583,90 @@ impl Composer {
         self.tracks.picked_track().lit_preset()
     }
 
-    // Sets the song's key. Chords added already stay, named for the new key.
+    // Sets the song's key: its major or minor scale.
     pub fn pick_key(&mut self, key: Key) {
-        self.key = Some(key);
+        self.pick_scale(Scale::of_key(key));
+    }
+
+    // Sets the song's scale and the key it reads as. Chords added already
+    // stay, named for the new key. The keys go to the scale's default, but
+    // locked keys stay, and sections go back to the main mapping, since their
+    // own were made for the old scale.
+    pub fn pick_scale(&mut self, scale: Scale) {
+        self.key = Some(scale.key());
+        self.scale = Some(scale);
+        self.keys = self.keys.with_default_for(scale);
+        self.sections.forget_keys();
+    }
+
+    pub fn scale(&self) -> Option<Scale> {
+        self.scale
+    }
+
+    // The song's main mapping.
+    pub fn main_keys(&self) -> &KeyMapping {
+        &self.keys
+    }
+
+    pub fn set_main_keys(&mut self, keys: KeyMapping) {
+        self.keys = keys;
+    }
+
+    // The mapping the song's keys play now: the section playing's own, or
+    // the main one.
+    pub fn keys_now(&self) -> &KeyMapping {
+        let Some(number) = self.section_playing else {
+            return &self.keys;
+        };
+        let Some(section) = self.sections.list().get(number) else {
+            return &self.keys;
+        };
+        match &section.keys {
+            Some(keys) => keys,
+            None => &self.keys,
+        }
+    }
+
+    // The arrangement moved on to section `number`, from 0, or stopped.
+    pub fn set_section_playing(&mut self, number: Option<usize>) {
+        self.section_playing = number;
+    }
+
+    // Whether the song, its arrangement or its loop plays right now, when an
+    // optimized mapping must not change anything.
+    pub fn is_playing(&self, engine: &Engine) -> bool {
+        if self.arranging.is_some() {
+            return true;
+        }
+        if engine.song_place().is_some() {
+            return true;
+        }
+        !matches!(engine.looper_status().state, LooperState::Idle | LooperState::Paused)
     }
 
     // `key` went down at `now` and plays `chord`, so it is the chord tried
     // last.
+    #[cfg(test)]
     pub fn chord_pressed(&mut self, key: &str, chord: Chord, now: Instant) {
-        self.record_press(key, chord.notes().to_vec(), now);
+        self.voicing_pressed(key, chord, chord.notes().to_vec(), now);
+    }
+
+    // `key` went down at `now` and plays `notes`. If they hold a major or
+    // minor chord it is the chord tried last, in this voicing. Notes that
+    // hold none are only a press: guidance knows no chord to follow.
+    pub fn notes_pressed(&mut self, key: &str, notes: &[u8], now: Instant) {
+        match chord_of_notes(notes) {
+            Some(chord) => self.voicing_pressed(key, chord, notes.to_vec(), now),
+            None => self.record_press(key, notes.to_vec(), now),
+        }
+    }
+
+    fn voicing_pressed(&mut self, key: &str, chord: Chord, notes: Vec<u8>, now: Instant) {
+        self.record_press(key, notes.clone(), now);
         self.selected_history = None;
         let played = PlayedChord {
             chord,
+            notes,
             key: String::from(key),
             pressed_at: now,
             held_for: None,
@@ -597,6 +719,7 @@ impl Composer {
     pub fn add_chord(&mut self, chord: Chord, held_ms: u64, now: Instant) {
         let played = PlayedChord {
             chord,
+            notes: chord.notes().to_vec(),
             key: String::new(),
             pressed_at: now,
             held_for: Some(Duration::from_millis(held_ms)),
@@ -740,6 +863,14 @@ impl Composer {
         }
 
         let picked = self.key.map(key_choice);
+        let mut scale = None;
+        if let Some(picked_scale) = self.scale {
+            scale = Some(ScaleInSong {
+                tonic: picked_scale.tonic,
+                kind: picked_scale.kind.word(),
+                name: picked_scale.name(),
+            });
+        }
 
         let mut progression = Vec::new();
         for played in &self.progression {
@@ -821,6 +952,7 @@ impl Composer {
             performance: self.performance.clone(),
             keys,
             key: picked,
+            scale,
             progression,
             holding: self.holding(now),
             guide: chord_guide,
@@ -879,9 +1011,9 @@ impl Composer {
         if chord >= self.progression.len() {
             return None;
         }
-        let now_keys = keys_playing(key_map, self.progression[chord].chord);
+        let now_keys = keys_playing(key_map, &self.progression[chord]);
         let next_keys = match self.next_place(chord) {
-            Some(next) => keys_playing(key_map, self.progression[next].chord),
+            Some(next) => keys_playing(key_map, &self.progression[next]),
             None => Vec::new(),
         };
         Some(Playhead {
@@ -907,18 +1039,16 @@ impl Composer {
     }
 }
 
-// The chord keys on `key_map` that play `chord`, in order by name. Every
-// chord has its own key (docs/adr/0020-every-chord-on-its-own-key.md), so this
-// is one key, or none if no key plays it now.
-fn keys_playing(key_map: &KeyMap, chord: Chord) -> Vec<String> {
-    let mut keys = Vec::new();
-    for (code, key_chord) in key_map.chord_keys() {
-        if key_chord == chord {
-            keys.push(code);
-        }
+// The keys on `key_map` that play `played` as it was played, or if none does
+// now, the first that plays its chord in another voicing. Empty if none does.
+fn keys_playing(key_map: &KeyMap, played: &PlayedChord) -> Vec<String> {
+    let exact = key_map.keys_playing(&played.notes);
+    if !exact.is_empty() {
+        return exact;
     }
-    keys.sort();
-    keys
+    let mut any = key_map.keys_for_chord(played.chord);
+    any.truncate(1);
+    any
 }
 
 fn key_choice(key: Key) -> KeyChoice {
@@ -987,7 +1117,7 @@ mod tests {
     impl Player {
         fn new() -> Player {
             Player {
-                key_map: KeyMap::new(),
+                key_map: KeyMap::with_test_layout(),
                 composer: Composer::new(),
                 engine: Engine::new().unwrap(),
                 start: Instant::now(),
@@ -1534,11 +1664,39 @@ mod tests {
         Some((now_keys, next_keys))
     }
 
+    #[test]
+    fn keys_follow_a_section_only_while_it_plays_and_a_new_scale_forgets_them() {
+        let c_major = Scale { tonic: 0, kind: crate::scales::ScaleKind::Major };
+        let a_minor = Scale { tonic: 9, kind: crate::scales::ScaleKind::Minor };
+        let mut composer = Composer::new();
+        composer.pick_scale(c_major);
+        let main = composer.main_keys().clone();
+        let own = KeyMapping::default_for(a_minor);
+        let section = SongSection {
+            keys: Some(own.clone()),
+            name: String::from("Verse"),
+            bars: 1,
+            tempo: 120,
+            key_shift: 0,
+            layers: Vec::new(),
+            automation: Vec::new(),
+        };
+        composer.set_sections(vec![section], vec![0]);
+        assert_eq!(*composer.keys_now(), main);
+        composer.set_section_playing(Some(0));
+        assert_eq!(*composer.keys_now(), own);
+        composer.set_section_playing(None);
+        assert_eq!(*composer.keys_now(), main);
+
+        composer.pick_scale(a_minor);
+        assert_eq!(composer.sections()[0].keys, None);
+    }
+
     // The notes laptop key `key` plays.
     fn notes_of(key: &str) -> [u8; 3] {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         match key_map.press(key) {
-            Some(KeyAction::PlayChord(chord)) => chord.notes(),
+            Some(KeyAction::PlayNotes(notes)) => notes.try_into().unwrap(),
             _ => panic!("{key} plays no chord"),
         }
     }

@@ -790,6 +790,7 @@ mod tests {
             section_layers.push(SectionLayer { track, layer });
         }
         SongSection {
+            keys: None,
             name: String::from(name),
             bars,
             tempo,

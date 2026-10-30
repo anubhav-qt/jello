@@ -24,6 +24,7 @@ use crate::commands;
 use crate::compose::Composer;
 use crate::engine::{Engine, LooperState};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
+use crate::key_stats::KeyStats;
 use crate::practice::{self, BEATS_PER_BAR, MOST_PASSES, Piece, Plan, Practice, Settings, Sounding};
 use crate::scoring::{self, Expected, Heard};
 use crate::skills;
@@ -535,6 +536,22 @@ impl Runner<'_> {
         let _ = self.app.emit("practice-marks", json!({"marks": marks}));
     }
 
+    // The player pressed something else while `waiting` was due: the key
+    // that plays it counts as missed, for the optimizer (src/key_stats.rs).
+    fn remember_miss(&self, waiting: &[Expected]) {
+        let Some(due) = waiting.first() else {
+            return;
+        };
+        let key_map = self.app.state::<Mutex<KeyMap>>();
+        let key_map = key_map.lock().unwrap();
+        let Some(key) = practice::key_for(&key_map, &due.pitches) else {
+            return;
+        };
+        drop(key_map);
+        let stats = self.app.state::<Mutex<KeyStats>>();
+        stats.lock().unwrap().missed(&key);
+    }
+
     // The keyboard's marks: the next notes outlined, the ones after them
     // numbered. `done` says which of `expected` are over.
     fn marks(&self, expected: &[Expected], done: &[bool]) -> Value {
@@ -606,7 +623,10 @@ impl Runner<'_> {
                         let note = waiting.remove(place);
                         mark_done(&plan.expected, &mut done, &note);
                     }
-                    None => wrong += 1,
+                    None => {
+                        wrong += 1;
+                        self.remember_miss(&waiting);
+                    }
                 }
                 if waiting.is_empty() {
                     step += 1;

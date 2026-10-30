@@ -169,6 +169,17 @@ export interface OptionsCard {
   options: OptionView[];
 }
 
+// An optimized mapping waiting for Try or Use
+// (src-tauri/src/keys_tool.rs).
+export interface MappingCard {
+  kind: "mapping";
+  title: string;
+  offer: number;
+  gain_percent: number;
+  moves: { key: string; was: string; now: string }[];
+  left_out: string[];
+}
+
 // A note the agent saved, changed or forgot (src-tauri/src/memory.rs).
 export interface MemoryNote {
   id: number;
@@ -232,7 +243,8 @@ export type Card =
   | ListenCard
   | PracticeCard
   | MemoryCard
-  | OptionsCard;
+  | OptionsCard
+  | MappingCard;
 
 // Text from the agent, as it arrives.
 export interface TextStep {

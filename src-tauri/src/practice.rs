@@ -874,20 +874,7 @@ fn word_in(value: &Value, name: &str, words: &[&str]) -> Result<String, String> 
 // The laptop key that plays `pitches` at the keys' octave now, if one does:
 // a melody key for one note, or a chord key for a chord's.
 pub fn key_for(key_map: &KeyMap, pitches: &[u8]) -> Option<String> {
-    if pitches.len() == 1 {
-        for (key, note) in key_map.note_keys() {
-            if note == pitches[0] {
-                return Some(key);
-            }
-        }
-        return None;
-    }
-    for (key, chord) in key_map.chord_keys() {
-        if chord.notes().as_slice() == pitches {
-            return Some(key);
-        }
-    }
-    None
+    key_map.keys_playing(pitches).into_iter().next()
 }
 
 // The tempo the next try plays at, after `clean` (whether the try just
@@ -1254,7 +1241,7 @@ mod tests {
 
     #[test]
     fn keys_are_found_for_notes_and_chords() {
-        let mut key_map = KeyMap::new();
+        let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_for(&key_map, &[60]).as_deref(), Some("KeyM"));
         assert!(key_for(&key_map, &[C3, C3 + 4, C3 + 7]).is_some());
         assert_eq!(key_for(&key_map, &[90]), None);
