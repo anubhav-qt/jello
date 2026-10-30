@@ -42,6 +42,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
   No Mix UI yet; mockups follow backend work and separate approval.
   [Mix design](docs/design.md#mix).
+- Song key mappings (0047): approved, not built; replaces the fixed layout.
+  [Design](docs/design.md#song-key-mappings).
 - Layers (0042): own lengths on a common cycle (`layer_cycles.rs`), 64 bars
   each, 16,384 notes.
 
