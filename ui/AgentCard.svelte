@@ -16,6 +16,7 @@
     type LaneCard,
     type SoundSketch,
   } from "./agent";
+  import { invoke } from "@tauri-apps/api/core";
   import { colorForNote } from "./note-colors";
 
   interface Props {
@@ -43,6 +44,42 @@
     change: "Changed",
     forget: "Forgot",
   };
+
+  // An optimized mapping's card: Try plays it unsaved, Use saves it.
+  let trying = $state(false);
+  let used = $state(false);
+  let mappingProblem = $state("");
+
+  async function askAboutMapping(command: string, offer: number | null): Promise<boolean> {
+    mappingProblem = "";
+    try {
+      if (offer === null) {
+        await invoke(command);
+      } else {
+        await invoke(command, { offer });
+      }
+      return true;
+    } catch (error) {
+      mappingProblem = String(error);
+      return false;
+    }
+  }
+
+  async function switchTrying(offer: number) {
+    if (trying) {
+      await askAboutMapping("stop_trying_keys", null);
+      trying = false;
+      return;
+    }
+    trying = await askAboutMapping("try_key_offer", offer);
+  }
+
+  async function useMapping(offer: number) {
+    if (await askAboutMapping("use_key_offer", offer)) {
+      used = true;
+      trying = false;
+    }
+  }
 
   const FIT_WORDS: Record<string, string> = {
     in_key: "in key",
@@ -357,6 +394,44 @@
       <span><span class="agent-quiet">Tempo</span> {card.view.settings.tempo}</span>
     </div>
     <p class="agent-quiet agent-card-note">On the Play tab</p>
+  {:else if card.kind === "mapping"}
+    <p class="agent-card-note">
+      {#if card.moves.length === 0}
+        These keys are already the most comfortable for this song.
+      {:else}
+        {card.gain_percent}% more comfortable, moving {card.moves.length}
+        {card.moves.length === 1 ? "key" : "keys"}.
+      {/if}
+    </p>
+    <div class="agent-mapping-moves">
+      {#each card.moves as move (move.key)}
+        <span class="agent-mapping-key">{move.key.replace("Key", "").replace("Digit", "")}</span>
+        <span class="agent-quiet">{move.was}</span>
+        <span>{move.now}</span>
+      {/each}
+    </div>
+    {#if card.left_out.length > 0}
+      <p class="agent-quiet agent-card-note">No key left for: {card.left_out.join(", ")}</p>
+    {/if}
+    {#if card.moves.length > 0}
+      <span class="agent-mapping-actions">
+        <button
+          type="button"
+          class="agent-button-plain"
+          disabled={used}
+          onclick={() => switchTrying(card.offer)}>{trying ? "Stop trying" : "Try"}</button
+        >
+        <button
+          type="button"
+          class="agent-button-plain"
+          disabled={used}
+          onclick={() => useMapping(card.offer)}>{used ? "Used" : "Use"}</button
+        >
+      </span>
+    {/if}
+    {#if mappingProblem !== ""}
+      <p class="agent-quiet agent-card-note">{mappingProblem}</p>
+    {/if}
   {:else if card.kind === "memory"}
     <p class="agent-memory-card-top">
       <span>{MEMORY_WORDS[card.action]}</span>

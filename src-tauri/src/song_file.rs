@@ -32,6 +32,7 @@
 use toml::{Table, Value};
 
 use crate::drums::{DrumPad, Drums, PAD_NAMES, pad_named, pad_of_note};
+use crate::key_mapping::{KeyMapping, is_mappable};
 use crate::mix::Mix;
 use crate::mix_automation::is_song_wide;
 use crate::mix_file::{read_mix, write_buses_and_master, write_strip_effects, write_strip_values};
@@ -45,6 +46,7 @@ use crate::sound_file::{
     Sound, group, groups, number_in, read_count, read_flag, read_signed, read_word, sound_of_table, start_group, write_routing,
     write_flag, write_name, write_number, write_sound, write_word,
 };
+use crate::scales::Scale;
 use crate::sound_profile::SoundProfile;
 
 // The most notes a loop holds, in all its layers (`JELLO_LOOP_MAX_NOTES` in
@@ -88,6 +90,11 @@ const HEADING: &str = "# A Jello song. Any value left out takes a new song's.";
 pub struct Song {
     // None until a key is picked.
     pub key: Option<Key>,
+    // The scale its keys follow (docs/adr/0047-song-key-mappings.md): `key`
+    // is the key it reads as. Picking a key picks its major or minor scale.
+    pub scale: Option<Scale>,
+    // The song's main mapping. Empty until a scale is picked.
+    pub keys: KeyMapping,
     pub tempo: u32,
     pub snap: bool,
     // The picked track, from 0.
@@ -107,10 +114,12 @@ pub struct Song {
 }
 
 // A chord of the song and how long it was held.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HeldChord {
     pub chord: Chord,
     pub held_ms: u64,
+    // Its notes, if it isn't the chord's plain three.
+    pub notes: Option<Vec<u8>>,
 }
 
 // The loop: how many bars it lasts, and its layers in the order they were
@@ -173,6 +182,8 @@ pub struct SongSection {
     pub key_shift: i32,
     pub layers: Vec<SectionLayer>,
     pub automation: Vec<Automation>,
+    // Its own mapping, or None to play the song's main one.
+    pub keys: Option<KeyMapping>,
 }
 
 // A layer a section plays: layer `layer` of track `track`, both from 0.
@@ -201,6 +212,8 @@ impl Song {
     pub fn new(new_song: &SoundProfile) -> Song {
         Song {
             key: None,
+            scale: None,
+            keys: KeyMapping::default(),
             tempo: START_TEMPO,
             snap: true,
             picked: 0,
@@ -347,6 +360,9 @@ pub fn text_of(song: &Song) -> String {
     if let Some(key) = song.key {
         write_word(&mut text, "key", &key_name(key));
     }
+    if let Some(scale) = song.scale {
+        write_word(&mut text, "scale", &scale.name());
+    }
     write_number(&mut text, "tempo", song.tempo);
     write_flag(&mut text, "snap", song.snap);
     write_number(&mut text, "picked", song.picked + 1);
@@ -364,9 +380,17 @@ pub fn text_of(song: &Song) -> String {
             if !(48..=59).contains(&held.chord.root) {
                 root = format!(", root_note = \"{}\"", note_name(held.chord.root));
             }
-            text.push_str(&format!("  {{ chord = \"{name}\", held_ms = {}{root} }},\n", held.held_ms));
+            let mut notes = String::new();
+            if let Some(played) = &held.notes {
+                notes = format!(", notes = [{}]", quoted_notes(played));
+            }
+            text.push_str(&format!("  {{ chord = \"{name}\", held_ms = {}{root}{notes} }},\n", held.held_ms));
         }
         text.push_str("]\n");
+    }
+
+    if !song.keys.is_empty() {
+        write_mapping(&mut text, &song.keys, "[keys]");
     }
 
     if let Some(looped) = &song.looped {
@@ -382,6 +406,74 @@ pub fn text_of(song: &Song) -> String {
         write_section(&mut text, section);
     }
     text
+}
+
+// Notes as their names in quotes, like `"C4", "E4"`.
+fn quoted_notes(notes: &[u8]) -> String {
+    let mut names = Vec::new();
+    for note in notes {
+        names.push(quoted(&note_name(*note)));
+    }
+    names.join(", ")
+}
+
+// A mapping under `heading`: the locked keys, then one key a line, in order.
+fn write_mapping(text: &mut String, mapping: &KeyMapping, heading: &str) {
+    start_group(text, heading);
+    let mut locked = Vec::new();
+    for key in &mapping.locked {
+        locked.push(quoted(key));
+    }
+    text.push_str(&format!("locked = [{}]\n", locked.join(", ")));
+    text.push_str("map = [\n");
+    for (key, notes) in &mapping.keys {
+        let key = quoted(key);
+        text.push_str(&format!("  {{ key = {key}, notes = [{}] }},\n", quoted_notes(notes)));
+    }
+    text.push_str("]\n");
+}
+
+// The mapping in `table`. A key that can't play notes or a note Jello can't
+// read is skipped, like anything else a song file gets wrong.
+fn read_mapping(table: &Table) -> KeyMapping {
+    let mut mapping = KeyMapping::default();
+    for item in items(table, "map") {
+        let Some(key) = read_word(item, "key") else {
+            continue;
+        };
+        if !is_mappable(key) {
+            continue;
+        }
+        let notes = read_note_names(item);
+        // Too many notes is skipped too.
+        let _ = mapping.set_key(key, &notes);
+    }
+    let Some(locked) = table.get("locked").and_then(Value::as_array) else {
+        return mapping;
+    };
+    for key in locked {
+        if let Some(key) = key.as_str() {
+            let _ = mapping.set_locked(key, true);
+        }
+    }
+    mapping
+}
+
+// The notes `item` lists by name, leaving out any Jello can't read.
+fn read_note_names(item: &Table) -> Vec<u8> {
+    let mut notes = Vec::new();
+    let Some(names) = item.get("notes").and_then(Value::as_array) else {
+        return notes;
+    };
+    for name in names {
+        let Some(name) = name.as_str() else {
+            continue;
+        };
+        if let Some(note) = note_of_name(name) {
+            notes.push(note);
+        }
+    }
+    notes
 }
 
 // The arrangement, as the names of its sections, like
@@ -505,6 +597,10 @@ fn write_section(text: &mut String, section: &SongSection) {
         }
         text.push_str("]\n");
     }
+
+    if let Some(keys) = &section.keys {
+        write_mapping(text, keys, "[section.keys]");
+    }
 }
 
 // A beat to a millionth, without the zeros at the end: "5.25", not
@@ -531,6 +627,15 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
     let mut song = Song::new(new_song);
     if let Some(name) = read_word(&table, "key") {
         song.key = key_of_name(name);
+    }
+    if let Some(name) = read_word(&table, "scale") {
+        song.scale = Scale::of_name(name);
+    }
+    if let Some(scale) = song.scale {
+        song.key = Some(scale.key());
+    }
+    if let Some(keys_table) = group(&table, "keys") {
+        song.keys = read_mapping(keys_table);
     }
 
     let tempo = read_count(&table, "tempo", START_TEMPO);
@@ -727,7 +832,13 @@ fn read_section(section_table: &Table, song: &Song) -> Option<SongSection> {
         }
     }
 
+    let mut keys = None;
+    if let Some(keys_table) = group(section_table, "keys") {
+        keys = Some(read_mapping(keys_table));
+    }
+
     Some(SongSection {
+        keys,
         name: String::from(name),
         bars,
         tempo,
@@ -846,9 +957,15 @@ fn read_chord(item: &Table) -> Option<HeldChord> {
     if held_ms < 0.0 {
         return None;
     }
+    let mut notes = None;
+    let listed = read_note_names(item);
+    if !listed.is_empty() {
+        notes = Some(listed);
+    }
     Some(HeldChord {
         chord,
         held_ms: held_ms.round() as u64,
+        notes,
     })
 }
 
@@ -993,6 +1110,7 @@ mod tests {
             drums: Some(drums),
         };
         let verse = SongSection {
+            keys: None,
             name: String::from("Verse \"one\""),
             bars: 4,
             tempo: 90,
@@ -1029,6 +1147,7 @@ mod tests {
             ],
         };
         let chorus = SongSection {
+            keys: None,
             name: String::from("Chorus"),
             bars: 8,
             tempo: 96,
@@ -1042,6 +1161,8 @@ mod tests {
                 tonic: 9,
                 mode: Mode::Minor,
             }),
+            scale: None,
+            keys: KeyMapping::default(),
             tempo: 96,
             snap: false,
             picked: 1,
@@ -1049,14 +1170,17 @@ mod tests {
                 HeldChord {
                     chord: minor(57),
                     held_ms: 1250,
+                    notes: None,
                 },
                 HeldChord {
                     chord: major(53),
                     held_ms: 980,
+                    notes: None,
                 },
                 HeldChord {
                     chord: major(58),
                     held_ms: 3,
+                    notes: None,
                 },
             ],
             looped: Some(SongLoop {
@@ -1189,6 +1313,7 @@ pads = [
         song.chords = vec![HeldChord {
             chord: major(49),
             held_ms: 500,
+            notes: None,
         }];
         assert!(text_of(&song).contains("chord = \"C#\""));
         song.key = Some(Key {
@@ -1240,6 +1365,8 @@ pads = [
         let song = read("");
         let new_song = Song {
             key: None,
+            scale: None,
+            keys: KeyMapping::default(),
             tempo: START_TEMPO,
             snap: true,
             picked: 0,
@@ -1332,10 +1459,12 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
             HeldChord {
                 chord: minor(57),
                 held_ms: 100,
+                notes: None,
             },
             HeldChord {
                 chord: major(48),
                 held_ms: 200,
+                notes: None,
             },
         ];
         assert_eq!(song.chords, expected_chords);
@@ -1520,5 +1649,79 @@ name = "B"
         assert_eq!(song.looped, reopened.looped);
         let bars: Vec<u32> = reopened.looped.unwrap().layers.iter().map(|layer| layer.bars).collect();
         assert_eq!(bars, vec![3, 2]);
+    }
+
+    fn song_with_keys() -> Song {
+        let scale = Scale::of_name("A dorian").unwrap();
+        let mut song = Song::new(&SoundProfile::new());
+        song.scale = Some(scale);
+        song.key = Some(scale.key());
+        song.keys = KeyMapping::default_for(scale);
+        song.keys.set_key("KeyJ", &[60, 64, 67, 71]).unwrap();
+        song.keys.set_key("KeyK", &[]).unwrap();
+        song.keys.set_locked("KeyJ", true).unwrap();
+        song
+    }
+
+    #[test]
+    fn a_scale_and_its_keys_read_back_as_they_were() {
+        let song = song_with_keys();
+        let text = text_of(&song);
+        assert!(text.contains("scale = \"A dorian\""));
+        assert!(text.contains("locked = [\"KeyJ\"]"));
+        assert_eq!(song_of(&text, &SoundProfile::new()).unwrap(), song);
+    }
+
+    #[test]
+    fn a_sections_own_keys_read_back_and_none_stays_none() {
+        let mut song = song_with_keys();
+        let mut own = song.keys.clone();
+        own.set_key("KeyL", &[72]).unwrap();
+        for (name, keys) in [("Verse", Some(own)), ("Chorus", None)] {
+            song.sections.push(SongSection {
+                keys,
+                name: String::from(name),
+                bars: 2,
+                tempo: 120,
+                key_shift: 0,
+                layers: Vec::new(),
+                automation: Vec::new(),
+            });
+        }
+        let read = song_of(&text_of(&song), &SoundProfile::new()).unwrap();
+        assert_eq!(read, song);
+        assert!(read.sections[1].keys.is_none());
+    }
+
+    #[test]
+    fn a_chord_played_in_a_voicing_keeps_its_notes() {
+        let mut song = Song::new(&SoundProfile::new());
+        song.chords.push(HeldChord {
+            chord: chord_of_name("C").unwrap(),
+            held_ms: 500,
+            notes: Some(vec![52, 55, 60]),
+        });
+        let read = song_of(&text_of(&song), &SoundProfile::new()).unwrap();
+        assert_eq!(read.chords[0].notes, Some(vec![52, 55, 60]));
+    }
+
+    #[test]
+    fn a_mapping_keeps_only_what_it_can_read() {
+        let text = "scale = \"C major\"\n[keys]\nlocked = [\"KeyJ\", \"Enter\", 3]\nmap = [\n\
+            { key = \"KeyJ\", notes = [\"C4\", \"nothing\"] },\n\
+            { key = \"Enter\", notes = [\"C4\"] },\n\
+            { notes = [\"C4\"] },\n\
+            { key = \"KeyK\", notes = 5 },\n]\n";
+        let song = song_of(text, &SoundProfile::new()).unwrap();
+        assert_eq!(song.keys.keys.len(), 1);
+        assert_eq!(song.keys.keys["KeyJ"], vec![60]);
+        assert_eq!(song.keys.locked.len(), 1);
+    }
+
+    #[test]
+    fn a_scale_nobody_knows_is_left_out_and_a_key_still_reads() {
+        let song = song_of("key = \"A minor\"\nscale = \"A nonsense\"\n", &SoundProfile::new()).unwrap();
+        assert_eq!(song.scale, None);
+        assert!(song.key.is_some());
     }
 }

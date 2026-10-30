@@ -127,6 +127,8 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
     }
     Song {
         key: composer.key(),
+        scale: composer.scale(),
+        keys: composer.main_keys().clone(),
         tempo: composer.tempo(),
         snap: engine.snap(),
         picked: tracks.picked(),
@@ -503,6 +505,8 @@ mod tests {
     use crate::engine::{EffectKind, TRACK_COUNT, FULL_VOLUME, GLIDE_KEY_NOTE, Kind, LooperState, VIBRATO_KEY_NOTE};
     use crate::harmony::{Chord, Key, Mode, Quality};
     use crate::presets::{mark_starting, test_folder};
+    use crate::key_mapping::KeyMapping;
+    use crate::scales::Scale;
     use crate::song_file::{HeldChord, SectionLayer, SongSection};
     use crate::sound_file::Sound;
 
@@ -570,6 +574,7 @@ mod tests {
         kit.name = Some(String::from("Track 2"));
         kit.drums = Some(crate::drums::Drums::new());
         let verse = SongSection {
+            keys: None,
             name: String::from("Verse"),
             bars: 2,
             tempo: 90,
@@ -596,6 +601,8 @@ mod tests {
         };
         Song {
             key: Some(a_minor()),
+            scale: Some(Scale::of_key(a_minor())),
+            keys: KeyMapping::default_for(Scale::of_key(a_minor())),
             tempo: 100,
             snap: false,
             picked: 1,
@@ -603,6 +610,7 @@ mod tests {
                 HeldChord {
                     chord: am(),
                     held_ms: 1250,
+                    notes: None,
                 },
                 HeldChord {
                     chord: Chord {
@@ -610,6 +618,7 @@ mod tests {
                         quality: Quality::Major,
                     },
                     held_ms: 400,
+                    notes: None,
                 },
             ],
             looped: Some(SongLoop {
@@ -958,6 +967,7 @@ mod tests {
         let expected = HeldChord {
             chord: am(),
             held_ms: 700,
+            notes: None,
         };
         assert_eq!(song_now(&composer, &mut engine).chords, vec![expected]);
     }

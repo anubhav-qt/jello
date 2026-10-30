@@ -18,6 +18,10 @@ mod harmony;
 mod hum;
 mod instruments;
 mod key_map;
+mod key_mapping;
+mod key_optimizer;
+mod key_stats;
+mod keys_tool;
 mod layer_cycles;
 mod layer_notes;
 mod listening;
@@ -35,6 +39,7 @@ mod pitch;
 mod practice;
 mod practice_run;
 mod presets;
+mod scales;
 mod scoring;
 mod sections;
 mod skills;
@@ -100,6 +105,10 @@ pub fn run() {
         .manage(Mutex::new(starters::Starters::default()))
         // What each laptop key does, and which note each held key started.
         .manage(Mutex::new(KeyMap::new()))
+        // The player's own timing between keys, and the optimizer's offers
+        // (docs/adr/0047-song-key-mappings.md).
+        .manage(Mutex::new(key_stats::KeyStats::default()))
+        .manage(Mutex::new(keys_tool::KeyOffers::default()))
         .manage(Mutex::new(composer))
         // Before the window opens, Jello opens the song open last, or makes
         // a new one on the starting sound (docs/adr/0038-song-files.md). The
@@ -120,6 +129,7 @@ pub fn run() {
             let memory = memory::Memory::load(memory::folder_of(app.handle()));
             app.manage(Mutex::new(memory));
             open_last_song(app.handle());
+            keys_tool::start_keys(app.handle());
             // The agent's tools reach the open song, so their server starts
             // once it is kept. Without it Jello still opens, with no agent.
             let tool_server = tool_server::start(app.handle()).ok();
@@ -211,6 +221,18 @@ pub fn run() {
             commands::release_key,
             commands::sound_view,
             commands::key_layout,
+            keys_tool::keys_tab_changed,
+            keys_tool::pick_play_scale,
+            keys_tool::pick_song_scale,
+            keys_tool::mapping_view,
+            keys_tool::set_key_notes,
+            keys_tool::set_key_locked,
+            keys_tool::reset_keys,
+            keys_tool::sound_mapped_note,
+            keys_tool::try_key_offer,
+            keys_tool::stop_trying_keys,
+            keys_tool::use_key_offer,
+            keys_tool::coming_keys,
             commands::shift_octave,
             commands::edit_composition,
             commands::compose_view,
@@ -289,6 +311,7 @@ fn keep_saving(app: AppHandle) {
         // A layer removed with Esc leaves the sections before they are saved.
         sections::catch_up(&mut composer, &mut engine);
         song_session::save_if_settled(&mut open, &composer, &mut engine, now);
+        keys_tool::save_key_stats(&app, &open);
         engine.tidy_sample_sets();
     }
 }
@@ -300,14 +323,25 @@ fn keep_arranging(app: AppHandle) {
     let mut playing_before = None;
     loop {
         thread::sleep(ARRANGE_CHECK);
+        let key_map = app.state::<Mutex<KeyMap>>();
         let composer = app.state::<Mutex<Composer>>();
         let engine = app.state::<Mutex<Engine>>();
+        let mut key_map = key_map.lock().unwrap();
         let mut composer = composer.lock().unwrap();
         let mut engine = engine.lock().unwrap();
         let stopped = arrange::keep_playing(&mut composer, &mut engine);
         let playing = arrange::playing_now(&composer, &engine);
+        // The section's keys take over at its boundary. Held notes keep
+        // sounding, since the key map remembers what each key started.
+        let mut section = None;
+        if let Some(place) = playing {
+            section = composer.arrangement().get(place).copied();
+        }
+        composer.set_section_playing(section);
+        key_map.follow(composer.keys_now());
         drop(engine);
         drop(composer);
+        drop(key_map);
         if stopped {
             let _ = app.emit("arrangement-stopped", ());
         } else if playing != playing_before && playing.is_some() {

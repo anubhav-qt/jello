@@ -46,6 +46,9 @@
   import AgentPanel from "./AgentPanel.svelte";
   import PracticeView from "./PracticeView.svelte";
   import type { PracticeMark, PracticeView as Practice } from "./practice";
+  import KeysPage from "./KeysPage.svelte";
+  import ScalePicker from "./ScalePicker.svelte";
+  import type { MappingSender } from "./keys";
   import type { Job } from "./agent";
 
   interface Props {
@@ -65,7 +68,12 @@
     onLayerPlayingChange: (layer: number, playing: boolean) => void;
     onLoopPlayingChange: (playing: boolean) => void;
     // What Compose's controls do. `place` is a chord's place in the song.
-    onKeyPick: (tonic: number, mode: "major" | "minor") => void;
+    onScalePick: (tonic: number, kind: string) => void;
+    // What Play's scale picker does, and what opening another tab does: Play
+    // has keys of its own, and the other tabs play the song's.
+    onPlayScalePick: (tonic: number, kind: string) => void;
+    onTabChange: (tab: Tab) => void;
+    mappingSender: MappingSender;
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
     onComposeEdit: (action: string, place: number) => void;
@@ -90,7 +98,10 @@
     onVolumeChange,
     onLayerPlayingChange,
     onLoopPlayingChange,
-    onKeyPick,
+    onScalePick,
+    onPlayScalePick,
+    onTabChange,
+    mappingSender,
     onChordClick,
     onPlayClick,
     onComposeEdit,
@@ -251,6 +262,75 @@
   let songs: SongsView | null = $state(null);
   let songsOpen = $state(false);
 
+  // Whether Play's scale picker is open again, after a scale was picked, and
+  // whether the mapping page is open. The page takes the whole left side, the
+  // keyboard and all (docs/adr/0047-song-key-mappings.md).
+  let playPickerOpen = $state(false);
+  let keysPageOpen = $state(false);
+  let keysPage: KeysPage | undefined = $state();
+
+  let playPickerShown = $derived.by(() => {
+    if (tab !== "play" || practice !== null) {
+      return false;
+    }
+    if (layout.play_scale === null) {
+      return true;
+    }
+    return playPickerOpen;
+  });
+
+  // The scale the Keys button shows: Play's own, or the song's.
+  let keysValue = $derived.by(() => {
+    if (tab === "play") {
+      return layout.play_scale ?? "no scale";
+    }
+    return compose?.scale?.name ?? "no scale";
+  });
+
+  function clickKeysButton() {
+    if (tab === "play") {
+      playPickerOpen = !playPickerOpen;
+      return;
+    }
+    keysPageOpen = !keysPageOpen;
+    soundPanelOpen = false;
+    songsOpen = false;
+    letGo();
+    tick().then(placeLane);
+  }
+
+  function closeKeysPage() {
+    keysPageOpen = false;
+    tick().then(placeLane);
+  }
+
+  // Whether the mapping page takes the keys, so they edit instead of playing.
+  export function keysPageWants(): boolean {
+    return keysPageOpen;
+  }
+
+  export function keysPageKey(code: string) {
+    keysPage?.keyPressed(code);
+  }
+
+  // The keys the loop's next presses need (src-tauri/src/keys_tool.rs).
+  const comingMarks = new SvelteMap<string, PracticeMark>();
+
+  export function showComing(marks: PracticeMark[]) {
+    comingMarks.clear();
+    for (const mark of marks) {
+      comingMarks.set(mark.key, mark);
+    }
+  }
+
+  // Practice's marks come first. Compose shows what the loop plays next.
+  let keyMarks = $derived.by(() => {
+    if (practiceMarks.size > 0 || tab !== "compose") {
+      return practiceMarks;
+    }
+    return comingMarks;
+  });
+
   let songName = $derived.by(() => {
     if (songs === null) {
       return "";
@@ -393,6 +473,9 @@
     tab = newTab;
     // Another tab shows its own screen, so the Songs panel closes.
     songsOpen = false;
+    playPickerOpen = false;
+    keysPageOpen = false;
+    onTabChange(newTab);
     // The sound panel is Compose's, so what it picked is let go.
     letGo();
     // A tab's screen can move the keyboard, so the lane follows it once
@@ -521,6 +604,10 @@
     }
     if (practice !== null && practice.running === true) {
       invoke("stop_practice");
+      return true;
+    }
+    if (keysPageOpen) {
+      closeKeysPage();
       return true;
     }
     if (soundPanelOpen || songsOpen) {
@@ -699,6 +786,16 @@
     <button
       type="button"
       class="action top-button"
+      class:is-open={keysPageOpen || playPickerOpen}
+      title="The scale, and which notes each key plays"
+      onclick={(event) => clickThenLetGo(event, clickKeysButton)}
+    >
+      <span class="action-name">Keys</span>
+      <span class="action-value">{keysValue}</span>
+    </button>
+    <button
+      type="button"
+      class="action top-button"
       class:is-open={soundPanelOpen}
       title="The sound panel (oscillator 1's kind: F12 steps it)"
       onclick={(event) => clickThenLetGo(event, switchSoundPanel)}
@@ -747,7 +844,16 @@
     class:has-agent={agentOpen}
   >
     <div class="screen-left">
-      <div class="workspace">
+      {#if keysPageOpen}
+        <KeysPage
+          bind:this={keysPage}
+          {platform}
+          {layout}
+          send={mappingSender}
+          onClose={closeKeysPage}
+        />
+      {/if}
+      <div class="workspace" class:is-hidden={keysPageOpen}>
         {#if songsOpen}
           <SongsPanel
             {songs}
@@ -767,6 +873,18 @@
         {:else}
           {#if tab === "play" && practice !== null}
             <PracticeView view={practice} onTry={onPracticeTry} />
+          {:else if playPickerShown}
+            <div class="play-picker">
+              <p class="tape-label">Pick a scale to play in</p>
+              <ScalePicker
+                tonic={null}
+                kind={null}
+                onPick={(tonic, kind) => {
+                  playPickerOpen = false;
+                  onPlayScalePick(tonic, kind);
+                }}
+              />
+            </div>
           {:else if tab === "play"}
             <!-- The held notes, in big glowing dots. -->
             <div class="stage-readout" class:is-idle={idle}>
@@ -794,7 +912,7 @@
               tried={triedGuide}
               {triedRoot}
               keysAcross={keysAcross(platform)}
-              {onKeyPick}
+              {onScalePick}
               {onChordClick}
               {onPlayClick}
               onEdit={onComposeEdit}
@@ -817,7 +935,7 @@
       </div>
 
       <!-- The keyboard, with no box around it. -->
-      <div class="stage-panel" bind:this={panel}>
+      <div class="stage-panel" class:is-hidden={keysPageOpen} bind:this={panel}>
         {#if sound !== null}
           <!-- The track row and the transport, as wide as the keys. -->
           <div class="stage-controls" style:--keys-across={keysAcross(platform)}>
@@ -837,7 +955,7 @@
           {layout}
           {agentHeld}
           {agentMarks}
-          {practiceMarks}
+          practiceMarks={keyMarks}
           {held}
           {sound}
           {looperBeats}
@@ -865,7 +983,7 @@
 
   <!-- The lane shows only once the looper starts: until then nothing is
        drawn under the keyboard. -->
-  {#if sound !== null && sound.looper.state !== "idle"}
+  {#if sound !== null && sound.looper.state !== "idle" && !keysPageOpen}
     {#if lanePlace !== null}
       <LooperLane
         {sound}

@@ -41,6 +41,34 @@ impl Chord {
     }
 }
 
+// The major or minor chord `notes` hold, or None if they hold neither. A key
+// can play any notes, so it can play a chord in any voicing, or with more
+// notes than its three. The lowest note that can be a root wins, and major
+// wins over minor. The chord's root is that note.
+pub fn chord_of_notes(notes: &[u8]) -> Option<Chord> {
+    let mut lowest_first = notes.to_vec();
+    lowest_first.sort();
+    for root in &lowest_first {
+        for quality in [Quality::Major, Quality::Minor] {
+            if *root > 120 {
+                continue;
+            }
+            let chord = Chord { root: *root, quality };
+            let mut holds_all = true;
+            for chord_note in chord.notes() {
+                let held = lowest_first.iter().any(|note| note % 12 == chord_note % 12);
+                if !held {
+                    holds_all = false;
+                }
+            }
+            if holds_all {
+                return Some(chord);
+            }
+        }
+    }
+    None
+}
+
 // Whether a key's home chord is major or minor.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

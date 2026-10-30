@@ -611,12 +611,14 @@ fn keys_for(studio: &Studio, arguments: &Value) -> Result<Value, String> {
             return Err(unknown_chord(name));
         };
         let mut found = None;
-        for (key, chord) in key_map.chord_keys() {
+        let mut chord_keys: Vec<_> = key_map.chord_keys().into_iter().collect();
+        chord_keys.sort_by_key(|(key, _)| key.clone());
+        for (key, chord) in chord_keys {
             if chord.pitch() != root {
                 continue;
             }
             let chord_steps = [0, chord.notes()[1] - chord.notes()[0], 7];
-            if kind.steps == chord_steps {
+            if kind.steps == chord_steps && found.is_none() {
                 found = Some(key);
             }
         }
@@ -762,13 +764,15 @@ mod tests {
             fn show_key(&self, _key: &str, _down: bool) {}
         }
         let open_song = Mutex::new(OpenSong::new(None));
-        let key_map = Mutex::new(KeyMap::new());
+        let key_map = Mutex::new(KeyMap::with_test_layout());
         let composer = Mutex::new(Composer::new());
         let engine = Mutex::new(Engine::new().unwrap());
         let phrases = Phrases::default();
         let offers = Mutex::new(Offers::default());
         let practice = Mutex::new(crate::practice::Practice::default());
         let memory = Mutex::new(crate::memory::Memory::default());
+        let key_stats = Mutex::new(crate::key_stats::KeyStats::default());
+        let key_offers = Mutex::new(crate::keys_tool::KeyOffers::default());
         let studio = Studio {
             open_song: &open_song,
             key_map: &key_map,
@@ -778,6 +782,8 @@ mod tests {
             offers: &offers,
             practice: &practice,
             memory: &memory,
+            key_stats: &key_stats,
+            key_offers: &key_offers,
             screen: &NoScreen,
         };
         let answer = keys_for(&studio, &json!({"notes": ["C4", "G5", "A5", "C2"]})).unwrap();

@@ -268,8 +268,8 @@ fn press(keys: &mut KeyMap, engine: &mut Engine, key: &str) {
         KeyAction::PlayNote(note) => {
             engine.note_on(note, LAPTOP_VELOCITY);
         }
-        KeyAction::PlayChord(chord) => {
-            for note in chord.notes() {
+        KeyAction::PlayNotes(notes) => {
+            for note in notes {
                 engine.note_on(note, LAPTOP_VELOCITY);
             }
         }
@@ -384,6 +384,7 @@ mod tests {
             chords.push(HeldChord {
                 chord: chord_of_name(name).unwrap(),
                 held_ms,
+                notes: None,
             });
         }
         let notes = vec![
@@ -414,7 +415,7 @@ mod tests {
     }
 
     fn answer(what: &str, with_loop: bool, phrase: Option<&Phrase>) -> Value {
-        let render = render(&song(), KeyMap::new(), what, with_loop, phrase).unwrap();
+        let render = render(&song(), KeyMap::with_test_layout(), what, with_loop, phrase).unwrap();
         let mut answer = answer_of(&render, 120, START_LIMITER.ceiling_db);
         answer["frames"] = json!(render.samples.len() / CHANNELS);
         answer
@@ -445,7 +446,7 @@ mod tests {
     fn a_render_starts_on_its_first_sample() {
         // The limiter's lookahead is trimmed, so the loop's A4 on beat 1
         // sounds within the first 1 ms instead of after it.
-        let render = render(&song(), KeyMap::new(), "loop", false, None).unwrap();
+        let render = render(&song(), KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let lookahead = CHANNELS * render.sample_rate as usize / 1000;
         let mut loudest: f32 = 0.0;
         for sample in &render.samples[..lookahead] {
@@ -471,7 +472,7 @@ mod tests {
 
     #[test]
     fn a_phrase_renders_on_the_copy_of_the_keys() {
-        let keys = KeyMap::new();
+        let keys = KeyMap::with_test_layout();
         let arguments = json!({"presses": [{"note": "C4", "start": 1, "hold": 1}]});
         let phrase = phrases::phrase_of(&arguments, &keys, 120).unwrap();
         let answer = answer("phrase", false, Some(&phrase));
@@ -486,7 +487,7 @@ mod tests {
 
     #[test]
     fn a_phrase_can_play_over_the_loop() {
-        let keys = KeyMap::new();
+        let keys = KeyMap::with_test_layout();
         let arguments = json!({"presses": [{"note": "C4", "start": 1, "hold": 1}]});
         let phrase = phrases::phrase_of(&arguments, &keys, 120).unwrap();
         let answer = answer("phrase", true, Some(&phrase));
@@ -500,9 +501,9 @@ mod tests {
         let mut empty = song();
         empty.looped = None;
         empty.chords.clear();
-        let loop_refused = render(&empty, KeyMap::new(), "loop", false, None);
+        let loop_refused = render(&empty, KeyMap::with_test_layout(), "loop", false, None);
         assert_eq!(loop_refused.err(), Some(String::from("the song has no loop yet")));
-        let chords_refused = render(&empty, KeyMap::new(), "chords", false, None);
+        let chords_refused = render(&empty, KeyMap::with_test_layout(), "chords", false, None);
         assert_eq!(chords_refused.err(), Some(String::from("the song has no chords yet")));
     }
 
@@ -511,7 +512,7 @@ mod tests {
         let mut long = song();
         long.chords[0].held_ms = 61_000;
         long.looped = None;
-        let render = render(&long, KeyMap::new(), "chords", false, None).unwrap();
+        let render = render(&long, KeyMap::with_test_layout(), "chords", false, None).unwrap();
         let answer = answer_of(&render, 120, START_LIMITER.ceiling_db);
         assert_eq!(answer["seconds"], json!(60.0));
         assert_eq!(answer["cut"], json!("it lasts 61.5 s, so only the first 60 s were rendered"));
@@ -523,12 +524,12 @@ mod tests {
         two_tracks.tracks.push(SongTrack::new(&SoundProfile::new()));
         two_tracks.looped.as_mut().unwrap().layers[0].track = 1;
 
-        let at_full = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
+        let at_full = render(&two_tracks, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let loud = answer_of(&at_full, 120, START_LIMITER.ceiling_db);
         assert!(loudness(&loud["beats"][0]).unwrap() > -30.0);
 
         two_tracks.tracks[1].volume = 0;
-        let at_zero = render(&two_tracks, KeyMap::new(), "loop", false, None).unwrap();
+        let at_zero = render(&two_tracks, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let silent = answer_of(&at_zero, 120, START_LIMITER.ceiling_db);
         assert_eq!(loudness(&silent["beats"][0]), None);
     }
@@ -547,7 +548,7 @@ mod tests {
         let output = eq.values.len() - 1;
         eq.values[output] = -12.0;
         quieter.mix.master[0] = Some(eq);
-        let rendered = render(&quieter, KeyMap::new(), "loop", false, None).unwrap();
+        let rendered = render(&quieter, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let answer = answer_of(&rendered, 120, quieter.mix.limiter.ceiling_db);
         let lufs = answer["lufs"].as_f64().unwrap();
         assert!((plain_lufs - lufs - 12.0).abs() < 0.3, "{plain_lufs} then {lufs}");
@@ -557,10 +558,10 @@ mod tests {
     fn a_send_to_a_bus_adds_the_track_again_through_it() {
         let mut sending = song();
         sending.mix.buses.push(Bus::new(None));
-        let rendered = render(&sending, KeyMap::new(), "loop", false, None).unwrap();
+        let rendered = render(&sending, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let alone = answer_of(&rendered, 120, START_LIMITER.ceiling_db)["lufs"].as_f64().unwrap();
         sending.mix.tracks[0].sends[0] = 100;
-        let rendered = render(&sending, KeyMap::new(), "loop", false, None).unwrap();
+        let rendered = render(&sending, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let doubled = answer_of(&rendered, 120, START_LIMITER.ceiling_db)["lufs"].as_f64().unwrap();
         // The same sound twice is 6 dB louder.
         assert!((doubled - alone - 6.0).abs() < 0.5, "{alone} then {doubled}");
@@ -571,7 +572,7 @@ mod tests {
         let mut held_down = song();
         held_down.mix.limiter.boost_db = 24.0;
         held_down.mix.limiter.ceiling_db = -6.0;
-        let rendered = render(&held_down, KeyMap::new(), "loop", false, None).unwrap();
+        let rendered = render(&held_down, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let answer = answer_of(&rendered, 120, held_down.mix.limiter.ceiling_db);
         assert_eq!(answer["whole"]["limiter_reached"], true);
         assert_eq!(answer["beats"][0]["limiter_reached"], true);
@@ -581,7 +582,7 @@ mod tests {
     fn silence_has_no_lufs_or_true_peak() {
         let mut silent = song();
         silent.tracks[0].volume = 0;
-        let rendered = render(&silent, KeyMap::new(), "loop", false, None).unwrap();
+        let rendered = render(&silent, KeyMap::with_test_layout(), "loop", false, None).unwrap();
         let answer = answer_of(&rendered, 120, START_LIMITER.ceiling_db);
         assert_eq!(answer["lufs"], Value::Null);
         assert_eq!(answer["true_peak_db"], Value::Null);

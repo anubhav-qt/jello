@@ -10,6 +10,7 @@ use crate::arrange;
 use crate::automation::part_at;
 use crate::compose::Composer;
 use crate::harmony::{Key, key_name};
+use crate::key_mapping::KeyMapping;
 use crate::engine::{Engine, FASTEST_TEMPO, SLOWEST_TEMPO, TRACK_COUNT};
 use crate::mix_automation::{forget_bus, is_song_wide, is_track_mix_value, mix_part_at};
 use crate::song_file::{
@@ -148,6 +149,23 @@ impl Sections {
         &self.order
     }
 
+    // Gives section `number`, from 0, its own mapping, or with None, puts it
+    // back on the song's main one.
+    pub fn set_keys(&mut self, number: usize, keys: Option<KeyMapping>) -> Result<(), String> {
+        let Some(section) = self.list.get_mut(number) else {
+            return Err(format!("the song has no section {}", number + 1));
+        };
+        section.keys = keys;
+        Ok(())
+    }
+
+    // Puts every section back on the song's main mapping.
+    pub fn forget_keys(&mut self) {
+        for section in &mut self.list {
+            section.keys = None;
+        }
+    }
+
     // Saves the layers of `looped` that are playing as a new section at the
     // end of the order, at `tempo`, lasting as long as the longest of them.
     // Returns its number.
@@ -169,6 +187,7 @@ impl Sections {
             key_shift: 0,
             layers,
             automation: Vec::new(),
+            keys: None,
         };
         self.list.push(section);
         self.order.push(self.list.len() - 1);
@@ -828,6 +847,7 @@ mod tests {
             move_of(Some(0), "pan", 21.0, 22.0),
         ];
         let section = SongSection {
+            keys: None,
             name: String::from("Verse"), bars: 1, tempo: 120, key_shift: 0,
             layers: Vec::new(), automation: original.clone(),
         };
@@ -867,6 +887,7 @@ mod tests {
         open_song_loop(&mut engine, 120, Some(&looped)).unwrap();
         engine.render(512);
         let section = SongSection {
+            keys: None,
             name: String::from("Verse"), bars: 2, tempo: 120, key_shift: 0,
             layers: vec![used(0, 0)],
             automation: vec![move_of(None, "bus 1 volume", 50.0, 80.0)],
@@ -903,6 +924,7 @@ mod tests {
         open_song_loop(&mut engine, 120, Some(&looped)).unwrap();
         engine.render(512);
         let section = SongSection {
+            keys: None,
             name: String::from("Verse"), bars: 2, tempo: 120, key_shift: 0,
             layers: vec![used(1, 0)],
             automation: vec![move_of(Some(1), "send 1", 100.0, 100.0)],

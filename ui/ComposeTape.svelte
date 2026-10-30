@@ -9,20 +9,19 @@
   import {
     fitWords,
     lengthSince,
-    pickerName,
     playingShare,
     secondsWords,
     songWords,
     type ChordGuide,
     type ChordInSong,
     type ComposeView,
-    type KeyChoice,
     type SectionEdit,
     type SectionsView,
   } from "./compose";
   import SectionDetails from "./SectionDetails.svelte";
   import SectionsLane from "./SectionsLane.svelte";
   import { clickThenLetGo } from "./dom";
+  import ScalePicker from "./ScalePicker.svelte";
   import { colorForNote } from "./note-colors";
 
   interface Props {
@@ -38,7 +37,7 @@
     triedRoot: number | null;
     // How many key widths wide the keyboard is, so the tape is as wide.
     keysAcross: number;
-    onKeyPick: (tonic: number, mode: "major" | "minor") => void;
+    onScalePick: (tonic: number, kind: string) => void;
     // A block was clicked: `place` is its place in the song, from 0.
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
@@ -57,7 +56,7 @@
     tried,
     triedRoot,
     keysAcross,
-    onKeyPick,
+    onScalePick,
     onChordClick,
     onPlayClick,
     onEdit,
@@ -249,22 +248,6 @@
     return total;
   });
 
-  // The keys to pick from, the major ones above the minor ones.
-  let majorKeys = $derived(keysIn("major"));
-  let minorKeys = $derived(keysIn("minor"));
-
-  function keysIn(mode: "major" | "minor"): KeyChoice[] {
-    const keys: KeyChoice[] = [];
-    if (view !== null) {
-      for (const choice of view.keys) {
-        if (choice.mode === mode) {
-          keys.push(choice);
-        }
-      }
-    }
-    return keys;
-  }
-
   // Whether the player opened the key picker again after picking a key.
   let pickerReopened = $state(false);
 
@@ -284,9 +267,9 @@
     pickerReopened = !pickerReopened;
   }
 
-  function pick(choice: KeyChoice) {
+  function pick(tonic: number, kind: string) {
     pickerReopened = false;
-    onKeyPick(choice.tonic, choice.mode);
+    onScalePick(tonic, kind);
   }
 
   // With no chord in the song and none held, the lane says what it is for.
@@ -343,17 +326,17 @@
   {#if view !== null}
     <div class="tape-top">
       <div class="tape-field">
-        <p class="tape-label">Key</p>
-        {#if view.key === null}
-          <p class="tape-key is-unpicked">Pick a key</p>
+        <p class="tape-label">Scale</p>
+        {#if view.scale === null}
+          <p class="tape-key is-unpicked">Pick a scale</p>
         {:else}
           <button
             type="button"
             class="tape-key"
-            style:--accent={colorForNote(view.key.tonic).accent}
+            style:--accent={colorForNote(view.scale.tonic).accent}
             onclick={(event) => clickThenLetGo(event, openOrClosePicker)}
           >
-            {view.key.name} <span class="tape-key-arrow">v</span>
+            {view.scale.name} <span class="tape-key-arrow">v</span>
           </button>
         {/if}
       </div>
@@ -382,31 +365,11 @@
     {#if openSection === null}
       <div class="tape-row tape-slot">
         {#if pickerShown}
-          <span class="tape-row-label">Key</span>
-          <div class="tape-picker">
-            <span class="tape-label">Major</span>
-            {#each majorKeys as choice}
-              <button
-                type="button"
-                class="tape-cell"
-                style:--accent={colorForNote(choice.tonic).accent}
-                onclick={(event) => clickThenLetGo(event, () => pick(choice))}
-              >
-                {pickerName(choice)}
-              </button>
-            {/each}
-            <span class="tape-label">Minor</span>
-            {#each minorKeys as choice}
-              <button
-                type="button"
-                class="tape-cell"
-                style:--accent={colorForNote(choice.tonic).accent}
-                onclick={(event) => clickThenLetGo(event, () => pick(choice))}
-              >
-                {pickerName(choice)}
-              </button>
-            {/each}
-          </div>
+          <ScalePicker
+            tonic={view.scale?.tonic ?? null}
+            kind={view.scale?.kind ?? null}
+            onPick={pick}
+          />
         {:else}
           <span class="tape-row-label">Progression</span>
           {#if songIsEmpty}

@@ -416,3 +416,181 @@ h3 > .tutor-markdown {
   border-top: 1px solid rgba(var(--ink), 0.12);
   margin: 12px 0;
 }
+
+/* The scale picker (docs/adr/0047-song-key-mappings.md). */
+.scale-picker {
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  align-items: center;
+  gap: 4px 8px;
+}
+.scale-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+}
+.scale-kind {
+  min-height: 27px;
+  padding: 2px 4px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+  background: none;
+  font-size: 11px;
+  line-height: 1.15;
+  color: var(--text);
+  cursor: default;
+}
+.scale-kind:hover:not(:disabled) {
+  border-color: rgba(var(--accent), 0.6);
+}
+.scale-kind:disabled {
+  color: var(--text-2);
+  opacity: 0.5;
+}
+.tape-cell.is-picked,
+.scale-kind.is-picked {
+  border-color: rgb(var(--accent));
+  background: rgba(var(--accent), 0.16);
+}
+.play-picker {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+}
+.workspace.is-hidden,
+.stage-panel.is-hidden {
+  display: none;
+}
+
+/* The mapping page takes the whole left side. */
+.keys-page {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+.keys-top,
+.keys-editing,
+.keys-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.keys-top {
+  justify-content: space-between;
+  gap: 16px;
+}
+.keys-scopes {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.keys-selected {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+}
+.keys-button {
+  padding: 5px 10px;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 3px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: default;
+}
+.keys-button:hover:not(:disabled) {
+  border-color: rgba(var(--accent), 0.75);
+}
+.keys-button:disabled {
+  opacity: 0.4;
+}
+.keys-button.is-picked {
+  border-color: rgb(var(--accent));
+  background: rgba(var(--accent), 0.16);
+}
+.keys-piano {
+  flex: 1 1 0;
+  min-height: 90px;
+  max-height: 220px;
+  display: grid;
+  grid-template-columns: repeat(var(--whites), 1fr);
+  gap: 2px;
+  touch-action: none;
+}
+.keys-white-place {
+  position: relative;
+  min-width: 0;
+}
+.keys-white {
+  width: 100%;
+  height: 100%;
+  padding: 0 0 4px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border: 1px solid rgba(var(--ink), 0.2);
+  border-radius: 0 0 3px 3px;
+  background: rgba(var(--ink), 0.05);
+  cursor: default;
+}
+.keys-black {
+  position: absolute;
+  top: 0;
+  left: 65%;
+  z-index: 1;
+  width: 70%;
+  height: 60%;
+  padding: 0;
+  border: 1px solid rgba(var(--ink), 0.3);
+  border-radius: 0 0 3px 3px;
+  background: #0b0b10;
+  cursor: default;
+}
+.keys-white:hover,
+.keys-black:hover {
+  border-color: rgba(var(--accent), 0.8);
+}
+.keys-white.is-on,
+.keys-black.is-on {
+  border-color: rgb(var(--accent));
+  background: rgb(var(--accent));
+}
+.keys-octave {
+  font-size: 9px;
+  color: var(--text-2);
+}
+.keys-white.is-on .keys-octave {
+  color: #000;
+}
+.keys-keyboard {
+  flex: none;
+}
+
+/* An optimized mapping's card. */
+.agent-mapping-moves {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 2px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.agent-mapping-key {
+  font-weight: 700;
+}
+.agent-mapping-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}

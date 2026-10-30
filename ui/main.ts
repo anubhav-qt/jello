@@ -22,6 +22,8 @@ import type {
 } from "./sound";
 import type { SongSender, SongsView } from "./songs";
 import type { PracticeMark, PracticeView } from "./practice";
+import type { MappingSender, MappingView } from "./keys";
+import type { Tab } from "./tabs";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -59,6 +61,11 @@ interface StageControls {
   showPractice(view: PracticeView): void;
   // The keys practice marks: the next to press and the ones after it.
   showPracticeMarks(marks: PracticeMark[]): void;
+  // The keys for what the loop plays next.
+  showComing(marks: PracticeMark[]): void;
+  // Whether the mapping page takes the keys, and a key it took.
+  keysPageWants(): boolean;
+  keysPageKey(code: string): void;
 }
 
 // The page, once Rust has said what each key does.
@@ -84,7 +91,11 @@ let lookPlanned = false;
 
 function keepWatchingLooper(view: SoundView) {
   if (!view.looper.busy) {
+    clearComing();
     return;
+  }
+  if (screen?.isComposing()) {
+    sendInOrder(askForComing);
   }
   if (lookPlanned) {
     return;
@@ -94,6 +105,26 @@ function keepWatchingLooper(view: SoundView) {
     lookPlanned = false;
     sendInOrder(askForSound);
   }, LOOPER_LOOK_MS);
+}
+
+// Whether any key is lit for what comes next, so stopping clears them once.
+let comingShown = false;
+
+function clearComing() {
+  if (comingShown) {
+    comingShown = false;
+    screen?.showComing([]);
+  }
+}
+
+async function askForComing() {
+  try {
+    const marks = await invoke<PracticeMark[]>("coming_keys");
+    comingShown = marks.length > 0;
+    screen?.showComing(marks);
+  } catch (error) {
+    showStatus(`Could not see what comes next: ${error}`);
+  }
 }
 
 function showSongs(view: SongsView) {
@@ -674,14 +705,70 @@ async function askForCompose() {
   }
 }
 
-async function pickKey(tonic: number, mode: "major" | "minor") {
+async function pickScale(tonic: number, kind: string) {
   try {
-    const view = await invoke<ComposeView>("pick_key", { tonic, mode });
+    const view = await invoke<ComposeView>("pick_song_scale", { tonic, kind });
     showCompose(view);
+    await askForLayout();
   } catch (error) {
-    showStatus(`Could not pick the key: ${error}`);
+    showStatus(`Could not pick the scale: ${error}`);
   }
 }
+
+async function pickPlayScale(tonic: number, kind: string) {
+  try {
+    const layout = await invoke<KeyLayout>("pick_play_scale", { tonic, kind });
+    showLayout(layout);
+  } catch (error) {
+    showStatus(`Could not pick the scale: ${error}`);
+  }
+}
+
+// Play has keys of its own; every other tab plays the song's.
+async function tabChanged(tab: Tab) {
+  try {
+    const layout = await invoke<KeyLayout>("keys_tab_changed", { onPlay: tab === "play" });
+    showLayout(layout);
+    await askForCompose();
+  } catch (error) {
+    showStatus(`Could not change the keys: ${error}`);
+  }
+}
+
+// Asks Rust for a change to the mapping page, in order with the keys. A refusal
+// shows in the top bar. The keys may play something else after.
+function askMapping(command: string, args: Record<string, unknown>): Promise<MappingView | null> {
+  return new Promise((done) => {
+    sendInOrder(async () => {
+      try {
+        const view = await invoke<MappingView>(command, args);
+        done(view);
+        if (command !== "mapping_view") {
+          await askForLayout();
+          await askForCompose();
+        }
+      } catch (error) {
+        showStatus(`Could not change the keys: ${error}`);
+        done(null);
+      }
+    });
+  });
+}
+
+const mappingSender: MappingSender = {
+  look: (section) => askMapping("mapping_view", { section }),
+  setNotes: (section, key, notes) => askMapping("set_key_notes", { section, key, notes }),
+  setLocked: (section, key, locked) => askMapping("set_key_locked", { section, key, locked }),
+  reset: (section) => askMapping("reset_keys", { section }),
+  soundNote: (note, on) =>
+    sendInOrder(async () => {
+      try {
+        await invoke("sound_mapped_note", { note, on });
+      } catch (error) {
+        showStatus(`Could not play that note: ${error}`);
+      }
+    }),
+};
 
 // Adds the chord played last to the song, leaving out the ones tried before.
 async function addLastChord() {
@@ -949,6 +1036,14 @@ window.addEventListener("keydown", (event) => {
   // button.
   event.preventDefault();
 
+  // The mapping page edits the key pressed instead of playing it.
+  if (screen?.keysPageWants()) {
+    if (!event.repeat) {
+      screen.keysPageKey(event.code);
+    }
+    return;
+  }
+
   // `event.code` is the key's place on the keyboard, like "KeyQ", whatever is
   // printed on it.
   const key = event.code;
@@ -1180,8 +1275,12 @@ async function start() {
         sendInOrder(() => setLayerPlaying(layer, playing)),
       onLoopPlayingChange: (playing: boolean) =>
         sendInOrder(() => setLoopPlaying(playing)),
-      onKeyPick: (tonic: number, mode: "major" | "minor") =>
-        sendInOrder(() => pickKey(tonic, mode)),
+      onScalePick: (tonic: number, kind: string) =>
+        sendInOrder(() => pickScale(tonic, kind)),
+      onPlayScalePick: (tonic: number, kind: string) =>
+        sendInOrder(() => pickPlayScale(tonic, kind)),
+      onTabChange: (tab: Tab) => sendInOrder(() => tabChanged(tab)),
+      mappingSender,
       onChordClick: (place: number) =>
         sendInOrder(() => playChordInSong(place)),
       onPlayClick: () => sendInOrder(playSong),

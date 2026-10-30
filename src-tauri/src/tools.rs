@@ -21,6 +21,8 @@ use crate::sections::{self, SectionEdit};
 use crate::harmony::{key_name, key_of_name};
 use crate::instruments;
 use crate::key_map::KeyMap;
+use crate::key_stats::KeyStats;
+use crate::keys_tool::{self, KeyOffers};
 use crate::layer_notes;
 use crate::listening;
 use crate::memory::{self, Memory};
@@ -47,6 +49,8 @@ pub struct Studio<'a> {
     pub offers: &'a Mutex<Offers>,
     pub practice: &'a Mutex<Practice>,
     pub memory: &'a Mutex<Memory>,
+    pub key_stats: &'a Mutex<KeyStats>,
+    pub key_offers: &'a Mutex<KeyOffers>,
     pub screen: &'a dyn Screen,
 }
 
@@ -577,6 +581,7 @@ pub fn list() -> Value {
     ]);
     if let Some(list) = tools.as_array_mut() {
         list.push(mix_tool::description());
+        list.push(keys_tool::description());
     }
     tools
 }
@@ -627,6 +632,7 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_tracks" => use_tracks(studio, arguments),
         "jello_arrange" => arrange_sections(studio, arguments),
         "jello_mix" => mix_tool::answer(studio, arguments),
+        "jello_keys" => keys_tool::answer(studio, arguments),
         _ => Err(format!("Jello has no tool called {name}")),
     };
     match answer {
@@ -1446,6 +1452,8 @@ mod tests {
         offers: Mutex<Offers>,
         practice: Mutex<Practice>,
         memory: Mutex<Memory>,
+        key_stats: Mutex<KeyStats>,
+        key_offers: Mutex<KeyOffers>,
         says_yes: bool,
         asked: Mutex<Vec<String>>,
         shown: Mutex<Vec<(String, bool)>>,
@@ -1473,13 +1481,15 @@ mod tests {
             composer.send_all(&mut engine);
             TestStudio {
                 open_song: Mutex::new(OpenSong::new(folders)),
-                key_map: Mutex::new(KeyMap::new()),
+                key_map: Mutex::new(KeyMap::with_test_layout()),
                 composer: Mutex::new(composer),
                 engine: Mutex::new(engine),
                 phrases: Phrases::default(),
                 offers: Mutex::new(Offers::default()),
                 practice: Mutex::new(Practice::default()),
                 memory: Mutex::new(Memory::default()),
+                key_stats: Mutex::new(KeyStats::default()),
+                key_offers: Mutex::new(KeyOffers::default()),
                 says_yes: true,
                 asked: Mutex::new(Vec::new()),
                 shown: Mutex::new(Vec::new()),
@@ -1496,6 +1506,8 @@ mod tests {
                 offers: &self.offers,
                 practice: &self.practice,
                 memory: &self.memory,
+                key_stats: &self.key_stats,
+                key_offers: &self.key_offers,
                 screen: self,
             };
             call(&studio, name, &arguments)

@@ -953,6 +953,9 @@ sixth kind, and a drum kit beside the synth.
 
 ### Computer keyboard
 
+The fixed layout below is history: [song key mappings](#song-key-mappings)
+replaced it, and only the non-note keys still work this way.
+
 Keep the existing layout as the default. The player already knows where the
 typing keys are; [chord guidance](#chord-guidance) will show which ones to
 try or play next without requiring a new layout to memorize.
@@ -1048,7 +1051,10 @@ Then each key press gets the next note. Details:
 
 ### Song key mappings
 
-Approved 2026-10-30 ([ADR 0047](adr/0047-song-key-mappings.md)); not built.
+Built ([ADR 0047](adr/0047-song-key-mappings.md)). Code: `scales.rs`,
+`key_mapping.rs`, `key_stats.rs`, `key_optimizer.rs`, `keys_tool.rs`,
+`ui/KeysPage.svelte`, `ui/ScalePicker.svelte`. Keys follow a section only while
+the arrangement plays it; opening a section on the page doesn't switch them.
 The agent reaches mappings through one tool of its own, `jello_keys`.
 
 **What other tools do.**
