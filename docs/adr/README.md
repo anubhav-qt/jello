@@ -54,6 +54,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0043](0043-the-agent-mode.md) | The agent mode | Accepted |
 | [0044](0044-the-sampler.md) | The sampler | Accepted |
 | [0045](0045-tracks-and-sections.md) | Tracks and sections | Accepted |
+| [0046](0046-the-mix.md) | The mix | Accepted |
 
 ## Template
 

@@ -32,6 +32,9 @@
 use toml::{Table, Value};
 
 use crate::drums::{DrumPad, Drums, PAD_NAMES, pad_named, pad_of_note};
+use crate::mix::Mix;
+use crate::mix_automation::is_song_wide;
+use crate::mix_file::{read_mix, write_buses_and_master, write_strip_effects, write_strip_values};
 use crate::engine::{
     FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, TRACK_COUNT, drum_note,
     VIBRATO_KEY_NOTE,
@@ -39,7 +42,7 @@ use crate::engine::{
 use crate::presets::name_problem;
 use crate::harmony::{Chord, Key, chord_name, chord_of_name, key_name, key_of_name, pitch_of_name};
 use crate::sound_file::{
-    Sound, group, groups, number_in, read_count, read_flag, read_signed, read_word, sound_of_table, start_group,
+    Sound, group, groups, number_in, read_count, read_flag, read_signed, read_word, sound_of_table, start_group, write_routing,
     write_flag, write_name, write_number, write_sound, write_word,
 };
 use crate::sound_profile::SoundProfile;
@@ -98,6 +101,9 @@ pub struct Song {
     // The sections in the order the song plays them, each a place in
     // `sections`.
     pub arrangement: Vec<usize>,
+    // Pan, sends, effects, buses and the master (src/mix.rs), with a strip
+    // for each track.
+    pub mix: Mix,
 }
 
 // A chord of the song and how long it was held.
@@ -178,10 +184,11 @@ pub struct SectionLayer {
 
 // A value a section moves in a straight line from `from` at its start to
 // `to` at its end: one of track `track`'s values, named as jello_sound names
-// them, or with no track, the tempo.
+// them or as its mix does (src/mix_automation.rs), or with no track, the
+// tempo or a value of the song's own mix, like "bus 1 volume".
 #[derive(Clone, Debug, PartialEq)]
 pub struct Automation {
-    // From 0, or None for the tempo.
+    // From 0, or None for the tempo and the song's own mix.
     pub track: Option<usize>,
     pub value: String,
     pub from: f64,
@@ -202,6 +209,7 @@ impl Song {
             tracks: vec![SongTrack::new(new_song)],
             sections: Vec::new(),
             arrangement: Vec::new(),
+            mix: Mix::new(1),
         }
     }
 
@@ -369,6 +377,7 @@ pub fn text_of(song: &Song) -> String {
     for (number, track) in song.tracks.iter().enumerate() {
         write_track(&mut text, song, number, track);
     }
+    write_buses_and_master(&mut text, &song.mix);
     for section in &song.sections {
         write_section(&mut text, section);
     }
@@ -403,10 +412,16 @@ fn write_track(text: &mut String, song: &Song, number: usize, track: &SongTrack)
     if let Some(preset) = &track.preset {
         write_word(text, "preset", preset);
     }
+    write_strip_values(text, &song.mix, number);
     match &track.drums {
-        Some(drums) => write_drums(text, drums),
+        Some(drums) => {
+            write_drums(text, drums);
+            start_group(text, "[track.routing]");
+            write_routing(text, &track.sound, "track.routing");
+        }
         None => write_sound(text, &track.sound, "track.sound"),
     }
+    write_strip_effects(text, &song.mix, number);
 
     let Some(looped) = &song.looped else {
         return;
@@ -506,7 +521,7 @@ fn beat_text(beat: f64) -> String {
 }
 
 // The song `text` describes, with `new_song`'s sound for whatever a track's
-// sound leaves out. Fails only on text that is not TOML.
+// sound leaves out. Invalid TOML, connection indices or mix routing fail.
 pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
     let table = match text.parse::<Table>() {
         Ok(table) => table,
@@ -535,6 +550,7 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
 
     // The tracks, and their layers if the loop has bars.
     let mut tracks = Vec::new();
+    let mut track_tables = Vec::new();
     let mut layers = Vec::new();
     let mut note_count = 0;
     for track_table in groups(&table, "track") {
@@ -542,7 +558,8 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
             break;
         }
         let number = tracks.len();
-        tracks.push(read_track(track_table, new_song));
+        tracks.push(read_track(track_table, new_song).map_err(|error| format!("track {}: {error}", number + 1))?);
+        track_tables.push(track_table);
         if loop_bars < 1 {
             continue;
         }
@@ -560,6 +577,12 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
     }
     if !tracks.is_empty() {
         song.tracks = tracks;
+    }
+    song.mix = read_mix(&table, &track_tables)?;
+    song.mix.fit_tracks(song.tracks.len());
+    for (number, track) in song.tracks.iter().enumerate() {
+        crate::mix::check_track_routing(&track.sound.connections, &song.mix.tracks[number].links)
+            .map_err(|error| format!("track {}: {error}", number + 1))?;
     }
     if !layers.is_empty() {
         song.looped = Some(SongLoop {
@@ -587,7 +610,7 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
 
 // A track: an instrument track on its [track.sound], or with a
 // [track.drums], a drums track.
-fn read_track(track_table: &Table, new_song: &SoundProfile) -> SongTrack {
+fn read_track(track_table: &Table, new_song: &SoundProfile) -> Result<SongTrack, String> {
     let mut track = SongTrack::new(new_song);
     if let Some(name) = read_word(track_table, "name") {
         track.name = Some(String::from(name));
@@ -603,10 +626,13 @@ fn read_track(track_table: &Table, new_song: &SoundProfile) -> SongTrack {
 
     if let Some(drums_table) = group(track_table, "drums") {
         track.drums = Some(read_drums(drums_table));
+        if let Some(routing_table) = group(track_table, "routing") {
+            track.sound = sound_of_table(routing_table, new_song)?;
+        }
     } else if let Some(sound_table) = group(track_table, "sound") {
-        track.sound = sound_of_table(sound_table, new_song);
+        track.sound = sound_of_table(sound_table, new_song)?;
     }
-    track
+    Ok(track)
 }
 
 // The drums `table`, a track's [track.drums], describes, starting from a
@@ -739,10 +765,15 @@ fn read_automation(item: &Table, song: &Song) -> Option<Automation> {
     if from.is_nan() || to.is_nan() {
         return None;
     }
+    // With no track: the tempo, or a value of the song's own mix.
     if track == 0 {
+        let mut word = String::from(TEMPO_WORD);
+        if is_song_wide(value) {
+            word = String::from(value);
+        }
         return Some(Automation {
             track: None,
-            value: String::from(TEMPO_WORD),
+            value: word,
             from,
             to,
         });
@@ -850,8 +881,35 @@ fn beat_in(item: &Table, name: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn song_rejects_effect_and_sound_connections_past_shared_capacity() {
+        use crate::engine::{EffectConnection, EQ_OUTPUT};
+        use crate::modulation::{CONNECTION_COUNT, Source};
+        let profile = SoundProfile::new();
+        let mut song = Song::new(&profile);
+        let connection = song.tracks[0].sound.connections[0];
+        song.tracks[0].sound.connections = [connection; CONNECTION_COUNT];
+        let link = EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount: 0.0, one_way: false, scaled_by: Source::None };
+        song.mix.tracks[0].links.push(link);
+        let text = text_of(&song);
+        assert!(song_of(&text, &profile).is_err());
+        song.tracks[0].sound.connections[CONNECTION_COUNT - 1].source = Source::None;
+        assert!(song_of(&text_of(&song), &profile).is_ok());
+    }
+
+    #[test]
+    fn old_drum_tracks_without_a_routing_table_keep_new_song_routing() {
+        let profile = SoundProfile::new();
+        let song = song_of("[[track]]\n[track.drums]\n", &profile).unwrap();
+        assert!(song.tracks[0].drums.is_some());
+        assert_eq!(song.tracks[0].sound.lfos, *profile.lfos());
+        assert_eq!(song.tracks[0].sound.connections, *profile.connections());
+    }
+
     use crate::drums::{DRUM_MOST_GROUP, DRUM_MOST_HALF_STEPS};
-    use crate::engine::{Kind, SLOWEST_TEMPO};
+    use crate::engine::{EffectKind, Kind, SLOWEST_TEMPO};
+    use crate::mix::{Bus, Place, Slot};
     use crate::harmony::{Mode, Quality};
 
     fn major(root: u8) -> Chord {
@@ -956,6 +1014,18 @@ mod tests {
                     from: 90.0,
                     to: 100.0,
                 },
+                Automation {
+                    track: None,
+                    value: String::from("bus 1 volume"),
+                    from: 20.0,
+                    to: 100.0,
+                },
+                Automation {
+                    track: Some(0),
+                    value: String::from("effect 1 band_1_gain_db"),
+                    from: -6.0,
+                    to: 0.0,
+                },
             ],
         };
         let chorus = SongSection {
@@ -996,7 +1066,26 @@ mod tests {
             tracks: vec![lead, kit],
             sections: vec![verse, chorus],
             arrangement: vec![0, 1, 0],
+            mix: full_mix(),
         }
+    }
+
+    // Two tracks' mix: the lead panned left, sending to a reverb bus, with
+    // an EQ, and the master ducking under the drums.
+    fn full_mix() -> Mix {
+        let mut mix = Mix::new(2);
+        mix.tracks[0].pan = -20;
+        mix.tracks[0].sends[0] = 25;
+        let mut eq = Slot::new(EffectKind::Eq, Place::Track(0));
+        eq.values[0] = 1.0;
+        mix.tracks[0].chain[0] = Some(eq);
+        let mut room = Bus::new(Some(String::from("Room")));
+        room.chain[0] = Some(Slot::new(EffectKind::Reverb, Place::Bus(0)));
+        mix.buses.push(room);
+        let mut ducking = Slot::new(EffectKind::Compressor, Place::Master);
+        ducking.values[7] = 1.0;
+        mix.master[3] = Some(ducking);
+        mix
     }
 
     fn read(text: &str) -> Song {
@@ -1025,7 +1114,11 @@ mod tests {
         assert!(text.contains("  { chord = \"Am\", held_ms = 1250 },\n"));
         assert!(text.contains("  { chord = \"Bb\", held_ms = 3 },\n"));
         assert!(text.contains("[loop]\nbars = 2\n"));
-        assert!(text.contains("[[track]]\nname = \"Lead\"\nvolume = 90\npreset = \"Warm pad\"\n"));
+        assert!(text.contains("[[track]]\nname = \"Lead\"\nvolume = 90\npreset = \"Warm pad\"\npan = -20\nsends = [25]\n"));
+        assert!(text.contains("[[track.effect]]\nslot = 1\nkind = \"eq\"\non = true\nband_1_on = true\n"));
+        assert!(text.contains("[[bus]]\nname = \"Room\"\nvolume = 100\npan = 0\n\n[[bus.effect]]\nslot = 1\nkind = \"reverb\"\n"));
+        assert!(text.contains("[master]\nboost_db = 0\nceiling_db = -1\nrelease_ms = 100\n"));
+        assert!(text.contains("[[master.effect]]\nslot = 4\nkind = \"compressor\"\non = true\nlistens_to = \"track 2\"\n"));
         assert!(text.contains("[track.sound]\ntuning_hz = 432.5\n"));
         assert!(text.contains("[[track.sound.oscillators]]\nkind = \"saw\"\n"));
         assert!(text.contains("[track.sound.filter]\n"));
@@ -1036,7 +1129,7 @@ mod tests {
         assert!(text.contains("  { note = \"vibrato key\", start = 1, end = 2 },\n"));
         assert!(text.contains("  { note = \"glide key\", start = 0.25, end = 0.5 },\n"));
         assert!(text.contains("  { note = \"G4\", start = 5.237396, end = 5.75 },\n"));
-        assert!(text.contains("[[track]]\nname = \"Black Pearl\"\nvolume = 60\n\n[track.drums]\nkit = \"Black Pearl\"\npads = [\n"));
+        assert!(text.contains("[[track]]\nname = \"Black Pearl\"\nvolume = 60\npan = 0\nsends = [0]\n\n[track.drums]\nkit = \"Black Pearl\"\npads = [\n"));
         assert!(text.contains("  { note = \"kick\", start = 1, end = 1.1 },\n"));
         assert!(text.contains("  { note = \"closed hat\", start = 1.5, end = 1.6 },\n"));
         assert!(text.contains("  { pad = \"snare\", level = 70, half_steps = -2, pan = 30, group = 2 },\n"));
@@ -1161,6 +1254,7 @@ pads = [
             }],
             sections: Vec::new(),
             arrangement: Vec::new(),
+            mix: Mix::new(1),
         };
         assert_eq!(song, new_song);
         assert_eq!(song, Song::new(&SoundProfile::new()));

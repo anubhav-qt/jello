@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "effect.h"
 #include "filter.h"
 #include "oscillator.h"
 #include "unison.h"
@@ -74,6 +75,8 @@ float most_amount(RoutingTarget target) {
         return most_kind_steps;
     } else if (target == RoutingTarget::copies) {
         return static_cast<float>(unison_most_copies - 1);
+    } else if (target == RoutingTarget::effect) {
+        return effect_most_move;
     } else if (is_read_at_start(target)) {
         // The envelopes' times and the glide time.
         return most_octaves_of_speed;
@@ -130,6 +133,9 @@ bool is_pitch(RoutingTarget target) {
 }
 
 bool is_read_at_start(RoutingTarget target) {
+    if (target == RoutingTarget::effect) {
+        return false;
+    }
     return static_cast<int>(target) >= static_cast<int>(RoutingTarget::oscillator_1_kind);
 }
 
@@ -418,6 +424,15 @@ void Routing::tick(std::uint64_t block_end) {
 
     read_shared_lfos();
     move_shared_speeds();
+    move_effects();
+}
+
+int Routing::effect_move_count() const {
+    return effect_move_count_;
+}
+
+const EffectMove& Routing::effect_move(int place) const {
+    return effect_moves_[place];
 }
 
 void Routing::read_shared_lfos() {
@@ -456,27 +471,55 @@ void Routing::move_shared_speeds() {
             continue;
         }
 
-        int source = lfo_of(connection.source);
-        if (source < 0) {
-            continue;
+        double move = 0.0;
+        if (shared_move(connection, move)) {
+            speed_moves_[target] += move;
         }
-        if (!is_shared_running(source)) {
+    }
+}
+
+void Routing::move_effects() {
+    effect_move_count_ = 0;
+    for (int place = 0; place < used_count_; place++) {
+        const Connection& connection = used(place);
+        if (connection.target != RoutingTarget::effect) {
             continue;
         }
 
-        double scale = 1.0;
-        if (connection.scaled_by != RoutingSource::none) {
-            int by = lfo_of(connection.scaled_by);
-            if (by < 0) {
-                continue;
-            }
-            if (!is_shared_running(by)) {
-                continue;
-            }
-            scale = one_way(readings_[by].value());
+        double move = 0.0;
+        if (!shared_move(connection, move)) {
+            continue;
         }
-        speed_moves_[target] += connection_move(connection, readings_[source], 1.0, scale);
+        EffectMove& effect_move = effect_moves_[effect_move_count_];
+        effect_move.slot = connection.effect_slot;
+        effect_move.value = connection.effect_value;
+        effect_move.move = move;
+        effect_move_count_ += 1;
     }
+}
+
+bool Routing::shared_move(const Connection& connection, double& move) const {
+    int source = lfo_of(connection.source);
+    if (source < 0) {
+        return false;
+    }
+    if (!is_shared_running(source)) {
+        return false;
+    }
+
+    double scale = 1.0;
+    if (connection.scaled_by != RoutingSource::none) {
+        int by = lfo_of(connection.scaled_by);
+        if (by < 0) {
+            return false;
+        }
+        if (!is_shared_running(by)) {
+            return false;
+        }
+        scale = one_way(readings_[by].value());
+    }
+    move = connection_move(connection, readings_[source], 1.0, scale);
+    return true;
 }
 
 bool Routing::is_shared_running(int index) const {

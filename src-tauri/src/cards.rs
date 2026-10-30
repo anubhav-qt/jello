@@ -663,7 +663,14 @@ pub fn play_agent_option(app: AppHandle, offers: State<'_, Mutex<Offers>>, offer
     if app.state::<Phrases>().is_playing() {
         return Err(String::from("something is playing: stop it first"));
     }
-    app.state::<Mutex<Engine>>().lock().unwrap().start_audio()?;
+    {
+        let composer = app.state::<Mutex<Composer>>();
+        let composer = composer.lock().unwrap();
+        if kind == "sound" {
+            checked_sound_choice(&composer, &picked.changes)?;
+        }
+        app.state::<Mutex<Engine>>().lock().unwrap().start_audio()?;
+    }
     std::thread::spawn(move || {
         let result = tool_server::with_studio(&app, |studio| play_choice(studio, &kind, &picked));
         if let Err(why) = result {
@@ -684,20 +691,16 @@ fn play_choice(studio: &Studio, kind: &str, picked: &Choice) -> Result<(), Strin
         return Ok(());
     }
 
-    let (before, tried) = take_sound_changes(studio, &picked.changes)?;
+    let (track, before, tried) = take_sound_changes(studio, &picked.changes)?;
     let played = phrases::play(studio, &phrase);
     // The song's sound comes back, unless the player changed it meanwhile.
     let mut composer = studio.composer.lock().unwrap();
     let mut engine = studio.engine.lock().unwrap();
-    if composer.sound_profile().sound() == tried {
-        sound_changes::take_changes(composer.sound_profile_mut(), &mut engine, &tried, &before);
-    }
+    restore_sound_choice(&mut composer, &mut engine, track, &before, &tried)?;
     played?;
     Ok(())
 }
 
-// Makes `changes` to the song's sound, and returns the sound before and
-// after.
 // The panel's Practice on a melody choice: makes it the piece practised on
 // the Play tab, for the player's right hand, and tells the agent so with the
 // next message.
@@ -754,14 +757,46 @@ fn practice_piece_of(picked: &Choice) -> Value {
     })
 }
 
-fn take_sound_changes(studio: &Studio, changes: &Value) -> Result<(Sound, Sound), String> {
-    let mut composer = studio.composer.lock().unwrap();
-    let mut engine = studio.engine.lock().unwrap();
+fn checked_sound_choice(composer: &Composer, changes: &Value) -> Result<Sound, String> {
     let before = composer.sound_profile().sound();
     let wanted = sound_changes::changed(&before, changes)?;
-    sound_changes::take_changes(composer.sound_profile_mut(), &mut engine, &before, &wanted);
-    let after = composer.sound_profile().sound();
-    Ok((before, after))
+    composer.check_picked_routing(&wanted.connections)?;
+    Ok(wanted)
+}
+
+// Applies a preview and remembers its track and the sound before and after.
+fn take_sound_changes(studio: &Studio, changes: &Value) -> Result<(u64, Sound, Sound), String> {
+    let mut composer = studio.composer.lock().unwrap();
+    let mut engine = studio.engine.lock().unwrap();
+    take_sound_changes_on(&mut composer, &mut engine, changes)
+}
+
+fn take_sound_changes_on(composer: &mut Composer, engine: &mut Engine, changes: &Value) -> Result<(u64, Sound, Sound), String> {
+    let track = composer.tracks().picked_track().id();
+    let before = composer.sound_profile().sound();
+    let wanted = checked_sound_choice(composer, changes)?;
+    let after = composer.apply_sound(engine, &wanted)?;
+    Ok((track, before, after))
+}
+
+fn restore_sound_choice(composer: &mut Composer, engine: &mut Engine, track: u64, before: &Sound, tried: &Sound) -> Result<(), String> {
+    let Some(number) = composer.tracks().list().iter().position(|held| held.id() == track) else {
+        return Ok(());
+    };
+    if composer.tracks().list()[number].sound_profile().sound() != *tried {
+        return Ok(());
+    }
+    composer.check_track_routing(number, &before.connections)?;
+    let picked = composer.tracks().picked();
+    if number != picked {
+        composer.tracks_mut().pick_for_a_while(engine, number);
+    }
+    let result = composer.apply_sound(engine, before);
+    if number != picked {
+        composer.tracks_mut().pick_for_a_while(engine, picked);
+    }
+    result?;
+    Ok(())
 }
 
 // The panel's Use on choice `choice` (from 0) of offer `offer`: chords go
@@ -783,22 +818,28 @@ pub fn use_agent_option(
     let open = app.state::<Mutex<OpenSong>>();
     let composer = app.state::<Mutex<Composer>>();
     let engine = app.state::<Mutex<Engine>>();
-    engine.lock().unwrap().start_audio()?;
-
+    let open = open.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    if kind == "sound" {
+        checked_sound_choice(&composer, &picked.changes)?;
+    }
+    engine.start_audio()?;
     let reply = {
-        let open = open.lock().unwrap();
-        let composer = composer.lock().unwrap();
-        let mut engine = engine.lock().unwrap();
         let mut replies = replies.lock().unwrap();
         undo::start_reply(&mut replies, &open, &composer, &mut engine)
     };
-    let lines = use_choice(&composer, &engine, &kind, &picked, Instant::now())?;
+    let lines = use_choice_on(&mut composer, &mut engine, &kind, &picked, Instant::now())?;
+    drop(engine);
+    drop(composer);
+    drop(open);
     let used = format!("the player used option {}, {}, of offer {offer}", choice + 1, picked.name);
     offers.lock().unwrap().used.push(used);
     let _ = app.emit("agent-acted", json!({"tool": "jello_options", "changes": lines}));
     Ok(reply)
 }
 
+#[cfg(test)]
 fn use_choice(
     composer: &Mutex<Composer>,
     engine: &Mutex<Engine>,
@@ -808,6 +849,16 @@ fn use_choice(
 ) -> Result<Vec<String>, String> {
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    use_choice_on(&mut composer, &mut engine, kind, picked, now)
+}
+
+fn use_choice_on(
+    composer: &mut Composer,
+    engine: &mut Engine,
+    kind: &str,
+    picked: &Choice,
+    now: Instant,
+) -> Result<Vec<String>, String> {
     if kind == "chords" {
         let ms_per_beat = 60_000.0 / f64::from(composer.tempo());
         let mut names = Vec::new();
@@ -819,13 +870,12 @@ fn use_choice(
         return Ok(vec![format!("Added {} to the song", names.join(", "))]);
     }
     if kind == "melody" {
-        let written = layer_notes::write_layer(&mut engine, None, None, None, &picked.notes)?;
+        let written = layer_notes::write_layer(engine, None, None, None, &picked.notes)?;
         return Ok(vec![written.line]);
     }
     let before = composer.sound_profile().sound();
-    let wanted = sound_changes::changed(&before, &picked.changes)?;
-    sound_changes::take_changes(composer.sound_profile_mut(), &mut engine, &before, &wanted);
-    let after = composer.sound_profile().sound();
+    let wanted = checked_sound_choice(composer, &picked.changes)?;
+    let after = composer.apply_sound(engine, &wanted)?;
     Ok(sound_changes::change_lines(&before, &after))
 }
 
@@ -885,6 +935,168 @@ fn list_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{EffectConnection, EffectKind, EQ_OUTPUT};
+    use crate::mix::Place;
+    use crate::modulation::{LfoShape, Source};
+
+    fn sound_option(changes: Value) -> Choice {
+        Choice {
+            name: String::from("Try"),
+            phrase: Value::Null,
+            chords: Vec::new(),
+            notes: Vec::new(),
+            changes,
+        }
+    }
+
+    fn effect_link(amount: f32) -> EffectConnection {
+        EffectConnection { source: Source::Lfo(0), slot: 0, value: EQ_OUTPUT,
+            amount, one_way: false, scaled_by: Source::None }
+    }
+
+    fn assert_engine_matches_song(composer: &Composer, engine: &mut Engine) {
+        let mut expected = Engine::for_render().unwrap();
+        composer.send_all(&mut expected);
+        engine.note_on(69, 100);
+        expected.note_on(69, 100);
+        assert_eq!(engine.render(4096), expected.render(4096));
+    }
+
+    #[test]
+    fn sound_option_play_and_use_reject_over_capacity_without_changes() {
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.mix_mut().tracks[0].links = vec![effect_link(0.0); 63];
+        composer.send_all(&mut engine);
+        let before = composer.sound_profile().sound();
+        let mix = composer.mix_now();
+        let choice = sound_option(json!({"connections": [
+            {"number": 64, "source": "lfo 1", "target": "pitch", "amount": 0}
+        ]}));
+        assert!(checked_sound_choice(&composer, &choice.changes).is_err());
+        assert!(take_sound_changes_on(&mut composer, &mut engine, &choice.changes).is_err());
+        assert!(use_choice_on(&mut composer, &mut engine, "sound", &choice, Instant::now()).is_err());
+        assert_eq!(composer.sound_profile().sound(), before);
+        assert_eq!(composer.mix_now(), mix);
+        assert_engine_matches_song(&composer, &mut engine);
+    }
+
+    #[test]
+    fn sound_option_preview_restores_effect_routing_after_sound_slots_move() {
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.mix_mut().place_effect(&mut engine, Place::Track(0), 0, EffectKind::Eq).unwrap();
+        let mut lfo = composer.sound_profile().lfos()[0];
+        lfo.per_note = false;
+        lfo.shape = LfoShape::Steps;
+        lfo.step_count = 1;
+        lfo.steps[0] = 100.0;
+        composer.sound_profile_mut().set_lfo(&mut engine, 0, lfo);
+        composer.mix_mut().tracks[0].links.push(effect_link(-6.0));
+        composer.send_all(&mut engine);
+        let changes = json!({"connections": [
+            {"number": 2, "source": "lfo 1", "target": "pitch", "amount": 0}
+        ]});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        assert_ne!(tried, before);
+        restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).unwrap();
+        assert_eq!(composer.sound_profile().sound(), before);
+        assert_eq!(composer.mix_now().tracks[0].links, vec![effect_link(-6.0)]);
+        assert_engine_matches_song(&composer, &mut engine);
+    }
+
+    #[test]
+    fn sound_option_restore_refuses_when_new_effect_links_fill_capacity() {
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.send_all(&mut engine);
+        let changes = json!({"connections": [{"number": 1, "source": "none"}]});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        composer.mix_mut().tracks[0].links = vec![effect_link(0.0); 64];
+        composer.send_picked_routing(&mut engine);
+        let mix = composer.mix_now();
+        assert!(restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).is_err());
+        assert_eq!(composer.sound_profile().sound(), tried);
+        assert_eq!(composer.mix_now(), mix);
+        assert_engine_matches_song(&composer, &mut engine);
+    }
+
+    #[test]
+    fn sound_option_preview_restores_its_track_after_selecting_another() {
+        use crate::tracks::Track;
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.tracks_mut().add(&mut engine, Track::new()).unwrap();
+        composer.mix_mut().tracks[0].links.push(effect_link(0.0));
+        let changes = json!({"filter": {"cutoff_hz": 900}});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        assert!(composer.tracks_mut().pick(&mut engine, 1));
+        let other = composer.sound_profile().sound();
+        restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).unwrap();
+        assert_eq!(composer.tracks().picked(), 1);
+        assert_eq!(engine.track(), 1);
+        assert_eq!(composer.sound_profile().sound(), other);
+        assert_eq!(composer.tracks().list()[0].sound_profile().sound(), before);
+        assert_eq!(composer.mix_now().tracks[0].links, vec![effect_link(0.0)]);
+    }
+
+    #[test]
+    fn sound_option_preview_follows_a_track_after_an_earlier_track_is_removed() {
+        use crate::tracks::Track;
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.tracks_mut().add(&mut engine, Track::new()).unwrap();
+        composer.tracks_mut().add(&mut engine, Track::new()).unwrap();
+        composer.tracks_mut().pick(&mut engine, 1);
+        let changes = json!({"filter": {"cutoff_hz": 900}});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        composer.tracks_mut().pick(&mut engine, 2);
+        composer.tracks_mut().remove(&mut engine, 0);
+        composer.forget_track(&mut engine, 0);
+        assert_eq!(composer.tracks().picked(), 1);
+        restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).unwrap();
+        assert_eq!(composer.tracks().picked(), 1);
+        assert_eq!(engine.track(), 1);
+        assert_eq!(composer.tracks().list()[0].sound_profile().sound(), before);
+    }
+
+    #[test]
+    fn sound_option_preview_does_not_restore_onto_a_replacement_track() {
+        use crate::tracks::Track;
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.tracks_mut().add(&mut engine, Track::new()).unwrap();
+        let changes = json!({"filter": {"cutoff_hz": 900}});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        composer.tracks_mut().remove(&mut engine, 0);
+        composer.forget_track(&mut engine, 0);
+        composer.apply_sound(&mut engine, &tried).unwrap();
+        let replacement_id = composer.tracks().picked_track().id();
+        assert_ne!(replacement_id, track);
+        restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).unwrap();
+        assert_eq!(composer.sound_profile().sound(), tried);
+        assert_eq!(composer.tracks().picked_track().id(), replacement_id);
+    }
+
+    #[test]
+    fn sound_option_failed_restore_keeps_another_track_selected() {
+        use crate::tracks::Track;
+        let mut engine = Engine::for_render().unwrap();
+        let mut composer = Composer::new();
+        composer.tracks_mut().add(&mut engine, Track::new()).unwrap();
+        let changes = json!({"connections": [{"number": 1, "source": "none"}]});
+        let (track, before, tried) = take_sound_changes_on(&mut composer, &mut engine, &changes).unwrap();
+        composer.mix_mut().tracks[0].links = vec![effect_link(0.0); 64];
+        composer.send_picked_routing(&mut engine);
+        composer.tracks_mut().pick(&mut engine, 1);
+        let selected = composer.sound_profile().sound();
+        assert!(restore_sound_choice(&mut composer, &mut engine, track, &before, &tried).is_err());
+        assert_eq!(composer.tracks().picked(), 1);
+        assert_eq!(engine.track(), 1);
+        assert_eq!(composer.sound_profile().sound(), selected);
+        assert_eq!(composer.tracks().list()[0].sound_profile().sound(), tried);
+        assert_eq!(composer.mix_now().tracks[0].links.len(), 64);
+    }
 
     #[test]
     fn numerals_count_from_the_key_s_home_note() {

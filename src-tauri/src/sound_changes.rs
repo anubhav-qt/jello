@@ -118,7 +118,7 @@ pub fn json_of(sound: &Sound) -> Value {
     })
 }
 
-fn lfo_json(index: usize, lfo: &Lfo) -> Value {
+pub fn lfo_json(index: usize, lfo: &Lfo) -> Value {
     // Only the steps that play.
     let mut steps = Vec::new();
     for height in lfo.steps.iter().take(lfo.step_count as usize) {
@@ -302,7 +302,7 @@ fn change_lfos(lfos: &mut [Lfo; LFO_COUNT], value: &Value) -> Result<(), String>
     Ok(())
 }
 
-fn change_lfo(lfo: &mut Lfo, place: &str, fields: &Map<String, Value>) -> Result<(), String> {
+pub fn change_lfo(lfo: &mut Lfo, place: &str, fields: &Map<String, Value>) -> Result<(), String> {
     let percent = FULL_PERCENT;
     for (name, value) in fields {
         let named = format!("{place} {name}");

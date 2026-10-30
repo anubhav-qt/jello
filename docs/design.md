@@ -317,9 +317,10 @@ and being built.
     note played on the very sample recording starts is recorded. Then the
     song player moves on to its next chord if one is due. When the looper
     or the song player starts or ends a note mid-chunk, the synth first
-    renders the stretch up to that sample. Last, it adds the click on top
-    and puts the sum through the soft clip, the last step before the
-    speakers.
+    renders the stretch up to that sample. The mixer (`mixer.*`) renders
+    the tracks and buses; last, the conductor adds the click on top and
+    puts the sum through the master limiter (`limiter.*`), the last step
+    before the speakers.
   - `synth.*`: the instrument. It adds up its voices, picks the voice for
     each new note, and remembers the oscillators, filter envelope and
     unison new notes play. It holds the routing list and works it out every 32
@@ -381,9 +382,10 @@ and being built.
 - **Threads:** the OS calls the engine on its audio thread every few
   milliseconds. Other threads reach it only through the mailbox, a lock-free
   queue with 1024 slots that it empties at the start of each chunk. When the
-  mailbox is full, new messages are dropped. Only one thread may send at a
-  time (Rust keeps the engine behind a lock), and the audio thread never
-  locks or waits.
+  mailbox is full, new messages are dropped and counted. Big bursts, like
+  opening a song, call `make_room` between batches and report any loss. Only
+  one thread may send at a time (Rust keeps the engine behind a lock), and the
+  audio thread never locks or waits.
 - **Voices:** 32, made once when the engine is created. A new note takes the
   voice still ringing that same note from the same source (live, loop or
   song), or else a free voice. When all 32 are
@@ -451,7 +453,7 @@ and being built.
     and partly cancel where they started: 7 copies are then about 6 dB
     quieter than one.
   - 7 copies can peak at about 2.6 times one copy's height (√7), so loud
-    chords in unison reach the soft clip sooner.
+    chords in unison reach the limiter sooner.
   - When the engine starts, each voice's copies start a step of 0.618 of
     a cycle (the golden ratio's share) apart, wrapped back into one cycle,
     so they never start lined up as one loud wave. Copy 0 starts at 0, so
@@ -621,8 +623,8 @@ and being built.
     engine works, not how a song sounds: the 5 ms takeover gap, the 10 ms
     volume ease, the 20 ms filter glide, the wave and noise trims, where the
     copies start, the 32 voices, 48 kHz, the filter's limits and the click.
-    The voice level and the soft clip become each track's volume and the
-    master limiter in step 6.
+    The voice level became each track's volume in step 5, and the soft
+    clip the master limiter in step 6 ([Mix](#mix-in-the-engine)).
   - Play plays the open song's profile. Song files keep it
     ([song files](#song-files)); copying a profile from another song and a
     profile per track come in step 5.
@@ -655,12 +657,14 @@ and being built.
   voice. Starting the click begins a new bar, starting it while it is on
   does nothing, and stopping it lets a sounding tick ring out. Kept by ear
   as they first were (2026-10-20).
-- **Soft clip:** after the voices and the click are added up, samples
-  between -0.8 and 0.8 pass unchanged. Louder ones are bent toward 1.0 without ever reaching it,
-  so the sound never clips. The master limiter takes over this job in step 6.
+- **Limiter:** after the tracks, buses and click are added up, the master
+  limiter holds them under its ceiling, -1 dB to start, so the sound never
+  clips; quieter sound passes unchanged. It replaced the soft clip in step
+  6 ([Mix](#mix-in-the-engine)).
 - **Offline render:** Rust makes a second engine with no speakers and calls
-  render, the same code the speakers hear. Rust writes 32-bit float WAV files
-  (`hound` crate) to `Music/Jello/`.
+  render, the same code the speakers hear, except that its limiter looks
+  1 ms ahead (`Engine::for_render`, then `trim_lookahead` once it starts).
+  Rust writes 32-bit float WAV files (`hound` crate) to `Music/Jello/`.
 - **Rust side:** `src-tauri/src/engine.rs` is the safe wrapper,
   `commands.rs` holds the commands, `key_map.rs` turns laptop keys into
   notes, `sound_profile.rs` holds a song's sound, `modulation.rs` the LFOs
@@ -668,8 +672,8 @@ and being built.
 - **Tests:** `cargo test` in `src-tauri/` renders notes silently and checks
   pitch, the envelope's timing and levels, the velocity curve, that a chord
   is its notes added up, exact silence after letting go, which voice a new
-  note takes and that taking it never clicks, the soft clip's exact bend and
-  never going above 1.0, that values MIDI never sends are ignored, the
+  note takes and that taking it never clicks, the limiter holding its
+  ceiling and never going above 1.0, that values MIDI never sends are ignored, the
   mailbox size, and that the same notes always give the same samples. For
   the waves, they check each one's harmonics, that on an A7 stray tones
   below 5,000 Hz stay at least 1,000 times quieter than the note, that all
@@ -1144,8 +1148,9 @@ goal; [ADR 0017](adr/0017-guided-compose.md) is how Compose does it now.
   While chord keys are held, the melody keys that play those chords' notes
   fill with their color, even outside the key, since a chord's own notes
   always sound right over it: G# fills while E is held in C major. The fill
-  comes at once and fades out slowly when the chord is let go, like a held
-  key. Holding a melody key fills nothing. Play shows none of this.
+  comes and goes at once. In Compose all guidance changes at once with no
+  fade, and a let-go key fades out in 0.5 s instead of Play's 0.9 s, so its
+  fade is never mistaken for guidance. Holding a melody key fills nothing. Play shows none of this.
 - **While the song plays** (built 2026-10-22, ahead of step 5). The song
   already says what comes next. The key for the chord playing glows as if
   held, and the key for the chord after it fills up from the bottom in its
@@ -1547,8 +1552,8 @@ Approved.
   ignored, like other values today.
 - **Mixing.** Each track renders into its own buffer, set aside when the
   engine is made, is turned up or down by its volume and added to the
-  sum. The click goes on top, then the soft clip, as now. Step 6's mixer
-  goes in exactly here: effects per track, then the master limiter.
+  sum. The click goes on top. Step 6's mixer took this over
+  ([Mix](#mix-in-the-engine)).
 - **The looper.** A layer belongs to a track and plays on that track's
   synth, in a slot of its own there (0 to 7), so up to 72 layers. Each
   live note says its track, so a layer records the notes of the track it
@@ -1585,6 +1590,451 @@ volumes, layers by track, the sequencer playing messages on their samples
 and the same audio twice, the arrangement's timing across tempo changes and
 ramps, key shifts skipping drums, automation steps, the song file keeping
 every track and section, and the keys.
+
+## Mix
+
+[ADR 0046](adr/0046-the-mix.md). Roadmap step 6. The C++ design and the
+Mix panel's mockups come next, each approved before it is built.
+
+- **A track's effects.** Each track has up to 8 effect slots. Any effect
+  goes in any slot, in any order, and one kind can be used twice. The
+  sound runs through the slots from the top down. Decided 2026-10-25.
+- **Send buses.** A song has up to 4 buses, shared effects such as one
+  reverb for every track. Each bus has the same 8 free slots as a track.
+  Each track sends 0 to 100% of its sound to each bus, after its volume,
+  so a quieter track sends less. A new song has no buses. Decided
+  2026-10-25.
+- **The master.** Every track and bus meets in the master, which has its
+  own 8 free slots and then a limiter that is always last and cannot be
+  removed. It replaces the soft clip, so the sound still never clips. Each
+  song sets the limiter's input boost and ceiling; a new song starts at a
+  -1 dB ceiling with no boost. Decided 2026-10-25.
+- **Sidechain.** Any effect that reacts to loudness (compressor, gate,
+  dynamic EQ, the filter's envelope follower) can listen to another track
+  or a bus, as it sounds after that source's effects, instead of its own
+  input. A track never listens to itself, and loops are refused. Decided
+  2026-10-25.
+- **First effects.** v1 builds a core set: EQ, compressor, gate,
+  saturation, chorus, delay, reverb, filter and volume shaper, plus the
+  master's limiter. The rest of the catalog comes in later batches, one
+  artist's sound at a time. Decided 2026-10-25.
+- **What moves effects.** A track's effect settings are targets of its own
+  LFOs and connections. Each bus and the master get 8 LFOs and a routing
+  list of their own. Section automation reaches every effect setting.
+  Decided 2026-10-25.
+- **Screen.** A Mix button beside Sound in Compose opens a Mix panel in
+  the tape's slot, like the Sound panel; the keyboard stays. Its look gets
+  a few mockups first. Decided 2026-10-25.
+- **Agent.** One `jello_mix` tool edits slots, buses, sends, sidechain
+  and the master, like `jello_sound` for sound. Listening gains loudness
+  in LUFS and true peak. Decided 2026-10-25.
+
+### Mix in the engine
+
+Designed in three parts, each approved before the next: the structure, each
+effect's settings, then what moves them and the C API.
+
+**Part 1: the structure.** Approved 2026-10-25.
+
+- **Chains.** A chain is 8 slots, each empty or holding one effect, and
+  the sound goes through the slots in order; an empty slot passes it on
+  untouched. There are 14 chains: one per track (9), one per bus (4) and
+  the master's. All are made when the engine is made.
+- **Effects are made off the audio thread.** A delay or a reverb needs
+  memory for its echoes, too much to set aside for all 112 slots. So
+  putting an effect in a slot makes it on the thread that sends the
+  message, and the message carries it to the audio thread, which swaps it
+  in. The effect it replaces goes back through a mailbox of its own, and
+  the sending thread frees it on its next call. The audio thread still
+  never allocates or frees.
+- **A track's strip.** Each track renders into its own buffer as now,
+  then: its chain, its volume (easing over 10 ms as now), and a new pan,
+  from fully left to fully right, at equal loudness (a sound panned to
+  one side keeps its loudness). Then it is added to the master's input,
+  and to each bus's input at its send, from 0 to 1, which eases like the
+  volume. Sends come after the volume and pan.
+- **A bus's strip.** The sum of what the tracks send it goes through its
+  chain, then a volume and a pan of its own, and into the master's input.
+- **Sidechain order.** A chain that listens to another hears that
+  source's sound after its chain and strip, from the same stretch of
+  samples, so it never lags. So the engine runs the chains in an order
+  where every source comes first. Rust works the order out, refuses
+  loops, and sends it; a track may listen to tracks, a bus to tracks and
+  to buses before it in the order, and the master to anything.
+- **The master.** Its input goes through its chain. The click is added
+  next, then the limiter, which takes the soft clip's place as the last
+  step before the speakers or the WAV. So the click never clips either.
+- **No delay on tracks.** No track or bus effect may hold the sound back
+  (no lookahead), so tracks never drift apart and live keys stay instant.
+  Only the master's limiter looks ahead, by 1 ms, and only in WAV renders,
+  which trim that 1 ms off; live it catches peaks at once, so every sound
+  stays on its exact sample. Decided 2026-10-25.
+- **Cost.** A chain with nothing in it costs nothing, and a silent track
+  still runs its effects, so reverb and delay tails ring out. The system
+  check grows to time a full mix.
+
+**Part 2: each effect's settings.** Approved 2026-10-25.
+
+Every effect has an on switch (off passes the sound untouched, crossfading
+over 10 ms) and its settings below, each a number in a range. A newly
+placed effect starts where it changes little, so you hear it come in as
+you turn it up; delay, reverb and chorus start fully wet on a bus and at
+30% elsewhere. These are starting points only: every value is the song's.
+"Listens to" is the sidechain: its own input, a track or a bus.
+
+- **EQ.** 8 bands. Each: on, shape (low cut, low shelf, bell, high
+  shelf, high cut, notch), frequency (20 Hz to 20 kHz), gain (-24 to
+  24 dB, for shelves and bells), width (Q, 0.1 to 18; for cuts, the slope:
+  12, 24 or 48 dB an octave). Then an output gain, -24 to 24 dB. Starts
+  with every band off.
+- **Compressor.** Threshold (-60 to 0 dB), ratio (1:1 to 20:1, then
+  limit), attack (0.1 to 100 ms), release (5 to 2,000 ms), knee (0 to
+  24 dB, how gently it starts), makeup gain (0 to 24 dB), mix (0 to 100%:
+  under 100% is parallel compression), listens to, and a low cut on what
+  it listens to (20 to 500 Hz) so deep bass doesn't make it pump. Starts
+  at 0 dB threshold, doing nothing.
+- **Gate.** Threshold (-80 to 0 dB), range (how far down it closes, 0 dB
+  to silent), attack (0.1 to 50 ms), hold (0 to 500 ms), release (5 to
+  2,000 ms), listens to. Starts at -80 dB, always open.
+- **Saturation.** Drive (0 to 36 dB), curve (soft like tape, warm like a
+  tube, hard clip, or fold, which folds peaks back for a buzzy sound),
+  tone (darker to brighter after it), output (-24 to 24 dB, or matched to
+  the input's loudness), mix. Worked out at 4 times the sample rate so
+  the added harmonics never fold back as harsh tones (aliasing). Starts at
+  0 dB drive.
+- **Chorus.** Copies (1 to 4), speed (0.01 to 10 Hz, or a cycle of 1/16 to
+  32 beats), depth (0 to 100%), delay (1 to 40 ms; short with feedback is
+  a flanger), feedback (0 to 95%), spread (how wide the copies sit, 0 to
+  100%), mix.
+- **Delay.** Time for left and right, each 1 to 8,000 ms or 1/16 to 16
+  beats (dotted and triplet values too), linked or apart; ping-pong;
+  feedback (0 to 100%); low cut and high cut on the repeats (each repeat
+  gets darker or thinner); wobble (tape wow, depth and speed); grit
+  (saturation on the repeats, 0 to 100%); duck (the repeats quieten while
+  the dry sound plays, 0 to 100%); mix. Never longer than 8 s, so a slow
+  tempo in beats stops there.
+- **Reverb.** One algorithm (a feedback delay network: many delays
+  feeding each other, the usual way to build a room). Size (0 to 100%),
+  decay (0.1 to 30 s), pre-delay (0 to 500 ms, the gap before the room
+  answers), damping (high cut on the tail, 1 to 20 kHz), low cut (20 to
+  1,000 Hz), diffusion (how fast echoes smear into a wash, 0 to 100%),
+  modulation (slow wobble in the tail for a lush sound, 0 to 100%), width
+  (0 to 100%), freeze (holds the tail forever), mix. Room, hall and plate
+  are starting points of these; spring and shimmer come in a later batch.
+- **Filter.** Type (low-pass, high-pass, band-pass, notch), slope (12 or
+  24 dB an octave), cutoff (20 Hz to 20 kHz), resonance (0 to 1), drive (0
+  to 100%), and an envelope follower: amount (-8 to 8 octaves, how far
+  loudness opens or closes the cutoff), attack, release, listens to. Then
+  mix. LFOs move it through connections (part 3). Starts open.
+- **Volume shaper.** A volume curve repeating every 1/16 to 16 beats, on
+  the beat: up to 16 points, each with a place in the cycle, a level (0 to
+  100%) and a bend into the next (-1 to 1), then depth (0 to 100%, how
+  much of the curve is heard). Starts as the classic pump: down at each
+  beat, back up by half way, at 0% depth.
+- **Limiter** (master only, always last). Input boost (0 to 24 dB),
+  ceiling (-12 to 0 dB), release (1 to 1,000 ms). In WAV renders it looks
+  1 ms ahead; live it turns down at once. It checks peaks at 4 times the
+  sample rate, so even the peaks between
+  samples stay under the ceiling (true peak). Starts at no boost, -1 dB,
+  100 ms.
+
+The compressor, gate and limiter report how far they turn the sound down,
+for meters on the Mix panel.
+
+**Part 3: what moves them, and the C API.** Approved 2026-10-25.
+
+- **Chains by number.** 0 to 8 are the tracks, 9 to 12 the buses and 13
+  the master.
+- **Gliding values.** Every number an effect has glides to a new value
+  over 20 ms, so automation's 10 ms steps and the LFOs' 32-sample moves
+  never crackle. A delay's time slides like tape over 100 ms (the repeats
+  bend in pitch, as on a real tape delay), and a reverb's size over
+  200 ms. Choices (a shape, a curve, a type) and switches move in whole
+  steps, crossfading over 10 ms.
+- **LFOs and connections.** A new target, "effect", with a slot and one of
+  that effect's values, moved by an amount in the value's own units. Only
+  LFOs that run for every note (in Hz or beats) move effects, since an
+  effect hears all notes at once; other sources on an effect do nothing,
+  and the panel won't offer them. A track's effects use the track's own 8
+  LFOs and 64 connections. Each bus and the master get their own, sent
+  with chain numbers 9 to 13 in the same LFO and connection functions.
+- **Automation.** Effect values, pan, sends, a bus's volume and pan, and
+  the limiter join what a section can automate, sent as steps every 10 ms
+  as now.
+- **The C API**, alongside the existing functions:
+  - `set_effect(chain, slot, kind)`: puts a new effect, at its starting
+    values, or none, in a slot. It is made on the calling thread, and
+    returns false and sends nothing if the mailbox is full. Effects it
+    replaced are freed on later calls.
+  - `move_effect(chain, from, to)`: moves a slot's effect, tail and all,
+    shifting the slots between.
+  - `set_effect_on(chain, slot, on)` and `set_effect_value(chain, slot,
+    value, number)`, with the values named per effect
+    (`JELLO_EQ_BAND_1_FREQUENCY` and so on). "Listens to" is a value too.
+  - `set_track_pan(track, pan)`, `set_send(track, bus, amount)`,
+    `set_bus_volume(bus, volume)`, `set_bus_pan(bus, pan)`,
+    `set_limiter(boost, ceiling, release)`.
+  - `set_chain_order(order)`: the order the chains run in, for
+    sidechains.
+  - `gain_reduction(chain, slot)`: how far that effect, or the limiter,
+    turned the sound down in the last chunk, in dB.
+  - Out-of-range numbers are ignored, as now. Every value, pan, send,
+    volume and on switch can be timed for the sequencer; placing, moving
+    and ordering effects never are.
+- **Build slices**, each listened to by you before the next:
+  1. The structure: pan, sends, buses and the limiter in place of the
+     soft clip (`mixer.*`, `limiter.*`). Built 2026-10-25. Chains,
+     placing and freeing effects come with the first effects in slice 2,
+     and chain order with sidechain in slice 3, so each is tested with
+     something real. Renders for listening use the lookahead too, so the
+     agent measures what the WAV holds.
+  2. EQ, filter and saturation. Built 2026-10-25: chains (`chain.*`),
+     effects made off the audio thread and freed by the sender
+     (`effect.*`), `eq.*` on `biquad.*`, `filter_effect.*` on the voices'
+     state variable filter, and `saturation.*`. An EQ band's width and
+     slope are two values (`JELLO_EQ_BAND_WIDTH`, `JELLO_EQ_BAND_SLOPE`),
+     the panel shows one by shape. Saturation's 4x runs through Butterworth
+     filters (IIR), so it holds nothing back. Placing an effect swaps it in
+     at once; to remove one without a jump, switch it off first.
+     Todo from listening: a new effect glides from its starting values to
+     the ones set right after, and matched saturation's loudness meters
+     start empty, so its first 300 ms wobble. An effect that has not
+     played yet should jump straight to its values, and match should start
+     even. Fold at high drive makes tones too high for 4x, which fold back
+     as metallic noise; try more oversampling for fold.
+  3. Compressor, gate and volume shaper, with sidechain. Built
+     2026-10-26: `compressor.*`, `gate.*`, `volume_shaper.*`, and
+     `listener.*` for "listens to". The compressor reads peaks after its
+     low cut, holds the reduction at each peak, lets it fall over the
+     release and follows it over the attack; its ratio's limit is the
+     number 0, and a new one is 4:1, 10 ms, 100 ms, no knee. The gate opens
+     and closes in straight lines, never closes at its lowest threshold, is
+     silent at its lowest range (-80 dB, read as 80 dB down), and starts at
+     1 ms, 20 ms hold, 100 ms. The volume shaper's values are numbered like
+     the EQ's (point * 3 + place, level or bend, then cycle, depth and how
+     many points); a bend b turns a share t of a segment into t to the
+     power 8^-b; a place under the one before counts as that one; the
+     volume heard moves all the way in 1 ms at the fastest, so steps never
+     click; the cycle changes in a step. "Listens to" is -1 for its own
+     input or a chain's number, and the filter's is its value 9; the
+     engine refuses a chain itself, the master, and a bus for a track.
+     `set_chain_order(order, 13)` takes the tracks first; a source that
+     runs later is heard as silence. `gain_reduction(chain, slot)` reads
+     the compressor and gate. Rust works out the order, refusing loops,
+     with `mix.rs` in slice 6.
+  4. Chorus, delay and reverb. Built 2026-10-26: `chorus.*`, `delay.*`,
+     `reverb.*`, all reading `delay_line.*`, which reads between samples
+     on a 4-point Hermite curve. `make_effect` now knows whether the
+     chain is a bus, so these start fully wet there and at 30% elsewhere
+     (`JELLO_EFFECT_START_MIX_PERCENT`). The chorus reads one line of
+     both speakers together; each copy's lateness swings by the depth's
+     share of the delay, at most 90%, a sine either at its speed or on
+     the beat (`JELLO_CHORUS_ON_BEAT` with a cycle in beats); copies sit
+     at equal loudness across the spread and are evened out by how many
+     play. A new chorus is 2 copies, 0.8 Hz, 0.25 deep, 7 ms, fully
+     spread. The delay has a time a side in ms and in beats, one switch
+     for which is heard (`JELLO_DELAY_ON_BEAT`), and starts at half a
+     beat, linked, 35% feedback. Its first piece starts right on its
+     times; after that a time slides there over 100 ms. The cuts, then
+     grit, are on every echo, so each repeat goes through them again;
+     wobble only ever makes echoes later (up to 5 ms); duck follows the
+     dry sound's peaks (5 ms up, 250 ms down) and ducks fully at -24 dB;
+     past 2.0 what goes round is rounded off, so full feedback never runs
+     away. The reverb: 8 delays from 53.1 to 97.3 ms at full size and 15%
+     of that at none, mixed by a Hadamard matrix; each loses its share of
+     60 dB per time round; damping is a one-pole high cut per delay; 4
+     all-passes a side for diffusion (up to 0.7); modulation swings each
+     delay up to 0.8 ms at its own slow speed; the low cut is on what
+     comes out. A new reverb is half size, 1.5 s, 8 kHz damping, 0.7
+     diffusion, 0.3 modulation, full width.
+  5. LFOs, connections and automation on effects. Built 2026-10-26: the
+     target `JELLO_TARGET_EFFECT` with a slot and a value in
+     `JelloConnection`, any amount up to 20,000 in the value's units.
+     `Routing` works out each connection's move every 32 samples, only
+     from shared LFOs in Hz or beats (scaled by one too, or not at all);
+     the mixer now renders in pieces that end on those samples and moves
+     each chain's effects where a piece starts a block. Each effect gives
+     its values' ranges (`ValueRange`, which now also checks them) and
+     what each is set to (`Effect::value`); the chain keeps those as the
+     base, adds the moves, keeps them in range, rounds whole ones, and
+     sets them back once no longer moved. "Listens to", slopes and a
+     compressor at its limit never move. A new effect in a moved slot is
+     moved too; a moved effect leaves its moves in the slot. Each bus and
+     the master have their own `Routing`, sent with chain numbers 9 to
+     13 to `set_lfo` and `set_connection`. Automation needed nothing new:
+     every effect value was already timed.
+  6. Rust, the song file, `jello_mix`, and loudness and true peak in
+     listening. Built 2026-10-27; effect modulation extended 2026-10-30:
+     - `effects.rs` copies each effect's values from the engine: number,
+       word, range and start. Shares are written in percent, choices as
+       words ("low-shelf", "tape"), switches as true or false, a
+       compressor at its limit as "limit", and "listens to" as "own",
+       "track 2" or "bus 1".
+     - `mix.rs` keeps the song's mix (a strip per track: pan, sends,
+       slots; the buses; the master's slots and limiter) and sends every
+       change on. It checks "listens to" (a track hears only tracks, a
+       bus tracks and buses, the master anything, and never a loop) and
+       works out the chain order. Removing a track or bus moves the later
+       ones down and points their listeners along; one that heard the
+       removed one hears its own input again. A new effect sends only
+       the values that differ from its start, so the mailbox never
+       fills.
+     - The song file (`mix_file.rs`): see [song files](#song-files).
+     - `jello_mix` (`mix_tool.rs`): look, describe, effect, move, on,
+       set, pan, send, add_bus, remove_bus, name_bus, bus_volume and
+       limiter, plus lfo, connect and disconnect for effect movement.
+       A set checks every value first and refuses them all if
+       one is wrong. `jello_look` gains a `mix` part.
+     - Effect connections belong to the song's mix, not to presets. A
+       track shares its 8 sound LFOs and 64 routing slots with its effects;
+       a bus and the master each have 8 LFOs and 64 slots of their own.
+       A preset replaces the track's LFO settings while preserving effect
+       connections. If the preset's sound connections and those effects
+       would exceed 64 slots, it is refused before anything changes.
+       Ordinary sound connections keep their indices; effect connections
+       fill the unused indices in order. A connection with a source still
+       occupies its slot even when its amount is zero. If its source or
+       scaling LFO becomes per-note or runs in presses, the connection stays
+       saved but is inactive until that LFO is shared in Hz or beats again.
+       Mix inspection gives the reason while it is inactive.
+       Effect connection amounts use the target's usual units, with percent
+       values expressed in percentage points. The song keeps native engine
+       amounts; inspection uses the current slot's value and reports the
+       native amount if the slot has no movable target. Replacing an effect
+       can therefore change the displayed unit while leaving the amount sent
+       to the engine unchanged.
+       An edit or preset that changes which ordinary connection slots are
+       occupied checks the combined limit, then stops a playing arrangement
+       before applying the change. Edits that keep the same occupied slots
+       leave the arrangement playing.
+     - Listening (`loudness.rs`): `lufs`, integrated as BS.1770-4 and EBU
+       R 128 measure it (K-weighting, 400 ms blocks every 100 ms, gates at
+       -70 LUFS and 10 LU below), and `true_peak_db`, read at 4 times the
+       sample rate through a 12-tap windowed sinc. `limiter_reached`
+       uses the song's own ceiling.
+     - Section automation (`mix_automation.rs`) moves a track's "pan",
+       "send 1" and "effect 2 mix", and with no track, like the tempo,
+       "bus 1 volume", "bus 1 pan", "bus 1 effect 1 decay_s", "master
+       effect 1 mix" and "limiter boost_db". Effect values move in the
+       units the file writes; switches, choices, slopes and "listens to"
+       don't move.
+     - Todo: Removing a bus doesn't yet
+       renumber section automation that names a later bus. A fresh
+       compressor, gate or filter now settles its listener on the selected
+       source; its targeted regression checks pass.
+
+     Then the Mix panel, after its mockups.
+- **Tests** check that empty chains leave the sound as it was, that the
+  limiter never passes its ceiling, peaks between samples included, that
+  a sidechain hears its source from the same samples, that replaced
+  effects are freed, that the same song renders the same audio twice, and
+  each effect against what it should measure: an EQ band's gain at its
+  frequency, a compressor's gain reduction at its ratio, a delay's echo on
+  its exact sample, a reverb's decay time, a gate closing.
+
+### Effects catalog
+
+Research from 2026-10-25 on what effects exist, as the menu the slots can
+draw from. Which ones v1 builds is a later decision. Every effect is our
+own code ([ADR 0019](adr/0019-instruments-built-from-scratch-no-guitar.md));
+other programs are only for ideas.
+
+- **EQ and filters** (shape which pitches are loud).
+  - Parametric EQ: bands that raise or cut around a frequency (bell),
+    everything above or below one (shelf), or remove the lows or highs
+    (cut). The effect used most in mixing.
+  - Graphic EQ: many fixed bands, each a slider.
+  - Dynamic EQ: a band that only cuts when its frequencies get too loud.
+  - Mid/side EQ: separate EQ for the middle and the sides of the stereo
+    picture.
+  - Filter: the synth's filter types as an effect, moved by an LFO or by
+    how loud the sound is (an envelope follower, which turns loudness into
+    a moving value).
+  - Comb filter: very short repeats that give a metallic, tuned ring.
+- **Dynamics** (control loud and quiet).
+  - Compressor: turns the sound down when it goes over a threshold, so
+    loud and quiet moments sit closer together. A sidechain input lets
+    another track's sound drive it (the kick ducking the bass).
+  - Glue (bus) compressor: a gentle compressor on a group of tracks so
+    they sound like one.
+  - Parallel compression: a heavily squashed copy mixed under the dry
+    sound, for punch that keeps its hits (used on Ado-style rock).
+  - Multiband compressor: compresses lows, mids and highs separately. Its
+    upward and downward "OTT" setting, popular in EDM, makes quiet details
+    loud and flat sounds lively.
+  - Limiter: a hard ceiling the sound never passes; the master's last step.
+  - Gate and expander: silence or lower the sound below a threshold.
+  - Transient shaper: turns up or down just the attack (the first hit) or
+    the sustain (what follows), without a threshold.
+  - Volume shaper: a drawn volume curve repeating each beat, the simplest
+    way to the "pumping" sidechain sound.
+- **Distortion and colour** (add harmonics, warmth or grit).
+  - Saturation: soft, warm overdrive like tape or tubes.
+  - Overdrive, distortion and fuzz: from crunchy to fully broken up.
+  - Waveshaper: bends the wave by a drawn curve.
+  - Bitcrusher and downsampler: fewer bits and a lower sample rate, for
+    lo-fi digital grit (Massive Attack's dusty textures).
+  - Tape: saturation plus wow and flutter (slow and fast pitch wobble)
+    and hiss.
+  - Vinyl: crackle and record-player wear.
+  - Exciter: adds high harmonics so a sound reads brighter without EQ.
+- **Modulation** (movement by a fast, repeating change).
+  - Chorus and ensemble: slightly delayed, wobbling copies that thicken a
+    sound; the classic partner of a supersaw.
+  - Flanger: a very short sweeping delay, the "jet plane" whoosh.
+  - Phaser: sweeping notches in the sound, a softer swirl.
+  - Tremolo and auto pan: volume or left and right position moved by an
+    LFO.
+  - Vibrato: pitch moved by an LFO.
+  - Rotary speaker: the spinning organ speaker (Pink Floyd's organ).
+  - Ring modulator and frequency shifter: metallic, bell-like or
+    inharmonic tones.
+- **Time and space** (echoes and rooms).
+  - Delay: repeats, synced to the beat or in ms; stereo and ping-pong
+    (repeats bouncing between the speakers).
+  - Tape and dub delay: echoes that darken, wobble and break up as they
+    repeat (Pink Floyd, Massive Attack).
+  - Filter delay: separate delays for the lows, mids and highs.
+  - Reverb: the sound of a space. Room, hall, plate (a bright metal sheet)
+    and spring (the twangy kind in amps).
+  - Shimmer reverb: a reverb whose tail rises an octave, angelic pads.
+  - Gated reverb: a big reverb cut off sharply, the 80s drum sound.
+  - Convolution reverb: plays back a recording of a real space. Needs
+    recordings (impulse responses) we make or may use.
+- **Pitch and spectral** (change pitch or the sound's makeup).
+  - Pitch shifter and harmonizer: the sound moved in pitch, or extra
+    copies at chosen intervals.
+  - Vocoder: one sound's shape on another's tone, the robot voice
+    (Radiohead).
+  - Resonator: tuned strings or objects that ring along with the sound.
+  - Granular delay: the sound cut into tiny grains, each delayed and
+    pitched, for clouds and textures.
+  - Spectral freeze: holds one moment of the sound as an endless drone.
+- **Glitch and rhythm**.
+  - Stutter and beat repeat: a slice repeated in time with the beat.
+  - Reverse: plays a slice backwards.
+  - Tape stop: the sound slowing to a halt, or starting up.
+  - Trance gate: the sound chopped on and off in a beat pattern.
+- **Stereo and utility**.
+  - Pan and balance, stereo width, mid/side, bass mono (lows kept in the
+    middle), gain, phase flip, and Haas (a tiny delay on one side for
+    width).
+- **Meters** (measure, change nothing): loudness in LUFS, true peak,
+  spectrum, stereo correlation (whether the two sides cancel in mono).
+
+What the artists need, from [Sound](#sound): YOASOBI's pumping mix is
+sidechain plus chorus on bright supersaws and a limiter; Ado needs
+distortion and parallel compression; Pink Floyd tape delay, long reverbs
+and a rotary speaker; Massive Attack lo-fi and dub delay; Radiohead
+stutter, reverse, vocoder and granular.
+
+A common master chain: corrective EQ, glue compression, tone EQ, width,
+then the limiter, with meters after it. Streaming targets are about
+-14 LUFS with true peak at or below -1 dB.
+
+Sources: the Ableton Live 12 audio effect reference, the Bitwig and Surge
+XT manuals, Vital's effect list, and mixing and mastering guides (Native
+Instruments, Sage Audio, eMastered, Slate Digital).
 
 ## Sound
 
@@ -1623,9 +2073,12 @@ Use our own recordings or licensed sample packs.
   Left out, the wrong sort, or an unknown word: a new song's value. Unknown
   names: skipped. Counts below 0 read as 0, fractions round. Out of range:
   kept until the song takes the sound, when the engine brings them in, as
-  with any change. Connections fill the routing list from the top in the
-  file's order, leaving out any whose source or target Jello does not know,
-  and none listed means none. Text that is not TOML can't be read.
+  with any change. Each new connection entry includes its 1-based `index`,
+  preserving gaps; older entries without it use their readable row's order.
+  Mixed indexed and unindexed entries use the same fallback and conflicting
+  or out-of-range indices are refused. Connections whose source or target
+  Jello does not know are left out, and none listed means none. Text that
+  is not TOML can't be read.
 - **Names.** Spaces at the ends are left off. Letters, numbers, spaces, `-`
   and `_`, 1 to 40 of them; never CON, PRN, AUX, NUL, COM1 to 9 or LPT1
   to 9 in any case. Saving under a name that differs only in case replaces
@@ -1684,6 +2137,22 @@ changes.
   song, and a loop opens on the very samples it was saved on. Since
   tracks, the sound and the layers belong to each `[[track]]`, and
   sections follow ([tracks and sections](#tracks-and-sections)).
+- **Mix** (`src-tauri/src/mix_file.rs`, [Mix](#mix)). Each `[[track]]`
+  says its `pan` and, with buses, `sends = [30, 0]`, one per bus; its
+  effects follow its sound under `[[track.effect]]`. Each bus is a
+  `[[bus]]` with `name`, `volume`, `pan` and `[[bus.effect]]`, and
+  `[master]` holds `boost_db`, `ceiling_db`, `release_ms` and
+  `[[master.effect]]`. An effect says `slot` (1 to 8), `kind` and `on`,
+  then only the values that differ from a new one's. Reading keeps pan,
+  sends and volumes in range, drops sends to buses the song lacks, skips
+  effects with no slot, a used slot or an unknown kind, and makes a
+  listener that may not listen, or would loop, hear its own input.
+  Each place's `[[effect_link]]` groups hold a source, slot, numeric value,
+  amount, direction and scaling source. Buses and master also hold
+  their own `[[lfos]]` groups when changed. Invalid modulation or a track
+  with more than 64 combined connections refuses the song before opening.
+  Drum tracks keep their shared LFOs and ordinary sound connections under
+  `[track.routing]`; older drum tracks without it use a new song's routing.
 - **Reading.** Like a preset's. Left out or the wrong sort: a new song's
   value. A chord or note Jello can't read, or one that ends before it
   starts, is skipped, and so is a layer left with no notes. The tempo is
@@ -1903,10 +2372,10 @@ comes before the sampler, and replaces the Tutor of
   the player's own changes made during that reply. Every tool call shows as
   a line under its reply, like "Filter cutoff 1200 -> 800 Hz".
 - **Listening by measuring.** `jello_listen` builds a second engine without
-  speakers (`Engine::new()` without `start_audio()`) holding the song's
+  speakers (`Engine::for_render()`, never `start_audio()`) holding the song's
   sound, chords and loop, and renders the loop, the chords or a phrase it is
   thinking of playing. It answers, for the whole render and beat by beat,
-  with loudness in dB, peak and whether the soft clip was reached,
+  with loudness in dB, peak and whether the limiter's ceiling was reached,
   brightness in Hz, the share of lows, mids and highs, the left and right
   width, and silences or notes ringing on. It can also save the render as
   a WAV in Music/Jello/Renders. Live sound is never touched. No new C++.
@@ -2002,7 +2471,11 @@ marks only what is selected, open or live.
   (a sound's drawing). Jello checks every card's fields and refuses a wrong
   one like any value.
 - `jello_options` offers 2 to 4 choices, of chords, a melody or a sound.
-  Each gets Play and Use; Use puts it in the song, with Undo.
+  Each gets Play and Use; Use puts it in the song, with Undo. A sound Play
+  restores the original track after previewing, even if the player selects
+  another track or removes an earlier one. Each open track has a temporary
+  identity for this purpose; it is not saved to the song. If the original
+  track is removed, its replacement is left alone.
 
 #### Chats, caching and memory
 

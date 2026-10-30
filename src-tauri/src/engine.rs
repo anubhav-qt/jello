@@ -10,7 +10,7 @@ use crate::instruments::{self, Instrument, Zone};
 
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_FASTEST_HZ, LFO_LONGEST_BEATS, LFO_LONGEST_DELAY_BEATS,
-    LFO_LONGEST_MS, LFO_MOST_PRESSES, LFO_MOST_STEPS, LFO_SHORTEST_BEATS, LFO_SLOWEST_HZ, Lfo, Unit,
+    LFO_LONGEST_MS, LFO_MOST_PRESSES, LFO_MOST_STEPS, LFO_SHORTEST_BEATS, LFO_SLOWEST_HZ, Lfo, Source, Unit,
     VIBRATO_KEY_LONGEST_MS, VibratoKeyTimes,
 };
 
@@ -132,6 +132,8 @@ struct RawConnection {
     one_way: bool,
     snap: bool,
     scaled_by: c_int,
+    effect_slot: c_int,
+    effect_value: c_int,
 }
 
 unsafe extern "C" {
@@ -142,6 +144,23 @@ unsafe extern "C" {
     fn jello_engine_note_off(engine: *mut JelloEngine, track: c_int, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
     fn jello_engine_set_track_volume(engine: *mut JelloEngine, track: c_int, volume: f32);
+    fn jello_engine_set_track_pan(engine: *mut JelloEngine, track: c_int, pan: f32);
+    fn jello_engine_set_send(engine: *mut JelloEngine, track: c_int, bus: c_int, amount: f32);
+    fn jello_engine_set_bus_volume(engine: *mut JelloEngine, bus: c_int, volume: f32);
+    fn jello_engine_set_bus_pan(engine: *mut JelloEngine, bus: c_int, pan: f32);
+    fn jello_engine_set_limiter(engine: *mut JelloEngine, boost_db: f32, ceiling_db: f32, release_ms: c_int);
+    fn jello_engine_use_lookahead(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_limiter_reduction(engine: *mut JelloEngine) -> f32;
+    fn jello_engine_set_effect(engine: *mut JelloEngine, chain: c_int, slot: c_int, kind: c_int) -> bool;
+    fn jello_engine_move_effect(engine: *mut JelloEngine, chain: c_int, from: c_int, to: c_int) -> bool;
+    fn jello_engine_set_effect_on(engine: *mut JelloEngine, chain: c_int, slot: c_int, on: bool);
+    fn jello_engine_set_effect_value(engine: *mut JelloEngine, chain: c_int, slot: c_int, value: c_int, number: f32);
+    fn jello_engine_effect_count(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_message_room(engine: *mut JelloEngine) -> c_int;
+    fn jello_engine_take_messages(engine: *mut JelloEngine);
+    fn jello_engine_dropped_messages(engine: *mut JelloEngine) -> u64;
+    fn jello_engine_set_chain_order(engine: *mut JelloEngine, order: *const c_int, count: c_int) -> bool;
+    fn jello_engine_gain_reduction(engine: *mut JelloEngine, chain: c_int, slot: c_int) -> f32;
     fn jello_engine_set_oscillator(
         engine: *mut JelloEngine,
         track: c_int,
@@ -305,6 +324,191 @@ pub const FULL_VOLUME: u32 = 100;
 
 // A bit longer than the engine takes to ease a track's volume.
 const VOLUME_SETTLE_MS: usize = 20;
+
+// How many send buses a song has room for (`JELLO_BUS_COUNT` in
+// engine/include/jello_engine.h, docs/design.md#mix).
+pub const BUS_COUNT: usize = 4;
+
+// A pan, in percent, from fully left (-PAN_MOST) to fully right (PAN_MOST).
+// Every track and bus starts in the middle, at 0.
+pub const PAN_MOST: i32 = 100;
+
+// The master limiter's settings (docs/design.md#mix-in-the-engine): how
+// much louder the sound is made, the loudest it may get, and how long it
+// takes to come back up after turning the sound down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limiter {
+    pub boost_db: f32,
+    pub ceiling_db: f32,
+    pub release_ms: u32,
+}
+
+// Where a new engine's limiter starts (`LimiterSettings` in
+// engine/src/limiter.h).
+pub const START_LIMITER: Limiter = Limiter {
+    boost_db: 0.0,
+    ceiling_db: -1.0,
+    release_ms: 100,
+};
+
+// Effect chains (docs/design.md#mix-in-the-engine): one per track from 0,
+// one per bus from FIRST_BUS_CHAIN, and the master's, each EFFECT_SLOTS
+// slots (`JELLO_` chain numbers in engine/include/jello_engine.h).
+pub const EFFECT_SLOTS: usize = 8;
+pub const FIRST_BUS_CHAIN: usize = 9;
+pub const MASTER_CHAIN: usize = 13;
+
+// How many values an effect can have, numbered from 0, and the most a
+// connection moves one either way, in its own units
+// (`JELLO_EFFECT_MOST_VALUES`, `JELLO_EFFECT_MOST_MOVE`).
+pub const EFFECT_MOST_VALUES: usize = 64;
+pub const EFFECT_MOST_MOVE: f32 = 20000.0;
+
+// `JELLO_TARGET_EFFECT`.
+const TARGET_EFFECT: c_int = 40;
+
+// One connection to an effect (`JELLO_TARGET_EFFECT`): `source` moves value
+// `value` of slot `slot`'s effect by `amount`, in the value's own units.
+// Only LFOs that run for every note, in Hz or beats, move effects.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectConnection {
+    pub source: Source,
+    pub slot: usize,
+    pub value: i32,
+    pub amount: f32,
+    pub one_way: bool,
+    pub scaled_by: Source,
+}
+
+// The kinds of effect a slot can hold (`JELLO_EFFECT_`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectKind {
+    None = 0,
+    Eq = 1,
+    Filter = 2,
+    Saturation = 3,
+    Compressor = 4,
+    Gate = 5,
+    VolumeShaper = 6,
+    Chorus = 7,
+    Delay = 8,
+    Reverb = 9,
+}
+
+// "Listens to", the sidechain value of the compressor, the gate and the
+// filter's follower: LISTEN_TO_OWN, or a chain's number
+// (`JELLO_LISTEN_TO_OWN`).
+pub const LISTEN_TO_OWN: f32 = -1.0;
+
+// Each effect's values by number, as `jello_engine_set_effect_value` takes
+// them (`JELLO_EQ_`, `JELLO_FILTER_EFFECT_`, `JELLO_SATURATION_`,
+// `JELLO_COMPRESSOR_`, `JELLO_GATE_`, `JELLO_SHAPER_`, `JELLO_CHORUS_`,
+// `JELLO_DELAY_` and `JELLO_REVERB_`). An EQ band's
+// value is band * EQ_BAND_VALUES + one of the EQ_BAND_ ones, and a volume
+// shaper point's point * SHAPER_POINT_VALUES + one of the SHAPER_POINT_
+// ones.
+pub const EQ_BAND_ON: i32 = 0;
+pub const EQ_BAND_SHAPE: i32 = 1;
+pub const EQ_BAND_FREQUENCY: i32 = 2;
+pub const EQ_BAND_GAIN: i32 = 3;
+pub const EQ_BAND_WIDTH: i32 = 4;
+pub const EQ_BAND_SLOPE: i32 = 5;
+pub const EQ_BAND_VALUES: i32 = 6;
+pub const EQ_OUTPUT: i32 = 48;
+pub const EQ_LOW_CUT: f32 = 0.0;
+pub const EQ_LOW_SHELF: f32 = 1.0;
+pub const EQ_BELL: f32 = 2.0;
+pub const EQ_HIGH_SHELF: f32 = 3.0;
+pub const EQ_HIGH_CUT: f32 = 4.0;
+pub const EQ_NOTCH: f32 = 5.0;
+pub const FILTER_EFFECT_TYPE: i32 = 0;
+pub const FILTER_EFFECT_SLOPE: i32 = 1;
+pub const FILTER_EFFECT_CUTOFF: i32 = 2;
+pub const FILTER_EFFECT_RESONANCE: i32 = 3;
+pub const FILTER_EFFECT_DRIVE: i32 = 4;
+pub const FILTER_EFFECT_FOLLOW: i32 = 5;
+pub const FILTER_EFFECT_FOLLOW_ATTACK: i32 = 6;
+pub const FILTER_EFFECT_FOLLOW_RELEASE: i32 = 7;
+pub const FILTER_EFFECT_MIX: i32 = 8;
+pub const FILTER_EFFECT_LISTENS_TO: i32 = 9;
+pub const SATURATION_DRIVE: i32 = 0;
+pub const SATURATION_CURVE: i32 = 1;
+pub const SATURATION_TONE: i32 = 2;
+pub const SATURATION_OUTPUT: i32 = 3;
+pub const SATURATION_MATCH: i32 = 4;
+pub const SATURATION_MIX: i32 = 5;
+pub const SATURATION_TAPE: f32 = 0.0;
+pub const SATURATION_TUBE: f32 = 1.0;
+pub const SATURATION_HARD: f32 = 2.0;
+pub const SATURATION_FOLD: f32 = 3.0;
+pub const COMPRESSOR_THRESHOLD: i32 = 0;
+pub const COMPRESSOR_RATIO: i32 = 1;
+pub const COMPRESSOR_ATTACK: i32 = 2;
+pub const COMPRESSOR_RELEASE: i32 = 3;
+pub const COMPRESSOR_KNEE: i32 = 4;
+pub const COMPRESSOR_MAKEUP: i32 = 5;
+pub const COMPRESSOR_MIX: i32 = 6;
+pub const COMPRESSOR_LISTENS_TO: i32 = 7;
+pub const COMPRESSOR_LOW_CUT: i32 = 8;
+pub const COMPRESSOR_LIMIT: f32 = 0.0;
+pub const GATE_THRESHOLD: i32 = 0;
+pub const GATE_RANGE: i32 = 1;
+pub const GATE_ATTACK: i32 = 2;
+pub const GATE_HOLD: i32 = 3;
+pub const GATE_RELEASE: i32 = 4;
+pub const GATE_LISTENS_TO: i32 = 5;
+pub const GATE_SILENT_RANGE_DB: f32 = -80.0;
+pub const SHAPER_POINT_PLACE: i32 = 0;
+pub const SHAPER_POINT_LEVEL: i32 = 1;
+pub const SHAPER_POINT_BEND: i32 = 2;
+pub const SHAPER_POINT_VALUES: i32 = 3;
+pub const SHAPER_CYCLE: i32 = 48;
+pub const SHAPER_DEPTH: i32 = 49;
+pub const SHAPER_POINTS: i32 = 50;
+pub const CHORUS_COPIES: i32 = 0;
+pub const CHORUS_SPEED: i32 = 1;
+pub const CHORUS_CYCLE: i32 = 2;
+pub const CHORUS_ON_BEAT: i32 = 3;
+pub const CHORUS_DEPTH: i32 = 4;
+pub const CHORUS_DELAY: i32 = 5;
+pub const CHORUS_FEEDBACK: i32 = 6;
+pub const CHORUS_SPREAD: i32 = 7;
+pub const CHORUS_MIX: i32 = 8;
+pub const DELAY_LEFT_MS: i32 = 0;
+pub const DELAY_RIGHT_MS: i32 = 1;
+pub const DELAY_LEFT_BEATS: i32 = 2;
+pub const DELAY_RIGHT_BEATS: i32 = 3;
+pub const DELAY_ON_BEAT: i32 = 4;
+pub const DELAY_LINKED: i32 = 5;
+pub const DELAY_PING_PONG: i32 = 6;
+pub const DELAY_FEEDBACK: i32 = 7;
+pub const DELAY_LOW_CUT: i32 = 8;
+pub const DELAY_HIGH_CUT: i32 = 9;
+pub const DELAY_WOBBLE: i32 = 10;
+pub const DELAY_WOBBLE_SPEED: i32 = 11;
+pub const DELAY_GRIT: i32 = 12;
+pub const DELAY_DUCK: i32 = 13;
+pub const DELAY_MIX: i32 = 14;
+pub const REVERB_SIZE: i32 = 0;
+pub const REVERB_DECAY: i32 = 1;
+pub const REVERB_PRE_DELAY: i32 = 2;
+pub const REVERB_DAMPING: i32 = 3;
+pub const REVERB_LOW_CUT: i32 = 4;
+pub const REVERB_DIFFUSION: i32 = 5;
+pub const REVERB_MODULATION: i32 = 6;
+pub const REVERB_WIDTH: i32 = 7;
+pub const REVERB_FREEZE: i32 = 8;
+pub const REVERB_MIX: i32 = 9;
+
+// How much of a new chorus, delay or reverb is heard off a bus
+// (`JELLO_EFFECT_START_MIX_PERCENT`); on a bus, all of it.
+pub const EFFECT_START_MIX: f32 = 0.3;
+
+// The limiter's limits (`JELLO_LIMITER_` in engine/include/jello_engine.h).
+pub const LIMITER_MOST_BOOST_DB: f32 = 24.0;
+pub const LIMITER_LOWEST_CEILING_DB: f32 = -12.0;
+pub const LIMITER_SHORTEST_RELEASE_MS: u32 = 1;
+pub const LIMITER_LONGEST_RELEASE_MS: u32 = 1000;
 
 // How long Esc waits for a layer's number (docs/adr/0026-layers.md).
 const ESC_WAIT: Duration = Duration::from_millis(500);
@@ -509,6 +713,31 @@ pub const GLIDE_LONGEST_MS: u32 = 10000;
 // profile starts there too.
 pub const START_GLIDE_MS: u32 = 100;
 
+// A pan in percent as the engine takes it, from -1 to 1.
+fn pan_share(pan: i32) -> f32 {
+    pan as f32 / PAN_MOST as f32
+}
+
+// `limiter` with each value moved into its limits. A boost or ceiling that
+// is not a number counts as the start's.
+pub fn limiter_within_ranges(limiter: Limiter) -> Limiter {
+    let mut boost_db = limiter.boost_db;
+    if boost_db.is_nan() {
+        boost_db = START_LIMITER.boost_db;
+    }
+    let mut ceiling_db = limiter.ceiling_db;
+    if ceiling_db.is_nan() {
+        ceiling_db = START_LIMITER.ceiling_db;
+    }
+    Limiter {
+        boost_db: within(boost_db, 0.0, LIMITER_MOST_BOOST_DB),
+        ceiling_db: within(ceiling_db, LIMITER_LOWEST_CEILING_DB, 0.0),
+        release_ms: limiter
+            .release_ms
+            .clamp(LIMITER_SHORTEST_RELEASE_MS, LIMITER_LONGEST_RELEASE_MS),
+    }
+}
+
 // `value` brought within `lowest` to `highest`. NaN, not a number at all,
 // counts as `lowest`; no slider sends it.
 fn within(value: f32, lowest: f32, highest: f32) -> f32 {
@@ -614,6 +843,8 @@ fn raw_connection(connection: &Connection) -> RawConnection {
         one_way: connection.one_way,
         snap: connection.snap,
         scaled_by: connection.scaled_by.number(),
+        effect_slot: 0,
+        effect_value: 0,
     }
 }
 
@@ -876,12 +1107,22 @@ pub struct SongPlace {
     pub ms_in: u64,
 }
 
+// The room one batch of settings needs in the mailbox: more than a chain with
+// every value of all 8 effects changed, its LFOs and its connections.
+const BATCH_ROOM: i32 = 700;
+// How long make_room waits for the audio thread before going on. A message
+// lost after that shows in dropped_messages.
+const LONGEST_ROOM_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 // The engine keeps no sound of its own: the song's sound profile says how
 // the notes sound, and sends it here
 // (docs/adr/0030-a-sound-profile-per-song.md). The song sends its tempo too.
 pub struct Engine {
     raw: *mut JelloEngine,
     audio_running: bool,
+    // Audio took too long to make room, so nothing waits for it again until
+    // it has.
+    audio_stalled: bool,
     // The picked track, from 0 (docs/design.md#tracks-and-sections). Notes,
     // sound settings, the song and the looper's presses go to it, and the
     // layer numbers count its layers.
@@ -932,6 +1173,9 @@ pub struct Engine {
     // True for the live engine, which reads instruments on another thread
     // so a key is never kept waiting; false for a render, which waits.
     loads_in_background: bool,
+    // How many frames the limiter holds the sound back: 0 live, 1 ms for a
+    // WAV render (for_render).
+    lookahead_frames: usize,
 }
 
 // A sample set the C++ engine keeps, made from `instrument`.
@@ -956,6 +1200,7 @@ impl Engine {
         let engine = Engine {
             raw,
             audio_running: false,
+            audio_stalled: false,
             track: 0,
             live_tracks: [0; PITCH_COUNT],
             vibrato_track: 0,
@@ -975,8 +1220,98 @@ impl Engine {
             kit_set: [None; TRACK_COUNT],
             sets: Vec::new(),
             loads_in_background: false,
+            lookahead_frames: 0,
         };
         Ok(engine)
+    }
+
+    // An engine for a WAV render: its limiter looks 1 ms ahead
+    // (`jello_engine_use_lookahead`), which sounds cleaner and catches the
+    // peaks between samples. Call trim_lookahead right after starting what
+    // plays.
+    pub fn for_render() -> Result<Engine, String> {
+        let mut engine = Engine::new()?;
+        // SAFETY: `raw` points to a live engine, which has not rendered yet
+        // and whose audio never runs.
+        let frames = unsafe { jello_engine_use_lookahead(engine.raw) };
+        engine.lookahead_frames = frames as usize;
+        Ok(engine)
+    }
+
+    // Makes sure the mailbox has room for one batch of settings: a track's
+    // sound or a chain's effects. Opening a song sends more than the mailbox
+    // holds at once, so it calls this between batches. With audio running it
+    // waits for the audio thread to take what is waiting; with none, it
+    // takes it here. Takes no sound time either way.
+    pub fn make_room(&mut self) {
+        if self.message_room() >= BATCH_ROOM {
+            self.audio_stalled = false;
+            return;
+        }
+        if !self.audio_running {
+            // SAFETY: `raw` points to a live engine, whose audio isn't running.
+            unsafe { jello_engine_take_messages(self.raw) };
+            return;
+        }
+        if self.audio_stalled {
+            return;
+        }
+        let waited_since = std::time::Instant::now();
+        while self.message_room() < BATCH_ROOM {
+            if waited_since.elapsed() >= LONGEST_ROOM_WAIT {
+                self.audio_stalled = true;
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn message_room(&self) -> i32 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_message_room(self.raw) }
+    }
+
+    // Renders chunks on another thread at the speakers' pace until `stop`,
+    // as audio would, for tests of what is sent while audio runs. Only with
+    // real audio never started, and until the thread is joined the engine
+    // may only send.
+    #[cfg(test)]
+    pub fn pretend_audio_runs(
+        &mut self,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        self.audio_running = true;
+        let raw = self.raw as usize;
+        std::thread::spawn(move || {
+            let mut chunk = vec![0.0f32; 1024];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                // SAFETY: the test keeps the engine alive until it joins.
+                unsafe { jello_engine_render(raw as *mut JelloEngine, chunk.as_mut_ptr(), 512) };
+                std::thread::sleep(std::time::Duration::from_micros(10_667));
+            }
+        })
+    }
+
+    // Acts as if audio runs but never takes a message, as when a device hangs.
+    #[cfg(test)]
+    pub fn pretend_audio_stalls(&mut self) {
+        self.audio_running = true;
+    }
+
+    // How many messages were ever lost to a full mailbox.
+    pub fn dropped_messages(&self) -> u64 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_dropped_messages(self.raw) }
+    }
+
+    // Renders, and throws away, the frames the limiter holds the sound back
+    // in a render, so what is rendered next lines up with when it was
+    // played, sample for sample. Call it right after starting what plays.
+    // Does nothing live.
+    pub fn trim_lookahead(&mut self) {
+        if self.lookahead_frames > 0 {
+            self.render(self.lookahead_frames);
+        }
     }
 
     // Makes this engine read instruments on another thread from now on,
@@ -1063,6 +1398,134 @@ impl Engine {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_set_track_volume(self.raw, track, volume) };
         percent
+    }
+
+    // Sets track `track`'s pan to `pan`, from -PAN_MOST (fully left) to
+    // PAN_MOST (fully right), eased over 10 ms
+    // (`jello_engine_set_track_pan`). Past either end counts as that end.
+    // Returns it as sent.
+    pub fn set_track_pan(&mut self, track: usize, pan: i32) -> i32 {
+        let pan = pan.clamp(-PAN_MOST, PAN_MOST);
+        let track = c_int::try_from(track).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_track_pan(self.raw, track, pan_share(pan)) };
+        pan
+    }
+
+    // Sends `percent` of track `track`'s sound, from 0 to FULL_VOLUME, to
+    // bus `bus`, from 0 (`jello_engine_set_send`). Above FULL_VOLUME counts
+    // as FULL_VOLUME. Returns it as sent.
+    pub fn set_send(&mut self, track: usize, bus: usize, percent: u32) -> u32 {
+        let percent = percent.min(FULL_VOLUME);
+        let track = c_int::try_from(track).unwrap_or(-1);
+        let bus = c_int::try_from(bus).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_send(self.raw, track, bus, percent as f32 / FULL_VOLUME as f32) };
+        percent
+    }
+
+    // Sets bus `bus`'s volume, from 0 to FULL_VOLUME, and its pan, from
+    // -PAN_MOST to PAN_MOST (`jello_engine_set_bus_volume` and
+    // `jello_engine_set_bus_pan`), like a track's. Each returns its value as
+    // sent.
+    pub fn set_bus_volume(&mut self, bus: usize, percent: u32) -> u32 {
+        let percent = percent.min(FULL_VOLUME);
+        let bus = c_int::try_from(bus).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_bus_volume(self.raw, bus, percent as f32 / FULL_VOLUME as f32) };
+        percent
+    }
+
+    pub fn set_bus_pan(&mut self, bus: usize, pan: i32) -> i32 {
+        let pan = pan.clamp(-PAN_MOST, PAN_MOST);
+        let bus = c_int::try_from(bus).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_bus_pan(self.raw, bus, pan_share(pan)) };
+        pan
+    }
+
+    // Sets the master limiter (`jello_engine_set_limiter`), each value kept
+    // within its limits. Returns it as sent.
+    pub fn set_limiter(&mut self, limiter: Limiter) -> Limiter {
+        let sent = limiter_within_ranges(limiter);
+        let release_ms = sent.release_ms as c_int;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_limiter(self.raw, sent.boost_db, sent.ceiling_db, release_ms) };
+        sent
+    }
+
+    // The most the limiter turned the sound down in the last chunk, in dB.
+    pub fn limiter_reduction_db(&self) -> f32 {
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_limiter_reduction(self.raw) }
+    }
+
+    // Puts a new effect of `kind`, or none, in slot `slot` of chain `chain`
+    // (`jello_engine_set_effect`). False if either is out of range or the
+    // mailbox is full.
+    pub fn set_effect(&mut self, chain: usize, slot: usize, kind: EffectKind) -> bool {
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_effect(self.raw, chain, slot, kind as c_int) }
+    }
+
+    // Moves slot `from`'s effect in chain `chain` to slot `to`
+    // (`jello_engine_move_effect`).
+    pub fn move_effect(&mut self, chain: usize, from: usize, to: usize) -> bool {
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        let from = c_int::try_from(from).unwrap_or(-1);
+        let to = c_int::try_from(to).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_move_effect(self.raw, chain, from, to) }
+    }
+
+    // Switches a slot's effect on or off (`jello_engine_set_effect_on`).
+    pub fn set_effect_on(&mut self, chain: usize, slot: usize, on: bool) {
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_effect_on(self.raw, chain, slot, on) };
+    }
+
+    // Sets value `value` of a slot's effect to `number`
+    // (`jello_engine_set_effect_value`); out of range is ignored.
+    pub fn set_effect_value(&mut self, chain: usize, slot: usize, value: i32, number: f32) {
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_effect_value(self.raw, chain, slot, value, number) };
+    }
+
+    // How many effects the engine holds (`jello_engine_effect_count`).
+    pub fn effect_count(&mut self) -> usize {
+        // SAFETY: `raw` points to a live engine until Drop.
+        let count = unsafe { jello_engine_effect_count(self.raw) };
+        count.max(0) as usize
+    }
+
+    // The order the chains before the master run in, for sidechains
+    // (`jello_engine_set_chain_order`): every track's and bus's chain once,
+    // the tracks first. False if it is not one of those or the mailbox is
+    // full.
+    pub fn set_chain_order(&mut self, order: &[usize]) -> bool {
+        let mut sent = Vec::new();
+        for chain in order {
+            sent.push(c_int::try_from(*chain).unwrap_or(-1));
+        }
+        let count = c_int::try_from(sent.len()).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop, and `sent` holds
+        // `count` numbers for the length of the call.
+        unsafe { jello_engine_set_chain_order(self.raw, sent.as_ptr(), count) }
+    }
+
+    // The most a slot's compressor or gate turned the sound down in the
+    // last chunk, in dB (`jello_engine_gain_reduction`).
+    pub fn gain_reduction_db(&self, chain: usize, slot: usize) -> f32 {
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        let slot = c_int::try_from(slot).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_gain_reduction(self.raw, chain, slot) }
     }
 
     // Lets go of every note.
@@ -2190,6 +2653,47 @@ impl Engine {
         connection
     }
 
+    // Sets LFO `index` of chain `chain`'s routing list: a track's, or a
+    // bus's or the master's own (`jello_engine_set_lfo` with a chain
+    // number). Values outside their ranges are brought within them, and an
+    // index or chain out of range is ignored. Returns the LFO as sent.
+    pub fn set_chain_lfo(&mut self, chain: usize, index: usize, lfo: Lfo) -> Lfo {
+        let lfo = lfo_within_ranges(lfo);
+        if index >= LFO_COUNT {
+            return lfo;
+        }
+        let raw = raw_lfo(&lfo);
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop, and the LFO's
+        // settings live until the call returns.
+        unsafe { jello_engine_set_lfo(self.raw, chain, index as c_int, &raw) };
+        lfo
+    }
+
+    // Sets connection `index` of chain `chain`'s routing list to move an
+    // effect (`jello_engine_set_connection` with a chain number). The
+    // amount is brought within EFFECT_MOST_MOVE; a slot, value, index or
+    // chain out of range is ignored.
+    pub fn set_effect_connection(&mut self, chain: usize, index: usize, connection: EffectConnection) {
+        if index >= CONNECTION_COUNT {
+            return;
+        }
+        let raw = RawConnection {
+            source: connection.source.within_range().number(),
+            target: TARGET_EFFECT,
+            amount: within(connection.amount, -EFFECT_MOST_MOVE, EFFECT_MOST_MOVE),
+            one_way: connection.one_way,
+            snap: false,
+            scaled_by: connection.scaled_by.within_range().number(),
+            effect_slot: c_int::try_from(connection.slot).unwrap_or(-1),
+            effect_value: connection.value,
+        };
+        let chain = c_int::try_from(chain).unwrap_or(-1);
+        // SAFETY: `raw` points to a live engine until Drop, and the
+        // connection lives until the call returns.
+        unsafe { jello_engine_set_connection(self.raw, chain, index as c_int, &raw) };
+    }
+
     // Sets how long the vibrato key takes to rise and fall
     // (`jello_engine_set_vibrato_key_times`), each brought within
     // VIBRATO_KEY_LONGEST_MS. Returns them as sent.
@@ -2498,7 +3002,9 @@ mod tests {
     const RELEASE_MS: u32 = 300;
     const MAILBOX_SLOTS: usize = 1024; // `EventMailbox` in engine/src/mailbox.h
     const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
-    const CLIP_START: f32 = 0.8; // `clip_start` in engine/src/conductor.cpp
+    // A new engine's limiter ceiling, -1 dB, as a level
+    // (`LimiterSettings` in engine/src/limiter.h).
+    const CEILING: f32 = 0.891_250_9;
 
     // Notes by their MIDI numbers, and how many times a second their waves
     // repeat in standard tuning.
@@ -2725,30 +3231,10 @@ mod tests {
         }
     }
 
-    // What the soft clip does to one sample. Matches `soft_clip` in
-    // engine/src/conductor.cpp.
-    fn soft_clip(sample: f32) -> f32 {
-        let size = sample.abs();
-        if size <= CLIP_START {
-            return sample;
-        }
-
-        let room = 1.0 - CLIP_START;
-        let over = size - CLIP_START;
-        let share = over / (over + room);
-        let squeezed = CLIP_START + share * room;
-
-        if sample < 0.0 {
-            -squeezed
-        } else {
-            squeezed
-        }
-    }
-
     // Plays `notes` together, then each note alone on a new engine, and
-    // checks that the chord is the lone notes added up, then put through the
-    // soft clip. Below 0.8 the soft clip changes nothing, so a quiet chord
-    // must be exactly its notes added up.
+    // checks that the chord is exactly the lone notes added up. Only for
+    // chords that stay under the limiter's ceiling, where it changes
+    // nothing.
     fn assert_chord_adds_up(notes: &[u8], velocity: u8) {
         let mut engine = Engine::new().unwrap();
         for note in notes {
@@ -2766,11 +3252,7 @@ mod tests {
             }
         }
 
-        let mut expected = Vec::new();
-        for sample in added_up {
-            expected.push(soft_clip(sample));
-        }
-        assert_same_sound(&chord, &expected);
+        assert_same_sound(&chord, &added_up);
     }
 
     #[test]
@@ -2783,8 +3265,8 @@ mod tests {
     #[test]
     fn all_32_voices_play_at_once() {
         // 32 notes in a row, from C3 up. Softly, so that all together they
-        // stay below 0.8: even if every peak lined up, they would add up to
-        // only 0.62.
+        // stay under the limiter's ceiling: even if every peak lined up, they
+        // would add up to only 0.62.
         let mut notes = Vec::new();
         for note in C3..C3 + VOICE_COUNT {
             notes.push(note);
@@ -3032,7 +3514,7 @@ mod tests {
         // Speakers can only play from -1.0 to 1.0. Anything past that clips,
         // which sounds harsh and broken. This is the loudest chord there is:
         // 32 notes at once, all pressed as hard as possible. Added up, their
-        // waves go far past 1.0, so only the soft clip keeps them under it.
+        // waves go far past 1.0, so only the limiter keeps them under it.
         let mut engine = Engine::new().unwrap();
         for note in C3..C3 + VOICE_COUNT {
             engine.note_on(note, 127);
@@ -3045,16 +3527,116 @@ mod tests {
     }
 
     #[test]
-    fn a_loud_chord_is_bent_by_the_soft_clip() {
-        // The same loudest chord. Past 0.8, its added-up notes must be bent
-        // exactly as the soft clip says: 1.0 into 0.9, 1.4 into 0.95. A hard
-        // clamp just under 1.0 would also keep it from clipping, but it cuts
-        // the tops of the waves flat, which sounds harsh too.
-        let mut notes = Vec::new();
+    fn a_loud_chord_is_held_under_the_ceiling() {
+        // The same loudest chord reaches the limiter's ceiling, -1 dB, and
+        // never goes past it, in either speaker.
+        let mut engine = Engine::new().unwrap();
         for note in C3..C3 + VOICE_COUNT {
-            notes.push(note);
+            engine.note_on(note, 127);
         }
-        assert_chord_adds_up(&notes, 127);
+        let samples = engine.render(frames_in_ms(&engine, 1000));
+        assert!(peak(&samples) <= CEILING);
+        assert!(peak(&samples) > CEILING * 0.99);
+        assert!(engine.limiter_reduction_db() > 3.0);
+    }
+
+    #[test]
+    fn the_limiter_turns_the_sound_down_instead_of_cutting_it() {
+        // Each sample of the loud chord is its notes added up, turned down
+        // by a gain: never cut flat, never turned up, and turned down alike
+        // in both speakers, so the sound never leans to one side.
+        let notes: Vec<u8> = (C3..C3 + VOICE_COUNT).collect();
+        let mut engine = Engine::new().unwrap();
+        for note in &notes {
+            engine.note_on(*note, 127);
+        }
+        let frames = frames_in_ms(&engine, 300);
+        let limited = engine.render(frames);
+
+        let mut added_up = vec![0.0; limited.len()];
+        for note in &notes {
+            let mut alone = Engine::new().unwrap();
+            alone.note_on(*note, 127);
+            let wave = alone.render(frames);
+            for i in 0..added_up.len() {
+                added_up[i] += wave[i];
+            }
+        }
+
+        for frame in 0..frames {
+            let left = 2 * frame;
+            let right = left + 1;
+            if added_up[left].abs() < 0.05 || added_up[right].abs() < 0.05 {
+                continue;
+            }
+            let left_gain = limited[left] / added_up[left];
+            let right_gain = limited[right] / added_up[right];
+            assert!(left_gain > 0.0 && left_gain <= 1.0 + 0.0001, "frame {frame}: gain {left_gain}");
+            assert!((left_gain - right_gain).abs() < 0.001, "frame {frame}: {left_gain} and {right_gain}");
+        }
+    }
+
+    #[test]
+    fn the_limiter_comes_back_up_after_a_loud_moment() {
+        // A loud chord, let go, then two seconds later a quiet note: by then
+        // the limiter is all the way back up, so it is as loud as on a new
+        // engine. Its wave starts elsewhere in its cycle, so only the
+        // loudness is the same.
+        let mut engine = Engine::new().unwrap();
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+        render_left(&mut engine, 300);
+        engine.all_notes_off();
+        render_left(&mut engine, 2000);
+        render_left(&mut engine, 10);
+        assert_eq!(engine.limiter_reduction_db(), 0.0);
+
+        let mut fresh = Engine::new().unwrap();
+        let expected = hold(&mut fresh, A4, VELOCITY);
+        assert_within_percent(peak(&hold(&mut engine, A4, VELOCITY)), peak(&expected), 0.1);
+    }
+
+    #[test]
+    fn a_loud_chord_panned_to_one_side_is_held_under_the_ceiling() {
+        // Fully right, the left speaker is silent and the right one plays
+        // the chord 3 dB louder. The limiter hears the right speaker too and
+        // turns it down, instead of leaving the last step to cut it flat.
+        let mut engine = Engine::new().unwrap();
+        engine.set_track_pan(0, PAN_MOST as i32);
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+        let samples = engine.render(frames_in_ms(&engine, 1000));
+        let (left, right) = split_speakers(&samples);
+        assert_eq!(peak(&left[frames_in_ms(&engine, 20)..]), 0.0);
+        assert!(peak(&right) <= CEILING);
+        assert!(peak(&right) > CEILING * 0.99);
+        assert!(engine.limiter_reduction_db() > 3.0);
+    }
+
+    // How far the limiter is still turned down, in dB, 500 ms after a loud
+    // chord is let go, with a release of `release_ms`.
+    fn turned_down_after_letting_go(release_ms: u32) -> f32 {
+        let mut engine = Engine::new().unwrap();
+        engine.set_limiter(Limiter {
+            release_ms,
+            ..START_LIMITER
+        });
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+        render_left(&mut engine, 300);
+        engine.all_notes_off();
+        render_left(&mut engine, 500);
+        render_left(&mut engine, 10);
+        engine.limiter_reduction_db()
+    }
+
+    #[test]
+    fn a_long_release_comes_back_up_more_slowly_than_a_short_one() {
+        assert!(turned_down_after_letting_go(1000) > 0.5);
+        assert!(turned_down_after_letting_go(10) < 0.01);
     }
 
     // Presses `note` at `velocity` on a new engine and returns how loud the
@@ -4193,6 +4775,30 @@ mod tests {
     }
 
     #[test]
+    fn a_full_mailbox_counts_what_it_loses() {
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(engine.dropped_messages(), 0);
+        for _ in 0..1100 {
+            engine.set_snap(true);
+        }
+        assert!(engine.dropped_messages() >= 76);
+    }
+
+    #[test]
+    fn stalled_audio_is_waited_for_only_once() {
+        let mut engine = Engine::new().unwrap();
+        engine.pretend_audio_stalls();
+        for _ in 0..1000 {
+            engine.set_snap(true);
+        }
+        engine.make_room();
+        let started = std::time::Instant::now();
+        engine.make_room();
+        engine.make_room();
+        assert!(started.elapsed() < LONGEST_ROOM_WAIT / 2);
+    }
+
+    #[test]
     fn the_beat_never_drifts() {
         // At 115 beats per minute a beat is 25,043.478... samples, so beats
         // can't all be the same whole number of samples long. Each one starts
@@ -4333,11 +4939,14 @@ mod tests {
         // All 32 voices are held. If a tick took one of them, a note would
         // stop. So once the tick is over, the notes sound exactly as they do
         // with no click at all.
+        // Softly, so even with a tick they stay under the limiter's ceiling:
+        // the limiter remembers how far it turned down, which would carry
+        // on after the tick.
         let mut clicking = Engine::new().unwrap();
         let mut quiet = Engine::new().unwrap();
         for note in 0..VOICE_COUNT {
-            clicking.note_on(C3 + note, VELOCITY);
-            quiet.note_on(C3 + note, VELOCITY);
+            clicking.note_on(C3 + note, 30);
+            quiet.note_on(C3 + note, 30);
         }
         clicking.start_click();
 
@@ -7209,8 +7818,8 @@ mod tests {
         let mut filtered = saw_engine();
         filtered.set_filter(filter);
         let wet = hold(&mut filtered, note, velocity);
-        // Past the soft clip, the measurement would be bent too.
-        assert!(peak(&wet) < CLIP_START);
+        // Past the limiter's ceiling, the measurement would be bent too.
+        assert!(peak(&wet) < CEILING);
 
         let mut through = Vec::new();
         for harmonic in 1..=count {
@@ -9468,7 +10077,7 @@ mod tests {
         // step, sliding there over the smoothing's share of a beat: at 50%
         // and 120, 250 ms. A4 is held throughout, C5 pressed 500 ms in, and
         // the C chord, one press, at a second. Softly, so five notes stay
-        // below the soft clip.
+        // under the limiter's ceiling.
         let lfo = with_steps(
             Lfo {
                 per_note: false,
@@ -11019,14 +11628,27 @@ mod tests {
         // nothing at all in the first slot, so one that got through would
         // be heard.
         let half_dip = raw_connection(&one_way_connection(Source::Lfo(0), Target::Loudness, -50.0));
+        let effect_dip = RawConnection {
+            target: TARGET_EFFECT,
+            effect_slot: 0,
+            effect_value: EQ_OUTPUT,
+            amount: -6.0,
+            ..half_dip
+        };
         let odd_connections = [
             ("source -1", RawConnection { source: -1, ..half_dip }),
             ("source 14", RawConnection { source: 14, ..half_dip }),
             ("scaled by -1", RawConnection { scaled_by: -1, ..half_dip }),
             ("scaled by 14", RawConnection { scaled_by: 14, ..half_dip }),
             ("target -1", RawConnection { target: -1, ..half_dip }),
-            ("target 40", RawConnection { target: 40, ..half_dip }),
+            ("target 41", RawConnection { target: 41, ..half_dip }),
             ("amount NaN", RawConnection { amount: f32::NAN, ..half_dip }),
+            ("effect slot -1", RawConnection { effect_slot: -1, ..effect_dip }),
+            ("effect slot 8", RawConnection { effect_slot: 8, ..effect_dip }),
+            ("effect value -1", RawConnection { effect_value: -1, ..effect_dip }),
+            ("effect value 64", RawConnection { effect_value: 64, ..effect_dip }),
+            ("effect amount 20001", RawConnection { amount: 20_001.0, ..effect_dip }),
+            ("effect amount NaN", RawConnection { amount: f32::NAN, ..effect_dip }),
         ];
         for (what, raw) in odd_connections {
             let odd = routed_a4_after(|engine| {
@@ -11825,5 +12447,3188 @@ mod tests {
         let starts = tick_starts(&wave);
         assert_eq!(starts[1] - starts[0], 2 * BEAT_AT_120);
         assert_eq!(engine.tempo(), START_TEMPO);
+    }
+
+    // The mix (docs/design.md#mix-in-the-engine): pans, sends, buses and the
+    // master limiter.
+
+    // Holds `note` on track 0 until it settles, then renders `ms` more, as
+    // the left and the right speaker.
+    fn hold_stereo(engine: &mut Engine, note: u8, ms: u32) -> (Vec<f32>, Vec<f32>) {
+        engine.note_on(note, VELOCITY);
+        render_left(engine, ATTACK_MS + DECAY_MS);
+        let samples = engine.render(frames_in_ms(engine, ms));
+        split_speakers(&samples)
+    }
+
+    // Left, right, left, ... as the left speaker's samples and the right's.
+    fn split_speakers(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for frame in samples.chunks(CHANNELS) {
+            left.push(frame[0]);
+            right.push(frame[1]);
+        }
+        (left, right)
+    }
+
+    // Checks that `actual` is `expected` turned up or down by `gain`, sample
+    // for sample, within a hundred-thousandth.
+    fn assert_scaled(actual: &[f32], expected: &[f32], gain: f32) {
+        assert_eq!(actual.len(), expected.len());
+        for i in 0..actual.len() {
+            let wanted = expected[i] * gain;
+            assert!(
+                (actual[i] - wanted).abs() <= 0.00001,
+                "sample {i} is {}, expected {wanted}",
+                actual[i]
+            );
+        }
+    }
+
+    #[test]
+    fn a_pan_moves_a_track_between_the_speakers() {
+        let mut middle = Engine::new().unwrap();
+        let (left, right) = hold_stereo(&mut middle, A4, 200);
+        assert_same_samples(&left, &right);
+
+        // Fully right, the left speaker is silent and the right one plays it
+        // about 3 dB louder, so it keeps its loudness.
+        let mut panned = Engine::new().unwrap();
+        assert_eq!(panned.set_track_pan(0, PAN_MOST), PAN_MOST);
+        let (to_left, to_right) = hold_stereo(&mut panned, A4, 200);
+        assert_scaled(&to_left, &left, 0.0);
+        assert_scaled(&to_right, &left, 2.0_f32.sqrt());
+
+        // Half way left: cos and sin of an eighth of a turn's half.
+        let mut half = Engine::new().unwrap();
+        half.set_track_pan(0, -50);
+        let (half_left, half_right) = hold_stereo(&mut half, A4, 200);
+        let angle = 0.25 * std::f32::consts::FRAC_PI_2;
+        assert_scaled(&half_left, &left, angle.cos() * 2.0_f32.sqrt());
+        assert_scaled(&half_right, &left, angle.sin() * 2.0_f32.sqrt());
+
+        // Past either end counts as that end, and another track's pan
+        // changes nothing here.
+        let mut other = Engine::new().unwrap();
+        assert_eq!(other.set_track_pan(0, -400), -PAN_MOST);
+        other.set_track_pan(0, 0);
+        other.set_track_pan(3, PAN_MOST);
+        let (other_left, _) = hold_stereo(&mut other, A4, 200);
+        assert_same_samples(&other_left, &left);
+    }
+
+    #[test]
+    fn a_pan_eases_without_a_click() {
+        let mut steady = Engine::new().unwrap();
+        let (reference, _) = hold_stereo(&mut steady, A4, 300);
+
+        let mut moving = Engine::new().unwrap();
+        moving.note_on(A4, VELOCITY);
+        render_left(&mut moving, ATTACK_MS + DECAY_MS);
+        let before = moving.render(frames_in_ms(&moving, 100));
+        moving.set_track_pan(0, PAN_MOST);
+        let after = moving.render(frames_in_ms(&moving, 200));
+        let mut samples = before;
+        samples.extend(after);
+        let (left, _) = split_speakers(&samples);
+
+        // The left speaker's gain falls from 1 to 0 over 10 ms, a little each
+        // sample, never in a jump. Samples near zero can't show the gain, so
+        // they are skipped, and the gain may move on a little for each.
+        let mut last_gain = 1.0;
+        let mut last_at = 0;
+        for i in 0..left.len() {
+            if reference[i].abs() < 0.05 {
+                continue;
+            }
+            let gain = left[i] / reference[i];
+            let most_move = 0.005 * (i - last_at) as f32;
+            assert!(
+                (gain - last_gain).abs() <= most_move,
+                "sample {i}: gain jumped from {last_gain} to {gain}"
+            );
+            last_gain = gain;
+            last_at = i;
+        }
+        assert_eq!(last_gain, 0.0);
+    }
+
+    #[test]
+    fn a_send_adds_the_track_to_a_bus() {
+        let mut dry = Engine::new().unwrap();
+        let (left, _) = hold_stereo(&mut dry, A4, 200);
+
+        // All of it sent to a bus, which plays it again: twice as loud.
+        let mut sent = Engine::new().unwrap();
+        assert_eq!(sent.set_send(0, 0, FULL_VOLUME), FULL_VOLUME);
+        let (doubled, _) = hold_stereo(&mut sent, A4, 200);
+        assert_scaled(&doubled, &left, 2.0);
+
+        // The bus at half volume plays half of it.
+        let mut half = Engine::new().unwrap();
+        half.set_send(0, 1, FULL_VOLUME);
+        assert_eq!(half.set_bus_volume(1, 50), 50);
+        let (one_and_a_half, _) = hold_stereo(&mut half, A4, 200);
+        assert_scaled(&one_and_a_half, &left, 1.5);
+
+        // The bus panned fully right: the left speaker only hears the track.
+        let mut panned = Engine::new().unwrap();
+        panned.set_send(0, 2, FULL_VOLUME);
+        assert_eq!(panned.set_bus_pan(2, PAN_MOST), PAN_MOST);
+        let (to_left, to_right) = hold_stereo(&mut panned, A4, 200);
+        assert_scaled(&to_left, &left, 1.0);
+        assert_scaled(&to_right, &left, 1.0 + 2.0_f32.sqrt());
+
+        // Sends come after the volume: a silent track sends nothing.
+        let mut muted = Engine::new().unwrap();
+        muted.set_track_volume(0, 0);
+        muted.set_send(0, 0, FULL_VOLUME);
+        let (silent, _) = hold_stereo(&mut muted, A4, 200);
+        assert_eq!(peak(&silent), 0.0);
+
+        // Too much counts as all of it, another track's send changes nothing
+        // here, and a bus past the last is ignored.
+        let mut other = Engine::new().unwrap();
+        assert_eq!(other.set_send(0, 3, 400), FULL_VOLUME);
+        other.set_send(0, 3, 0);
+        other.set_send(5, 0, FULL_VOLUME);
+        other.set_send(0, BUS_COUNT, FULL_VOLUME);
+        other.set_bus_volume(BUS_COUNT, 0);
+        let (unchanged, _) = hold_stereo(&mut other, A4, 200);
+        assert_same_samples(&unchanged, &left);
+    }
+
+    #[test]
+    fn a_timed_pan_moves_on_its_sample() {
+        let mut steady = Engine::new().unwrap();
+        steady.note_on(A4, VELOCITY);
+        let reference = steady.render(20_000);
+        let (reference_left, _) = split_speakers(&reference);
+
+        let mut timed = Engine::new().unwrap();
+        timed.note_on(A4, VELOCITY);
+        timed.time_next(10_000);
+        timed.set_track_pan(0, PAN_MOST);
+        timed.send_now();
+        timed.play_sequence();
+        let samples = timed.render(20_000);
+        let (left, _) = split_speakers(&samples);
+
+        assert_same_samples(&left[..10_000], &reference_left[..10_000]);
+        assert!(left[10_000].abs() < reference_left[10_000].abs());
+        assert_eq!(peak(&left[11_000..]), 0.0);
+    }
+
+    #[test]
+    fn a_boost_makes_the_sound_louder_up_to_the_ceiling() {
+        let mut plain = Engine::new().unwrap();
+        let held = hold(&mut plain, A4, VELOCITY);
+
+        // 6 dB is about twice as loud.
+        let mut boosted = Engine::new().unwrap();
+        let limiter = Limiter {
+            boost_db: 6.0,
+            ..START_LIMITER
+        };
+        assert_eq!(boosted.set_limiter(limiter), limiter);
+        let louder = hold(&mut boosted, A4, VELOCITY);
+        assert_scaled(&louder, &held, 10.0_f32.powf(6.0 / 20.0));
+
+        // The most boost, on the loudest chord, still stays under the ceiling.
+        let mut loudest = Engine::new().unwrap();
+        loudest.set_limiter(Limiter {
+            boost_db: LIMITER_MOST_BOOST_DB,
+            ..START_LIMITER
+        });
+        for note in C3..C3 + VOICE_COUNT {
+            loudest.note_on(note, 127);
+        }
+        assert!(peak(&loudest.render(frames_in_ms(&loudest, 500))) <= CEILING);
+    }
+
+    #[test]
+    fn a_lower_ceiling_holds_the_sound_lower() {
+        let mut engine = Engine::new().unwrap();
+        engine.set_limiter(Limiter {
+            ceiling_db: -6.0,
+            ..START_LIMITER
+        });
+        let held = hold(&mut engine, A4, VELOCITY);
+        let mut plain = Engine::new().unwrap();
+        let louder = hold(&mut plain, A4, VELOCITY);
+        assert!(peak(&louder) > 0.2);
+
+        // -6 dB is about 0.501. A4 alone is quieter than that, so it passes
+        // as it is.
+        assert_same_samples(&held, &louder);
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        assert!(peak(&engine.render(frames_in_ms(&engine, 500))) <= ceiling);
+    }
+
+    #[test]
+    fn the_limiter_s_settings_stay_within_their_limits() {
+        let mut engine = Engine::new().unwrap();
+        let too_far = Limiter {
+            boost_db: 30.0,
+            ceiling_db: 3.0,
+            release_ms: 0,
+        };
+        let sent = engine.set_limiter(too_far);
+        assert_eq!(
+            sent,
+            Limiter {
+                boost_db: LIMITER_MOST_BOOST_DB,
+                ceiling_db: 0.0,
+                release_ms: LIMITER_SHORTEST_RELEASE_MS,
+            }
+        );
+
+        let the_other_way = Limiter {
+            boost_db: -5.0,
+            ceiling_db: -40.0,
+            release_ms: 5000,
+        };
+        let sent = engine.set_limiter(the_other_way);
+        assert_eq!(
+            sent,
+            Limiter {
+                boost_db: 0.0,
+                ceiling_db: LIMITER_LOWEST_CEILING_DB,
+                release_ms: LIMITER_LONGEST_RELEASE_MS,
+            }
+        );
+
+        let not_numbers = Limiter {
+            boost_db: f32::NAN,
+            ceiling_db: f32::NAN,
+            release_ms: 100,
+        };
+        assert_eq!(engine.set_limiter(not_numbers), START_LIMITER);
+    }
+
+    #[test]
+    fn a_render_lines_up_once_the_lookahead_is_trimmed() {
+        let mut live = Engine::new().unwrap();
+        live.note_on(A4, VELOCITY);
+        let expected = live.render(20_000);
+
+        // The lookahead holds the sound back 1 ms. Thrown away right after
+        // the note starts, the rest lines up sample for sample.
+        let mut render = Engine::for_render().unwrap();
+        render.note_on(A4, VELOCITY);
+        render.trim_lookahead();
+        assert_same_samples(&render.render(20_000), &expected);
+
+        // Untrimmed, it comes 48 frames late.
+        let mut late = Engine::for_render().unwrap();
+        late.note_on(A4, VELOCITY);
+        let samples = late.render(20_000 + 48);
+        assert_eq!(peak(&samples[..96]), 0.0);
+        assert_same_samples(&samples[96..], &expected);
+    }
+
+    // The loudest the wave gets between and on its samples, read at 8
+    // points between each two from 32 samples either side.
+    fn true_peak(wave: &[f32]) -> f32 {
+        let reach: i64 = 32;
+        let mut loudest = peak(wave);
+        for i in 0..wave.len() as i64 {
+            for point in 1..8 {
+                let place = i as f64 + point as f64 / 8.0;
+                let mut value = 0.0;
+                for at in i - reach + 1..=i + reach {
+                    if at < 0 || at >= wave.len() as i64 {
+                        continue;
+                    }
+                    let distance = place - at as f64;
+                    let sinc = (PI * distance).sin() / (PI * distance);
+                    let window = 0.5 * (1.0 + (PI * distance / (reach as f64 + 0.5)).cos());
+                    value += wave[at as usize] as f64 * sinc * window;
+                }
+                loudest = loudest.max(value.abs() as f32);
+            }
+        }
+        loudest
+    }
+
+    #[test]
+    fn a_render_keeps_even_the_peaks_between_samples_under_the_ceiling() {
+        // High, bright squares at their loudest have peaks between their
+        // samples. A render catches those too, within 0.1 dB.
+        let mut render = Engine::for_render().unwrap();
+        render.set_oscillator(
+            0,
+            Oscillator {
+                kind: Kind::Square,
+                ..START_OSCILLATORS[0]
+            },
+        );
+        for note in A7 - 12..A7 + 8 {
+            render.note_on(note, 127);
+        }
+        render.trim_lookahead();
+        let samples = render.render(frames_in_ms(&render, 200));
+        let (left, right) = split_speakers(&samples);
+        let allowed = CEILING * 10.0_f32.powf(0.1 / 20.0);
+        assert!(true_peak(&left) <= allowed, "left reaches {}", true_peak(&left));
+        assert!(true_peak(&right) <= allowed, "right reaches {}", true_peak(&right));
+    }
+
+    // Effects (docs/design.md#mix-in-the-engine): chains, the EQ, the
+    // filter and saturation.
+
+    // A sine note soft enough that a 12 dB boost stays under the ceiling.
+    const GENTLE: u8 = 50;
+    const G7: u8 = 103;
+    const G7_HZ: f64 = 3135.9635;
+
+    // An EQ band's value number.
+    fn band_value(band: i32, which: i32) -> i32 {
+        band * EQ_BAND_VALUES + which
+    }
+
+    // Switches band `band` of the EQ in track 0's slot `slot` on, in
+    // `shape` at `hz`, with `gain_db` and `width`.
+    fn eq_band(engine: &mut Engine, slot: usize, band: i32, shape: f32, hz: f32, gain_db: f32, width: f32) {
+        engine.set_effect_value(0, slot, band_value(band, EQ_BAND_SHAPE), shape);
+        engine.set_effect_value(0, slot, band_value(band, EQ_BAND_FREQUENCY), hz);
+        engine.set_effect_value(0, slot, band_value(band, EQ_BAND_GAIN), gain_db);
+        engine.set_effect_value(0, slot, band_value(band, EQ_BAND_WIDTH), width);
+        engine.set_effect_value(0, slot, band_value(band, EQ_BAND_ON), 1.0);
+    }
+
+    // How loud the tone at `hz` is in `wave`, in dB.
+    fn tone_db(engine: &Engine, wave: &[f32], hz: f64) -> f64 {
+        20.0 * tone_size(engine, wave, hz).log10()
+    }
+
+    // A sine engine with an effect of `kind` in track 0's first slot.
+    fn sine_with(kind: EffectKind) -> Engine {
+        let mut engine = sine_engine();
+        assert!(engine.set_effect(0, 0, kind));
+        engine
+    }
+
+    // How much louder `note`'s tone at `hz` is through `with` than on a
+    // plain sine engine, in dB, held at `velocity`.
+    fn boost_db(mut with: Engine, note: u8, hz: f64, velocity: u8) -> f64 {
+        let mut plain = sine_engine();
+        let plain_wave = hold(&mut plain, note, velocity);
+        let wave = hold(&mut with, note, velocity);
+        tone_db(&with, &wave, hz) - tone_db(&plain, &plain_wave, hz)
+    }
+
+    // Checks that `actual` is within `allowed` of `expected`, in dB.
+    fn assert_db(actual: f64, expected: f64, allowed: f64) {
+        assert!(
+            (actual - expected).abs() <= allowed,
+            "got {actual} dB, expected {expected} dB give or take {allowed}"
+        );
+    }
+
+    // The biggest jump from one sample to the next.
+    fn biggest_step(wave: &[f32]) -> f32 {
+        let mut biggest = 0.0;
+        for pair in wave.windows(2) {
+            let step = (pair[1] - pair[0]).abs();
+            if step > biggest {
+                biggest = step;
+            }
+        }
+        biggest
+    }
+
+    // A chord played on `engine`, 300 ms of it in both speakers.
+    fn chord_through(engine: &mut Engine) -> Vec<f32> {
+        for note in [C3, E4, G4, A4] {
+            engine.note_on(note, VELOCITY);
+        }
+        engine.render(frames_in_ms(engine, 300))
+    }
+
+    #[test]
+    fn a_new_eq_or_filter_changes_nothing() {
+        let mut plain = Engine::new().unwrap();
+        let expected = chord_through(&mut plain);
+        for kind in [EffectKind::Eq, EffectKind::Filter] {
+            let mut engine = Engine::new().unwrap();
+            assert!(engine.set_effect(0, 0, kind));
+            assert_same_samples(&chord_through(&mut engine), &expected);
+        }
+    }
+
+    #[test]
+    fn a_new_saturation_changes_little() {
+        let mut plain = sine_engine();
+        let expected = hold(&mut plain, A4, VELOCITY);
+        let mut engine = sine_with(EffectKind::Saturation);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        assert_within_percent(peak(&wave), peak(&expected), 3.0);
+    }
+
+    #[test]
+    fn a_bell_turns_its_frequency_up_by_its_gain() {
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 1.0);
+        assert_db(boost_db(engine, A4, A4_HZ, GENTLE), 12.0, 0.1);
+
+        // An octave away, a little.
+        let mut away = sine_with(EffectKind::Eq);
+        eq_band(&mut away, 0, 3, EQ_BELL, 2.0 * A4_HZ as f32, 12.0, 1.0);
+        let boost = boost_db(away, A4, A4_HZ, GENTLE);
+        assert!(boost > 1.0 && boost < 6.0, "boosted {boost} dB");
+
+        // Every band works, and a cut too.
+        for band in 0..8 {
+            let mut cut = sine_with(EffectKind::Eq);
+            eq_band(&mut cut, 0, band, EQ_BELL, A4_HZ as f32, -12.0, 1.0);
+            assert_db(boost_db(cut, A4, A4_HZ, GENTLE), -12.0, 0.1);
+        }
+    }
+
+    #[test]
+    fn a_low_cut_is_as_steep_as_its_slope() {
+        // Two octaves below a Butterworth cut, each 12 dB of slope takes
+        // about 24 dB off.
+        for (slope, expected) in [(12.0, -24.1), (24.0, -48.2)] {
+            let mut engine = sine_with(EffectKind::Eq);
+            engine.set_effect_value(0, 0, band_value(0, EQ_BAND_SLOPE), slope);
+            eq_band(&mut engine, 0, 0, EQ_LOW_CUT, 4.0 * A4_HZ as f32, 0.0, 1.0);
+            assert_db(boost_db(engine, A4, A4_HZ, VELOCITY), expected, 1.0);
+        }
+        let mut steepest = sine_with(EffectKind::Eq);
+        steepest.set_effect_value(0, 0, band_value(0, EQ_BAND_SLOPE), 48.0);
+        eq_band(&mut steepest, 0, 0, EQ_LOW_CUT, 4.0 * A4_HZ as f32, 0.0, 1.0);
+        assert!(boost_db(steepest, A4, A4_HZ, VELOCITY) < -80.0);
+
+        // A high cut is the mirror.
+        let mut high = sine_with(EffectKind::Eq);
+        eq_band(&mut high, 0, 7, EQ_HIGH_CUT, A4_HZ as f32 / 4.0, 0.0, 1.0);
+        assert_db(boost_db(high, A4, A4_HZ, VELOCITY), -48.2, 1.0);
+    }
+
+    #[test]
+    fn a_cut_at_any_slope_takes_3_db_off_at_its_frequency() {
+        // Butterworth: flat right up to the cut, 3 dB down at it.
+        for slope in [12.0, 24.0, 48.0] {
+            let mut engine = sine_with(EffectKind::Eq);
+            engine.set_effect_value(0, 0, band_value(0, EQ_BAND_SLOPE), slope);
+            eq_band(&mut engine, 0, 0, EQ_LOW_CUT, A4_HZ as f32, 0.0, 1.0);
+            assert_db(boost_db(engine, A4, A4_HZ, VELOCITY), -3.0, 0.2);
+        }
+    }
+
+    #[test]
+    fn a_shelf_turns_its_side_up_or_down() {
+        let mut high = sine_with(EffectKind::Eq);
+        eq_band(&mut high, 0, 1, EQ_HIGH_SHELF, A4_HZ as f32 / 8.0, 6.0, 0.7071);
+        assert_db(boost_db(high, A4, A4_HZ, GENTLE), 6.0, 0.2);
+
+        let mut low = sine_with(EffectKind::Eq);
+        eq_band(&mut low, 0, 1, EQ_LOW_SHELF, A4_HZ as f32 * 8.0, -6.0, 0.7071);
+        assert_db(boost_db(low, A4, A4_HZ, GENTLE), -6.0, 0.2);
+    }
+
+    #[test]
+    fn a_notch_takes_its_frequency_out() {
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 2, EQ_NOTCH, A4_HZ as f32, 0.0, 10.0);
+        assert!(boost_db(engine, A4, A4_HZ, VELOCITY) < -30.0);
+    }
+
+    #[test]
+    fn the_eq_s_output_turns_everything_up_or_down() {
+        let mut engine = sine_with(EffectKind::Eq);
+        engine.set_effect_value(0, 0, EQ_OUTPUT, -6.0);
+        assert_db(boost_db(engine, A4, A4_HZ, VELOCITY), -6.0, 0.05);
+    }
+
+    #[test]
+    fn a_band_switched_off_changes_nothing_once_faded_out() {
+        let mut plain = sine_engine();
+        plain.note_on(A4, VELOCITY);
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 1.0);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut plain, 100);
+        render_left(&mut engine, 100);
+
+        engine.set_effect_value(0, 0, band_value(3, EQ_BAND_ON), 0.0);
+        let fading = render_left(&mut engine, 10);
+        render_left(&mut plain, 10);
+        assert!(peak(&fading) > 0.0);
+        assert_same_samples(&render_left(&mut engine, 200), &render_left(&mut plain, 200));
+    }
+
+    #[test]
+    fn a_moved_gain_glides_without_a_click() {
+        // From 0 to 12 dB while A4 holds: no jump bigger than the loudest
+        // the wave steps at 12 dB, and all the way there after 20 ms.
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 3, EQ_BELL, A4_HZ as f32, 0.0, 1.0);
+        let before = hold(&mut engine, A4, GENTLE);
+        engine.set_effect_value(0, 0, band_value(3, EQ_BAND_GAIN), 12.0);
+        let gliding = render_left(&mut engine, 20);
+        let after = render_left(&mut engine, 1000);
+
+        assert!(biggest_step(&gliding) <= biggest_step(&after) * 1.01);
+        assert!(peak(&gliding[..48]) < peak(&before) * 1.1);
+        assert_db(tone_db(&engine, &after, A4_HZ) - tone_db(&engine, &before, A4_HZ), 12.0, 0.1);
+    }
+
+    #[test]
+    fn a_new_shape_crossfades_without_a_click() {
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 1.0);
+        let before = hold(&mut engine, A4, GENTLE);
+        engine.set_effect_value(0, 0, band_value(3, EQ_BAND_SHAPE), EQ_NOTCH);
+        let fading = render_left(&mut engine, 10);
+        assert!(biggest_step(&fading) <= biggest_step(&before) * 1.01);
+
+        // Halfway through, the bell is still about half heard.
+        let ms = frames_in_ms(&engine, 1) as usize;
+        let halfway = &fading[4 * ms..6 * ms];
+        assert!(peak(halfway) > peak(&before) * 0.3, "halfway peak {}", peak(halfway));
+        let after = render_left(&mut engine, 1000);
+        assert!(tone_db(&engine, &after, A4_HZ) < tone_db(&engine, &before, A4_HZ) - 40.0);
+    }
+
+    #[test]
+    fn a_low_pass_turns_the_highs_down_by_its_slope() {
+        // Two octaves above the cutoff, about 24 dB off at 12 dB an octave,
+        // and twice that at 24.
+        for (slope, expected) in [(12.0, -24.4), (24.0, -48.8)] {
+            let mut engine = sine_with(EffectKind::Filter);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_SLOPE, slope);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, A7_HZ as f32 / 4.0);
+            assert_db(boost_db(engine, A7, A7_HZ, VELOCITY), expected, 1.0);
+        }
+    }
+
+    #[test]
+    fn every_filter_type_keeps_its_own_part() {
+        let types = [(1.0, 4.0 * A4_HZ, -24.0), (2.0, 4.0 * A4_HZ, -12.0), (3.0, A4_HZ, -30.0)];
+        for (filter_type, cutoff, most_db) in types {
+            let mut engine = sine_with(EffectKind::Filter);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_TYPE, filter_type);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, cutoff as f32);
+            let boost = boost_db(engine, A4, A4_HZ, VELOCITY);
+            assert!(boost < most_db, "type {filter_type}: {boost} dB");
+        }
+
+        // A band-pass keeps its cutoff.
+        let mut band = sine_with(EffectKind::Filter);
+        band.set_effect_value(0, 0, FILTER_EFFECT_TYPE, 2.0);
+        band.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, A4_HZ as f32);
+        assert!(boost_db(band, A4, A4_HZ, VELOCITY) > -4.0);
+    }
+
+    #[test]
+    fn loudness_opens_the_filter_by_its_follow_amount() {
+        let mut still = sine_with(EffectKind::Filter);
+        still.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, A7_HZ as f32 / 8.0);
+        let mut following = sine_with(EffectKind::Filter);
+        following.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, A7_HZ as f32 / 8.0);
+        following.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW, 8.0);
+        let opened = boost_db(following, A7, A7_HZ, VELOCITY) - boost_db(still, A7, A7_HZ, VELOCITY);
+        assert!(opened > 10.0, "opened by {opened} dB");
+    }
+
+    #[test]
+    fn the_filter_s_drive_rounds_off_loud_peaks() {
+        let mut clean = sine_with(EffectKind::Filter);
+        let clean_wave = hold(&mut clean, A4, 127);
+        let mut driven = sine_with(EffectKind::Filter);
+        driven.set_effect_value(0, 0, FILTER_EFFECT_DRIVE, 1.0);
+        let driven_wave = hold(&mut driven, A4, 127);
+        let third = 3.0 * A4_HZ;
+        assert!(tone_db(&clean, &clean_wave, third) < -80.0);
+        assert!(tone_db(&driven, &driven_wave, third) > tone_db(&driven, &driven_wave, A4_HZ) - 30.0);
+    }
+
+    // The tone at `harmonic` times A4 next to A4's, in dB, through
+    // saturation with `drive_db` and `curve`.
+    fn saturated_harmonic(drive_db: f32, curve: f32, harmonic: f64) -> f64 {
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, drive_db);
+        engine.set_effect_value(0, 0, SATURATION_CURVE, curve);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        tone_db(&engine, &wave, harmonic * A4_HZ) - tone_db(&engine, &wave, A4_HZ)
+    }
+
+    #[test]
+    fn saturation_adds_harmonics_by_its_drive() {
+        assert!(saturated_harmonic(0.0, SATURATION_TAPE, 3.0) < -40.0);
+        assert!(saturated_harmonic(24.0, SATURATION_TAPE, 3.0) > -20.0);
+
+        // Only the tube's lopsided curve adds even harmonics.
+        assert!(saturated_harmonic(24.0, SATURATION_TAPE, 2.0) < -60.0);
+        assert!(saturated_harmonic(24.0, SATURATION_HARD, 2.0) < -60.0);
+        assert!(saturated_harmonic(24.0, SATURATION_TUBE, 2.0) > -30.0);
+
+        // Each curve bends its own way.
+        let curves = [SATURATION_TAPE, SATURATION_TUBE, SATURATION_HARD, SATURATION_FOLD];
+        for first in 0..curves.len() {
+            for second in first + 1..curves.len() {
+                let one = saturated_harmonic(24.0, curves[first], 5.0);
+                let other = saturated_harmonic(24.0, curves[second], 5.0);
+                assert!((one - other).abs() > 0.5, "curves {first} and {second}");
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_s_harmonics_never_fold_back_as_harsh_tones() {
+        // G7 clipped hard has an 11th harmonic too high for the samples to
+        // hold, which would fold back down to 48,000 - 11 x G7 Hz. Worked
+        // out at 4 times the rate, it is filtered out first.
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_CURVE, SATURATION_HARD);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        let wave = hold(&mut engine, G7, VELOCITY);
+        let folded = 48_000.0 - 11.0 * G7_HZ;
+        let below = tone_db(&engine, &wave, G7_HZ) - tone_db(&engine, &wave, folded);
+        assert!(below > 60.0, "only {below} dB below");
+    }
+
+    #[test]
+    fn fold_s_harmonics_never_fold_back_as_harsh_tones() {
+        // Fold adds far more high harmonics than the other curves. G7's
+        // 55th would fold back down to 192,000 - 55 x G7 Hz at 4 times the
+        // rate; at 16 times it is filtered out first.
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_CURVE, SATURATION_FOLD);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        let wave = hold(&mut engine, G7, VELOCITY);
+        let folded = 192_000.0 - 55.0 * G7_HZ;
+        let below = tone_db(&engine, &wave, G7_HZ) - tone_db(&engine, &wave, folded);
+        assert!(below > 60.0, "only {below} dB below");
+    }
+
+    #[test]
+    fn switching_to_fold_and_back_crossfades_without_a_click() {
+        // Fold runs at its own rate, so both rates run while they crossfade.
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 12.0);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        let tape = hold(&mut engine, A4, GENTLE);
+        engine.set_effect_value(0, 0, SATURATION_CURVE, SATURATION_FOLD);
+        let to_fold = render_left(&mut engine, 10);
+        let fold = render_left(&mut engine, 100);
+        engine.set_effect_value(0, 0, SATURATION_CURVE, SATURATION_TAPE);
+        let to_tape = render_left(&mut engine, 10);
+        let most = biggest_step(&tape).max(biggest_step(&fold));
+        assert!(biggest_step(&to_fold) <= most * 1.01);
+        assert!(biggest_step(&to_tape) <= most * 1.01);
+    }
+
+    #[test]
+    fn matched_saturation_is_as_loud_as_its_input_from_the_first_note() {
+        // A new saturation starts right at its drive, so every 10 ms of
+        // the first note is as loud as without it.
+        for curve in [SATURATION_TAPE, SATURATION_FOLD] {
+            let mut plain = sine_engine();
+            plain.note_on(A4, GENTLE);
+            let expected = render_left(&mut plain, 400);
+            let mut engine = sine_with(EffectKind::Saturation);
+            engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+            engine.set_effect_value(0, 0, SATURATION_CURVE, curve);
+            engine.set_effect_value(0, 0, SATURATION_MATCH, 1.0);
+            engine.note_on(A4, GENTLE);
+            let wave = render_left(&mut engine, 400);
+            let ms = frames_in_ms(&engine, 10);
+            for piece in 0..40 {
+                let heard = &wave[piece * ms..(piece + 1) * ms];
+                let without = &expected[piece * ms..(piece + 1) * ms];
+                assert_db(20.0 * (rms(heard) / rms(without)).log10(), 0.0, 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_s_tone_tilts_it_darker() {
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        engine.set_effect_value(0, 0, SATURATION_TONE, -1.0);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        let darker = tone_db(&engine, &wave, 5.0 * A4_HZ) - tone_db(&engine, &wave, A4_HZ);
+        assert!(darker < saturated_harmonic(24.0, SATURATION_TAPE, 5.0) - 5.0);
+    }
+
+    #[test]
+    fn matched_saturation_stays_as_loud_as_its_input() {
+        let mut plain = sine_engine();
+        let expected = hold(&mut plain, A4, GENTLE);
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_MATCH, 1.0);
+        let wave = hold(&mut engine, A4, GENTLE);
+        assert_db(20.0 * (rms(&wave) / rms(&expected)).log10(), 0.0, 1.0);
+    }
+
+    #[test]
+    fn saturation_mixed_away_is_the_dry_sound() {
+        let mut plain = sine_engine();
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_MIX, 0.0);
+        render_left(&mut plain, 30);
+        render_left(&mut engine, 30);
+        assert_same_samples(&hold(&mut engine, A4, VELOCITY), &hold(&mut plain, A4, VELOCITY));
+    }
+
+    #[test]
+    fn an_effect_switched_off_fades_out_and_passes_the_sound_untouched() {
+        let mut plain = sine_engine();
+        plain.note_on(A4, VELOCITY);
+        let mut engine = sine_with(EffectKind::Saturation);
+        engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+        engine.set_effect_value(0, 0, SATURATION_OUTPUT, -12.0);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut plain, 300);
+        let on = render_left(&mut engine, 300);
+
+        engine.set_effect_on(0, 0, false);
+        let fading = render_left(&mut engine, 10);
+        let plain_fading = render_left(&mut plain, 10);
+        let most_step = biggest_step(&on).max(biggest_step(&plain_fading));
+        assert!(biggest_step(&fading) <= most_step * 1.01);
+        assert_same_samples(&render_left(&mut engine, 100), &render_left(&mut plain, 100));
+
+        // And back on.
+        engine.set_effect_on(0, 0, true);
+        render_left(&mut engine, 10);
+        let back = render_left(&mut engine, 100);
+        assert!(tone_db(&engine, &back, 3.0 * A4_HZ) > -40.0);
+    }
+
+    // Track 0 through saturation, a low cut and a high-pass filter, in
+    // the order `kinds` says, with A4 held.
+    fn ordered(kinds: [EffectKind; 3]) -> Engine {
+        let mut engine = sine_engine();
+        for (slot, kind) in kinds.iter().enumerate() {
+            place_ordered(&mut engine, slot, *kind);
+        }
+        engine
+    }
+
+    fn place_ordered(engine: &mut Engine, slot: usize, kind: EffectKind) {
+        assert!(engine.set_effect(0, slot, kind));
+        if kind == EffectKind::Saturation {
+            engine.set_effect_value(0, slot, SATURATION_DRIVE, 24.0);
+            engine.set_effect_value(0, slot, SATURATION_OUTPUT, -12.0);
+        } else if kind == EffectKind::Eq {
+            eq_band(engine, slot, 0, EQ_LOW_CUT, 1000.0, 0.0, 1.0);
+        } else {
+            engine.set_effect_value(0, slot, FILTER_EFFECT_TYPE, 1.0);
+            engine.set_effect_value(0, slot, FILTER_EFFECT_CUTOFF, 2000.0);
+        }
+    }
+
+    #[test]
+    fn moving_an_effect_shifts_the_slots_between() {
+        use EffectKind::{Eq, Filter, Saturation};
+        let mut expected = ordered([Eq, Filter, Saturation]);
+        let wanted = hold(&mut expected, A4, VELOCITY);
+
+        let mut down = ordered([Saturation, Eq, Filter]);
+        assert!(down.move_effect(0, 0, 2));
+        assert_same_samples(&hold(&mut down, A4, VELOCITY), &wanted);
+
+        let mut up = ordered([Filter, Saturation, Eq]);
+        assert!(up.move_effect(0, 2, 0));
+        assert_same_samples(&hold(&mut up, A4, VELOCITY), &wanted);
+
+        // Moving to where it is changes nothing.
+        let mut still = ordered([Eq, Filter, Saturation]);
+        assert!(still.move_effect(0, 1, 1));
+        assert_same_samples(&hold(&mut still, A4, VELOCITY), &wanted);
+
+        // The order changes the sound.
+        let mut other = ordered([Saturation, Eq, Filter]);
+        assert!(hold(&mut other, A4, VELOCITY) != wanted);
+    }
+
+    #[test]
+    fn a_moved_effect_takes_its_own_values_in_its_new_slot() {
+        // A filter set in slot 2 straight away...
+        let mut expected = sine_engine();
+        assert!(expected.set_effect(0, 2, EffectKind::Filter));
+        expected.set_effect_value(0, 2, FILTER_EFFECT_CUTOFF, 500.0);
+        let wanted = hold(&mut expected, A4, VELOCITY);
+
+        // ...sounds the same as one moved there from slot 0, either way.
+        let mut down = sine_with(EffectKind::Filter);
+        assert!(down.move_effect(0, 0, 2));
+        down.set_effect_value(0, 2, FILTER_EFFECT_CUTOFF, 500.0);
+        assert_same_samples(&hold(&mut down, A4, VELOCITY), &wanted);
+
+        let mut up = sine_engine();
+        assert!(up.set_effect(0, 5, EffectKind::Filter));
+        assert!(up.move_effect(0, 5, 2));
+        up.set_effect_value(0, 2, FILTER_EFFECT_CUTOFF, 500.0);
+        assert_same_samples(&hold(&mut up, A4, VELOCITY), &wanted);
+    }
+
+    #[test]
+    fn switching_an_effect_off_fades_without_a_click() {
+        // 12 dB down through the EQ, then off: the sound grows back over
+        // the crossfade instead of jumping.
+        let mut plain = sine_engine();
+        plain.note_on(A4, VELOCITY);
+        let mut engine = sine_with(EffectKind::Eq);
+        engine.set_effect_value(0, 0, EQ_OUTPUT, -12.0);
+        engine.note_on(A4, VELOCITY);
+        // 300 ms is a whole number of A4's cycles, ending where a jump is
+        // zero, so 301.
+        let before = render_left(&mut engine, 301);
+        render_left(&mut plain, 301);
+
+        // The switch lands on the first sample, so the step into it counts.
+        engine.set_effect_on(0, 0, false);
+        let mut fading = vec![*before.last().unwrap()];
+        fading.extend(render_left(&mut engine, 10));
+        let plain_fading = render_left(&mut plain, 10);
+        assert!(biggest_step(&fading) <= biggest_step(&plain_fading) * 1.1);
+        assert_same_samples(&render_left(&mut engine, 100), &render_left(&mut plain, 100));
+    }
+
+    #[test]
+    fn replaced_effects_are_freed() {
+        let mut engine = Engine::new().unwrap();
+        assert!(engine.set_effect(0, 0, EffectKind::Eq));
+        assert!(engine.set_effect(0, 0, EffectKind::Filter));
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::Saturation));
+        assert_eq!(engine.effect_count(), 3);
+
+        assert!(engine.set_effect(0, 0, EffectKind::None));
+        render_left(&mut engine, 10);
+        assert_eq!(engine.effect_count(), 1);
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::None));
+        render_left(&mut engine, 10);
+        assert_eq!(engine.effect_count(), 0);
+    }
+
+    #[test]
+    fn effect_numbers_out_of_range_are_ignored() {
+        let mut expected = sine_with(EffectKind::Eq);
+        eq_band(&mut expected, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 1.0);
+        let wanted = hold(&mut expected, A4, GENTLE);
+
+        let mut engine = sine_with(EffectKind::Eq);
+        eq_band(&mut engine, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 1.0);
+        let wrong = [
+            (band_value(3, EQ_BAND_FREQUENCY), 19.0),
+            (band_value(3, EQ_BAND_FREQUENCY), 20_001.0),
+            (band_value(3, EQ_BAND_FREQUENCY), f32::NAN),
+            (band_value(3, EQ_BAND_GAIN), 24.5),
+            (band_value(3, EQ_BAND_WIDTH), 0.05),
+            (band_value(3, EQ_BAND_WIDTH), 18.5),
+            (band_value(3, EQ_BAND_SHAPE), 6.0),
+            (band_value(3, EQ_BAND_SHAPE), 1.5),
+            (band_value(3, EQ_BAND_SLOPE), 36.0),
+            (band_value(3, EQ_BAND_ON), 0.5),
+            (EQ_OUTPUT, -25.0),
+            (EQ_OUTPUT + 1, 0.0),
+            (-1, 0.0),
+        ];
+        for (value, number) in wrong {
+            engine.set_effect_value(0, 0, value, number);
+        }
+        // Wrong chains and slots, and a value for an empty slot.
+        engine.set_effect_value(0, 1, EQ_OUTPUT, -12.0);
+        engine.set_effect_value(14, 0, EQ_OUTPUT, -12.0);
+        engine.set_effect_value(0, 8, EQ_OUTPUT, -12.0);
+        engine.set_effect_on(0, 8, false);
+        engine.set_effect_on(0, 1, false);
+        assert!(!engine.set_effect(14, 0, EffectKind::Eq));
+        assert!(!engine.set_effect(0, 8, EffectKind::Eq));
+        assert!(!engine.move_effect(0, 0, 8));
+        assert!(!engine.move_effect(14, 0, 1));
+        assert_same_samples(&hold(&mut engine, A4, GENTLE), &wanted);
+
+        // Values another kind has, and numbers out of their ranges.
+        let mut filter = sine_with(EffectKind::Filter);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_SLOPE, 48.0);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_TYPE, 4.0);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 19.0);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW, 8.5);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW_ATTACK, 0.05);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW_RELEASE, 2001.0);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_MIX, 1.5);
+        filter.set_effect_value(0, 0, FILTER_EFFECT_MIX + 1, 0.0);
+        filter.set_effect_value(0, 0, EQ_OUTPUT, -12.0);
+        let mut saturation = sine_with(EffectKind::Saturation);
+        saturation.set_effect_value(0, 0, SATURATION_DRIVE, 36.5);
+        saturation.set_effect_value(0, 0, SATURATION_CURVE, 4.0);
+        saturation.set_effect_value(0, 0, SATURATION_TONE, -1.5);
+        saturation.set_effect_value(0, 0, SATURATION_OUTPUT, 24.5);
+        saturation.set_effect_value(0, 0, SATURATION_MATCH, 2.0);
+        saturation.set_effect_value(0, 0, SATURATION_MIX + 1, 0.0);
+        let mut plain = sine_engine();
+        let plain_wave = hold(&mut plain, A4, VELOCITY);
+        assert_same_samples(&hold(&mut filter, A4, VELOCITY), &plain_wave);
+        let mut fresh = sine_with(EffectKind::Saturation);
+        assert_same_samples(&hold(&mut saturation, A4, VELOCITY), &hold(&mut fresh, A4, VELOCITY));
+    }
+
+    #[test]
+    fn a_bus_s_chain_changes_only_what_goes_through_the_bus() {
+        // Track 0 sends all of itself to bus 0, so it is heard twice. The
+        // bus's EQ turns its copy down to a half: one and a half times.
+        let mut both = sine_engine();
+        both.set_send(0, 0, FULL_VOLUME);
+        let mut halved = sine_engine();
+        halved.set_send(0, 0, FULL_VOLUME);
+        assert!(halved.set_effect(FIRST_BUS_CHAIN, 0, EffectKind::Eq));
+        halved.set_effect_value(FIRST_BUS_CHAIN, 0, EQ_OUTPUT, -6.0206);
+        let mut plain = sine_engine();
+
+        let once_wave = hold(&mut plain, A4, GENTLE);
+        let once = tone_size(&plain, &once_wave, A4_HZ);
+        let twice_wave = hold(&mut both, A4, GENTLE);
+        let twice = tone_size(&both, &twice_wave, A4_HZ);
+        let and_a_half_wave = hold(&mut halved, A4, GENTLE);
+        let and_a_half = tone_size(&halved, &and_a_half_wave, A4_HZ);
+        assert_within_percent(twice as f32, 2.0 * once as f32, 0.5);
+        assert_within_percent(and_a_half as f32, 1.5 * once as f32, 0.5);
+    }
+
+    #[test]
+    fn the_master_s_chain_changes_everything_but_the_click() {
+        let mut plain = sine_engine();
+        let mut halved = sine_engine();
+        assert!(halved.set_effect(MASTER_CHAIN, 0, EffectKind::Eq));
+        halved.set_effect_value(MASTER_CHAIN, 0, EQ_OUTPUT, -6.0206);
+        let once_wave = hold(&mut plain, A4, GENTLE);
+        let once = tone_size(&plain, &once_wave, A4_HZ);
+        let half_wave = hold(&mut halved, A4, GENTLE);
+        let half = tone_size(&halved, &half_wave, A4_HZ);
+        assert_within_percent(half as f32, 0.5 * once as f32, 0.5);
+
+        let mut click = Engine::new().unwrap();
+        click.start_click();
+        let mut halved_click = Engine::new().unwrap();
+        assert!(halved_click.set_effect(MASTER_CHAIN, 0, EffectKind::Eq));
+        halved_click.set_effect_value(MASTER_CHAIN, 0, EQ_OUTPUT, -6.0206);
+        halved_click.start_click();
+        assert_same_samples(&render_left(&mut halved_click, 1000), &render_left(&mut click, 1000));
+    }
+
+    #[test]
+    fn a_timed_effect_value_lands_on_its_sample() {
+        let mut steady = sine_with(EffectKind::Eq);
+        steady.note_on(A4, VELOCITY);
+        let reference = render_left(&mut steady, 500);
+
+        let mut timed = sine_with(EffectKind::Eq);
+        timed.note_on(A4, VELOCITY);
+        timed.time_next(10_000);
+        timed.set_effect_value(0, 0, EQ_OUTPUT, -24.0);
+        timed.set_effect_on(0, 0, true);
+        timed.send_now();
+        timed.play_sequence();
+        let left = render_left(&mut timed, 500);
+
+        assert_same_samples(&left[..10_000], &reference[..10_000]);
+        let mut changed = 10_000;
+        while left[changed] == reference[changed] {
+            changed += 1;
+        }
+        assert!(changed <= 10_001, "first changed on sample {changed}");
+        assert!(peak(&left[12_000..]) < peak(&reference[12_000..]) * 0.07);
+    }
+
+    #[test]
+    fn effects_render_the_same_every_time() {
+        let make = || {
+            let mut engine = Engine::new().unwrap();
+            engine.set_send(0, 1, 50);
+            place_ordered(&mut engine, 2, EffectKind::Saturation);
+            assert!(engine.set_effect(FIRST_BUS_CHAIN + 1, 0, EffectKind::Filter));
+            engine.set_effect_value(FIRST_BUS_CHAIN + 1, 0, FILTER_EFFECT_CUTOFF, 900.0);
+            engine.set_effect_value(FIRST_BUS_CHAIN + 1, 0, FILTER_EFFECT_FOLLOW, 3.0);
+            assert!(engine.set_effect(MASTER_CHAIN, 3, EffectKind::Eq));
+            engine.set_effect_value(MASTER_CHAIN, 3, band_value(5, EQ_BAND_ON), 1.0);
+            engine
+        };
+        let mut first = make();
+        let mut second = make();
+        assert_same_samples(&chord_through(&mut first), &chord_through(&mut second));
+    }
+
+    // Compressors, gates, volume shapers and the sidechain
+    // (docs/design.md#mix-in-the-engine, slice 3).
+
+    const A1: u8 = 33;
+
+    // The peak of a held A4 at VELOCITY on a plain sine engine, in dB.
+    fn held_a4_db() -> f64 {
+        let mut plain = sine_engine();
+        let wave = hold(&mut plain, A4, VELOCITY);
+        20.0 * (peak(&wave) as f64).log10()
+    }
+
+    // A sine engine with a compressor in track 0's first slot, at
+    // `threshold_db` and `ratio`, letting go slowly so it barely moves
+    // between peaks. The values glide there in silence first, so nothing
+    // is still letting go of the glide when a note plays.
+    fn compressing(threshold_db: f64, ratio: f32) -> Engine {
+        let mut engine = sine_with(EffectKind::Compressor);
+        engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, threshold_db as f32);
+        engine.set_effect_value(0, 0, COMPRESSOR_RATIO, ratio);
+        engine.set_effect_value(0, 0, COMPRESSOR_RELEASE, 2000.0);
+        render_left(&mut engine, 30);
+        engine
+    }
+
+    // How loud a held A4 comes out of `engine` compared with a plain sine
+    // engine, in dB.
+    fn a4_change_db(engine: &mut Engine) -> f64 {
+        let mut plain = sine_engine();
+        let plain_wave = hold(&mut plain, A4, VELOCITY);
+        let wave = hold(engine, A4, VELOCITY);
+        tone_db(engine, &wave, A4_HZ) - tone_db(&plain, &plain_wave, A4_HZ)
+    }
+
+    #[test]
+    fn a_new_compressor_gate_or_volume_shaper_changes_nothing() {
+        for kind in [EffectKind::Compressor, EffectKind::Gate, EffectKind::VolumeShaper] {
+            let mut engine = sine_with(kind);
+            let mut plain = sine_engine();
+            engine.note_on(A4, VELOCITY);
+            plain.note_on(A4, VELOCITY);
+            assert_same_samples(&render_left(&mut engine, 1000), &render_left(&mut plain, 1000));
+        }
+    }
+
+    #[test]
+    fn a_compressor_turns_down_by_its_ratio_past_the_threshold() {
+        // A held A4 peaks 20 dB over the threshold. At 4:1 it comes out 5 dB
+        // over, 15 dB down; a limit holds it at the threshold; 1:1 leaves it.
+        let threshold = held_a4_db() - 20.0;
+        for (ratio, expected) in [(4.0, -15.0), (COMPRESSOR_LIMIT, -20.0), (1.0, 0.0)] {
+            let mut engine = compressing(threshold, ratio);
+            assert_db(a4_change_db(&mut engine), expected, 0.2);
+            assert_db(engine.gain_reduction_db(0, 0) as f64, -expected, 0.2);
+        }
+    }
+
+    #[test]
+    fn a_compressor_s_knee_starts_it_gently() {
+        // Right at the threshold, a 12 dB knee at 4:1 already takes off
+        // 3/4 of 6 squared over 24: 1.125 dB.
+        let mut engine = compressing(held_a4_db(), 4.0);
+        engine.set_effect_value(0, 0, COMPRESSOR_KNEE, 12.0);
+        assert_db(a4_change_db(&mut engine), -1.125, 0.1);
+
+        let mut hard = compressing(held_a4_db(), 4.0);
+        assert_db(a4_change_db(&mut hard), 0.0, 0.05);
+    }
+
+    #[test]
+    fn a_compressor_s_makeup_and_mix_come_after_it() {
+        let threshold = held_a4_db() - 20.0;
+        let mut made_up = compressing(threshold, 4.0);
+        made_up.set_effect_value(0, 0, COMPRESSOR_MAKEUP, 6.0);
+        assert_db(a4_change_db(&mut made_up), -9.0, 0.2);
+
+        // Half the dry sound and half 15 dB down.
+        let mut parallel = compressing(threshold, 4.0);
+        parallel.set_effect_value(0, 0, COMPRESSOR_MIX, 0.5);
+        let expected = 20.0 * (0.5 + 0.5 * 10.0_f64.powf(-15.0 / 20.0)).log10();
+        assert_db(a4_change_db(&mut parallel), expected, 0.2);
+    }
+
+    #[test]
+    fn a_compressor_turns_down_over_its_attack_and_back_up_over_its_release() {
+        let threshold = held_a4_db() - 20.0;
+        let mut engine = compressing(threshold, 4.0);
+        engine.set_effect_value(0, 0, COMPRESSOR_ATTACK, 50.0);
+        engine.note_on(A4, VELOCITY);
+        let mut readings = Vec::new();
+        for _ in 0..40 {
+            render_left(&mut engine, 10);
+            readings.push(engine.gain_reduction_db(0, 0));
+        }
+        // Two thirds of the way to 15 dB in 50 ms.
+        assert!(readings[0] < 4.0, "{readings:?}");
+        assert!(readings[4] > 7.5 && readings[4] < 11.0, "{readings:?}");
+        assert!(readings[39] > 14.8, "{readings:?}");
+
+        // Lifting the threshold out of reach: back up two thirds of the way
+        // in its 200 ms release, and all the way in the end.
+        let mut engine = compressing(threshold, 4.0);
+        engine.set_effect_value(0, 0, COMPRESSOR_ATTACK, 0.1);
+        engine.set_effect_value(0, 0, COMPRESSOR_RELEASE, 200.0);
+        hold(&mut engine, A4, VELOCITY);
+        engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, 0.0);
+        let mut readings = Vec::new();
+        for _ in 0..20 {
+            render_left(&mut engine, 10);
+            readings.push(engine.gain_reduction_db(0, 0));
+        }
+        assert!(readings[19] > 4.0 && readings[19] < 7.5, "{readings:?}");
+        render_left(&mut engine, 4000);
+        render_left(&mut engine, 10);
+        assert_eq!(engine.gain_reduction_db(0, 0), 0.0);
+    }
+
+    #[test]
+    fn a_compressor_s_low_cut_keeps_deep_bass_from_making_it_pump() {
+        let threshold = held_a4_db() - 20.0;
+        let mut plain = compressing(threshold, 4.0);
+        hold(&mut plain, A1, VELOCITY);
+        assert!(plain.gain_reduction_db(0, 0) > 14.0);
+
+        let mut cut = compressing(threshold, 4.0);
+        cut.set_effect_value(0, 0, COMPRESSOR_LOW_CUT, 500.0);
+        render_left(&mut cut, 30);
+        hold(&mut cut, A1, VELOCITY);
+        assert!(cut.gain_reduction_db(0, 0) < 0.5, "{}", cut.gain_reduction_db(0, 0));
+    }
+
+    // A sine engine with a gate in track 0's first slot at -20 dB, between
+    // a held A4 at VELOCITY and one at GENTLE.
+    fn gating() -> Engine {
+        let mut engine = sine_with(EffectKind::Gate);
+        engine.set_effect_value(0, 0, GATE_THRESHOLD, -20.0);
+        engine
+    }
+
+    #[test]
+    fn a_gate_lets_loud_sound_through_and_closes_under_its_threshold() {
+        let mut loud = gating();
+        let mut plain = sine_engine();
+        assert_same_samples(&hold(&mut loud, A4, VELOCITY), &hold(&mut plain, A4, VELOCITY));
+        assert_eq!(loud.gain_reduction_db(0, 0), 0.0);
+
+        let mut soft = gating();
+        assert_eq!(peak(&hold(&mut soft, A4, GENTLE)), 0.0);
+        assert_eq!(soft.gain_reduction_db(0, 0), 80.0);
+
+        // Closed 12 dB down: a quarter as loud.
+        let mut range = gating();
+        range.set_effect_value(0, 0, GATE_RANGE, -12.0412);
+        let mut plain = sine_engine();
+        let plain_peak = peak(&hold(&mut plain, A4, GENTLE));
+        assert_within_percent(peak(&hold(&mut range, A4, GENTLE)), plain_peak * 0.25, 0.5);
+        assert_db(range.gain_reduction_db(0, 0) as f64, 12.0412, 0.01);
+    }
+
+    #[test]
+    fn a_gate_holds_open_then_closes_over_its_release() {
+        let mut engine = gating();
+        engine.set_effect_value(0, 0, GATE_HOLD, 200.0);
+        engine.set_effect_value(0, 0, GATE_RELEASE, 50.0);
+        let mut plain = sine_engine();
+        hold(&mut engine, A4, VELOCITY);
+        hold(&mut plain, A4, VELOCITY);
+
+        // The threshold glides up past the peaks within 20 ms, then the gate
+        // holds 200 ms and closes over 50.
+        engine.set_effect_value(0, 0, GATE_THRESHOLD, 0.0);
+        let gated = render_left(&mut engine, 600);
+        let open = render_left(&mut plain, 600);
+        let ms = frames_in_ms(&engine, 1);
+        assert_same_samples(&gated[..200 * ms], &open[..200 * ms]);
+        let closing = peak(&gated[225 * ms..240 * ms]) / peak(&open[225 * ms..240 * ms]);
+        assert!(closing > 0.15 && closing < 0.85, "closing at {closing}");
+        assert_eq!(peak(&gated[275 * ms..]), 0.0);
+    }
+
+    // How loud `shaped` plays `plain`'s sound at sample `at`: their ratio
+    // on the first sample from there where `plain` is not near zero.
+    fn volume_at(shaped: &[f32], plain: &[f32], at: usize) -> f32 {
+        let mut sample = at;
+        while plain[sample].abs() < 0.1 {
+            sample += 1;
+        }
+        shaped[sample] / plain[sample]
+    }
+
+    // Checks that the volume `shaped` plays `plain`'s sound at moves at most
+    // all the way in `ms` samples, read on every sample from `start` to
+    // `end` where `plain` is not near zero.
+    fn assert_volume_never_jumps(shaped: &[f32], plain: &[f32], start: usize, end: usize, ms: usize) {
+        let mut last: Option<(usize, f32)> = None;
+        for sample in start..end {
+            if plain[sample].abs() < 0.1 {
+                continue;
+            }
+            let volume = shaped[sample] / plain[sample];
+            if let Some((last_sample, last_volume)) = last {
+                let most = (sample - last_sample) as f32 / ms as f32 + 0.001;
+                let moved = (volume - last_volume).abs();
+                assert!(moved <= most, "moved {moved} by sample {sample}, at most {most}");
+            }
+            last = Some((sample, volume));
+        }
+    }
+
+    // A held A4 for 2 seconds through `shaped`, and on a plain sine engine.
+    fn shaped_and_plain(shaped: &mut Engine) -> (Vec<f32>, Vec<f32>) {
+        let mut plain = sine_engine();
+        shaped.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        (render_left(shaped, 2000), render_left(&mut plain, 2000))
+    }
+
+    #[test]
+    fn a_volume_shaper_pumps_on_the_beat() {
+        // At 120 beats a minute a beat lasts 500 ms. The classic pump at full
+        // depth drops to silence at the beat and is back up by half way,
+        // moving early and settling.
+        let mut engine = sine_with(EffectKind::VolumeShaper);
+        engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        let (shaped, plain) = shaped_and_plain(&mut engine);
+        let beat = frames_in_ms(&engine, 500);
+        let quarter = 0.5_f32.powf(8.0_f32.powf(-0.5));
+        assert_within_percent(volume_at(&shaped, &plain, beat + beat / 4), quarter, 1.0);
+        assert_eq!(volume_at(&shaped, &plain, beat + beat * 3 / 4), 1.0);
+        assert_eq!(volume_at(&shaped, &plain, 2 * beat + beat * 3 / 4), 1.0);
+
+        // Near silence just after each beat, without a click: the volume
+        // takes at least 1 ms to fall all the way.
+        let ms = frames_in_ms(&engine, 1);
+        let mut lowest = 1.0_f32;
+        for sample in 2 * beat..2 * beat + 3 * ms {
+            if plain[sample].abs() > 0.05 {
+                lowest = lowest.min(shaped[sample] / plain[sample]);
+            }
+        }
+        assert!(lowest < 0.25, "lowest {lowest}");
+        assert_volume_never_jumps(&shaped, &plain, 2 * beat - ms, 2 * beat + 3 * ms, ms);
+
+        // Half depth: half of the dip.
+        let mut half = sine_with(EffectKind::VolumeShaper);
+        half.set_effect_value(0, 0, SHAPER_DEPTH, 0.5);
+        let (shaped, plain) = shaped_and_plain(&mut half);
+        let expected = 1.0 - 0.5 * (1.0 - quarter);
+        assert_within_percent(volume_at(&shaped, &plain, beat + beat / 4), expected, 1.0);
+    }
+
+    #[test]
+    fn a_volume_shaper_follows_its_own_points_and_cycle() {
+        // Two points over a 2 beat cycle: full at the start, silent half way,
+        // straight lines between, and round again to full.
+        let mut engine = sine_with(EffectKind::VolumeShaper);
+        engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        engine.set_effect_value(0, 0, SHAPER_CYCLE, 2.0);
+        engine.set_effect_value(0, 0, SHAPER_POINTS, 2.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_LEVEL, 1.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_BEND, 0.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_PLACE, 0.5);
+        engine.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_LEVEL, 0.0);
+        let (shaped, plain) = shaped_and_plain(&mut engine);
+        let beat = frames_in_ms(&engine, 500);
+        assert_within_percent(volume_at(&shaped, &plain, beat / 4), 0.75, 1.0);
+        assert_within_percent(volume_at(&shaped, &plain, beat + beat / 4), 0.25, 2.0);
+        assert_within_percent(volume_at(&shaped, &plain, 3 * beat / 2), 0.5, 1.0);
+
+        // Bent all the way late, the first segment barely moves by half way.
+        let mut late = sine_with(EffectKind::VolumeShaper);
+        late.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        late.set_effect_value(0, 0, SHAPER_CYCLE, 2.0);
+        late.set_effect_value(0, 0, SHAPER_POINTS, 2.0);
+        late.set_effect_value(0, 0, SHAPER_POINT_LEVEL, 1.0);
+        late.set_effect_value(0, 0, SHAPER_POINT_BEND, -1.0);
+        late.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_PLACE, 0.5);
+        late.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_LEVEL, 0.0);
+        let (shaped, plain) = shaped_and_plain(&mut late);
+        let expected = 1.0 - 0.5_f32.powf(8.0);
+        assert_within_percent(volume_at(&shaped, &plain, beat / 2), expected, 0.5);
+    }
+
+    // A sine engine with a volume shaper at full depth over a 2 beat cycle,
+    // its first point full at the start and its second silent half way,
+    // with straight lines.
+    fn shaping_two_beats() -> Engine {
+        let mut engine = sine_with(EffectKind::VolumeShaper);
+        engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        engine.set_effect_value(0, 0, SHAPER_CYCLE, 2.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_LEVEL, 1.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_BEND, 0.0);
+        engine.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_PLACE, 0.5);
+        engine.set_effect_value(0, 0, SHAPER_POINT_VALUES + SHAPER_POINT_LEVEL, 0.0);
+        engine
+    }
+
+    #[test]
+    fn a_volume_shaper_uses_only_its_first_points() {
+        // A silent third point past the count is never heard: from the
+        // second point the volume rises back to full, half way up at 3/4.
+        let mut engine = shaping_two_beats();
+        engine.set_effect_value(0, 0, SHAPER_POINTS, 2.0);
+        engine.set_effect_value(0, 0, 2 * SHAPER_POINT_VALUES + SHAPER_POINT_LEVEL, 0.0);
+        let (shaped, plain) = shaped_and_plain(&mut engine);
+        let beat = frames_in_ms(&engine, 500);
+        assert_within_percent(volume_at(&shaped, &plain, 3 * beat / 2), 0.5, 1.0);
+    }
+
+    #[test]
+    fn a_volume_shaper_point_placed_before_the_one_before_counts_as_its_place() {
+        // The third point asks for a quarter of the way, before the second
+        // at half way, so it sits at half way too. At 3/8 of the cycle the
+        // line from the first point to the second is still falling.
+        let mut engine = shaping_two_beats();
+        engine.set_effect_value(0, 0, SHAPER_POINTS, 3.0);
+        engine.set_effect_value(0, 0, 2 * SHAPER_POINT_VALUES + SHAPER_POINT_PLACE, 0.25);
+        engine.set_effect_value(0, 0, 2 * SHAPER_POINT_VALUES + SHAPER_POINT_LEVEL, 1.0);
+        let (shaped, plain) = shaped_and_plain(&mut engine);
+        let beat = frames_in_ms(&engine, 500);
+        assert_within_percent(volume_at(&shaped, &plain, 3 * beat / 4), 0.25, 2.0);
+    }
+
+    #[test]
+    fn a_volume_shaper_lines_up_with_the_beat_when_it_starts() {
+        // The click starts the beat 100 ms in, so the pump's dips move there.
+        let mut engine = sine_with(EffectKind::VolumeShaper);
+        engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        let mut plain = sine_engine();
+        engine.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        render_left(&mut plain, 100);
+        engine.start_click();
+        let shaped = render_left(&mut engine, 1000);
+        let plain = render_left(&mut plain, 1000);
+        let beat = frames_in_ms(&engine, 500);
+        let quarter = 0.5_f32.powf(8.0_f32.powf(-0.5));
+        assert_within_percent(volume_at(&shaped, &plain, beat / 4), quarter, 1.0);
+        assert_eq!(volume_at(&shaped, &plain, beat * 3 / 4), 1.0);
+    }
+
+    // An engine with sines on tracks 0 and 1, track 0 fully left and track
+    // 1 fully right, so the left speaker plays only track 0.
+    fn two_sides() -> Engine {
+        let mut engine = sine_engine();
+        engine.on_track(1, |engine| engine.set_first_kind(Kind::Sine));
+        engine.set_track_pan(0, -PAN_MOST);
+        engine.set_track_pan(1, PAN_MOST);
+        engine
+    }
+
+    // Track 1 runs first, then the rest in number order.
+    fn track_1_first() -> Vec<usize> {
+        let mut order = vec![1, 0];
+        for chain in 2..MASTER_CHAIN {
+            order.push(chain);
+        }
+        order
+    }
+
+    // Plays A4 on track 1 from sample `sample`.
+    fn track_1_from(engine: &mut Engine, sample: u64) {
+        engine.on_track(1, |engine| {
+            engine.time_next(sample);
+            engine.note_on(A4, VELOCITY);
+            engine.send_now();
+            engine.play_sequence();
+        });
+    }
+
+    // A gate on track 0 that opens at once for anything track 1 plays.
+    fn gate_on_track_1(engine: &mut Engine) {
+        assert!(engine.set_effect(0, 0, EffectKind::Gate));
+        engine.set_effect_value(0, 0, GATE_THRESHOLD, -60.0);
+        engine.set_effect_value(0, 0, GATE_ATTACK, 0.1);
+        engine.set_effect_value(0, 0, GATE_HOLD, 0.0);
+        engine.set_effect_value(0, 0, GATE_RELEASE, 5.0);
+        engine.set_effect_value(0, 0, GATE_LISTENS_TO, 1.0);
+    }
+
+    // The first sample from sample 1000 on that is not silent.
+    fn first_sound(wave: &[f32]) -> usize {
+        let mut sample = 1000;
+        while wave[sample] == 0.0 {
+            sample += 1;
+        }
+        sample
+    }
+
+    #[test]
+    fn a_sidechain_hears_its_source_from_the_same_samples() {
+        let start = 10_000;
+
+        // Track 1 alone: the sample its sound first reaches -60 dB.
+        let mut alone = two_sides();
+        track_1_from(&mut alone, start);
+        let (_, right) = render_sides(&mut alone, 500);
+        let mut reaches = 0;
+        while right[reaches].abs() < 0.001 {
+            reaches += 1;
+        }
+
+        // Track 0's gate opens on that very sample, though the tracks
+        // render a piece at a time.
+        let mut engine = two_sides();
+        gate_on_track_1(&mut engine);
+        assert!(engine.set_chain_order(&track_1_first()));
+        engine.note_on(A4, VELOCITY);
+        track_1_from(&mut engine, start);
+        let (left, _) = render_sides(&mut engine, 500);
+        assert_eq!(first_sound(&left), reaches);
+
+        // In number order track 0 runs before track 1, so its gate hears
+        // nothing and stays shut.
+        let mut numbered = two_sides();
+        gate_on_track_1(&mut numbered);
+        numbered.note_on(A4, VELOCITY);
+        track_1_from(&mut numbered, start);
+        let (left, _) = render_sides(&mut numbered, 500);
+        assert_eq!(peak(&left[1000..]), 0.0);
+
+        // An order that is not one changes nothing.
+        let mut refused = two_sides();
+        gate_on_track_1(&mut refused);
+        assert!(refused.set_chain_order(&track_1_first()));
+        assert!(!refused.set_chain_order(&[0, 1]));
+        refused.note_on(A4, VELOCITY);
+        track_1_from(&mut refused, start);
+        let (left, _) = render_sides(&mut refused, 500);
+        assert_eq!(first_sound(&left), reaches);
+    }
+
+    #[test]
+    fn a_gate_opens_over_its_attack() {
+        // Track 0's gate listens to track 1 and opens over 50 ms from the
+        // sample track 1 first reaches its threshold: half open after 25.
+        let start = 10_000;
+        let mut alone = two_sides();
+        track_1_from(&mut alone, start);
+        let (_, right) = render_sides(&mut alone, 500);
+        let mut reaches = 0;
+        while right[reaches].abs() < 0.001 {
+            reaches += 1;
+        }
+
+        let mut engine = two_sides();
+        gate_on_track_1(&mut engine);
+        engine.set_effect_value(0, 0, GATE_ATTACK, 50.0);
+        assert!(engine.set_chain_order(&track_1_first()));
+        engine.note_on(A4, VELOCITY);
+        track_1_from(&mut engine, start);
+        let (gated, _) = render_sides(&mut engine, 500);
+
+        let mut plain = two_sides();
+        plain.note_on(A4, VELOCITY);
+        let (open, _) = render_sides(&mut plain, 500);
+
+        let ms = frames_in_ms(&engine, 1);
+        assert!(volume_at(&gated, &open, reaches + 5 * ms) < 0.15);
+        assert_within_percent(volume_at(&gated, &open, reaches + 25 * ms), 0.5, 3.0);
+        assert_eq!(volume_at(&gated, &open, reaches + 60 * ms), 1.0);
+    }
+
+    #[test]
+    fn the_master_and_a_bus_can_listen_to_a_track() {
+        // A compressor listening to track 1 turns track 0 down while track 1
+        // plays: on the master, or on a bus track 0 sends all of itself to,
+        // which plays it a second time.
+        for chain in [MASTER_CHAIN, FIRST_BUS_CHAIN] {
+            let mut engine = two_sides();
+            let mut most = 0.2;
+            if chain == FIRST_BUS_CHAIN {
+                engine.set_send(0, 0, FULL_VOLUME);
+                most = 0.6;
+            }
+            assert!(engine.set_effect(chain, 0, EffectKind::Compressor));
+            engine.set_effect_value(chain, 0, COMPRESSOR_THRESHOLD, -40.0);
+            engine.set_effect_value(chain, 0, COMPRESSOR_LISTENS_TO, 1.0);
+            engine.note_on(A4, VELOCITY);
+            let (before, _) = render_sides(&mut engine, 500);
+            track_1_from(&mut engine, 0);
+            render_sides(&mut engine, 500);
+            let (during, _) = render_sides(&mut engine, 500);
+            let settled = frames_in_ms(&engine, 250);
+            assert!(peak(&during) < peak(&before[settled..]) * most, "chain {chain}");
+        }
+    }
+
+    #[test]
+    fn the_master_can_listen_to_a_bus() {
+        // Track 0 sends all of itself to the first bus. The master's
+        // compressor turns down while listening to that bus, and not while
+        // listening to the second bus, which nothing sends to.
+        for (bus, turned_down) in [(FIRST_BUS_CHAIN, true), (FIRST_BUS_CHAIN + 1, false)] {
+            let mut engine = sine_engine();
+            engine.set_send(0, 0, FULL_VOLUME);
+            assert!(engine.set_effect(MASTER_CHAIN, 0, EffectKind::Compressor));
+            engine.set_effect_value(MASTER_CHAIN, 0, COMPRESSOR_THRESHOLD, -40.0);
+            engine.set_effect_value(MASTER_CHAIN, 0, COMPRESSOR_LISTENS_TO, bus as f32);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 500);
+            let reduction = engine.gain_reduction_db(MASTER_CHAIN, 0);
+            if turned_down {
+                assert!(reduction > 10.0, "bus {bus}: {reduction}");
+            } else {
+                assert_eq!(reduction, 0.0, "bus {bus}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_gate_listens_to_its_selected_silent_source_immediately() {
+        // Add the gate after the note is already sounding. A silent source
+        // closes it at the same rate as an unreachable threshold does.
+        let make = |external| {
+            let mut engine = sine_engine();
+            hold(&mut engine, A4, VELOCITY);
+            assert!(engine.set_effect(0, 0, EffectKind::Gate));
+            engine.set_effect_value(0, 0, GATE_RELEASE, 5.0);
+            if external {
+                engine.set_effect_value(0, 0, GATE_THRESHOLD, -40.0);
+                engine.set_effect_value(0, 0, GATE_LISTENS_TO, 1.0);
+            } else {
+                engine.set_effect_value(0, 0, GATE_THRESHOLD, 0.0);
+            }
+            render_left(&mut engine, 30)
+        };
+        assert_same_samples(&make(true), &make(false));
+    }
+
+    #[test]
+    fn a_heard_gate_crossfades_to_a_new_listener_source() {
+        // The gate is open on its own sound. Moving to silent track 1 keeps
+        // it open at first, then closes it after the listener crossfade.
+        let make = || {
+            let mut engine = sine_engine();
+            assert!(engine.set_effect(0, 0, EffectKind::Gate));
+            engine.set_effect_value(0, 0, GATE_THRESHOLD, -40.0);
+            engine.set_effect_value(0, 0, GATE_HOLD, 0.0);
+            engine.set_effect_value(0, 0, GATE_RELEASE, 5.0);
+            hold(&mut engine, A4, VELOCITY);
+            engine
+        };
+        let mut changed = make();
+        let mut unchanged = make();
+        changed.set_effect_value(0, 0, GATE_LISTENS_TO, 1.0);
+        let fading = render_left(&mut changed, 30);
+        let open = render_left(&mut unchanged, 30);
+        let ms = frames_in_ms(&changed, 1);
+        // By 3 ms an immediate switch would have mostly closed the gate.
+        assert!(peak(&fading[3 * ms..4 * ms]) > peak(&open[3 * ms..4 * ms]) * 0.9);
+        assert_eq!(peak(&fading[20 * ms..]), 0.0);
+    }
+
+    #[test]
+    fn a_new_filter_follows_its_selected_silent_source_immediately() {
+        // Following a silent track has the same sound from the beginning as
+        // having no following at all, even while the filter's input is loud.
+        let make = |follow| {
+            let mut engine = sine_engine();
+            assert!(engine.set_effect(0, 0, EffectKind::Filter));
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 110.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW, follow);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_LISTENS_TO, 1.0);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 500)
+        };
+        assert_same_samples(&make(8.0), &make(0.0));
+    }
+
+    #[test]
+    fn a_chain_never_listens_to_itself_the_master_or_from_a_track_to_a_bus() {
+        // A gate that would hear silence closes. A refused source leaves it
+        // on its own loud input, open, so it sounds as if never set.
+        let make = |chain: usize| {
+            let mut engine = sine_engine();
+            engine.set_send(0, 0, FULL_VOLUME);
+            assert!(engine.set_effect(chain, 0, EffectKind::Gate));
+            engine.set_effect_value(chain, 0, GATE_THRESHOLD, -60.0);
+            engine
+        };
+        let refused = [
+            (0, 0),
+            (0, FIRST_BUS_CHAIN),
+            (0, MASTER_CHAIN),
+            (FIRST_BUS_CHAIN, FIRST_BUS_CHAIN),
+            (FIRST_BUS_CHAIN, MASTER_CHAIN),
+            (MASTER_CHAIN, MASTER_CHAIN),
+        ];
+        for (chain, source) in refused {
+            let mut expected = make(chain);
+            let mut engine = make(chain);
+            engine.set_effect_value(chain, 0, GATE_LISTENS_TO, source as f32);
+            assert_same_samples(&hold(&mut engine, A4, VELOCITY), &hold(&mut expected, A4, VELOCITY));
+        }
+
+        // Silent track 1 is allowed, so the gate closes.
+        let mut engine = make(0);
+        engine.set_track_volume(0, FULL_VOLUME);
+        engine.set_send(0, 0, 0);
+        engine.set_effect_value(0, 0, GATE_LISTENS_TO, 1.0);
+        assert_eq!(peak(&hold(&mut engine, A4, VELOCITY)), 0.0);
+    }
+
+    #[test]
+    fn chain_orders_that_are_not_an_order_are_refused() {
+        let mut engine = Engine::new().unwrap();
+        let numbered: Vec<usize> = (0..MASTER_CHAIN).collect();
+        assert!(engine.set_chain_order(&numbered));
+        let mut shuffled = numbered.clone();
+        shuffled.swap(0, 8);
+        shuffled.swap(9, 12);
+        assert!(engine.set_chain_order(&shuffled));
+
+        assert!(!engine.set_chain_order(&numbered[..12]));
+        let mut long = numbered.clone();
+        long.push(MASTER_CHAIN);
+        assert!(!engine.set_chain_order(&long));
+        let mut repeated = numbered.clone();
+        repeated[1] = 0;
+        assert!(!engine.set_chain_order(&repeated));
+        let mut master = numbered.clone();
+        master[12] = MASTER_CHAIN;
+        assert!(!engine.set_chain_order(&master));
+        let mut bus_first = numbered.clone();
+        bus_first.swap(8, 9);
+        assert!(!engine.set_chain_order(&bus_first));
+        let mut past = numbered.clone();
+        past[3] = 99;
+        assert!(!engine.set_chain_order(&past));
+    }
+
+    #[test]
+    fn the_filter_s_follower_can_listen_to_another_track() {
+        // Track 0's A4 through a low-pass two octaves under it is nearly
+        // gone. Following track 1 by 8 octaves opens it while track 1 plays.
+        let make = |with_track_1: bool| {
+            let mut engine = two_sides();
+            assert!(engine.set_chain_order(&track_1_first()));
+            assert!(engine.set_effect(0, 0, EffectKind::Filter));
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 110.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW, 8.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_LISTENS_TO, 1.0);
+            engine.note_on(A4, VELOCITY);
+            if with_track_1 {
+                track_1_from(&mut engine, 0);
+            }
+            render_sides(&mut engine, 500);
+            let (left, _) = render_sides(&mut engine, 1000);
+            tone_db(&engine, &left, A4_HZ)
+        };
+        let opened = make(true) - make(false);
+        assert!(opened > 12.0, "opened by {opened} dB");
+    }
+
+    #[test]
+    fn the_meter_reads_nothing_for_other_kinds_and_empty_slots() {
+        let mut engine = sine_with(EffectKind::Eq);
+        assert!(engine.set_effect(0, 1, EffectKind::Compressor));
+        engine.set_effect_value(0, 1, COMPRESSOR_THRESHOLD, -40.0);
+        hold(&mut engine, A4, VELOCITY);
+        assert!(engine.gain_reduction_db(0, 1) > 10.0);
+        assert_eq!(engine.gain_reduction_db(0, 0), 0.0);
+        assert_eq!(engine.gain_reduction_db(0, 2), 0.0);
+        assert_eq!(engine.gain_reduction_db(14, 1), 0.0);
+        assert_eq!(engine.gain_reduction_db(0, 8), 0.0);
+
+        // Switched off, it reads nothing once faded out.
+        engine.set_effect_on(0, 1, false);
+        render_left(&mut engine, 100);
+        render_left(&mut engine, 10);
+        assert_eq!(engine.gain_reduction_db(0, 1), 0.0);
+    }
+
+    #[test]
+    fn compressor_gate_and_shaper_numbers_out_of_range_are_ignored() {
+        // Each starts doing something, so a wrong number let through would
+        // be heard.
+        let compressor = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::Compressor));
+            engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, -40.0);
+        };
+        let wrong_compressor = [
+            (COMPRESSOR_THRESHOLD, -61.0),
+            (COMPRESSOR_THRESHOLD, 0.5),
+            (COMPRESSOR_RATIO, 0.5),
+            (COMPRESSOR_RATIO, 21.0),
+            (COMPRESSOR_ATTACK, 0.05),
+            (COMPRESSOR_ATTACK, 101.0),
+            (COMPRESSOR_RELEASE, 4.0),
+            (COMPRESSOR_RELEASE, 2001.0),
+            (COMPRESSOR_KNEE, -1.0),
+            (COMPRESSOR_KNEE, 25.0),
+            (COMPRESSOR_MAKEUP, -1.0),
+            (COMPRESSOR_MAKEUP, 25.0),
+            (COMPRESSOR_MIX, 1.1),
+            (COMPRESSOR_LISTENS_TO, 14.0),
+            (COMPRESSOR_LISTENS_TO, -2.0),
+            (COMPRESSOR_LISTENS_TO, 0.5),
+            (COMPRESSOR_LOW_CUT, 19.0),
+            (COMPRESSOR_LOW_CUT, 501.0),
+            (COMPRESSOR_LOW_CUT + 1, 0.0),
+            (COMPRESSOR_THRESHOLD, f32::NAN),
+        ];
+        let gate = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::Gate));
+            engine.set_effect_value(0, 0, GATE_THRESHOLD, -10.0);
+        };
+        let wrong_gate = [
+            (GATE_THRESHOLD, -81.0),
+            (GATE_THRESHOLD, 1.0),
+            (GATE_RANGE, -81.0),
+            (GATE_RANGE, 1.0),
+            (GATE_ATTACK, 0.05),
+            (GATE_ATTACK, 51.0),
+            (GATE_HOLD, -1.0),
+            (GATE_HOLD, 501.0),
+            (GATE_RELEASE, 4.0),
+            (GATE_RELEASE, 2001.0),
+            (GATE_LISTENS_TO, 14.0),
+            (GATE_LISTENS_TO + 1, 0.0),
+        ];
+        let shaper = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::VolumeShaper));
+            engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        };
+        let wrong_shaper = [
+            (SHAPER_DEPTH, 1.1),
+            (SHAPER_DEPTH, -0.1),
+            (SHAPER_CYCLE, 1.0 / 32.0),
+            (SHAPER_CYCLE, 17.0),
+            (SHAPER_POINTS, 0.0),
+            (SHAPER_POINTS, 17.0),
+            (SHAPER_POINTS, 2.5),
+            (SHAPER_POINT_PLACE + SHAPER_POINT_VALUES, -0.1),
+            (SHAPER_POINT_PLACE + SHAPER_POINT_VALUES, 1.1),
+            (SHAPER_POINT_LEVEL, 1.1),
+            (SHAPER_POINT_LEVEL, -0.1),
+            (SHAPER_POINT_BEND, 1.1),
+            (SHAPER_POINT_BEND, -1.1),
+            (SHAPER_POINTS + 1, 0.0),
+            (-1, 0.0),
+        ];
+        let filter = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::Filter));
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 110.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_FOLLOW, 8.0);
+        };
+        let wrong_filter = [(FILTER_EFFECT_LISTENS_TO, 14.0), (FILTER_EFFECT_LISTENS_TO, -2.0)];
+
+        let check = |start: &dyn Fn(&mut Engine), wrong: &[(i32, f32)]| {
+            let mut expected = sine_engine();
+            start(&mut expected);
+            let mut engine = sine_engine();
+            start(&mut engine);
+            for (value, number) in wrong {
+                engine.set_effect_value(0, 0, *value, *number);
+            }
+            expected.note_on(A4, VELOCITY);
+            engine.note_on(A4, VELOCITY);
+            assert_same_samples(&render_left(&mut engine, 1500), &render_left(&mut expected, 1500));
+        };
+        check(&compressor, &wrong_compressor);
+        check(&gate, &wrong_gate);
+        check(&shaper, &wrong_shaper);
+        check(&filter, &wrong_filter);
+    }
+
+    #[test]
+    fn compressors_gates_and_shapers_are_freed_when_replaced() {
+        let mut engine = Engine::new().unwrap();
+        assert!(engine.set_effect(0, 0, EffectKind::Compressor));
+        assert!(engine.set_effect(FIRST_BUS_CHAIN, 3, EffectKind::Gate));
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::VolumeShaper));
+        assert_eq!(engine.effect_count(), 3);
+        assert!(engine.set_effect(0, 0, EffectKind::None));
+        assert!(engine.set_effect(FIRST_BUS_CHAIN, 3, EffectKind::None));
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::Eq));
+        render_left(&mut engine, 10);
+        assert_eq!(engine.effect_count(), 1);
+    }
+
+    #[test]
+    fn sidechained_dynamics_render_the_same_every_time() {
+        let make = || {
+            let mut engine = two_sides();
+            assert!(engine.set_chain_order(&track_1_first()));
+            assert!(engine.set_effect(0, 2, EffectKind::Compressor));
+            engine.set_effect_value(0, 2, COMPRESSOR_THRESHOLD, -30.0);
+            engine.set_effect_value(0, 2, COMPRESSOR_LISTENS_TO, 1.0);
+            engine.set_send(1, 0, 60);
+            assert!(engine.set_effect(FIRST_BUS_CHAIN, 0, EffectKind::Gate));
+            engine.set_effect_value(FIRST_BUS_CHAIN, 0, GATE_THRESHOLD, -30.0);
+            assert!(engine.set_effect(MASTER_CHAIN, 1, EffectKind::VolumeShaper));
+            engine.set_effect_value(MASTER_CHAIN, 1, SHAPER_DEPTH, 0.5);
+            engine.note_on(C3, VELOCITY);
+            track_1_from(&mut engine, 4_000);
+            engine
+        };
+        let mut first = make();
+        let mut second = make();
+        assert_same_samples(&render_stereo(&mut first, 1500), &render_stereo(&mut second, 1500));
+    }
+
+    // Chorus, delay and reverb (docs/design.md#mix-in-the-engine, slice 4).
+
+    const A2: u8 = 45;
+    const A6: u8 = 93;
+    const A6_HZ: f64 = 1760.0;
+    const ECHOING: [EffectKind; 3] = [EffectKind::Chorus, EffectKind::Delay, EffectKind::Reverb];
+
+    // The first sample of `wave` that is not silent.
+    fn first_heard(wave: &[f32]) -> usize {
+        let mut sample = 0;
+        while wave[sample] == 0.0 {
+            sample += 1;
+        }
+        sample
+    }
+
+    // How loud `wave` is from `from_ms` for `length_ms`, in dB, -200 for
+    // silence.
+    fn level_db(engine: &Engine, wave: &[f32], from_ms: u32, length_ms: u32) -> f64 {
+        let start = frames_in_ms(engine, from_ms);
+        let end = start + frames_in_ms(engine, length_ms);
+        let loudness = rms(&wave[start..end]);
+        if loudness == 0.0 {
+            return -200.0;
+        }
+        20.0 * loudness.log10()
+    }
+
+    // Plays `note` on `engine` for `held_ms`, then renders the rest of
+    // `total_ms`, left speaker.
+    fn tap(engine: &mut Engine, note: u8, held_ms: u32, total_ms: u32) -> Vec<f32> {
+        engine.note_on(note, VELOCITY);
+        let mut wave = render_left(engine, held_ms);
+        engine.note_off(note);
+        wave.extend(render_left(engine, total_ms - held_ms));
+        wave
+    }
+
+    // The lowest and highest pitch of `wave` in 20 ms pieces, from
+    // `from_ms` to `to_ms`.
+    fn pitch_range(engine: &Engine, wave: &[f32], from_ms: u32, to_ms: u32) -> (f64, f64) {
+        let mut lowest = f64::MAX;
+        let mut highest = 0.0;
+        let piece = frames_in_ms(engine, 20);
+        let mut start = frames_in_ms(engine, from_ms);
+        while start + piece <= frames_in_ms(engine, to_ms) {
+            let hz = pitch(engine, &wave[start..start + piece]);
+            lowest = lowest.min(hz);
+            highest = f64::max(highest, hz);
+            start += piece;
+        }
+        (lowest, highest)
+    }
+
+    #[test]
+    fn a_new_chorus_delay_or_reverb_is_heard_at_30_percent_or_all_wet_on_a_bus() {
+        // In a note's first ms no echo has come back yet, so only the dry
+        // sound plays: 70% of it on a track or the master.
+        for kind in ECHOING {
+            for chain in [0, MASTER_CHAIN] {
+                let mut engine = sine_engine();
+                assert!(engine.set_effect(chain, 0, kind));
+                let mut plain = sine_engine();
+                engine.note_on(A4, VELOCITY);
+                plain.note_on(A4, VELOCITY);
+                let wave = render_left(&mut engine, 1);
+                let plain_wave = render_left(&mut plain, 1);
+                for i in 0..wave.len() {
+                    let expected = plain_wave[i] * (1.0 - EFFECT_START_MIX);
+                    assert!((wave[i] - expected).abs() < 1e-6, "{kind:?} on chain {chain}, sample {i}");
+                }
+            }
+
+            // On a bus, none of the dry sound comes through it: what the
+            // track sends it adds nothing yet.
+            let make = |with_effect: bool| {
+                let mut engine = sine_engine();
+                engine.set_send(0, 0, FULL_VOLUME);
+                if with_effect {
+                    assert!(engine.set_effect(FIRST_BUS_CHAIN, 0, kind));
+                }
+                render_left(&mut engine, 30);
+                engine.note_on(A4, VELOCITY);
+                render_left(&mut engine, 1)
+            };
+            // The send eases in, so both wait for it first.
+            let through_effect = make(true);
+            let through_bus = make(false);
+            for i in 0..through_effect.len() {
+                let expected = through_bus[i] * 0.5;
+                assert!((through_effect[i] - expected).abs() < 1e-6, "{kind:?} on a bus, sample {i}");
+            }
+        }
+    }
+
+    // A sine engine with a chorus in track 0's first slot, all wet, and
+    // `values` set, glided there in silence.
+    fn chorusing(values: &[(i32, f32)]) -> Engine {
+        let mut engine = sine_with(EffectKind::Chorus);
+        engine.set_effect_value(0, 0, CHORUS_MIX, 1.0);
+        for (value, number) in values {
+            engine.set_effect_value(0, 0, *value, *number);
+        }
+        render_left(&mut engine, 30);
+        engine
+    }
+
+    // Checks that `actual` and `expected` differ by no more than `allowed`
+    // on any sample.
+    fn assert_close_samples(actual: &[f32], expected: &[f32], allowed: f32) {
+        assert_eq!(actual.len(), expected.len());
+        for i in 0..actual.len() {
+            let apart = (actual[i] - expected[i]).abs();
+            assert!(apart <= allowed, "sample {i} is {}, expected {}", actual[i], expected[i]);
+        }
+    }
+
+    // A held A4 for `ms` through `engine`, both speakers, and on a plain
+    // sine engine that waited as long first.
+    fn sides_and_plain(engine: &mut Engine, ms: u32) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let mut plain = sine_engine();
+        render_left(&mut plain, 30);
+        engine.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let (left, right) = render_sides(engine, ms);
+        (left, right, render_left(&mut plain, ms))
+    }
+
+    #[test]
+    fn a_still_chorus_copy_plays_its_delay_late() {
+        let mut engine = chorusing(&[(CHORUS_COPIES, 1.0), (CHORUS_DEPTH, 0.0), (CHORUS_DELAY, 10.0)]);
+        let (left, right, plain) = sides_and_plain(&mut engine, 300);
+        let late = frames_in_ms(&engine, 10);
+        assert_eq!(peak(&left[..late]), 0.0);
+        assert_close_samples(&left[late..], &plain[..plain.len() - late], 1e-7);
+        assert_same_samples(&right, &left);
+    }
+
+    #[test]
+    fn a_chorus_swings_its_copies_pitch_by_its_depth_speed_and_delay() {
+        // The lateness swings 90% of 20 ms either way once a second, so the
+        // pitch swings by up to 2 pi times 18 ms a second: 11.3%.
+        let mut engine = chorusing(&[
+            (CHORUS_COPIES, 1.0),
+            (CHORUS_DEPTH, 1.0),
+            (CHORUS_SPEED, 1.0),
+            (CHORUS_DELAY, 20.0),
+        ]);
+        let (left, _, _) = sides_and_plain(&mut engine, 2100);
+        let (lowest, highest) = pitch_range(&engine, &left, 100, 2100);
+        let swing = 2.0 * PI * 0.018;
+        assert_within_percent(lowest as f32, (A4_HZ * (1.0 - swing)) as f32, 1.0);
+        assert_within_percent(highest as f32, (A4_HZ * (1.0 + swing)) as f32, 1.0);
+    }
+
+    #[test]
+    fn chorus_copies_spread_across_the_speakers() {
+        // Two copies fully spread: the first all left, at equal loudness,
+        // which is 0.707 of a single copy in the middle.
+        let swinging = |copies: f32, spread: f32| {
+            let mut engine = chorusing(&[
+                (CHORUS_COPIES, copies),
+                (CHORUS_SPREAD, spread),
+                (CHORUS_DEPTH, 0.5),
+                (CHORUS_SPEED, 1.0),
+                (CHORUS_DELAY, 10.0),
+            ]);
+            let (left, right, _) = sides_and_plain(&mut engine, 1000);
+            (left, right)
+        };
+        let (single_left, single_right) = swinging(1.0, 1.0);
+        let (pair_left, pair_right) = swinging(2.0, 1.0);
+        assert_same_samples(&single_right, &single_left);
+        let expected: Vec<f32> = single_left.iter().map(|sample| sample * std::f32::consts::FRAC_1_SQRT_2).collect();
+        assert_close_samples(&pair_left, &expected, 1e-6);
+        let apart: Vec<f32> = pair_left.iter().zip(&pair_right).map(|(l, r)| l - r).collect();
+        assert!(peak(&apart) > 0.01, "apart by {}", peak(&apart));
+
+        // No spread: both in the middle.
+        let (left, right) = swinging(2.0, 0.0);
+        assert_same_samples(&right, &left);
+    }
+
+    #[test]
+    fn chorus_feedback_rings_at_its_delay() {
+        // A delay of two A4 cycles feeds each copy back in step, so half
+        // feedback makes A4 twice as loud: 1 / (1 - 0.5).
+        let still = [(CHORUS_COPIES, 1.0), (CHORUS_DEPTH, 0.0), (CHORUS_DELAY, 2000.0 / 440.0)];
+        let mut plain = chorusing(&still);
+        let mut fed_back = chorusing(&still);
+        fed_back.set_effect_value(0, 0, CHORUS_FEEDBACK, 0.5);
+        render_left(&mut fed_back, 30);
+        let plain_wave = hold(&mut plain, A4, VELOCITY);
+        let wave = hold(&mut fed_back, A4, VELOCITY);
+        let louder = tone_db(&fed_back, &wave, A4_HZ) - tone_db(&plain, &plain_wave, A4_HZ);
+        assert_db(louder, 20.0 * 2.0_f64.log10(), 0.2);
+    }
+
+    #[test]
+    fn a_chorus_on_the_beat_swings_once_a_cycle() {
+        // Half a beat is a quarter second at 120 beats a minute and half a
+        // second at 60, both a whole number of A4 cycles, so once the note
+        // is held the sound repeats exactly every cycle of the swing.
+        for (tempo, cycle_ms) in [(120, 250), (60, 500)] {
+            let mut engine = chorusing(&[(CHORUS_ON_BEAT, 1.0), (CHORUS_CYCLE, 0.5), (CHORUS_DEPTH, 1.0)]);
+            engine.set_tempo(tempo);
+            render_left(&mut engine, 1100);
+            let wave = hold(&mut engine, A4, VELOCITY);
+            let cycle = frames_in_ms(&engine, cycle_ms);
+            let length = frames_in_ms(&engine, 400);
+            assert_close_samples(&wave[cycle..cycle + length], &wave[..length], 1e-4);
+
+            // Half a cycle on, the swing is somewhere else.
+            let apart: Vec<f32> = (0..length).map(|i| wave[i + cycle / 2] - wave[i]).collect();
+            assert!(peak(&apart) > 0.01, "at {tempo}: apart by {}", peak(&apart));
+        }
+
+        // At its speed of 0.8 Hz it never repeats that soon.
+        let mut engine = chorusing(&[(CHORUS_DEPTH, 1.0)]);
+        let wave = hold(&mut engine, A4, VELOCITY);
+        let cycle = frames_in_ms(&engine, 250);
+        let apart: Vec<f32> = (0..cycle).map(|i| wave[i + cycle] - wave[i]).collect();
+        assert!(peak(&apart) > 0.01, "at its speed: apart by {}", peak(&apart));
+    }
+
+    // A sine engine with a delay in track 0's first slot, all wet, timed in
+    // ms, with no feedback, and `values` set, glided there in silence.
+    fn delaying(values: &[(i32, f32)]) -> Engine {
+        let mut engine = sine_with(EffectKind::Delay);
+        engine.set_effect_value(0, 0, DELAY_MIX, 1.0);
+        engine.set_effect_value(0, 0, DELAY_ON_BEAT, 0.0);
+        engine.set_effect_value(0, 0, DELAY_FEEDBACK, 0.0);
+        for (value, number) in values {
+            engine.set_effect_value(0, 0, *value, *number);
+        }
+        render_left(&mut engine, 30);
+        engine
+    }
+
+    // How many samples after a plain sine engine `wave`'s echo of a note
+    // starts.
+    fn echo_lateness(wave: &[f32]) -> usize {
+        let mut plain = sine_engine();
+        let plain_wave = tap(&mut plain, A4, 50, 100);
+        first_heard(wave) - first_heard(&plain_wave)
+    }
+
+    #[test]
+    fn a_delay_s_echo_lands_on_its_exact_sample_and_feedback_repeats_it() {
+        let mut engine = delaying(&[(DELAY_LEFT_MS, 1000.0), (DELAY_FEEDBACK, 0.5)]);
+        let wave = tap(&mut engine, A4, 50, 2500);
+        let second = frames_in_ms(&engine, 1000);
+        assert_eq!(echo_lateness(&wave), second);
+
+        // The next echo a second later, half as loud.
+        let first_echo = &wave[second..second + frames_in_ms(&engine, 300)];
+        let next_echo = &wave[2 * second..2 * second + frames_in_ms(&engine, 300)];
+        let quieter = tone_db(&engine, next_echo, A4_HZ) - tone_db(&engine, first_echo, A4_HZ);
+        assert_db(quieter, -20.0 * 2.0_f64.log10(), 0.1);
+    }
+
+    #[test]
+    fn a_delay_s_echo_can_land_between_samples() {
+        // An echo 10 ms late lands on a whole sample. One a sample and a
+        // half later sits halfway between that echo moved on by one sample
+        // and by two, not on either of them. Both times are exact in a
+        // float, so only the second falls between samples.
+        let echo_after = |ms: f32| {
+            let mut engine = delaying(&[(DELAY_LEFT_MS, ms)]);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 200)
+        };
+        let whole = echo_after(10.0);
+        let sample_rate = Engine::new().unwrap().sample_rate() as f32;
+        let between = echo_after(10.0 + 1.5 * 1000.0 / sample_rate);
+
+        let from = frames_in_ms(&Engine::new().unwrap(), 100);
+        let allowed = peak(&whole) / 200.0;
+        for i in from..between.len() {
+            let halfway = 0.5 * (whole[i - 1] + whole[i - 2]);
+            assert!((between[i] - halfway).abs() < allowed, "sample {i}");
+        }
+    }
+
+    #[test]
+    fn a_new_delay_starts_right_on_its_time() {
+        // On a bus, so it is all wet from the start. Its note plays while a
+        // time sliding up from nothing would still be on its way.
+        let mut engine = sine_engine();
+        engine.set_send(0, 0, FULL_VOLUME);
+        assert!(engine.set_effect(FIRST_BUS_CHAIN, 0, EffectKind::Delay));
+        engine.set_effect_value(FIRST_BUS_CHAIN, 0, DELAY_ON_BEAT, 0.0);
+        engine.set_effect_value(FIRST_BUS_CHAIN, 0, DELAY_LEFT_MS, 10.0);
+        engine.set_effect_value(FIRST_BUS_CHAIN, 0, DELAY_FEEDBACK, 0.0);
+        let mut plain = sine_engine();
+        render_left(&mut engine, 30);
+        render_left(&mut plain, 30);
+        let wave = tap(&mut engine, A4, 50, 100);
+        let plain_wave = tap(&mut plain, A4, 50, 100);
+
+        // Taking away the dry sound leaves only the echo.
+        let mut echo = Vec::new();
+        for i in 0..wave.len() {
+            echo.push(wave[i] - plain_wave[i]);
+        }
+        assert_eq!(echo_lateness(&echo), frames_in_ms(&engine, 10));
+    }
+
+    #[test]
+    fn a_delay_s_sides_keep_their_own_times_unless_linked() {
+        let apart = [(DELAY_LEFT_MS, 100.0), (DELAY_RIGHT_MS, 200.0), (DELAY_LINKED, 0.0)];
+        let mut engine = delaying(&apart);
+        engine.note_on(A4, VELOCITY);
+        let (left, right) = render_sides(&mut engine, 300);
+        let mut plain = sine_engine();
+        plain.note_on(A4, VELOCITY);
+        let start = first_heard(&render_left(&mut plain, 10));
+        assert_eq!(first_heard(&left) - start, frames_in_ms(&engine, 100));
+        assert_eq!(first_heard(&right) - start, frames_in_ms(&engine, 200));
+
+        let mut linked = delaying(&apart);
+        linked.set_effect_value(0, 0, DELAY_LINKED, 1.0);
+        render_left(&mut linked, 200);
+        linked.note_on(A4, VELOCITY);
+        let (_, right) = render_sides(&mut linked, 300);
+        assert_eq!(first_heard(&right) - start, frames_in_ms(&engine, 100));
+    }
+
+    #[test]
+    fn a_delay_on_the_beat_follows_the_tempo_up_to_8_seconds() {
+        // Half a beat: 250 ms at 120 beats a minute, 500 ms at 60.
+        for (tempo, expected_ms) in [(120, 250), (60, 500)] {
+            let mut engine = delaying(&[(DELAY_ON_BEAT, 1.0)]);
+            engine.set_tempo(tempo);
+            render_left(&mut engine, 1100);
+            let wave = tap(&mut engine, A4, 50, 1000);
+            assert_eq!(echo_lateness(&wave), frames_in_ms(&engine, expected_ms), "at {tempo}");
+        }
+
+        // 16 beats at 100 a minute would be 9.6 seconds.
+        let mut engine = delaying(&[(DELAY_ON_BEAT, 1.0), (DELAY_LEFT_BEATS, 16.0)]);
+        engine.set_tempo(100);
+        render_left(&mut engine, 1100);
+        let wave = tap(&mut engine, A4, 50, 8200);
+        assert_eq!(echo_lateness(&wave), frames_in_ms(&engine, 8000));
+    }
+
+    #[test]
+    fn ping_pong_starts_on_the_left_and_bounces_right() {
+        let mut engine = delaying(&[(DELAY_LEFT_MS, 100.0), (DELAY_PING_PONG, 1.0), (DELAY_FEEDBACK, 0.5)]);
+        engine.note_on(A4, VELOCITY);
+        let (left, right) = render_sides(&mut engine, 300);
+        let mut plain = sine_engine();
+        plain.note_on(A4, VELOCITY);
+        let start = first_heard(&render_left(&mut plain, 10));
+        assert_eq!(first_heard(&left) - start, frames_in_ms(&engine, 100));
+        assert_eq!(first_heard(&right) - start, frames_in_ms(&engine, 200));
+
+        // Without feedback nothing bounces back to the right.
+        let mut once = delaying(&[(DELAY_LEFT_MS, 100.0), (DELAY_PING_PONG, 1.0)]);
+        once.note_on(A4, VELOCITY);
+        let (_, right) = render_sides(&mut once, 500);
+        assert_eq!(peak(&right), 0.0);
+    }
+
+    #[test]
+    fn a_delay_s_cuts_make_each_repeat_thinner_or_darker() {
+        // Two octaves past either cut takes A4 down about 24 dB.
+        let echo_db = |values: &[(i32, f32)]| {
+            let mut engine = delaying(values);
+            let wave = tap(&mut engine, A4, 50, 1400);
+            let start = frames_in_ms(&engine, 1000);
+            tone_db(&engine, &wave[start..start + frames_in_ms(&engine, 300)], A4_HZ)
+        };
+        let open = echo_db(&[(DELAY_LEFT_MS, 1000.0)]);
+        let thin = echo_db(&[(DELAY_LEFT_MS, 1000.0), (DELAY_LOW_CUT, 1760.0)]);
+        let dark = echo_db(&[(DELAY_LEFT_MS, 1000.0), (DELAY_HIGH_CUT, 110.0)]);
+        assert!(thin < open - 20.0, "low cut: {open} to {thin}");
+        assert!(dark < open - 20.0, "high cut: {open} to {dark}");
+
+        // Full feedback repeats it as loud, but an octave past the high cut
+        // each repeat loses about 12 dB more.
+        let mut engine = delaying(&[(DELAY_LEFT_MS, 1000.0), (DELAY_FEEDBACK, 1.0), (DELAY_HIGH_CUT, 220.0)]);
+        let wave = tap(&mut engine, A4, 50, 2400);
+        let second = frames_in_ms(&engine, 1000);
+        let length = frames_in_ms(&engine, 300);
+        let first_echo = tone_db(&engine, &wave[second..second + length], A4_HZ);
+        let next_echo = tone_db(&engine, &wave[2 * second..2 * second + length], A4_HZ);
+        assert!(next_echo < first_echo - 9.0, "{first_echo} then {next_echo}");
+    }
+
+    #[test]
+    fn a_delay_s_wobble_swings_the_echoes_pitch() {
+        // 5 ms of swing twice a second moves the pitch by up to pi times
+        // 5 ms times 2 a second: 3.1%.
+        let mut wobbly = delaying(&[(DELAY_LEFT_MS, 100.0), (DELAY_WOBBLE, 1.0), (DELAY_WOBBLE_SPEED, 2.0)]);
+        let wave = hold(&mut wobbly, A4, VELOCITY);
+        let (lowest, highest) = pitch_range(&wobbly, &wave, 0, 1000);
+        let swing = PI * 0.005 * 2.0;
+        assert_within_percent(lowest as f32, (A4_HZ * (1.0 - swing)) as f32, 0.5);
+        assert_within_percent(highest as f32, (A4_HZ * (1.0 + swing)) as f32, 0.5);
+
+        let mut steady = delaying(&[(DELAY_LEFT_MS, 100.0)]);
+        let wave = hold(&mut steady, A4, VELOCITY);
+        let (lowest, highest) = pitch_range(&steady, &wave, 0, 1000);
+        assert_within_percent(lowest as f32, A4_HZ as f32, 0.1);
+        assert_within_percent(highest as f32, A4_HZ as f32, 0.1);
+    }
+
+    #[test]
+    fn a_delay_s_grit_saturates_its_echoes() {
+        let third_db = |grit: f32| {
+            let mut engine = delaying(&[(DELAY_LEFT_MS, 100.0), (DELAY_GRIT, grit)]);
+            let wave = hold(&mut engine, A4, VELOCITY);
+            tone_db(&engine, &wave, 3.0 * A4_HZ) - tone_db(&engine, &wave, A4_HZ)
+        };
+        let gritty = third_db(1.0);
+        let clean = third_db(0.0);
+        assert!(gritty > -30.0, "gritty third harmonic at {gritty} dB");
+        assert!(clean < -80.0, "clean third harmonic at {clean} dB");
+    }
+
+    #[test]
+    fn a_delay_ducks_its_echoes_while_the_dry_sound_plays() {
+        let echoes = |duck: f32| {
+            let mut engine = delaying(&[(DELAY_FEEDBACK, 0.7), (DELAY_DUCK, duck)]);
+            tap(&mut engine, A4, 1500, 3000)
+        };
+        let ducked = echoes(1.0);
+        let open = echoes(0.0);
+        let ms = frames_in_ms(&sine_engine(), 1);
+        let held = 700 * ms..1500 * ms;
+        assert!(peak(&ducked[held.clone()]) < peak(&open[held]) * 0.02);
+        let after = 2500 * ms..3000 * ms;
+        assert!(peak(&ducked[after.clone()]) > peak(&open[after]) * 0.5);
+    }
+
+    #[test]
+    fn a_new_delay_time_slides_there_without_a_click() {
+        // Moved by half a wave while the echo plays: jumping there would
+        // flip the wave over at once.
+        let mut engine = delaying(&[]);
+        let mut plain = sine_engine();
+        render_left(&mut plain, 30);
+        hold(&mut engine, A4, VELOCITY);
+        let plain_wave = hold(&mut plain, A4, VELOCITY);
+        let half_wave_ms = 500.0 / A4_HZ as f32;
+        engine.set_effect_value(0, 0, DELAY_LEFT_MS, 250.0 + half_wave_ms);
+        let sliding = render_left(&mut engine, 200);
+        assert!(biggest_step(&sliding) < biggest_step(&plain_wave) * 2.0);
+    }
+
+    // A sine engine with a reverb in track 0's first slot, all wet, with no
+    // modulation, and `values` set, glided there in silence.
+    fn reverberating(values: &[(i32, f32)]) -> Engine {
+        let mut engine = sine_with(EffectKind::Reverb);
+        engine.set_effect_value(0, 0, REVERB_MIX, 1.0);
+        engine.set_effect_value(0, 0, REVERB_MODULATION, 0.0);
+        for (value, number) in values {
+            engine.set_effect_value(0, 0, *value, *number);
+        }
+        render_left(&mut engine, 300);
+        engine
+    }
+
+    // How long `note`'s tail through `engine` takes to fall 60 dB, in
+    // seconds. Once the note is gone, its level in 50 ms pieces over 45 dB
+    // of an `expected` decay, then the straight line that fits them best,
+    // since a tail's level wobbles as its echoes add and cancel.
+    fn decay_seconds(engine: &mut Engine, note: u8, expected: f64) -> f64 {
+        let start_ms = 600;
+        let measured_ms = (expected * 750.0) as u32;
+        let wave = tap(engine, note, 100, start_ms + measured_ms);
+        let mut times = Vec::new();
+        let mut levels = Vec::new();
+        let mut from_ms = start_ms;
+        while from_ms + 50 <= start_ms + measured_ms {
+            times.push(from_ms as f64 / 1000.0);
+            levels.push(level_db(engine, &wave, from_ms, 50));
+            from_ms += 50;
+        }
+        let count = times.len() as f64;
+        let mean_time = times.iter().sum::<f64>() / count;
+        let mean_level = levels.iter().sum::<f64>() / count;
+        let mut together = 0.0;
+        let mut spread = 0.0;
+        for i in 0..times.len() {
+            together += (times[i] - mean_time) * (levels[i] - mean_level);
+            spread += (times[i] - mean_time) * (times[i] - mean_time);
+        }
+        let db_per_second = together / spread;
+        -60.0 / db_per_second
+    }
+
+    #[test]
+    fn a_reverb_s_tail_falls_60_db_over_its_decay_at_any_size() {
+        for (decay, size) in [(1.0, 0.5), (4.0, 0.5), (2.0, 0.0), (2.0, 1.0)] {
+            let mut engine = reverberating(&[
+                (REVERB_DECAY, decay as f32),
+                (REVERB_SIZE, size),
+                (REVERB_DAMPING, 20000.0),
+            ]);
+            let measured = decay_seconds(&mut engine, A4, decay);
+            assert_within_percent(measured as f32, decay as f32, 10.0);
+        }
+    }
+
+    #[test]
+    fn a_reverb_s_damping_fades_the_highs_sooner() {
+        let fall_db = |note: u8| {
+            let mut engine = reverberating(&[(REVERB_DECAY, 3.0), (REVERB_DAMPING, 1000.0)]);
+            let wave = tap(&mut engine, note, 100, 1200);
+            level_db(&engine, &wave, 300, 100) - level_db(&engine, &wave, 1000, 100)
+        };
+        let high = fall_db(A6);
+        let low = fall_db(A2);
+        assert!(high > low + 20.0, "A6 fell {high} dB, A2 {low} dB");
+    }
+
+    #[test]
+    fn a_reverb_s_pre_delay_holds_it_back() {
+        let first = |pre_delay: f32| {
+            let mut engine = reverberating(&[(REVERB_PRE_DELAY, pre_delay)]);
+            first_heard(&tap(&mut engine, A4, 100, 500))
+        };
+        let engine = sine_engine();
+        assert_eq!(first(200.0) - first(0.0), frames_in_ms(&engine, 200));
+    }
+
+    #[test]
+    fn a_bigger_reverb_answers_later() {
+        // The shortest of the eight delays is 53.1 ms at full size and 15%
+        // of it at none.
+        let first = |size: f32| {
+            let mut engine = reverberating(&[(REVERB_SIZE, size)]);
+            first_heard(&tap(&mut engine, A4, 100, 500))
+        };
+        let engine = sine_engine();
+        let later = first(1.0) - first(0.0);
+        let expected = frames_in_ms(&engine, 45);
+        assert!(later.abs_diff(expected) < frames_in_ms(&engine, 1), "later by {later}");
+    }
+
+    #[test]
+    fn a_reverb_s_diffusion_smears_the_sound_at_once() {
+        // Undiffused, the sound waits through the all-passes, about 30 ms;
+        // diffused, some of it goes straight through.
+        let first = |diffusion: f32| {
+            let mut engine = reverberating(&[(REVERB_DIFFUSION, diffusion)]);
+            first_heard(&tap(&mut engine, A4, 100, 500))
+        };
+        let engine = sine_engine();
+        let sooner = first(0.0) - first(1.0);
+        assert!(sooner > frames_in_ms(&engine, 28), "sooner by {sooner}");
+        assert!(sooner < frames_in_ms(&engine, 32), "sooner by {sooner}");
+    }
+
+    #[test]
+    fn a_reverb_s_low_cut_takes_out_the_bass() {
+        let tail_db = |low_cut: f32| {
+            let mut engine = reverberating(&[(REVERB_LOW_CUT, low_cut)]);
+            let wave = tap(&mut engine, A1, 500, 1000);
+            tone_db(&engine, &wave[frames_in_ms(&engine, 200)..], 55.0)
+        };
+        let cut = tail_db(500.0);
+        let open = tail_db(20.0);
+        assert!(cut < open - 25.0, "{open} to {cut}");
+    }
+
+    #[test]
+    fn a_reverb_s_width_goes_from_one_middle_sound_to_full_stereo() {
+        let sides = |width: f32| {
+            let mut engine = reverberating(&[(REVERB_WIDTH, width)]);
+            engine.note_on(A4, VELOCITY);
+            render_sides(&mut engine, 1000)
+        };
+        let (left, right) = sides(0.0);
+        assert_same_samples(&right, &left);
+        let (left, right) = sides(1.0);
+        let apart: Vec<f32> = left.iter().zip(&right).map(|(l, r)| l - r).collect();
+        assert!(rms(&apart) > rms(&left) * 0.5);
+    }
+
+    #[test]
+    fn a_frozen_reverb_holds_its_tail_and_lets_nothing_in() {
+        let mut engine = reverberating(&[(REVERB_DECAY, 1.0)]);
+        let mut wave = tap(&mut engine, A4, 300, 500);
+        engine.set_effect_value(0, 0, REVERB_FREEZE, 1.0);
+        wave.extend(render_left(&mut engine, 500));
+        engine.note_on(A6, VELOCITY);
+        wave.extend(render_left(&mut engine, 3000));
+        let held = level_db(&engine, &wave, 3500, 200) - level_db(&engine, &wave, 600, 200);
+        assert_db(held, 0.0, 1.0);
+        let frozen = &wave[frames_in_ms(&engine, 1500)..];
+        let let_in = tone_db(&engine, frozen, A6_HZ) - tone_db(&engine, frozen, A4_HZ);
+        assert!(let_in < -60.0, "A6 at {let_in} dB");
+    }
+
+    #[test]
+    fn a_reverb_s_modulation_moves_its_tail() {
+        let tail = |modulation: f32| {
+            let mut engine = reverberating(&[(REVERB_MODULATION, modulation)]);
+            tap(&mut engine, A4, 100, 1500)
+        };
+        let still = tail(0.0);
+        let moving = tail(1.0);
+        let apart: Vec<f32> = still.iter().zip(&moving).map(|(a, b)| a - b).collect();
+        assert!(peak(&apart[48_000..]) > peak(&still[48_000..]) * 0.05);
+    }
+
+    #[test]
+    fn chorus_delay_and_reverb_numbers_out_of_range_are_ignored() {
+        let wrong_chorus = [
+            (CHORUS_COPIES, 0.0),
+            (CHORUS_COPIES, 5.0),
+            (CHORUS_COPIES, 2.5),
+            (CHORUS_SPEED, 0.005),
+            (CHORUS_SPEED, 11.0),
+            (CHORUS_CYCLE, 1.0 / 32.0),
+            (CHORUS_CYCLE, 33.0),
+            (CHORUS_ON_BEAT, 2.0),
+            (CHORUS_DEPTH, 1.1),
+            (CHORUS_DELAY, 0.5),
+            (CHORUS_DELAY, 41.0),
+            (CHORUS_FEEDBACK, 0.96),
+            (CHORUS_SPREAD, -0.1),
+            (CHORUS_MIX, 1.1),
+            (CHORUS_MIX + 1, 0.0),
+            (CHORUS_SPEED, f32::NAN),
+        ];
+        let wrong_delay = [
+            (DELAY_LEFT_MS, 0.5),
+            (DELAY_LEFT_MS, 8001.0),
+            (DELAY_RIGHT_MS, 0.5),
+            (DELAY_LEFT_BEATS, 1.0 / 32.0),
+            (DELAY_RIGHT_BEATS, 17.0),
+            (DELAY_ON_BEAT, 0.5),
+            (DELAY_LINKED, 2.0),
+            (DELAY_PING_PONG, -1.0),
+            (DELAY_FEEDBACK, 1.1),
+            (DELAY_LOW_CUT, 19.0),
+            (DELAY_HIGH_CUT, 20001.0),
+            (DELAY_WOBBLE, -0.1),
+            (DELAY_WOBBLE_SPEED, 0.05),
+            (DELAY_WOBBLE_SPEED, 11.0),
+            (DELAY_GRIT, 1.1),
+            (DELAY_DUCK, 1.1),
+            (DELAY_MIX, -0.1),
+            (DELAY_MIX + 1, 0.0),
+        ];
+        let wrong_reverb = [
+            (REVERB_SIZE, 1.1),
+            (REVERB_DECAY, 0.05),
+            (REVERB_DECAY, 31.0),
+            (REVERB_PRE_DELAY, -1.0),
+            (REVERB_PRE_DELAY, 501.0),
+            (REVERB_DAMPING, 999.0),
+            (REVERB_DAMPING, 20001.0),
+            (REVERB_LOW_CUT, 19.0),
+            (REVERB_LOW_CUT, 1001.0),
+            (REVERB_DIFFUSION, 1.1),
+            (REVERB_MODULATION, -0.1),
+            (REVERB_WIDTH, 1.1),
+            (REVERB_FREEZE, 0.5),
+            (REVERB_MIX, 1.1),
+            (REVERB_MIX + 1, 0.0),
+        ];
+        let check = |kind: EffectKind, wrong: &[(i32, f32)]| {
+            let mut expected = sine_with(kind);
+            let mut engine = sine_with(kind);
+            for (value, number) in wrong {
+                engine.set_effect_value(0, 0, *value, *number);
+            }
+            expected.note_on(A4, VELOCITY);
+            engine.note_on(A4, VELOCITY);
+            assert_same_samples(&render_left(&mut engine, 1500), &render_left(&mut expected, 1500));
+        };
+        check(EffectKind::Chorus, &wrong_chorus);
+        check(EffectKind::Delay, &wrong_delay);
+        check(EffectKind::Reverb, &wrong_reverb);
+    }
+
+    #[test]
+    fn choruses_delays_and_reverbs_are_freed_when_replaced() {
+        let mut engine = Engine::new().unwrap();
+        assert!(engine.set_effect(0, 0, EffectKind::Chorus));
+        assert!(engine.set_effect(FIRST_BUS_CHAIN, 3, EffectKind::Delay));
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::Reverb));
+        assert_eq!(engine.effect_count(), 3);
+        assert!(engine.set_effect(0, 0, EffectKind::None));
+        assert!(engine.set_effect(FIRST_BUS_CHAIN, 3, EffectKind::None));
+        assert!(engine.set_effect(MASTER_CHAIN, 7, EffectKind::Eq));
+        render_left(&mut engine, 10);
+        assert_eq!(engine.effect_count(), 1);
+    }
+
+    #[test]
+    fn echoes_render_the_same_every_time() {
+        let make = || {
+            let mut engine = Engine::new().unwrap();
+            engine.set_send(0, 1, 60);
+            assert!(engine.set_effect(0, 1, EffectKind::Chorus));
+            engine.set_effect_value(0, 1, CHORUS_COPIES, 3.0);
+            assert!(engine.set_effect(FIRST_BUS_CHAIN + 1, 0, EffectKind::Reverb));
+            engine.set_effect_value(FIRST_BUS_CHAIN + 1, 0, REVERB_MODULATION, 1.0);
+            assert!(engine.set_effect(MASTER_CHAIN, 2, EffectKind::Delay));
+            engine.set_effect_value(MASTER_CHAIN, 2, DELAY_WOBBLE, 1.0);
+            engine.set_effect_value(MASTER_CHAIN, 2, DELAY_PING_PONG, 1.0);
+            engine
+        };
+        let mut first = make();
+        let mut second = make();
+        chord_through(&mut first);
+        chord_through(&mut second);
+        assert_same_samples(&render_stereo(&mut first, 1500), &render_stereo(&mut second, 1500));
+    }
+
+    // LFOs and connections on effects (docs/design.md#mix-in-the-engine,
+    // slice 5). A move is worked out every 32 samples, on the samples the
+    // routing list is, and glides there like any new value, so an effect
+    // moved by a connection sounds exactly like one set there on the same
+    // sample. Renders of whole ms in twos end on those samples.
+
+    // An LFO that runs for every note and holds at `percent` all the way.
+    fn held_lfo(percent: f32) -> Lfo {
+        Lfo {
+            per_note: false,
+            ..with_steps(lfo_at(LfoShape::Steps, 1.0), &[percent])
+        }
+    }
+
+    // LFO 1 moving value `value` of slot `slot`'s effect by `amount`, both
+    // ways.
+    fn effect_move(slot: usize, value: i32, amount: f32) -> EffectConnection {
+        EffectConnection {
+            source: Source::Lfo(0),
+            slot,
+            value,
+            amount,
+            one_way: false,
+            scaled_by: Source::None,
+        }
+    }
+
+    // A sine engine with an EQ in track 0's first slot, its output moved by
+    // `amount` dB by LFO 1, held at full.
+    fn eq_moved_by(amount: f32) -> Engine {
+        let mut engine = sine_with(EffectKind::Eq);
+        engine.set_chain_lfo(0, 0, held_lfo(100.0));
+        engine.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, amount));
+        engine
+    }
+
+    // A sine engine with an EQ in track 0's first slot, its output set to
+    // `db`.
+    fn eq_set_to(db: f32) -> Engine {
+        let mut engine = sine_with(EffectKind::Eq);
+        engine.set_effect_value(0, 0, EQ_OUTPUT, db);
+        engine
+    }
+
+    // A held A4 for `ms` on each of `engines`, checked to be the same.
+    fn assert_a4_same(moved: &mut Engine, set: &mut Engine, ms: u32) {
+        moved.note_on(A4, VELOCITY);
+        set.note_on(A4, VELOCITY);
+        assert_same_samples(&render_left(moved, ms), &render_left(set, ms));
+    }
+
+    #[test]
+    fn an_lfo_moves_an_effect_value_as_if_it_were_set_there() {
+        assert_a4_same(&mut eq_moved_by(-6.0), &mut eq_set_to(-6.0), 300);
+        assert_a4_same(&mut eq_moved_by(9.5), &mut eq_set_to(9.5), 300);
+
+        // From a starting value never set: an open filter's 20 kHz.
+        let mut moved = sine_with(EffectKind::Filter);
+        moved.set_chain_lfo(0, 0, held_lfo(100.0));
+        moved.set_effect_connection(0, 0, effect_move(0, FILTER_EFFECT_CUTOFF, -19_000.0));
+        let mut set = sine_with(EffectKind::Filter);
+        set.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 1000.0);
+        assert_a4_same(&mut moved, &mut set, 300);
+    }
+
+    #[test]
+    fn each_effect_s_values_are_moved_from_where_the_effect_starts() {
+        // Each effect's value moved from its starting number sounds like the
+        // value set there plus the move.
+        let squashed = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, -40.0);
+        };
+        let boosted = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, EQ_BAND_ON, 1.0);
+            engine.set_effect_value(0, 0, EQ_BAND_FREQUENCY, 440.0);
+            engine.set_effect_value(0, 0, EQ_BAND_GAIN, 12.0);
+        };
+        let untouched = |_: &mut Engine| {};
+        let pumping = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        };
+        let louder = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, SATURATION_OUTPUT, 6.0);
+        };
+        let apart = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, DELAY_ON_BEAT, 0.0);
+            engine.set_effect_value(0, 0, DELAY_LINKED, 0.0);
+            engine.set_effect_value(0, 0, DELAY_RIGHT_MS, 100.0);
+        };
+        let first_bend = SHAPER_POINT_BEND;
+        let cases: [(EffectKind, &dyn Fn(&mut Engine), i32, f32, f32); 7] = [
+            (EffectKind::Compressor, &squashed, COMPRESSOR_RATIO, 2.0, 6.0),
+            (EffectKind::Eq, &boosted, EQ_BAND_WIDTH, 1.0, 2.0),
+            (EffectKind::Chorus, &untouched, CHORUS_DELAY, 3.0, 10.0),
+            (EffectKind::Reverb, &untouched, REVERB_DECAY, 1.0, 2.5),
+            (EffectKind::VolumeShaper, &pumping, first_bend, 0.25, 0.75),
+            (EffectKind::Saturation, &louder, SATURATION_OUTPUT, 3.0, 9.0),
+            (EffectKind::Delay, &apart, DELAY_RIGHT_MS, 50.0, 150.0),
+        ];
+        for (kind, setup, value, amount, number) in cases {
+            let mut moved = sine_with(kind);
+            setup(&mut moved);
+            moved.set_chain_lfo(0, 0, held_lfo(100.0));
+            moved.set_effect_connection(0, 0, effect_move(0, value, amount));
+            let mut set = sine_with(kind);
+            setup(&mut set);
+            set.set_effect_value(0, 0, value, number);
+            assert_a4_same(&mut moved, &mut set, 300);
+        }
+    }
+
+    #[test]
+    fn a_new_effect_starts_right_at_the_values_sent_with_it() {
+        // A note played at once through a new effect sounds just like one
+        // played after the effect has had time to glide there. Effects that
+        // move with time or close in silence are left out.
+        let saturated = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+            engine.set_effect_value(0, 0, SATURATION_CURVE, SATURATION_FOLD);
+            engine.set_effect_value(0, 0, SATURATION_TONE, -0.5);
+            engine.set_effect_value(0, 0, SATURATION_OUTPUT, -6.0);
+            engine.set_effect_value(0, 0, SATURATION_MATCH, 1.0);
+            engine.set_effect_value(0, 0, SATURATION_MIX, 0.8);
+        };
+        let equalized = |engine: &mut Engine| {
+            eq_band(engine, 0, 3, EQ_BELL, A4_HZ as f32, 12.0, 2.0);
+            eq_band(engine, 0, 0, EQ_LOW_CUT, 200.0, 0.0, 1.0);
+            engine.set_effect_value(0, 0, band_value(0, EQ_BAND_SLOPE), 48.0);
+            engine.set_effect_value(0, 0, EQ_OUTPUT, -3.0);
+        };
+        let filtered = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, FILTER_EFFECT_TYPE, 2.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_SLOPE, 24.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 600.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_RESONANCE, 0.5);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_DRIVE, 0.5);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_MIX, 0.9);
+        };
+        let squashed = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, -30.0);
+            engine.set_effect_value(0, 0, COMPRESSOR_RATIO, 6.0);
+            engine.set_effect_value(0, 0, COMPRESSOR_KNEE, 6.0);
+            engine.set_effect_value(0, 0, COMPRESSOR_MAKEUP, 6.0);
+            engine.set_effect_value(0, 0, COMPRESSOR_MIX, 0.8);
+            engine.set_effect_value(0, 0, COMPRESSOR_LOW_CUT, 200.0);
+        };
+        let echoed = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, DELAY_ON_BEAT, 0.0);
+            engine.set_effect_value(0, 0, DELAY_LEFT_MS, 100.0);
+            engine.set_effect_value(0, 0, DELAY_PING_PONG, 1.0);
+            engine.set_effect_value(0, 0, DELAY_FEEDBACK, 0.5);
+            engine.set_effect_value(0, 0, DELAY_LOW_CUT, 300.0);
+            engine.set_effect_value(0, 0, DELAY_HIGH_CUT, 5000.0);
+            engine.set_effect_value(0, 0, DELAY_GRIT, 0.4);
+            engine.set_effect_value(0, 0, DELAY_DUCK, 0.5);
+            engine.set_effect_value(0, 0, DELAY_MIX, 0.7);
+        };
+        let roomy = |engine: &mut Engine| {
+            engine.set_effect_value(0, 0, REVERB_SIZE, 0.8);
+            engine.set_effect_value(0, 0, REVERB_DECAY, 3.0);
+            engine.set_effect_value(0, 0, REVERB_PRE_DELAY, 20.0);
+            engine.set_effect_value(0, 0, REVERB_DAMPING, 4000.0);
+            engine.set_effect_value(0, 0, REVERB_LOW_CUT, 200.0);
+            engine.set_effect_value(0, 0, REVERB_DIFFUSION, 0.5);
+            engine.set_effect_value(0, 0, REVERB_MODULATION, 0.0);
+            engine.set_effect_value(0, 0, REVERB_WIDTH, 0.5);
+            engine.set_effect_value(0, 0, REVERB_MIX, 0.6);
+        };
+        let setups: [(EffectKind, &dyn Fn(&mut Engine)); 6] = [
+            (EffectKind::Saturation, &saturated),
+            (EffectKind::Eq, &equalized),
+            (EffectKind::Filter, &filtered),
+            (EffectKind::Compressor, &squashed),
+            (EffectKind::Delay, &echoed),
+            (EffectKind::Reverb, &roomy),
+        ];
+        for (kind, setup) in setups {
+            let mut at_once = sine_with(kind);
+            setup(&mut at_once);
+            let mut later = sine_with(kind);
+            setup(&mut later);
+            render_left(&mut later, 100);
+            assert_a4_same(&mut at_once, &mut later, 300);
+        }
+    }
+
+    #[test]
+    fn effects_that_move_with_time_start_at_the_values_sent_with_them() {
+        // A chorus mixed away is the dry sound from the first sample.
+        let mut chorus = sine_with(EffectKind::Chorus);
+        chorus.set_effect_value(0, 0, CHORUS_MIX, 0.0);
+        let (chorused, plain) = shaped_and_plain(&mut chorus);
+        assert_same_samples(&chorused, &plain);
+
+        // A gate set to close on everything starts closing at once, down
+        // to 80% after 20 ms of its 100 ms release.
+        let mut gate = sine_with(EffectKind::Gate);
+        gate.set_effect_value(0, 0, GATE_THRESHOLD, 0.0);
+        gate.set_effect_value(0, 0, GATE_HOLD, 0.0);
+        let (gated, plain) = shaped_and_plain(&mut gate);
+        let ms = frames_in_ms(&gate, 1);
+        assert_within_percent(volume_at(&gated, &plain, 20 * ms), 0.8, 1.0);
+
+        // A shaper at full depth is down near the pump's bottom within 2
+        // ms of the first beat.
+        let mut shaper = sine_with(EffectKind::VolumeShaper);
+        shaper.set_effect_value(0, 0, SHAPER_DEPTH, 1.0);
+        let (shaped, plain) = shaped_and_plain(&mut shaper);
+        for sample in 2 * ms..4 * ms {
+            if plain[sample].abs() > 0.01 {
+                let volume = shaped[sample] / plain[sample];
+                assert!(volume < 0.4, "volume {volume} at sample {sample}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_gate_stays_open_through_its_hold() {
+        // Between a wave's peaks the sound dips under the threshold. With no
+        // hold the gate starts to close in every dip; with one it stays open.
+        let mut held = sine_with(EffectKind::Gate);
+        held.set_effect_value(0, 0, GATE_THRESHOLD, -20.0);
+        held.set_effect_value(0, 0, GATE_HOLD, 50.0);
+        let mut unheld = sine_with(EffectKind::Gate);
+        unheld.set_effect_value(0, 0, GATE_THRESHOLD, -20.0);
+        unheld.set_effect_value(0, 0, GATE_HOLD, 0.0);
+        held.note_on(A4, VELOCITY);
+        unheld.note_on(A4, VELOCITY);
+        let held_wave = render_left(&mut held, 300);
+        let unheld_wave = render_left(&mut unheld, 300);
+        assert!(rms(&unheld_wave) < rms(&held_wave), "the gate kept no hold");
+    }
+
+    #[test]
+    fn a_connection_scaled_by_an_lfo_moves_an_effect_value_by_its_share() {
+        // LFO 2 held in the middle lets half the move through.
+        let mut moved = sine_with(EffectKind::Eq);
+        moved.set_chain_lfo(0, 0, held_lfo(100.0));
+        moved.set_chain_lfo(0, 1, held_lfo(0.0));
+        let scaled = EffectConnection {
+            scaled_by: Source::Lfo(1),
+            ..effect_move(0, EQ_OUTPUT, -6.0)
+        };
+        moved.set_effect_connection(0, 0, scaled);
+        assert_a4_same(&mut moved, &mut eq_set_to(-3.0), 300);
+    }
+
+    #[test]
+    fn slopes_and_switches_take_only_their_own_numbers() {
+        // An EQ's low cut takes 12, 24 or 48 dB an octave, not 36.
+        let low_cut = || {
+            let mut engine = sine_with(EffectKind::Eq);
+            engine.set_effect_value(0, 0, EQ_BAND_SHAPE, EQ_LOW_CUT);
+            engine.set_effect_value(0, 0, EQ_BAND_FREQUENCY, 400.0);
+            engine.set_effect_value(0, 0, EQ_BAND_ON, 1.0);
+            engine
+        };
+        let mut odd = low_cut();
+        odd.set_effect_value(0, 0, EQ_BAND_SLOPE, 36.0);
+        let mut plain = low_cut();
+        odd.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let wave = render_left(&mut odd, 300);
+        assert!(wave == render_left(&mut plain, 300), "the EQ took a 36 dB slope");
+
+        // The filter takes 12 dB an octave back after 24.
+        let steep_low_pass = || {
+            let mut engine = sine_with(EffectKind::Filter);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_CUTOFF, 300.0);
+            engine.set_effect_value(0, 0, FILTER_EFFECT_SLOPE, 24.0);
+            engine
+        };
+        let mut gentle = steep_low_pass();
+        gentle.set_effect_value(0, 0, FILTER_EFFECT_SLOPE, 12.0);
+        let mut steep = steep_low_pass();
+        gentle.note_on(A4, VELOCITY);
+        steep.note_on(A4, VELOCITY);
+        let wave = render_left(&mut gentle, 300);
+        assert!(wave != render_left(&mut steep, 300), "the filter refused a 12 dB slope");
+
+        // A frozen reverb stays frozen when its freeze is set to 2.
+        let frozen = || {
+            let mut engine = sine_with(EffectKind::Reverb);
+            engine.set_effect_value(0, 0, REVERB_FREEZE, 1.0);
+            engine
+        };
+        let mut odd = frozen();
+        odd.set_effect_value(0, 0, REVERB_FREEZE, 2.0);
+        let mut plain = frozen();
+        odd.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let wave = render_left(&mut odd, 300);
+        assert!(wave == render_left(&mut plain, 300), "the reverb took a freeze of 2");
+    }
+
+    #[test]
+    fn connections_to_the_same_effect_value_add_up() {
+        let mut moved = eq_moved_by(-2.0);
+        moved.set_effect_connection(0, 5, effect_move(0, EQ_OUTPUT, -4.0));
+        assert_a4_same(&mut moved, &mut eq_set_to(-6.0), 300);
+    }
+
+    #[test]
+    fn a_new_effect_in_a_moved_slot_is_moved_too() {
+        let mut moved = eq_moved_by(-6.0);
+        let mut set = eq_set_to(-6.0);
+        moved.note_on(A4, VELOCITY);
+        set.note_on(A4, VELOCITY);
+        let mut moved_wave = render_left(&mut moved, 100);
+        let mut set_wave = render_left(&mut set, 100);
+
+        assert!(moved.set_effect(0, 0, EffectKind::Eq));
+        assert!(set.set_effect(0, 0, EffectKind::Eq));
+        set.set_effect_value(0, 0, EQ_OUTPUT, -6.0);
+        moved_wave.extend(render_left(&mut moved, 200));
+        set_wave.extend(render_left(&mut set, 200));
+        assert_same_samples(&moved_wave, &set_wave);
+    }
+
+    #[test]
+    fn a_value_out_of_range_is_ignored_while_moved() {
+        let swinging = || {
+            let sine = Lfo {
+                per_note: false,
+                ..lfo_at(LfoShape::Sine, 3.3)
+            };
+            let mut engine = sine_with(EffectKind::Eq);
+            engine.set_chain_lfo(0, 0, sine);
+            engine.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, -6.0));
+            engine.note_on(A4, VELOCITY);
+            engine
+        };
+        let mut odd = swinging();
+        let mut plain = swinging();
+        let mut odd_wave = render_left(&mut odd, 100);
+        let mut plain_wave = render_left(&mut plain, 100);
+        odd.set_effect_value(0, 0, EQ_OUTPUT, 30.0);
+        odd_wave.extend(render_left(&mut odd, 400));
+        plain_wave.extend(render_left(&mut plain, 400));
+        assert_same_samples(&odd_wave, &plain_wave);
+    }
+
+    #[test]
+    fn an_lfo_swings_an_effect_value_back_and_forth() {
+        // A square at 2 Hz: up for the first 250 ms of each cycle, down for
+        // the rest, moving the EQ's output 6 dB either way.
+        let square = Lfo {
+            per_note: false,
+            ..lfo_at(LfoShape::Square, 2.0)
+        };
+        let mut engine = sine_with(EffectKind::Eq);
+        engine.set_chain_lfo(0, 0, square);
+        engine.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, 6.0));
+        let mut plain = sine_engine();
+        engine.note_on(A4, VELOCITY);
+        plain.note_on(A4, VELOCITY);
+        let wave = render_left(&mut engine, 1000);
+        let plain_wave = render_left(&mut plain, 1000);
+
+        for (from_ms, expected_db) in [(50, 6.0), (300, -6.0), (550, 6.0), (800, -6.0)] {
+            let louder = level_db(&engine, &wave, from_ms, 150) - level_db(&engine, &plain_wave, from_ms, 150);
+            assert!((louder - expected_db).abs() < 0.01, "from {from_ms} ms: {louder} dB");
+        }
+    }
+
+    #[test]
+    fn a_moved_effect_value_stays_within_its_range() {
+        let mut up = eq_set_to(20.0);
+        up.set_chain_lfo(0, 0, held_lfo(100.0));
+        up.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, 10.0));
+        assert_a4_same(&mut up, &mut eq_set_to(24.0), 300);
+
+        let mut down = eq_set_to(-20.0);
+        down.set_chain_lfo(0, 0, held_lfo(100.0));
+        down.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, -10.0));
+        assert_a4_same(&mut down, &mut eq_set_to(-24.0), 300);
+    }
+
+    #[test]
+    fn a_moved_choice_moves_in_whole_steps() {
+        // Driven tape saturation moved 1.4 curves is the tube, and 1.6
+        // the hard clip.
+        let driven = || {
+            let mut engine = sine_with(EffectKind::Saturation);
+            engine.set_effect_value(0, 0, SATURATION_DRIVE, 24.0);
+            engine
+        };
+        for (move_by, curve) in [(1.4, 1.0), (1.6, 2.0)] {
+            let mut moved = driven();
+            moved.set_chain_lfo(0, 0, held_lfo(100.0));
+            moved.set_effect_connection(0, 0, effect_move(0, SATURATION_CURVE, move_by));
+            let mut set = driven();
+            set.set_effect_value(0, 0, SATURATION_CURVE, curve);
+            assert_a4_same(&mut moved, &mut set, 300);
+        }
+    }
+
+    #[test]
+    fn a_value_no_longer_moved_goes_back_to_where_it_was_set() {
+        let mut moved = eq_moved_by(-6.0);
+        let mut set = eq_set_to(-6.0);
+        moved.note_on(A4, VELOCITY);
+        set.note_on(A4, VELOCITY);
+        let mut moved_wave = render_left(&mut moved, 100);
+        let mut set_wave = render_left(&mut set, 100);
+
+        let unused = EffectConnection {
+            source: Source::None,
+            ..effect_move(0, EQ_OUTPUT, -6.0)
+        };
+        moved.set_effect_connection(0, 0, unused);
+        set.set_effect_value(0, 0, EQ_OUTPUT, 0.0);
+        moved_wave.extend(render_left(&mut moved, 200));
+        set_wave.extend(render_left(&mut set, 200));
+        assert_same_samples(&moved_wave, &set_wave);
+    }
+
+    #[test]
+    fn a_moved_value_set_again_is_moved_from_where_it_is_set() {
+        let mut moved = eq_moved_by(-6.0);
+        let mut set = eq_set_to(-6.0);
+        moved.note_on(A4, VELOCITY);
+        set.note_on(A4, VELOCITY);
+        let mut moved_wave = render_left(&mut moved, 100);
+        let mut set_wave = render_left(&mut set, 100);
+
+        moved.set_effect_value(0, 0, EQ_OUTPUT, 3.0);
+        set.set_effect_value(0, 0, EQ_OUTPUT, -3.0);
+        moved_wave.extend(render_left(&mut moved, 200));
+        set_wave.extend(render_left(&mut set, 200));
+        assert_same_samples(&moved_wave, &set_wave);
+    }
+
+    #[test]
+    fn only_lfos_that_run_for_every_note_in_hz_or_beats_move_effects() {
+        let in_beats = Lfo {
+            speed: LfoSpeed::Beats,
+            ..held_lfo(100.0)
+        };
+        let mut moved = sine_with(EffectKind::Eq);
+        moved.set_chain_lfo(0, 0, in_beats);
+        moved.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, -6.0));
+        assert_a4_same(&mut moved, &mut eq_set_to(-6.0), 300);
+
+        // A per-note LFO, one in presses, and the sources each note has
+        // of its own move nothing, and neither does a shared LFO scaled by
+        // one of them.
+        let per_note = Lfo {
+            per_note: true,
+            ..held_lfo(100.0)
+        };
+        let in_presses = Lfo {
+            speed: LfoSpeed::Presses,
+            ..held_lfo(100.0)
+        };
+        let lowering = effect_move(0, EQ_OUTPUT, -6.0);
+        let from = |source: Source| EffectConnection { source, ..lowering };
+        let scaled_by = |by: Source| EffectConnection { scaled_by: by, ..lowering };
+        let lfo_2_scaled_by_lfo_1 = EffectConnection {
+            source: Source::Lfo(1),
+            ..scaled_by(Source::Lfo(0))
+        };
+        let unmoving = [
+            (per_note, lowering),
+            (in_presses, lowering),
+            (held_lfo(100.0), from(Source::VibratoKey)),
+            (held_lfo(100.0), from(Source::NoteHeight)),
+            (held_lfo(100.0), from(Source::Random)),
+            (held_lfo(100.0), from(Source::LoudnessEnvelope)),
+            (held_lfo(100.0), scaled_by(Source::VibratoKey)),
+            (per_note, lfo_2_scaled_by_lfo_1),
+        ];
+        for (place, (lfo, connection)) in unmoving.into_iter().enumerate() {
+            let mut engine = sine_with(EffectKind::Eq);
+            engine.set_chain_lfo(0, 0, lfo);
+            engine.set_chain_lfo(0, 1, held_lfo(100.0));
+            engine.set_effect_connection(0, 0, connection);
+            engine.set_vibrato_key(true);
+            let mut plain = sine_with(EffectKind::Eq);
+            plain.set_vibrato_key(true);
+            engine.note_on(A4, VELOCITY);
+            plain.note_on(A4, VELOCITY);
+            let wave = render_left(&mut engine, 300);
+            assert!(wave == render_left(&mut plain, 300), "connection {place} moved the EQ");
+        }
+    }
+
+    #[test]
+    fn a_bus_and_the_master_move_their_effects_with_their_own_lfos() {
+        for chain in [FIRST_BUS_CHAIN, MASTER_CHAIN] {
+            let with_eq = || {
+                let mut engine = sine_engine();
+                engine.set_send(0, 0, FULL_VOLUME);
+                assert!(engine.set_effect(chain, 0, EffectKind::Eq));
+                engine
+            };
+            let mut moved = with_eq();
+            moved.set_chain_lfo(chain, 0, held_lfo(100.0));
+            moved.set_effect_connection(chain, 0, effect_move(0, EQ_OUTPUT, -6.0));
+            let mut set = with_eq();
+            set.set_effect_value(chain, 0, EQ_OUTPUT, -6.0);
+            assert_a4_same(&mut moved, &mut set, 300);
+
+            // The track's LFOs only move the track's own effects.
+            let mut by_track = with_eq();
+            by_track.set_chain_lfo(0, 0, held_lfo(100.0));
+            by_track.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, -6.0));
+            assert_a4_same(&mut by_track, &mut with_eq(), 300);
+        }
+    }
+
+    #[test]
+    fn bus_and_master_lfos_keep_time_with_a_track_s() {
+        // The same sine in beats moving an EQ on track 0 or on the master,
+        // with the beat starting a little in, sounds the same: only track 0
+        // plays.
+        let in_beats = Lfo {
+            per_note: false,
+            speed: LfoSpeed::Beats,
+            beats: 1.5,
+            ..lfo_at(LfoShape::Sine, 1.0)
+        };
+        let moved_on = |chain: usize| {
+            let mut engine = sine_engine();
+            assert!(engine.set_effect(chain, 0, EffectKind::Eq));
+            engine.set_chain_lfo(chain, 0, in_beats);
+            engine.set_effect_connection(chain, 0, effect_move(0, EQ_OUTPUT, -12.0));
+            engine.note_on(A4, VELOCITY);
+            let mut wave = render_left(&mut engine, 333);
+            engine.start_click();
+            wave.extend(render_left(&mut engine, 2000));
+            wave
+        };
+        assert_same_samples(&moved_on(0), &moved_on(MASTER_CHAIN));
+    }
+
+    #[test]
+    fn moved_effects_sound_the_same_however_the_sound_is_split() {
+        let make = || {
+            let mut engine = sine_with(EffectKind::Eq);
+            let sine = Lfo {
+                per_note: false,
+                ..lfo_at(LfoShape::Sine, 3.3)
+            };
+            engine.set_chain_lfo(0, 0, sine);
+            engine.set_effect_connection(0, 0, effect_move(0, EQ_OUTPUT, -12.0));
+            assert!(engine.set_effect(MASTER_CHAIN, 0, EffectKind::Saturation));
+            engine.set_effect_value(MASTER_CHAIN, 0, SATURATION_DRIVE, 12.0);
+            engine.set_chain_lfo(MASTER_CHAIN, 0, sine);
+            engine.set_effect_connection(MASTER_CHAIN, 0, effect_move(0, SATURATION_DRIVE, 12.0));
+            engine.note_on(A4, VELOCITY);
+            engine
+        };
+        let mut whole = make();
+        let mut pieces = make();
+        let pieces_of = 37;
+        let count = 200;
+        let whole_wave = whole.render(pieces_of * count);
+        let mut pieces_wave = Vec::new();
+        for _ in 0..count {
+            pieces_wave.extend(pieces.render(pieces_of));
+        }
+        assert_same_samples(&pieces_wave, &whole_wave);
+    }
+
+    #[test]
+    fn connections_never_move_values_with_no_range_or_a_compressor_at_its_limit() {
+        // Each pair is the same effect with and without a full move of a
+        // value connections must leave be: a compressor's "listens to" (to
+        // track 1, which plays nothing) and its limit, and a low cut's slope.
+        let squashed = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::Compressor));
+            engine.set_effect_value(0, 0, COMPRESSOR_THRESHOLD, -40.0);
+        };
+        let limited = |engine: &mut Engine| {
+            squashed(engine);
+            engine.set_effect_value(0, 0, COMPRESSOR_RATIO, COMPRESSOR_LIMIT);
+        };
+        let low_cut = |engine: &mut Engine| {
+            assert!(engine.set_effect(0, 0, EffectKind::Eq));
+            engine.set_effect_value(0, 0, EQ_BAND_SHAPE, EQ_LOW_CUT);
+            engine.set_effect_value(0, 0, EQ_BAND_FREQUENCY, 400.0);
+            engine.set_effect_value(0, 0, EQ_BAND_ON, 1.0);
+        };
+        let cases: [(&str, &dyn Fn(&mut Engine), i32, f32); 3] = [
+            ("listens to", &squashed, COMPRESSOR_LISTENS_TO, 2.0),
+            ("ratio at its limit", &limited, COMPRESSOR_RATIO, 5.0),
+            ("slope", &low_cut, EQ_BAND_SLOPE, 24.0),
+        ];
+        for (what, setup, value, amount) in cases {
+            let mut moved = sine_engine();
+            setup(&mut moved);
+            moved.set_chain_lfo(0, 0, held_lfo(100.0));
+            moved.set_effect_connection(0, 0, effect_move(0, value, amount));
+            let mut still = sine_engine();
+            setup(&mut still);
+            moved.note_on(A4, VELOCITY);
+            still.note_on(A4, VELOCITY);
+            let wave = render_left(&mut moved, 300);
+            assert!(wave == render_left(&mut still, 300), "the {what} moved");
+        }
+    }
+
+    #[test]
+    fn an_effect_moved_to_another_slot_leaves_its_moves_behind() {
+        let mut moved = eq_moved_by(-6.0);
+        let mut set = eq_set_to(-6.0);
+        moved.note_on(A4, VELOCITY);
+        set.note_on(A4, VELOCITY);
+        let mut moved_wave = render_left(&mut moved, 100);
+        let mut set_wave = render_left(&mut set, 100);
+
+        // The connection still moves slot 0, which is empty now.
+        assert!(moved.move_effect(0, 0, 1));
+        assert!(set.move_effect(0, 0, 1));
+        set.set_effect_value(0, 1, EQ_OUTPUT, 0.0);
+        moved_wave.extend(render_left(&mut moved, 200));
+        set_wave.extend(render_left(&mut set, 200));
+        assert_same_samples(&moved_wave, &set_wave);
+    }
+
+    #[test]
+    fn a_timed_connection_moves_a_bus_effect_from_the_next_32_samples() {
+        // Sent for sample 10,000, it moves from 10,016, where the routing
+        // list is next worked out.
+        let with_eq = || {
+            let mut engine = sine_engine();
+            engine.set_send(0, 0, FULL_VOLUME);
+            assert!(engine.set_effect(FIRST_BUS_CHAIN, 0, EffectKind::Eq));
+            engine.set_chain_lfo(FIRST_BUS_CHAIN, 0, held_lfo(100.0));
+            engine
+        };
+        let mut moved = with_eq();
+        moved.time_next(10_000);
+        moved.set_effect_connection(FIRST_BUS_CHAIN, 0, effect_move(0, EQ_OUTPUT, -6.0));
+        moved.send_now();
+        moved.play_sequence();
+        let mut set = with_eq();
+        set.time_next(10_016);
+        set.set_effect_value(FIRST_BUS_CHAIN, 0, EQ_OUTPUT, -6.0);
+        set.send_now();
+        set.play_sequence();
+        assert_a4_same(&mut moved, &mut set, 400);
     }
 }

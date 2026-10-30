@@ -574,6 +574,11 @@ Voice::Moves Voice::add_moves(const Routing& routing, const Readings& readings, 
     for (int place = 0; place < routing.used_count(); place++) {
         const Connection& connection = routing.used(place);
 
+        // Effects hear every note at once, so the mixer moves them.
+        if (connection.target == RoutingTarget::effect) {
+            continue;
+        }
+
         // A shared LFO's speed is shared by every note, so the routing list
         // moves it itself.
         int speed_of = lfo_speed_of(connection.target);

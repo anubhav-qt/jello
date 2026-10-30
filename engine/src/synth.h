@@ -134,6 +134,9 @@ public:
     void set_connection(int index, const Connection& connection);
     void set_vibrato_key_times(int rise_ms, int fall_ms);
 
+    // The routing list, for the moves of the track's effects.
+    const Routing& routing() const;
+
     // How many beats pass each sample at the song's tempo, for the LFOs in
     // beats, and beat `number` starting on the current sample
     // (Routing::on_beat).
@@ -147,8 +150,7 @@ public:
     // Adds every voice to `frames` frames of stereo (left, right, left,
     // ...). It adds instead of overwriting, so the conductor can render a
     // chunk in pieces and put the click in the same buffer. Many voices can
-    // add up to more than 1.0: the conductor keeps the sum in range with the
-    // soft clip. Every control_samples samples, counted from the first, the
+    // add up to more than 1.0: the master limiter keeps the sum in range. Every control_samples samples, counted from the first, the
     // routing list is worked out again.
     void render(float* out, int frames);
 

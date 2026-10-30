@@ -1192,8 +1192,11 @@ pub fn set_connection(
 
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    let mut wanted = composer.sound_profile().sound();
+    wanted.connections[index] = connection;
+    composer.check_picked_routing(&wanted.connections)?;
     engine.start_audio()?;
-    composer.sound_profile_mut().set_connection(&mut engine, index, connection);
+    composer.apply_sound(&mut engine, &wanted)?;
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
@@ -1263,8 +1266,9 @@ pub fn load_preset(
     let sound = presets::read(&sounds, &name, &SoundProfile::new())?;
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    composer.check_picked_routing(&sound.connections)?;
     engine.start_audio()?;
-    composer.take_preset(&mut engine, &name, &sound);
+    composer.take_preset(&mut engine, &name, &sound)?;
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
@@ -1313,7 +1317,7 @@ pub fn load_starting_sound(sounds: &Path, settings: &Path, composer: &mut Compos
     let Ok(sound) = presets::read(sounds, &name, &SoundProfile::new()) else {
         return;
     };
-    composer.take_preset(engine, &name, &sound);
+    let _ = composer.take_preset(engine, &name, &sound);
 }
 
 // Does what a laptop key does when pressed: plays its note or chord, holds
@@ -1676,7 +1680,7 @@ pub(crate) fn remove_track_on(composer: &mut Composer, engine: &mut Engine, trac
     let removed = track - 1;
     let kept = engine.loop_to_keep();
     composer.tracks_mut().remove(engine, removed);
-    composer.forget_track(removed);
+    composer.forget_track(engine, removed);
 
     // The loop opens again with the later tracks' layers one track down.
     let Some((bars, layers)) = kept else {
@@ -2169,7 +2173,7 @@ mod tests {
         assert_eq!(json["preset"], serde_json::Value::Null);
 
         let sound = SoundProfile::new().sound();
-        composer.take_preset(&mut engine, "Low saw", &sound);
+        composer.take_preset(&mut engine, "Low saw", &sound).unwrap();
         let json = serde_json::to_value(sound_view_of(&mut engine, &composer, Instant::now())).unwrap();
         assert_eq!(json["preset"], "Low saw");
 

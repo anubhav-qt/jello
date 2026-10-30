@@ -548,32 +548,174 @@
   background-position: bottom left;
 }
 
-/* Stop, then the field to type in. */
+/* The input box (docs/design.md#the-input-box): Type, Speak and Hum tabs
+   on top, the files waiting, what the tab shows and the message; under
+   it Attach, the model and Send, which turns into Stop. */
 .agent-bottom {
+  position: relative;
   flex: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 10px 14px 14px;
 }
-.agent-stop {
+.agent-box {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  height: 32px;
-  border: 1px solid rgba(var(--accent), 0.75);
+  flex-direction: column;
+  border: 1px solid rgba(var(--ink), 0.2);
   border-radius: 3px;
-  background: rgba(var(--accent), 0.12);
+  background: rgba(var(--ink), 0.03);
+}
+.agent-box:focus-within,
+.agent-box.is-dropping {
+  border-color: rgba(var(--accent), 0.75);
+}
+.agent-modes {
+  display: flex;
+  border-bottom: 1px solid rgba(var(--ink), 0.12);
+}
+.agent-mode {
+  flex: 1;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
   color: #fff;
   font:
-    800 14px Doto,
+    800 12px Doto,
     monospace;
   text-transform: uppercase;
 }
-.agent-stop kbd {
+.agent-mode:hover {
+  background: rgba(var(--ink), 0.04);
+}
+.agent-mode.is-on {
+  border-bottom-color: rgb(var(--accent));
+  background: rgba(var(--accent), 0.08);
+}
+.agent-mode:disabled {
+  opacity: 0.35;
+}
+.agent-box-part {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 4px;
+  font-size: 12px;
+}
+.agent-box-part p {
+  margin: 0;
+}
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-box-part.agent-row {
+  flex-direction: row;
+}
+.agent-row b,
+.agent-file b {
+  color: rgba(var(--ink), 0.55);
+  font:
+    800 10px Doto,
+    monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agent-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Files waiting to go with the next message, a row each. */
+.agent-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 0;
+  font-size: 12px;
+}
+.agent-files p {
+  margin: 0;
+}
+.agent-file {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 2px;
+}
+.agent-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-file-remove {
+  padding: 1px 6px;
+}
+
+/* The mic's level: seven lavender bars. */
+.agent-meter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+}
+.agent-meter span {
+  width: 4px;
+  border-radius: 1px;
+  background: rgba(var(--accent), 0.9);
+  transition: height 50ms linear;
+}
+
+.agent-message {
+  resize: none;
+  max-height: 180px;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 13px / 1.5 "Open Sans", sans-serif;
+  outline: none;
+}
+.agent-message:disabled {
+  opacity: 0.4;
+}
+
+.agent-under {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-under .agent-model-button {
+  border-color: transparent;
+  color: rgba(var(--ink), 0.7);
+}
+.agent-under .agent-model-button:hover,
+.agent-under .agent-model-button.is-open {
+  border-color: rgba(var(--accent), 0.75);
+  color: #fff;
+}
+.agent-send {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.agent-send kbd {
   font: 10px monospace;
   color: var(--text-2);
+}
+/* The model list opens upward from the model button. */
+.agent-bottom .agent-models {
+  top: auto;
+  right: auto;
+  bottom: 48px;
+  left: 14px;
 }
 /* The files that went with a message, above what the player said. */
 .agent-attached {
@@ -586,8 +728,7 @@
   color: rgba(var(--ink), 0.7);
   font-size: 11px;
 }
-.agent-attached b,
-.agent-waiting-file b {
+.agent-attached b {
   color: rgba(var(--ink), 0.45);
   font-weight: 600;
   text-transform: uppercase;
@@ -595,61 +736,9 @@
   font-size: 10px;
 }
 
-/* Files waiting to go with the next message, above the input. A drag
-   over the window lights the box. */
-.agent-waiting {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  border: 1px dashed rgba(var(--ink), 0.2);
-  border-radius: 3px;
-  font-size: 12px;
-}
-.agent-waiting.is-dropping {
-  border-color: rgba(var(--accent), 0.8);
-}
-.agent-waiting p {
-  margin: 0;
-}
-.agent-waiting-file {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.agent-waiting-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The mic's level while dictating: a thin line that grows. */
-.agent-mic-meter {
-  flex: 1;
-  height: 2px;
-  align-self: center;
-  background: rgba(var(--ink), 0.12);
-}
-.agent-mic-meter span {
-  display: block;
-  height: 100%;
-  background: rgba(var(--accent), 0.9);
-  transition: width 50ms linear;
-}
-
-.agent-field {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.agent-field textarea,
 .agent-sign-in-form input {
   flex: 1;
   min-width: 0;
-  resize: none;
   padding: 8px;
   border: 1px solid rgba(var(--ink), 0.2);
   border-radius: 3px;
@@ -657,12 +746,8 @@
   color: var(--text);
   font: 12px / 1.5 "Open Sans", sans-serif;
 }
-.agent-field textarea:focus,
 .agent-sign-in-form input:focus {
   outline: 1px solid rgba(var(--accent), 0.7);
-}
-.agent-field textarea:disabled {
-  opacity: 0.4;
 }
 
 /* A key the agent holds, playing a phrase: lit like a held key, with a
@@ -1008,8 +1093,8 @@
   color: #fff;
 }
 
-/* Humming: the beat of the count in, a small roll of the notes heard, the
-   description and its vibes. */
+/* Humming: the beat of the count in, a small roll of the notes heard and
+   the vibe words. */
 .agent-hum-beat {
   color: #fff;
   font:
@@ -1037,22 +1122,6 @@
   height: 4px;
   margin-bottom: -2px;
   border-radius: 1px;
-}
-.agent-hum-describe {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.agent-hum-describe textarea {
-  flex: 1;
-  min-width: 0;
-  resize: none;
-  padding: 6px 8px;
-  border: 1px solid rgba(var(--ink), 0.2);
-  border-radius: 3px;
-  background: rgba(var(--ink), 0.03);
-  color: var(--text);
-  font: 12px / 1.5 "Open Sans", sans-serif;
 }
 .agent-hum-vibes {
   display: flex;

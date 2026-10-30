@@ -1,12 +1,15 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 
 #include "click.h"
 #include "clock.h"
+#include "limiter.h"
 #include "looper.h"
 #include "mailbox.h"
+#include "mixer.h"
 #include "sequencer.h"
 #include "song_player.h"
 #include "synth.h"
@@ -30,11 +33,19 @@ struct LooperStatus {
 // Like an orchestra's conductor, it keeps the beat and cues the players: it
 // takes the messages other threads leave in the mailbox, passes notes on to
 // the tracks and the looper, gives Compose's song to the song player and the
-// arrangement's timed messages to the sequencer, plays the click on the beat,
-// and puts the sum through the soft clip, the last step before the speakers.
+// arrangement's timed messages to the sequencer, mixes the tracks, plays the
+// click on the beat, and puts the sum through the master limiter, the last
+// step before the speakers.
 class Conductor {
 public:
     explicit Conductor(int sample_rate);
+
+    // Frees every effect still on its way to the audio thread or back.
+    // Only once the audio has stopped.
+    ~Conductor();
+
+    Conductor(const Conductor&) = delete;
+    Conductor& operator=(const Conductor&) = delete;
 
     // These only put a message in the mailbox. The audio thread acts on it at
     // the start of its next chunk of sound. Only one thread may call them at
@@ -90,7 +101,9 @@ public:
     void set_tuning(int track, float a4_hz);
     // The routing list's LFOs and connections, and how long the vibrato key
     // takes to rise and fall (Synth::set_lfo, set_connection and
-    // set_vibrato_key_times).
+    // set_vibrato_key_times). The LFOs and connections also take a bus's or
+    // the master's chain number for `track`, for its own (Mixer::set_lfo
+    // and set_connection).
     void set_lfo(int track, int index, const LfoSettings& settings);
     void set_connection(int track, int index, const Connection& connection);
     void set_vibrato_key_times(int track, int rise_ms, int fall_ms);
@@ -111,8 +124,63 @@ public:
     bool set_drum_kit(int track, const SampleSet* set);
     void set_drum_pad(int track, int pad, const DrumPad& settings);
 
-    // How loud track `track` plays, from 0 to 1 (Tracks::set_volume). Timed.
+    // How loud track `track` plays, from 0 to 1 (Mixer::set_volume), where
+    // it sits between the speakers, from -1 to 1 (Mixer::set_pan), and how
+    // much of it goes to bus `bus`, from 0 to Mixer::bus_count - 1
+    // (Mixer::set_send). A bus's own volume and pan (Mixer::set_bus_volume
+    // and set_bus_pan). The limiter's settings (Limiter::set). All timed.
     void set_track_volume(int track, float volume);
+    void set_track_pan(int track, float pan);
+    void set_send(int track, int bus, float amount);
+    void set_bus_volume(int bus, float volume);
+    void set_bus_pan(int bus, float pan);
+    void set_limiter(const LimiterSettings& settings);
+
+    // Effects (docs/design.md#mix-in-the-engine), in chain `chain`, from 0
+    // to Mixer::chain_count - 1, slot `slot`, from 0 to Chain::slot_count -
+    // 1, which the caller makes sure of. set_effect puts a new effect of
+    // `kind`, at its starting values, or none, in the slot, switched on
+    // (Chain::swap). The effect is made here, on the calling thread. The one
+    // it replaces comes back from the audio thread and is freed on a later
+    // call. move_effect moves a slot's effect to slot `to` (Chain::move).
+    // Both return false and send nothing if the mailbox is full, and are
+    // never timed. set_effect_on and set_effect_value switch the effect on
+    // or off and set its values (Chain::set_on and set_value). Both timed.
+    bool set_effect(int chain, int slot, EffectKind kind);
+    bool move_effect(int chain, int from, int to);
+    void set_effect_on(int chain, int slot, bool on);
+    void set_effect_value(int chain, int slot, int value, float number);
+
+    // The order the chains before the master run in, for sidechains
+    // (Mixer::set_order), which the caller makes sure of. Returns false and
+    // sends nothing if the mailbox is full. Never timed.
+    bool set_chain_order(const std::array<int, Mixer::master_chain>& order);
+
+    // The most slot `slot`'s effect in chain `chain` turned the sound down
+    // in the last chunk, in dB, 0 for an empty slot
+    // (Chain::take_reduction_db).
+    float effect_reduction_db(int chain, int slot) const;
+
+    // How many effects the engine holds, in chains or on their way, after
+    // freeing the ones that have come back. Only the sending thread may ask.
+    int effect_count();
+
+    // Makes the limiter look 1 ms ahead, for WAV renders, and returns how
+    // many frames that holds the sound back (Limiter::use_lookahead). Only
+    // before the first render, and never with the speakers running.
+    int use_lookahead();
+
+    // How many more messages the mailbox holds, and how many were ever lost
+    // to it being full. Only the sending thread may ask.
+    std::uint64_t message_room() const;
+    std::uint64_t dropped_messages() const;
+
+    // Acts on every waiting message on the calling thread, without moving
+    // the sound on. Only with no audio running.
+    void take_waiting_messages();
+
+    // The most the limiter turned the sound down in the last chunk, in dB.
+    float limiter_reduction_db() const;
 
     // A layer's notes and volume for the sequencer, which plays the
     // arrangement's layers on the tracks' layer slots, from 0 to
@@ -184,12 +252,18 @@ private:
     // Puts a timed message in the mailbox, or in the sequencer's while
     // time_next is in force.
     void send(const Event& event);
+    // Sends now, counting the message as lost if the mailbox is full.
+    bool send_counted(const Event& event);
 
     // Acts on every message waiting in the mailbox, oldest first.
     void take_messages();
 
     // Does what one message asks.
     void handle(const Event& event);
+
+    // Frees every effect the audio thread has swapped out since the last
+    // time. Only the sending thread may call it.
+    void free_replaced_effects();
 
     // Right Shift's press on track `track`, on the audio thread.
     void handle_looper_press(int track);
@@ -200,14 +274,32 @@ private:
     // Stops the beat once neither the click nor the looper needs it.
     void stop_beat_if_unused();
 
+    // Tells the effects how long a beat is at the tempo asked for, while
+    // the beat is stopped, as it does the tracks.
+    void count_beats_while_stopped();
+
     // Tells the screen what the looper is doing, and how far the song has
     // played, at the end of each chunk.
     void publish_looper_status();
     void publish_song_position();
     void publish_sequence_position();
     void publish_sets_in_use();
+    void publish_reductions();
+
+    int sample_rate_;
 
     EventMailbox mailbox_;
+
+    // Effects the audio thread swapped out, on their way back to be freed,
+    // and how many were ever made and freed. Only the sending thread uses
+    // the counts.
+    FreedEffects freed_effects_;
+    int effects_made_ = 0;
+    int effects_freed_ = 0;
+
+    // How many messages were lost to a full mailbox. Only the sending thread
+    // uses it.
+    std::uint64_t dropped_messages_ = 0;
 
     // The arrangement's timed messages, on their way to the sequencer.
     TimedEvents timed_events_;
@@ -220,6 +312,8 @@ private:
     LoadedNotes loaded_notes_;
 
     Tracks tracks_;
+    Mixer mixer_;
+    Limiter limiter_;
     Clock clock_;
     Click click_;
     Looper looper_;
@@ -280,5 +374,10 @@ private:
     std::uint64_t sample_messages_sent_ = 0;
     std::uint64_t sample_messages_handled_ = 0;
     std::atomic<std::uint32_t> shown_sets_in_use_{0};
+
+    // What the limiter, and each slot's effect, last told about how far it
+    // turned the sound down.
+    std::atomic<float> shown_limiter_reduction_{0.0f};
+    std::array<std::array<std::atomic<float>, Chain::slot_count>, Mixer::chain_count> shown_reductions_{};
     std::atomic<std::uint64_t> shown_sample_handled_{0};
 };

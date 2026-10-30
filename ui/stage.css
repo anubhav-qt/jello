@@ -389,6 +389,23 @@
     text-shadow 900ms ease-out;
 }
 
+/* In Compose a let-go key fades out faster, in half a second, so its fade
+   is never mistaken for guidance, which changes at once. */
+.screen-body.is-composing .key {
+  transition:
+    background-color 500ms ease-out,
+    border-color 500ms ease-out,
+    box-shadow 500ms ease-out,
+    color 500ms ease-out;
+}
+
+.screen-body.is-composing .key .key-note {
+  transition:
+    font-variation-settings 500ms ease-out,
+    color 500ms ease-out,
+    text-shadow 500ms ease-out;
+}
+
 .stage .key-octave {
   opacity: 0.6;
 }
@@ -522,14 +539,16 @@
    up in their own color, the strongest most, over the key's own background
    so holding the key still lights and fades as usual. Three squares in the
    corner light like signal bars: three for the strongest, one for the
-   third. */
+   third. Guidance shows and goes at once, so it only uses what the key's
+   slow fades leave alone: a background image, a filter for glow, and the
+   text's fill color instead of its color. */
 .stage .key[data-best] {
   background-image: linear-gradient(rgba(var(--accent), var(--best-fill)), rgba(var(--accent), var(--best-fill)));
 }
 
 .stage .key[data-best="1"] {
   --best-fill: 0.24;
-  box-shadow: 0 0 16px rgba(var(--accent), 0.35);
+  filter: drop-shadow(0 0 8px rgba(var(--accent), 0.35));
 }
 
 .stage .key[data-best="2"] {
@@ -541,8 +560,8 @@
 }
 
 .stage .key[data-best] .key-note {
-  color: rgb(var(--accent));
-  text-shadow: 0 0 8px rgba(var(--accent), 0.6);
+  -webkit-text-fill-color: rgb(var(--accent));
+  filter: drop-shadow(0 0 4px rgba(var(--accent), 0.6));
 }
 
 .stage .key-best {
@@ -569,20 +588,15 @@
 
 /* Compose's guidance on the melody keys: a note outside the song's key
    dims like an outside chord. The notes of the chords held now fill with
-   their color, even outside the key: at once, then fading out slowly when
-   the chord is let go, like a held key. */
+   their color, even outside the key, at once both ways, like the best
+   chords above. */
 .stage .key.is-outside .key-label,
 .stage .key.is-outside .key-note {
   opacity: 0.35;
 }
 
 .stage .key.is-chord-note {
-  background-color: rgba(var(--accent), 0.2);
-  transition:
-    background-color 40ms,
-    border-color 40ms,
-    box-shadow 40ms,
-    color 40ms;
+  background-image: linear-gradient(rgba(var(--accent), 0.2), rgba(var(--accent), 0.2));
 }
 
 .stage .key.is-chord-note .key-label,
@@ -591,11 +605,7 @@
 }
 
 .stage .key.is-chord-note .key-note {
-  color: rgb(var(--accent));
-  transition:
-    font-variation-settings 40ms,
-    color 40ms,
-    text-shadow 40ms;
+  -webkit-text-fill-color: rgb(var(--accent));
 }
 
 .stage .key.is-held,
