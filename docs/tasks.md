@@ -8,6 +8,7 @@ Tests were run; these were not checked:
 - Hear Electric Clean, Crunch, Lead and Metal, then tune them by ear. The
   acoustic is approved. Presets saved earlier stay as saved: remove one from
   the Sounds folder to get the new values.
+- Loops replay a string's move as a fresh pluck, and Compose doesn't time moves.
 - Windows.
 
 ## Grand piano: left to check

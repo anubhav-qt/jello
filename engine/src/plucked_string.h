@@ -33,8 +33,8 @@ struct StringSettings {
 
 class PluckedString {
 public:
-    // How many samples of memory one string needs at `sample_rate`, a power
-    // of two.
+    // How many samples of memory one string needs at `sample_rate`: a delay
+    // line a power of two long, and as much again to move it to another note.
     static int memory_size(int sample_rate);
 
     // Gives the string its `memory`, memory_size samples long, unwritten
@@ -47,6 +47,16 @@ public:
     // give it its own noise, so no two plucks are alike.
     void pluck(double cycle_step, double hardness, const StringSettings& settings, std::uint64_t press_number,
                std::uint64_t place);
+
+    // Moves it at once to another note with nothing plucked: what is left of
+    // its wave is stretched to the new length, so it carries on as loud and
+    // as bright, from where it was. `from_step` and `to_step` are the cycle
+    // steps of the two notes.
+    void jump(double from_step, double to_step);
+
+    // It is sliding to the note at `cycle_step`: from here on it rings away
+    // at that note's pace.
+    void head_for(double cycle_step);
 
     // How high it is right now, about -1 to 1.
     double height() const;
@@ -74,7 +84,12 @@ private:
     void write_pluck(int period, double hardness, const StringSettings& settings, std::uint64_t press_number,
                      std::uint64_t place);
 
+    // What one trip round a delay of `period` samples costs.
+    void set_loop_gain(double period);
+
     float* memory_ = nullptr;
+    // Holds a stretched wave while it is copied back.
+    float* stretched_ = nullptr;
     int size_ = 0;
     int mask_ = 0;
     int sample_rate_ = 48000;
@@ -82,6 +97,7 @@ private:
 
     // What each trip costs: how far it falls, and how much it is averaged
     // with the sample before, which takes off the top.
+    double decay_seconds_ = 0.001;
     double loop_gain_ = 0.0;
     double smoothing_ = 0.0;
     double last_read_ = 0.0;

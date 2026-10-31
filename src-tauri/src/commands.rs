@@ -19,7 +19,7 @@ use crate::engine::{
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
 use crate::instruments::{self, Status};
-use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, layer_number_of};
+use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, StringChanges, layer_number_of};
 use crate::key_stats::KeyStats;
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
@@ -1481,11 +1481,12 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HitDrum(pad) => {
             engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
         }
-        KeyAction::Pluck { stop, note, velocity } => {
-            for stopped in stop {
-                engine.note_off(stopped);
-            }
-            engine.note_on(note, velocity);
+        KeyAction::Pluck { after, note, velocity } => match after {
+            Some(from) => engine.pluck_string_after(from, note, velocity),
+            None => engine.note_on(note, velocity),
+        },
+        KeyAction::ChangeStrings(changes) => {
+            change_strings(engine, changes);
         }
         KeyAction::StopNotes(notes) => {
             for note in notes {
@@ -1556,6 +1557,16 @@ pub(crate) fn release_key_on(key_map: &mut KeyMap, composer: &mut Composer, engi
     }
     for note in notes {
         engine.note_off(note);
+    }
+    change_strings(engine, key_map.take_released_changes());
+}
+
+fn change_strings(engine: &mut Engine, changes: StringChanges) {
+    for note in changes.stops {
+        engine.note_off(note);
+    }
+    for (from, to) in changes.moves {
+        engine.move_string(from, to);
     }
 }
 

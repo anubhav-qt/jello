@@ -146,6 +146,8 @@ unsafe extern "C" {
     fn jello_engine_destroy(engine: *mut JelloEngine);
     fn jello_engine_start_audio(engine: *mut JelloEngine) -> bool;
     fn jello_engine_note_on(engine: *mut JelloEngine, track: c_int, note: c_int, velocity: c_int);
+    fn jello_engine_move_string(engine: *mut JelloEngine, track: c_int, from: c_int, to: c_int);
+    fn jello_engine_pluck_string_after(engine: *mut JelloEngine, track: c_int, from: c_int, to: c_int, velocity: c_int);
     fn jello_engine_note_off(engine: *mut JelloEngine, track: c_int, note: c_int);
     fn jello_engine_all_notes_off(engine: *mut JelloEngine);
     fn jello_engine_set_track_volume(engine: *mut JelloEngine, track: c_int, volume: f32);
@@ -1497,6 +1499,34 @@ impl Engine {
         let note = c_int::from(note);
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_note_off(self.raw, track, note) };
+    }
+
+    // A guitar string ringing `from` moves to `to` with nothing plucked, what
+    // is left of it carrying on, on the track it started on.
+    pub fn move_string(&mut self, from: u8, to: u8) {
+        let track = self.track_of_string(from, to);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_move_string(self.raw, track, c_int::from(from), c_int::from(to)) };
+    }
+
+    // A guitar string ringing `from` is plucked on `to`, so `from` stops.
+    pub fn pluck_string_after(&mut self, from: u8, to: u8, velocity: u8) {
+        let track = self.track_of_string(from, to);
+        let velocity = c_int::from(velocity);
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_pluck_string_after(self.raw, track, c_int::from(from), c_int::from(to), velocity) };
+    }
+
+    // The track a string ringing `from` plays on, which `to` then belongs to.
+    fn track_of_string(&mut self, from: u8, to: u8) -> c_int {
+        let mut track = self.track;
+        if usize::from(from) < PITCH_COUNT {
+            track = self.live_tracks[usize::from(from)];
+        }
+        if usize::from(to) < PITCH_COUNT {
+            self.live_tracks[usize::from(to)] = track;
+        }
+        track as c_int
     }
 
     // Picks track `track`, from 0, for the notes, sound settings, song and
@@ -4636,14 +4666,225 @@ mod tests {
     }
 
     #[test]
-    fn a_string_bends_with_the_glide_like_any_note() {
-        // Vibrato and glide move its delay, so nothing breaks while it bends.
+    fn another_string_never_glides_from_this_one() {
+        let play = |glide_key: bool| -> Vec<f32> {
+            let mut engine = string_engine(START_STRING);
+            engine.set_glide_time(200);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 50);
+            engine.set_glide_key(glide_key);
+            engine.note_on(A4 + 12, VELOCITY);
+            render_left(&mut engine, 300)
+        };
+        assert_eq!(play(true), play(false));
+    }
+
+    fn long_string() -> StringSound {
+        StringSound {
+            decay_ms: 20_000,
+            ..START_STRING
+        }
+    }
+
+    #[test]
+    fn a_moved_string_lands_on_its_new_note_whichever_way_it_goes() {
+        for (from, to) in [(A4, A4 + 7), (A4, A4 - 12), (A4, A4 - 19), (A4 - 24, A4 + 12)] {
+            let mut engine = string_engine(long_string());
+            engine.note_on(from, VELOCITY);
+            render_left(&mut engine, 200);
+            engine.move_string(from, to);
+            render_left(&mut engine, 20);
+            let after = render_left(&mut engine, 200);
+            let wanted = 440.0 * 2f64.powf((f64::from(to) - f64::from(A4)) / 12.0);
+            let heard = pitch_near(&after, wanted);
+            assert!((heard / wanted - 1.0).abs() < 0.01, "{from} to {to}: {heard} Hz, not {wanted}");
+        }
+    }
+
+    #[test]
+    fn a_moved_string_carries_on_from_what_was_left_with_nothing_plucked() {
+        let mut string = long_string();
+        string.decay_ms = 1000;
+        let mut engine = string_engine(string);
+        engine.note_on(A4, VELOCITY);
+        let start = rms_of(&render_left(&mut engine, 50));
+        render_left(&mut engine, 700);
+        let before = rms_of(&render_left(&mut engine, 50));
+        assert!(before < start * 0.4, "it has rung down: {before} from {start}");
+
+        engine.move_string(A4, A4 + 2);
+        let after = rms_of(&render_left(&mut engine, 50));
+        assert!(after < before * 1.2, "nothing plucked it: {after} after {before}");
+        assert!(after > before * 0.4, "it carried on: {after} after {before}");
+    }
+
+    #[test]
+    fn a_moved_string_does_not_click() {
+        for to in [A4 + 2, A4 - 2, A4 - 12, A4 + 12] {
+            let mut engine = string_engine(long_string());
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 100);
+            let before = render_left(&mut engine, 50);
+            engine.move_string(A4, to);
+            let after = render_left(&mut engine, 50);
+            let tallest_before = peak(&before);
+            let tallest_after = peak(&after);
+            assert!(tallest_after < tallest_before * 1.3, "{to}: {tallest_after} after {tallest_before}");
+            for sample in after {
+                assert!(sample.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn a_moved_string_slides_only_while_the_glide_key_is_held() {
+        let halfway = |glide_key: bool| -> f64 {
+            let mut engine = string_engine(long_string());
+            engine.set_glide_time(400);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 100);
+            engine.set_glide_key(glide_key);
+            engine.move_string(A4, A4 + 12);
+            render_left(&mut engine, 175);
+            hz_by_crossings(&render_left(&mut engine, 50))
+        };
+        // Halfway through the cents, about 622 Hz.
+        let sliding = halfway(true);
+        assert!(sliding > 500.0 && sliding < 720.0, "{sliding} Hz");
+        let jumped = halfway(false);
+        assert!(jumped > 840.0, "{jumped} Hz");
+    }
+
+    // The same, averaged first, so a string's bright top doesn't add crossings.
+    fn hz_of_lows(samples: &[f32]) -> f64 {
+        let mut averaged = Vec::new();
+        for chunk in samples.windows(24) {
+            averaged.push(chunk.iter().sum::<f32>());
+        }
+        hz_by_crossings(&averaged)
+    }
+
+    // How fast `samples`, 48 kHz, cross upward through the middle line, in Hz.
+    fn hz_by_crossings(samples: &[f32]) -> f64 {
+        let mut crossings = 0;
+        for at in 1..samples.len() {
+            if samples[at - 1] < 0.0 && samples[at] >= 0.0 {
+                crossings += 1;
+            }
+        }
+        f64::from(crossings) * 48_000.0 / samples.len() as f64
+    }
+
+    #[test]
+    fn a_string_plucked_after_another_note_slides_from_it_only_on_the_glide_key() {
+        let early = |glide_key: bool| -> f64 {
+            let mut engine = string_engine(long_string());
+            engine.set_glide_time(800);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 100);
+            engine.set_glide_key(glide_key);
+            engine.pluck_string_after(A4, A4 + 12, VELOCITY);
+            hz_of_lows(&render_left(&mut engine, 60))
+        };
+        let sliding = early(true);
+        assert!(sliding < 600.0, "{sliding} Hz");
+        let plain = early(false);
+        assert!(plain > 800.0, "{plain} Hz");
+    }
+
+    #[test]
+    fn a_looper_records_a_moved_string_as_one_note_ending_and_another_starting() {
+        let mut engine = string_engine(long_string());
+        engine.press_looper();
+        render_frames_left(&mut engine, RECORDING_STARTS as usize + 10_000, usize::MAX);
+        engine.note_on(A4, VELOCITY);
+        render_frames_left(&mut engine, 10_000, usize::MAX);
+        engine.move_string(A4, A4 + 2);
+        render_frames_left(&mut engine, 10_000, usize::MAX);
+        let notes = first_layer_notes(&mut engine);
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].note, A4);
+        assert_eq!(notes[1].note, A4 + 2);
+        assert_eq!(notes[0].end, Some(notes[1].start));
+    }
+
+    #[test]
+    fn a_string_moved_down_sounds_the_low_note_and_not_its_old_wave_repeated() {
+        let mut engine = string_engine(long_string());
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 200);
+        engine.move_string(A4, A4 - 12);
+        render_left(&mut engine, 20);
+        let heard = hz_of_lows(&render_left(&mut engine, 200));
+        assert!(heard < 300.0, "{heard} Hz");
+    }
+
+    #[test]
+    fn a_moved_string_rings_away_at_its_new_note_s_pace() {
+        let fall = |moved: bool| -> f32 {
+            let mut string = long_string();
+            string.decay_ms = 1000;
+            let mut engine = string_engine(string);
+            if moved {
+                engine.note_on(A4 - 24, VELOCITY);
+                render_left(&mut engine, 10);
+                engine.move_string(A4 - 24, A4);
+            } else {
+                engine.note_on(A4, VELOCITY);
+                render_left(&mut engine, 10);
+            }
+            let first = rms_of(&render_left(&mut engine, 50));
+            render_left(&mut engine, 300);
+            rms_of(&render_left(&mut engine, 50)) / first
+        };
+        let moved = fall(true);
+        let fresh = fall(false);
+        assert!(moved < fresh * 1.4 && moved > fresh * 0.7, "{moved} against {fresh}");
+    }
+
+    #[test]
+    fn a_sliding_pluck_is_as_full_as_a_plain_one() {
+        let level = |glide_key: bool| -> f32 {
+            let mut engine = string_engine(long_string());
+            engine.set_glide_time(800);
+            engine.note_on(A4, VELOCITY);
+            render_left(&mut engine, 300);
+            engine.set_glide_key(glide_key);
+            engine.pluck_string_after(A4, A4 + 12, VELOCITY);
+            render_left(&mut engine, 100);
+            rms_of(&render_left(&mut engine, 30))
+        };
+        let sliding = level(true);
+        let plain = level(false);
+        assert!(sliding > plain * 0.8, "{sliding} against {plain}");
+    }
+
+    #[test]
+    fn moving_a_string_that_fell_silent_does_nothing() {
         let mut engine = string_engine(START_STRING);
-        engine.set_glide_time(200);
+        engine.move_string(A4, A4 + 2);
+        assert_eq!(peak(&render_left(&mut engine, 50)), 0.0);
+    }
+
+    #[test]
+    fn a_moved_string_lets_go_on_its_new_note() {
+        let mut engine = string_engine(long_string());
         engine.note_on(A4, VELOCITY);
         render_left(&mut engine, 50);
+        engine.move_string(A4, A4 + 2);
+        render_left(&mut engine, 50);
+        engine.note_off(A4 + 2);
+        render_left(&mut engine, 300);
+        assert_eq!(peak(&render_left(&mut engine, 50)), 0.0);
+    }
+
+    #[test]
+    fn a_string_stays_finite_while_it_slides() {
+        let mut engine = string_engine(START_STRING);
+        engine.note_on(A4, VELOCITY);
+        engine.set_glide_time(200);
         engine.set_glide_key(true);
-        engine.note_on(A4 + 12, VELOCITY);
+        engine.move_string(A4, A4 + 12);
         for sample in render_left(&mut engine, 400) {
             assert!(sample.is_finite());
         }

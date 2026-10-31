@@ -741,6 +741,29 @@ void jello_engine_note_on(JelloEngine* engine, int track, int note, int velocity
     engine->conductor.note_on(track, note, velocity);
 }
 
+void jello_engine_move_string(JelloEngine* engine, int track, int from, int to) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (from < 0 || from > 127 || to < 0 || to > 127) {
+        return;
+    }
+    engine->conductor.move_string(track, from, to);
+}
+
+void jello_engine_pluck_string_after(JelloEngine* engine, int track, int from, int to, int velocity) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (from < 0 || from > 127 || to < 0 || to > 127) {
+        return;
+    }
+    if (velocity < 1 || velocity > 127) {
+        return;
+    }
+    engine->conductor.pluck_string_after(track, from, to, velocity);
+}
+
 void jello_engine_note_off(JelloEngine* engine, int track, int note) {
     if (!is_valid_track(track)) {
         return;

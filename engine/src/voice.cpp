@@ -366,6 +366,22 @@ void Voice::slide_in(double from_hz, int glide_ms, const Routing& routing) {
     Moves moves = add_moves(routing, readings, true);
     start_glide(from_hz, start_sample_, moved_glide_ms(glide_ms, routing, 0.0));
 
+    // A string was just plucked at the note's length, so it starts at the
+    // slide's first pitch instead.
+    if (glide_samples_ > 0) {
+        double ratio = from_hz / hz_;
+        for (int c = 0; c < copy_count_; c++) {
+            Copy& copy = copies_[c];
+            for (int o = 0; o < oscillator_count; o++) {
+                if (kinds_[o] == Kind::string) {
+                    double step = copy.phase_steps[o].value;
+                    copy.strings[o].jump(step, step * ratio);
+                    copy.strings[o].head_for(step);
+                }
+            }
+        }
+    }
+
     // Nothing has played yet, so the live settings start again right where
     // the slide starts, as if the note had started there.
     head_for(moves, 0, start_sample_);
@@ -383,6 +399,30 @@ void Voice::bend_to(int note, std::uint64_t press_number, std::uint64_t now, dou
 
     double age_ms = static_cast<double>(now - start_sample_) * 1000.0 / sample_rate_;
     start_glide(from_hz, now, moved_glide_ms(glide_ms, routing, age_ms));
+}
+
+void Voice::move_string(int note, std::uint64_t now, double a4_hz, int glide_ms, const Routing& routing) {
+    double from_hz = pitch_at(now);
+    bend_to(note, press_number_, now, a4_hz, glide_ms, routing);
+    double ratio = hz_ / from_hz;
+
+    for (int c = 0; c < copy_count_; c++) {
+        Copy& copy = copies_[c];
+        for (int o = 0; o < oscillator_count; o++) {
+            if (kinds_[o] != Kind::string) {
+                continue;
+            }
+            Line& step = copy.phase_steps[o];
+            double to_step = step.value * ratio;
+            if (glide_samples_ == 0) {
+                copy.strings[o].jump(step.value, to_step);
+                step.head_to(to_step, 0);
+            } else {
+                copy.strings[o].head_for(to_step);
+            }
+        }
+    }
+    quiet_samples_ = 0;
 }
 
 int Voice::moved_glide_ms(int glide_ms, const Routing& routing, double age_ms) const {

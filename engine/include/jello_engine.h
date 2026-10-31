@@ -56,6 +56,17 @@ void jello_engine_note_on(JelloEngine* engine, int track, int note, int velocity
 // Lets go of `note`, so it fades out. A note outside 0 to 127 is ignored.
 void jello_engine_note_off(JelloEngine* engine, int track, int note);
 
+// A guitar string ringing `from` moves to `to` with nothing plucked, what is
+// left of it carrying on, sliding while the glide key is held. The looper
+// records it as `from` ending and `to` starting. A note outside 0 to 127 is
+// ignored.
+void jello_engine_move_string(JelloEngine* engine, int track, int from, int to);
+
+// A guitar string ringing `from` is plucked on `to` at `velocity`, so `from`
+// stops. While the glide key is held, the pluck slides in from `from`. A note
+// or velocity outside its range is ignored.
+void jello_engine_pluck_string_after(JelloEngine* engine, int track, int from, int to, int velocity);
+
 // Lets go of every live note on every track.
 void jello_engine_all_notes_off(JelloEngine* engine);
 

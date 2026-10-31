@@ -57,6 +57,8 @@ public:
     // sequencer instead, due on the sample time_next gave.
     void note_on(int track, int note, int velocity);  // timed
     void note_off(int track, int note);               // timed
+    void move_string(int track, int from, int to);    // timed
+    void pluck_string_after(int track, int from, int to, int velocity);  // timed
     // Lets go of every live note on every track.
     void all_notes_off();
     // Oscillator `index`, from 0 (Synth::set_oscillator). Timed.

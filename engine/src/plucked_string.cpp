@@ -16,6 +16,10 @@ constexpr double lowest_hz = 27.5;
 // The shortest delay it reads, in samples: reading needs two samples ahead.
 constexpr double shortest_delay = 2.5;
 
+// How many samples past one period a jump to another note writes, for reading
+// between samples and past the smoothing.
+constexpr int reading_margin = 4;
+
 // How much a pluck is its shape, with the rest noise. The shape gives it its
 // body and the noise its scratch.
 constexpr double shape_share = 0.6;
@@ -57,13 +61,14 @@ int PluckedString::memory_size(int sample_rate) {
     while (size < needed) {
         size *= 2;
     }
-    return size;
+    return size * 2;
 }
 
 void PluckedString::attach(float* memory, int size, int sample_rate) {
     memory_ = memory;
-    size_ = size;
-    mask_ = size - 1;
+    size_ = size / 2;
+    stretched_ = memory + size_;
+    mask_ = size_ - 1;
     sample_rate_ = sample_rate;
 }
 
@@ -94,9 +99,8 @@ void PluckedString::pluck(double cycle_step, double hardness, const StringSettin
 
     double longest_delay = size_ - 4.0;
     double period = std::clamp(1.0 / cycle_step, shortest_delay, longest_delay);
-    double seconds_per_trip = period / sample_rate_;
-    double decay = std::max(static_cast<double>(settings.decay_seconds), 0.001);
-    loop_gain_ = std::pow(10.0, -3.0 * seconds_per_trip / decay);
+    decay_seconds_ = std::max(static_cast<double>(settings.decay_seconds), 0.001);
+    set_loop_gain(period);
     smoothing_ = 0.5 * (1.0 - std::clamp(static_cast<double>(settings.tone), 0.0, 1.0));
     last_read_ = 0.0;
     pickup_ = settings.pickup;
@@ -113,6 +117,39 @@ void PluckedString::pluck(double cycle_step, double hardness, const StringSettin
     }
 
     write_pluck(static_cast<int>(std::round(period)), hardness, settings, press_number, place);
+}
+
+void PluckedString::set_loop_gain(double period) {
+    double seconds_per_trip = period / sample_rate_;
+    loop_gain_ = std::pow(10.0, -3.0 * seconds_per_trip / decay_seconds_);
+}
+
+void PluckedString::jump(double from_step, double to_step) {
+    if (memory_ == nullptr) {
+        return;
+    }
+    double longest_delay = size_ - 4.0;
+    double from_period = std::clamp(1.0 / from_step, shortest_delay, longest_delay);
+    double to_period = std::clamp(1.0 / to_step, shortest_delay, longest_delay);
+    double stretch = from_period / to_period;
+
+    // A little past one period, for reading between samples. The newest sample
+    // stays the newest and the next one read stays the next one heard, so the
+    // sound doesn't jump.
+    int count = std::min(static_cast<int>(std::ceil(to_period)) + reading_margin, size_ - 1);
+    for (int i = 0; i < count; i++) {
+        double back = std::max(static_cast<double>(count - i) * stretch, shortest_delay);
+        stretched_[i] = static_cast<float>(read_back(back));
+    }
+    for (int i = 0; i < count; i++) {
+        memory_[(write_ - count + i) & mask_] = stretched_[i];
+    }
+    set_loop_gain(to_period);
+}
+
+void PluckedString::head_for(double cycle_step) {
+    double longest_delay = size_ - 4.0;
+    set_loop_gain(std::clamp(1.0 / cycle_step, shortest_delay, longest_delay));
 }
 
 void PluckedString::write_pluck(int period, double hardness, const StringSettings& settings,

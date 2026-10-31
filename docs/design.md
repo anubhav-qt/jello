@@ -1002,7 +1002,19 @@ Guitars play on laptop keys with no recordings
   shift octaves. Space stops every string, and plucks are softer while it is
   held.
 - **Ringing.** A string rings after its key comes up, until it is plucked on
-  another note, a left-hand key moves it off its note, or it rings away.
+  another note, a palm stops it, or it rings away. Only a string's own next
+  note replaces it, so a chord change leaves every other string ringing.
+- **The left hand on ringing strings.** A left-hand key gives each ringing
+  string its note in the new shape with nothing plucked: what is left of the
+  string's wave is stretched to the new note, as loud and as bright as it was
+  (`PluckedString::jump`). A string on the same note, or one the shape leaves
+  silent, is untouched. Letting go of a shape with an older one still held moves
+  back to it. Letting go of the last one moves nothing, so changing chords never
+  passes through the open strings; the next pluck or shape decides.
+- **Glide.** The glide key slides a string's own move, or a pluck leaving another
+  note on that string. A string never slides from another string's note.
+- **Loops.** The looper records a move as one note ending and the next starting,
+  so a loop plays it as a fresh pluck for now, and Compose only hears plucks.
 - **Shapes.** Each scale has a default (`src-tauri/src/guitar.rs`). Its open
   strings tune down to its notes from E2 A2 D3 G3 B3 E4. The number row walks
   every string up the scale, QWERT holds its major chords, ASDFG its minor

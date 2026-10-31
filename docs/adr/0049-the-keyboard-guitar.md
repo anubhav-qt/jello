@@ -17,9 +17,10 @@ and with none held the strings play open. Bare arrows shift octaves as on any
 other sound.
 
 A plucked string rings after its key comes up, until it is plucked on another
-note, the left hand moves it off its note, or it rings away. Space, the pedal
-elsewhere, is a palm: it stops every string, and plucks are softer while it is
-held.
+note or rings away. A left-hand key moves a ringing string to its new note with
+nothing plucked, carrying on from what is left of it, and leaves a string on the
+same note alone. Glide stays on one string. Space, the pedal elsewhere, is a
+palm: it stops every string, and plucks are softer while it is held.
 
 Shapes follow [ADR 0047](0047-song-key-mappings.md): keys play nothing until a
 scale is picked, each of the 11 scales has a default, and a song or a section
