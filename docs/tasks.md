@@ -1,5 +1,16 @@
 # Active tasks
 
+## Grand piano: left to check
+
+Built ([ADR 0048](adr/0048-the-grand-piano.md), [design](design.md#sampler)).
+Tests and the real app's controls were checked; these were not:
+
+- Hear it: the touches, the release recordings, the pedal's own sounds and a
+  held chord under the pedal, on the Grand Piano preset.
+- Windows.
+- Later: a room reverb belongs to Mix, whose UI isn't built; `jello_mix` can
+  add one now.
+
 ## Song key mappings: left to check
 
 Built ([ADR 0047](adr/0047-song-key-mappings.md), [design](design.md#song-key-mappings)).

@@ -15,6 +15,10 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands;
+use crate::engine::{Kind, LOUDNESS_SHORTEST_MS, LoudnessEnvelope, Oscillator};
+use crate::presets;
+use crate::sound_file::Sound;
+use crate::sound_profile::SoundProfile;
 
 // How often the screen hears how far a download has got.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
@@ -25,6 +29,12 @@ const UNPACKING: &str = ".unpacking";
 
 // How deep in an unpacked download to look for its SFZ file.
 const DEEPEST_LOOK: usize = 4;
+
+// The preset the piano comes with: only a place to start from, every value of
+// it the song's own to change once loaded. Notes sound as recorded, and a key
+// coming up dampens the strings over this long (docs/adr/0048-the-grand-piano.md).
+const PIANO_PRESET: &str = "Grand Piano";
+const PIANO_RELEASE_MS: u32 = 400;
 
 // One starter instrument: what it is called once fetched, where it comes
 // from, how big the download is, and whose it is.
@@ -41,8 +51,10 @@ pub struct Starter {
 pub const STARTERS: [Starter; 2] = [
     Starter {
         name: "Salamander Grand Piano",
-        url: "https://freepats.zenvoid.org/Piano/SalamanderGrandPiano/SalamanderGrandPiano-SFZ+FLAC-V3+20200602.tar.gz",
-        bytes: 741_757_374,
+        // One exact version, so the size below stays true. GitHub is far
+        // quicker than FreePats, which took about an hour.
+        url: "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/3382bf9496bba2486f5ab0de55a264d1dfc38404.tar.gz",
+        bytes: 748_441_806,
         drums: false,
         license: "CC BY 3.0",
         credit: "Alexander Holm",
@@ -142,7 +154,43 @@ fn fetch(app: &AppHandle, starter: &Starter, folder: &Path) -> Result<(), String
     let result = result.and_then(|_| unpack(&archive, &unpacking));
     let result = result.and_then(|_| keep_instrument(starter, &unpacking, folder));
     let _ = fs::remove_dir_all(&unpacking);
-    result
+    result?;
+
+    // An instrument that won't come with its preset still plays.
+    if !starter.drums {
+        if let Ok(sounds) = commands::sounds_folder(app) {
+            let _ = save_piano_preset(&sounds, starter.name);
+        }
+    }
+    Ok(())
+}
+
+// Saves the piano's preset for instrument `name` in `folder`, unless the player
+// already has one called that.
+fn save_piano_preset(folder: &Path, name: &str) -> Result<(), String> {
+    for preset in presets::list(folder, None) {
+        if preset.name == PIANO_PRESET {
+            return Ok(());
+        }
+    }
+    presets::save(folder, PIANO_PRESET, &piano_sound(name))?;
+    Ok(())
+}
+
+fn piano_sound(name: &str) -> Sound {
+    let mut sound = SoundProfile::new().sound();
+    sound.oscillators[0] = Oscillator {
+        kind: Kind::Sample,
+        ..sound.oscillators[0]
+    };
+    sound.instruments[0] = Some(String::from(name));
+    sound.loudness_envelope = LoudnessEnvelope {
+        attack_ms: LOUDNESS_SHORTEST_MS,
+        decay_ms: LOUDNESS_SHORTEST_MS,
+        sustain: 100,
+        release_ms: PIANO_RELEASE_MS,
+    };
+    sound
 }
 
 // The download's file name: the last part of its address.
@@ -291,6 +339,25 @@ fn copy_notes(from: &Path, into: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presets::test_folder;
+
+    #[test]
+    fn the_piano_s_preset_plays_it_as_recorded_and_never_replaces_the_player_s() {
+        let folder = test_folder("piano");
+        save_piano_preset(&folder, "A piano").unwrap();
+        let new_song = SoundProfile::new();
+        let sound = presets::read(&folder, PIANO_PRESET, &new_song).unwrap();
+        assert_eq!(sound.oscillators[0].kind, Kind::Sample);
+        assert_eq!(sound.oscillators[0].level, 100);
+        assert_eq!(sound.instruments[0].as_deref(), Some("A piano"));
+        assert_eq!(sound.loudness_envelope.attack_ms, LOUDNESS_SHORTEST_MS);
+        assert_eq!(sound.loudness_envelope.sustain, 100);
+        assert_eq!(sound.loudness_envelope.release_ms, PIANO_RELEASE_MS);
+
+        save_piano_preset(&folder, "Another piano").unwrap();
+        let sound = presets::read(&folder, PIANO_PRESET, &new_song).unwrap();
+        assert_eq!(sound.instruments[0].as_deref(), Some("A piano"));
+    }
 
     // A folder of its own in the temp folder, emptied first.
     fn scratch(name: &str) -> PathBuf {

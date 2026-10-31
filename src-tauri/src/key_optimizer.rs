@@ -54,7 +54,7 @@ const BOTTOM: i8 = 3;
 const THUMB: i8 = 4;
 
 // Every mappable key's spot.
-const SPOTS: [(&str, i8, i8, i8); 48] = [
+const SPOTS: [(&str, i8, i8, i8); 47] = [
     ("Backquote", 0, NUMBER, -1),
     ("Digit1", 0, NUMBER, 0),
     ("Digit2", 1, NUMBER, 1),
@@ -102,7 +102,6 @@ const SPOTS: [(&str, i8, i8, i8); 48] = [
     ("Comma", 6, BOTTOM, 7),
     ("Period", 7, BOTTOM, 8),
     ("Slash", 8, BOTTOM, 9),
-    ("Space", 4, THUMB, 4),
 ];
 
 fn spot_of(key: &str) -> Spot {

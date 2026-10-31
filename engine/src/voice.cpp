@@ -1,5 +1,7 @@
 #include "voice.h"
 
+#include "release_sounds.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -57,6 +59,10 @@ constexpr double once_end_nudge = 1e-9;
 // The fastest a recording plays, in frames each sample: 3 octaves up. Any
 // faster and its tone is mostly gone anyway.
 constexpr double most_sample_step = 8.0;
+
+// A release's recording this much of its full loudness or less is not
+// played at all: its strings have rung away. About -60 dB.
+constexpr double quietest_release_sound = 0.001;
 
 // The A4 recordings are tuned from: their root notes are named at 440 Hz,
 // and the song's tuning moves the notes they play instead.
@@ -199,6 +205,8 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     old_height.right += old_gap.right;
 
     note_ = note;
+    held_by_pedal_ = false;
+    peak_ = velocity_to_peak(velocity);
     press_number_ = start.press_number;
     source_ = start.source;
     layer_ = start.layer;
@@ -235,6 +243,7 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
         offset_cents_[o] = offset_cents(oscillator);
         levels_[o] = oscillator.level;
         widths_[o] = oscillator.width;
+        touches_[o] = oscillator.touch;
         sets_[o] = nullptr;
         zones_[o] = nullptr;
         if (oscillator.kind == Kind::sample) {
@@ -266,7 +275,7 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     // The note's own loudness envelope, kept until it ends.
     const LoudnessEnvelopeSettings& loudness = moved.loudness_envelope;
     envelope_.set_stages(loudness.attack_ms, loudness.decay_ms, loudness.sustain, loudness.release_ms);
-    envelope_.start(velocity_to_peak(velocity));
+    envelope_.start(peak_);
     filter_.start(note, !was_sounding, filter, moved.filter_envelope, moved.key_tracking,
                   moves.of(RoutingTarget::filter_type));
 
@@ -373,7 +382,45 @@ void Voice::tick(const Routing& routing, std::uint64_t block_end) {
     head_for(moves, control_samples, block_end);
 }
 
+void Voice::hold_by_pedal() {
+    held_by_pedal_ = true;
+}
+
+bool Voice::is_held_by_pedal() const {
+    return held_by_pedal_;
+}
+
+void Voice::start_release_sounds(ReleaseSounds& sounds, std::uint64_t now) const {
+    double seconds = static_cast<double>(now - start_sample_) / sample_rate_;
+    for (int o = 0; o < oscillator_count; o++) {
+        const SampleSet* set = sets_[o];
+        if (set == nullptr) {
+            continue;
+        }
+        double touch = static_cast<double>(touches_[o]) / 127.0;
+        double hz = hz_ * std::exp2(offset_cents_[o] / cents_per_octave);
+        for (const SampleZone& zone : set->release_zones()) {
+            if (!SampleSet::plays(zone, note_, touches_[o])) {
+                continue;
+            }
+            // As an SFZ file's rt_decay and amp_veltrack say.
+            double decibels = static_cast<double>(zone.fade_db_per_second) * seconds;
+            double share = static_cast<double>(zone.touch_share);
+            double gain = std::pow(10.0, -decibels / 20.0) * ((1.0 - share) + share * touch * touch) * levels_[o];
+            if (gain < quietest_release_sound) {
+                continue;
+            }
+            double root_hz = note_to_frequency(zone.root_note, recorded_a4_hz) *
+                             std::exp2(static_cast<double>(zone.tune_cents) / cents_per_octave);
+            double step = std::min(hz / root_hz, most_sample_step);
+            float loudness = static_cast<float>(gain) * peak_ * voice_level;
+            sounds.play(set, &zone, step, loudness, source_, layer_);
+        }
+    }
+}
+
 void Voice::release() {
+    held_by_pedal_ = false;
     envelope_.release();
     filter_.release();
 }
@@ -430,7 +477,7 @@ void Voice::start_sample(int index, int note, const OscillatorSettings& oscillat
     if (set == nullptr) {
         return;
     }
-    const SampleZone* zone = set->zone_for(zone_note(note, oscillator));
+    const SampleZone* zone = set->zone_for(zone_note(note, oscillator), oscillator.touch);
     if (zone == nullptr) {
         return;
     }

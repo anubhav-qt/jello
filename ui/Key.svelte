@@ -317,6 +317,9 @@
   {#if kind === "glide"}
     <span class="key-note">glide</span>
   {/if}
+  {#if kind === "pedal"}
+    <span class="key-note">pedal</span>
+  {/if}
   {#if kind === "drum"}
     <span class="key-note">{layout.drums[spec.code]}</span>
   {/if}

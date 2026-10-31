@@ -497,11 +497,17 @@ enum {
 // of each cycle up, a share from JELLO_PULSE_NARROWEST_PERCENT to
 // JELLO_PULSE_WIDEST_PERCENT hundredths; the other kinds leave it be. Notes
 // sent before it keep theirs, even while they ring on. An index or any
-// value outside the ranges above is ignored. A new engine plays oscillator
-// 0 as JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level
-// 0, all tuned right on the note and at a width of 0.5.
+// value outside the ranges above is ignored. A sample's `touch`, from
+// JELLO_TOUCH_SOFTEST to JELLO_TOUCH_HARDEST, says how hard its keys are
+// struck: which of its recordings play. A new engine plays oscillator 0 as
+// JELLO_KIND_TRIANGLE at level 1, and the others as triangles at level 0, all
+// tuned right on the note, at a width of 0.5 and a touch of 80.
+enum {
+    JELLO_TOUCH_SOFTEST = 1,
+    JELLO_TOUCH_HARDEST = 127,
+};
 void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
-                                 int half_steps, float cents, float width);
+                                 int half_steps, float cents, float width, int touch);
 
 // Starts the click: a tick on every beat, higher on the first beat of each
 // bar. Its first tick is beat 1 of a bar. Does nothing if the click is
@@ -959,6 +965,12 @@ void jello_engine_set_vibrato_key_times(JelloEngine* engine, int track, int rise
 // Letting go of every note lets go of it too.
 void jello_engine_set_vibrato_key(JelloEngine* engine, int track, bool held);
 
+// Holds or lets go of the sustain pedal (docs/adr/0048-the-grand-piano.md).
+// While it is held, the track's notes ring on when their keys come up, until
+// it is let go. The looper records it with a layer's notes and plays it back,
+// as that layer's own. Letting go of every note lets go of it too.
+void jello_engine_set_pedal_key(JelloEngine* engine, int track, bool held);
+
 // The longest a glide takes, in ms (docs/adr/0036-glide.md).
 enum {
     JELLO_GLIDE_LONGEST_MS = 10000,
@@ -1112,6 +1124,7 @@ enum {
     JELLO_LOOP_MAX_NOTES = 16384,
     JELLO_VIBRATO_KEY_NOTE = 128,
     JELLO_GLIDE_KEY_NOTE = 129,
+    JELLO_PEDAL_KEY_NOTE = 146,
 };
 
 // One note of a loop, for jello_engine_plan_loop.
@@ -1232,6 +1245,15 @@ enum {
     JELLO_SAMPLE_SET_MOST = 32,
 };
 
+// When a zone plays: as a note starts, as its key comes up, or as the pedal
+// goes down or up.
+enum {
+    JELLO_TRIGGER_ATTACK = 0,
+    JELLO_TRIGGER_RELEASE = 1,
+    JELLO_TRIGGER_PEDAL_DOWN = 2,
+    JELLO_TRIGGER_PEDAL_UP = 3,
+};
+
 // One zone of a sample set.
 typedef struct JelloSampleZone {
     // The notes it plays, 0 to 127; for a drum kit, the pads it plays, 0
@@ -1250,6 +1272,15 @@ typedef struct JelloSampleZone {
     // where it starts plays once, to its end.
     uint64_t loop_start;
     uint64_t loop_end;
+    // The touches it was recorded for, both ends included, and when it plays.
+    int lowest_touch;
+    int highest_touch;
+    int trigger;
+    // For a release: how many decibels quieter it starts for each second the
+    // note sounded, and the share of its loudness a soft touch takes away,
+    // from 0 to 1.
+    float fade_db_per_second;
+    float touch_share;
 } JelloSampleZone;
 
 // Makes a sample set from `count` zones, copying their recordings, and

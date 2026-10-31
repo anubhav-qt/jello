@@ -38,7 +38,7 @@ use crate::mix_automation::is_song_wide;
 use crate::mix_file::{read_mix, write_buses_and_master, write_strip_effects, write_strip_values};
 use crate::engine::{
     FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, TRACK_COUNT, drum_note,
-    VIBRATO_KEY_NOTE,
+    PEDAL_KEY_NOTE, VIBRATO_KEY_NOTE,
 };
 use crate::presets::name_problem;
 use crate::harmony::{Chord, Key, chord_name, chord_of_name, key_name, key_of_name, pitch_of_name};
@@ -81,6 +81,7 @@ const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#",
 // The words for the presses of the vibrato and glide keys.
 const VIBRATO_KEY_WORD: &str = "vibrato key";
 const GLIDE_KEY_WORD: &str = "glide key";
+const PEDAL_KEY_WORD: &str = "pedal";
 
 // The first line of every song file, for whoever opens one.
 const HEADING: &str = "# A Jello song. Any value left out takes a new song's.";
@@ -284,6 +285,9 @@ pub fn note_name(note: u8) -> String {
     if note == GLIDE_KEY_NOTE {
         return String::from(GLIDE_KEY_WORD);
     }
+    if note == PEDAL_KEY_NOTE {
+        return String::from(PEDAL_KEY_WORD);
+    }
     let octave = i32::from(note / 12) - 1;
     let name = NOTE_NAMES[usize::from(note % 12)];
     format!("{name}{octave}")
@@ -298,6 +302,9 @@ pub fn note_of_name(name: &str) -> Option<u8> {
     }
     if name == GLIDE_KEY_WORD {
         return Some(GLIDE_KEY_NOTE);
+    }
+    if name == PEDAL_KEY_WORD {
+        return Some(PEDAL_KEY_NOTE);
     }
     if let Some(pad) = pad_named(name) {
         return Some(drum_note(pad));
@@ -1342,11 +1349,13 @@ pads = [
         assert_eq!(note_name(127), "G9");
         assert_eq!(note_name(VIBRATO_KEY_NOTE), "vibrato key");
         assert_eq!(note_name(GLIDE_KEY_NOTE), "glide key");
+        assert_eq!(note_name(PEDAL_KEY_NOTE), "pedal");
+        assert_eq!(note_of_name("pedal"), Some(PEDAL_KEY_NOTE));
 
         assert_eq!(note_name(drum_note(0)), "kick");
         assert_eq!(note_name(drum_note(15)), "tambourine");
 
-        for pitch in 0..=GLIDE_KEY_NOTE + 16 {
+        for pitch in 0..=PEDAL_KEY_NOTE {
             assert_eq!(note_of_name(&note_name(pitch)), Some(pitch));
         }
         assert_eq!(note_of_name("open_hat"), Some(drum_note(6)));

@@ -139,6 +139,9 @@ export interface OscillatorView {
   // PULSE_NARROWEST_PERCENT to PULSE_WIDEST_PERCENT. Only a square uses it
   // (docs/design.md#pulse-width).
   width: number;
+  // How hard a sample's keys are struck, from TOUCH_SOFTEST to TOUCH_HARDEST:
+  // which of its recordings play. Only a sample uses it.
+  touch: number;
   // The instrument a sample plays (docs/design.md#sampler).
   instrument: InstrumentView;
 }
@@ -152,7 +155,12 @@ export interface Oscillator {
   halfSteps: number;
   cents: number;
   width: number;
+  touch: number;
 }
+
+// The softest and hardest touches (`TOUCH_` in src-tauri/src/engine.rs).
+export const TOUCH_SOFTEST = 1;
+export const TOUCH_HARDEST = 127;
 
 // How many oscillators play each note, and how far each can be tuned from
 // it, either way (`OSCILLATOR_` in src-tauri/src/engine.rs).

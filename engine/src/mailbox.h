@@ -49,6 +49,7 @@ enum class EventType {
     set_vibrato_key_times,
     set_glide_key,
     set_glide_time,
+    set_pedal_key,
     set_instrument,
     set_drum_kit,
     set_drum_pad,
@@ -136,8 +137,8 @@ struct Event {
     // Which oscillator, LFO or connection, from 0, for set_oscillator,
     // set_lfo, set_connection, set_chain_lfo and set_chain_connection, and
     // the LFO's or connection's settings.
-    // Whether the vibrato or glide key is held; only for set_vibrato_key and
-    // set_glide_key. How long the vibrato key takes to rise and fall; only
+    // Whether the vibrato key, glide key or pedal is held; only for
+    // set_vibrato_key, set_glide_key and set_pedal_key. How long the vibrato key takes to rise and fall; only
     // for set_vibrato_key_times. And how long a glide takes; only for
     // set_glide_time. The other messages can leave them out too.
     int index = 0;

@@ -947,7 +947,7 @@
               onVolume={soundSender.setTrackVolume}
               onRemove={soundSender.removeTrack}
             />
-            <LoopTransport {sound} onRecord={onRecordClick} onTempo={onTempoChange} onExpression={onExpressionChange} />
+            <LoopTransport {sound} onRecord={onRecordClick} onTempo={onTempoChange} onExpression={onExpressionChange} drumMode={layout.drum_mode} />
           </div>
         {/if}
         <Keyboard

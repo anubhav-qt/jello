@@ -114,6 +114,9 @@ public:
     // the looper records like a note too, and how long a glide takes
     // (Synth::set_glide_time).
     void set_glide_key(int track, bool held);
+    // Holds or lets go of the live pedal (Synth::set_pedal_key), which the
+    // looper records like a note too.
+    void set_pedal_key(int track, bool held);
     void set_glide_time(int track, int glide_ms);
     // Oscillator `index`'s instrument (Synth::set_instrument), the drum
     // kit's recordings (Synth::set_drum_kit) and pad `pad`'s settings

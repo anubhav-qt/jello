@@ -7,8 +7,10 @@
 // Reading one takes a while, so it is done once and kept: every engine
 // that plays an instrument shares the one read. The recordings are turned
 // into what the engine plays: 48,000 frames a second, one or two channels,
-// only the middle velocity layer, each cut to 15 seconds unless it loops,
-// and the whole instrument made as loud as the others.
+// at most MOST_LAYERS velocity layers, each cut to 15 seconds unless it loops,
+// and the whole instrument made as loud as the others. The recordings of keys
+// coming up and of the pedal are kept beside the notes
+// (docs/adr/0048-the-grand-piano.md).
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -23,14 +25,23 @@ use crate::drums::{gm_notes_of, pad_named};
 // into that.
 pub const SAMPLE_RATE: u32 = 48000;
 
-// Only the recordings made for this velocity play, one layer of each
-// instrument: a medium hit. More layers are a todo.
-const KEPT_VELOCITY: u8 = 80;
+// A medium hit: the velocity layer a drum kit's pads play, and the one that
+// sets how loud an instrument is.
+const MEDIUM_VELOCITY: u8 = 80;
+
+// The most velocity layers kept of each note, spread evenly from the softest
+// to the hardest: each layer of a piano's is about 135 MB in memory, and laptop
+// keys can only pick one at a time.
+const MOST_LAYERS: usize = 6;
 
 // How long a recording that plays once is kept, and how long it fades out
-// over where it is cut, so it never clicks.
+// over where it is cut, so a low piano note, still ringing there, dies away.
 const LONGEST_SECONDS: u64 = 15;
-const CUT_FADE_MS: u64 = 100;
+const CUT_FADE_MS: u64 = 1000;
+
+// How long a recording fades in when its start is skipped, so starting it
+// partway through never clicks.
+const SKIPPED_START_FADE_FRAMES: usize = 48;
 
 // How loud an instrument's loudest frame is made, just under full.
 const PEAK: f32 = 0.9;
@@ -50,6 +61,14 @@ pub struct Zone {
     // The note it was recorded at, and how far off that it is, in cents.
     pub root: u8,
     pub tune_cents: f32,
+    // The touches it was recorded for, from 1 to 127, and when it plays.
+    pub lowest_touch: u8,
+    pub highest_touch: u8,
+    pub trigger: Trigger,
+    // For a release: how many decibels quieter it starts for each second the
+    // note sounded, and the share of its loudness a soft touch takes away.
+    pub fade_db_per_second: f32,
+    pub touch_share: f32,
     // 1 or 2; in stereo left and right take turns.
     pub channels: u16,
     pub frames: Vec<f32>,
@@ -62,6 +81,30 @@ impl Zone {
     pub fn frame_count(&self) -> u64 {
         self.frames.len() as u64 / u64::from(self.channels)
     }
+
+    fn plays_touch(&self, touch: u8) -> bool {
+        self.lowest_touch <= touch && touch <= self.highest_touch
+    }
+}
+
+// When a recording plays (`JELLO_TRIGGER_` in engine/include/jello_engine.h).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Trigger {
+    Attack,
+    Release,
+    PedalDown,
+    PedalUp,
+}
+
+impl Trigger {
+    pub fn number(self) -> i32 {
+        match self {
+            Trigger::Attack => 0,
+            Trigger::Release => 1,
+            Trigger::PedalDown => 2,
+            Trigger::PedalUp => 3,
+        }
+    }
 }
 
 // An instrument as the engine plays it.
@@ -71,9 +114,15 @@ pub struct Instrument {
 }
 
 impl Instrument {
-    // The first zone that plays `note`, or None.
+    // The first zone a drum pad on `note` plays, or None.
     pub fn exact_zone(&self, note: u8) -> Option<&Zone> {
         for zone in &self.zones {
+            if zone.trigger != Trigger::Attack {
+                continue;
+            }
+            if !zone.plays_touch(MEDIUM_VELOCITY) {
+                continue;
+            }
             if zone.lowest <= note && note <= zone.highest {
                 return Some(zone);
             }
@@ -289,6 +338,14 @@ struct Region {
     highest: u8,
     root: u8,
     tune_cents: f32,
+    // The velocities it was recorded for, and when it plays.
+    lowest_touch: u8,
+    highest_touch: u8,
+    trigger: Trigger,
+    // How many decibels quieter a release starts for each second the note
+    // sounded (rt_decay), and how much velocity moves it (amp_veltrack).
+    fade_db_per_second: f32,
+    touch_share: f32,
     // How much louder or quieter it plays, as a gain.
     gain: f32,
     // From the SFZ file: loop it, play it once, or as the file says.
@@ -310,28 +367,117 @@ enum Looping {
 // The instrument in `folder`.
 pub fn read_instrument(folder: &Path) -> Result<Instrument, String> {
     let regions = match first_sfz_in(folder) {
-        Some(sfz) => read_sfz(&sfz)?,
+        Some(sfz) => with_few_layers(read_sfz(&sfz)?),
         None => regions_from_names(folder)?,
     };
     if regions.is_empty() {
         return Err(format!("{} has no recordings Jello can play", folder_name(folder)));
     }
 
-    let mut recordings: HashMap<PathBuf, Arc<Recording>> = HashMap::new();
+    let recordings = decode_all(&regions)?;
     let mut zones = Vec::new();
     for region in &regions {
-        let recording = match recordings.get(&region.sample) {
-            Some(recording) => recording.clone(),
-            None => {
-                let recording = Arc::new(decode(&region.sample)?);
-                recordings.insert(region.sample.clone(), recording.clone());
-                recording
-            }
+        let Some(recording) = recordings.get(&region.sample) else {
+            continue;
         };
-        zones.push(zone_of(region, &recording));
+        zones.push(zone_of(region, recording));
     }
     make_as_loud(&mut zones);
     Ok(Instrument { zones })
+}
+
+// Every recording `regions` name, read on as many threads as there are
+// cores, since an instrument can have hundreds.
+fn decode_all(regions: &[Region]) -> Result<HashMap<PathBuf, Recording>, String> {
+    let mut paths = HashSet::new();
+    for region in regions {
+        paths.insert(&region.sample);
+    }
+    let paths: Vec<&PathBuf> = paths.into_iter().collect();
+    let threads = thread::available_parallelism().map_or(1, |count| count.get());
+    let share = paths.len().div_ceil(threads).max(1);
+
+    let results: Vec<Result<Vec<(PathBuf, Recording)>, String>> = thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for some_paths in paths.chunks(share) {
+            workers.push(scope.spawn(move || {
+                let mut decoded = Vec::new();
+                for path in some_paths {
+                    decoded.push(((*path).clone(), decode(path)?));
+                }
+                Ok(decoded)
+            }));
+        }
+        let mut results = Vec::new();
+        for worker in workers {
+            match worker.join() {
+                Ok(result) => results.push(result),
+                Err(_) => results.push(Err(String::from("reading a recording crashed"))),
+            }
+        }
+        results
+    });
+
+    let mut recordings = HashMap::new();
+    for result in results {
+        for (path, recording) in result? {
+            recordings.insert(path, recording);
+        }
+    }
+    Ok(recordings)
+}
+
+// `regions` with at most MOST_LAYERS velocity layers of each group of notes.
+// The layers kept meet with no gaps, from velocity 1 to 127, so every touch
+// plays one. Only the notes have layers: a key coming up or the pedal keep
+// the velocities their file gives.
+fn with_few_layers(regions: Vec<Region>) -> Vec<Region> {
+    let mut kept = Vec::new();
+    let mut groups: Vec<((u8, u8), Vec<Region>)> = Vec::new();
+    for region in regions {
+        if region.trigger != Trigger::Attack {
+            kept.push(region);
+            continue;
+        }
+        let notes = (region.lowest, region.highest);
+        match groups.iter_mut().find(|(group_notes, _)| *group_notes == notes) {
+            Some((_, group)) => group.push(region),
+            None => groups.push((notes, vec![region])),
+        }
+    }
+
+    let mut notes = Vec::new();
+    for (_, mut group) in groups {
+        group.sort_by_key(|region| (region.lowest_touch, region.highest_touch));
+        group.dedup_by_key(|region| (region.lowest_touch, region.highest_touch));
+        let chosen = evenly_chosen(group);
+        let mut next_touch = 1;
+        let last = chosen.len() - 1;
+        for (place, mut region) in chosen.into_iter().enumerate() {
+            region.lowest_touch = next_touch;
+            if place == last {
+                region.highest_touch = 127;
+            }
+            next_touch = region.highest_touch.saturating_add(1);
+            notes.push(region);
+        }
+    }
+    notes.extend(kept);
+    notes
+}
+
+// At most MOST_LAYERS of `layers`, the first, the last and those evenly
+// between them.
+fn evenly_chosen(layers: Vec<Region>) -> Vec<Region> {
+    if layers.len() <= MOST_LAYERS {
+        return layers;
+    }
+    let last = layers.len() - 1;
+    let mut chosen = Vec::new();
+    for turn in 0..MOST_LAYERS {
+        chosen.push(layers[turn * last / (MOST_LAYERS - 1)].clone());
+    }
+    chosen
 }
 
 fn folder_name(folder: &Path) -> String {
@@ -412,6 +558,11 @@ fn plain_region(sample: PathBuf, lowest: u8, highest: u8, root: u8) -> Region {
         highest,
         root,
         tune_cents: 0.0,
+        lowest_touch: 1,
+        highest_touch: 127,
+        trigger: Trigger::Attack,
+        fade_db_per_second: 0.0,
+        touch_share: 0.0,
         gain: 1.0,
         looping: Looping::AsRecorded,
         loop_points: None,
@@ -483,12 +634,13 @@ fn key_of(value: &str) -> Option<u8> {
 // The SFZ file at `path` read into regions. Only the parts Jello plays are
 // read: which recording, its notes and the note it was recorded at, the
 // velocities it is for, its tuning and volume, its loop and where it starts
-// and ends. A region for another velocity, a release, a round robin past
-// the first or a pedal is left out.
+// and ends, and whether it plays as a key comes up or the pedal moves. A
+// round robin past the first is left out, but for the pedal's, which take
+// turns.
 fn read_sfz(path: &Path) -> Result<Vec<Region>, String> {
     let mut defines = Vec::new();
-    let text = sfz_text(path, &mut defines, 0)?;
     let folder = path.parent().unwrap_or(Path::new("."));
+    let text = sfz_text(path, folder, &mut defines, 0)?;
 
     let mut control: HashMap<String, String> = HashMap::new();
     let mut global: HashMap<String, String> = HashMap::new();
@@ -562,38 +714,48 @@ fn merged_opcodes(levels: &[&HashMap<String, String>]) -> HashMap<String, String
 fn region_of(opcodes: &HashMap<String, String>, control: &HashMap<String, String>, folder: &Path) -> Option<Region> {
     let sample = opcodes.get("sample")?;
 
-    // Only one layer, the first round robin, and no releases or pedals.
-    let lovel = number_or(opcodes, "lovel", 1.0);
-    let hivel = number_or(opcodes, "hivel", 127.0);
-    let velocity = f64::from(KEPT_VELOCITY);
-    if velocity < lovel || velocity > hivel {
-        return None;
+    // A keyswitch only ever stays on its default.
+    if let (Some(needed), Some(default)) = (opcodes.get("sw_last"), opcodes.get("sw_default")) {
+        if key_of(needed) != key_of(default) {
+            return None;
+        }
     }
-    if let Some(trigger) = opcodes.get("trigger") {
-        if trigger != "attack" {
+
+    let trigger = trigger_of(opcodes)?;
+    let from_pedal = trigger == Trigger::PedalDown || trigger == Trigger::PedalUp;
+    if !from_pedal {
+        if number_or(opcodes, "lorand", 0.0) > 0.0 {
+            return None;
+        }
+        if !controllers_allow(opcodes, control) {
             return None;
         }
     }
     if number_or(opcodes, "seq_position", 1.0) != 1.0 {
         return None;
     }
-    if number_or(opcodes, "lorand", 0.0) > 0.0 {
+
+    let lowest_touch = number_or(opcodes, "lovel", 1.0).clamp(1.0, 127.0) as u8;
+    let highest_touch = number_or(opcodes, "hivel", 127.0).clamp(1.0, 127.0) as u8;
+    if lowest_touch > highest_touch {
         return None;
     }
-    for name in opcodes.keys() {
-        if name.starts_with("on_lo") || name.starts_with("on_hi") {
-            return None;
-        }
-    }
 
-    let mut lowest = key_or(opcodes, "lokey", 0)?;
-    let mut highest = key_or(opcodes, "hikey", 127)?;
-    let mut root = key_or(opcodes, "pitch_keycenter", 60).unwrap_or(60);
-    if let Some(key) = opcodes.get("key") {
-        let key = key_of(key)?;
-        lowest = key;
-        highest = key;
-        root = key;
+    // A pedal makes its sound whatever the keys do, so its file's keys may
+    // say anything.
+    let mut lowest = 0;
+    let mut highest = 127;
+    let mut root = 60;
+    if !from_pedal {
+        lowest = key_or(opcodes, "lokey", 0)?;
+        highest = key_or(opcodes, "hikey", 127)?;
+        root = key_or(opcodes, "pitch_keycenter", 60).unwrap_or(60);
+        if let Some(key) = opcodes.get("key") {
+            let key = key_of(key)?;
+            lowest = key;
+            highest = key;
+            root = key;
+        }
     }
     if lowest > highest {
         return None;
@@ -641,12 +803,87 @@ fn region_of(opcodes: &HashMap<String, String>, control: &HashMap<String, String
         highest,
         root,
         tune_cents,
+        lowest_touch,
+        highest_touch,
+        trigger,
+        fade_db_per_second: number_or(opcodes, "rt_decay", 0.0).max(0.0) as f32,
+        touch_share: (number_or(opcodes, "amp_veltrack", 100.0) / 100.0).clamp(0.0, 1.0) as f32,
         gain,
         looping,
         loop_points,
-        offset: whole_number(opcodes, "offset").unwrap_or(0),
+        offset: start_of(opcodes, control),
         end: whole_number(opcodes, "end").map(|last| last + 1),
     })
+}
+
+// When the region plays, or None for a kind Jello leaves out. Controller 64
+// is the pedal: a region set off as it reaches its top or bottom plays as the
+// pedal goes down or up.
+fn trigger_of(opcodes: &HashMap<String, String>) -> Option<Trigger> {
+    let mut from_controller = false;
+    for name in opcodes.keys() {
+        if name.starts_with("on_lo") || name.starts_with("on_hi") {
+            from_controller = true;
+        }
+    }
+    if from_controller {
+        let lowest = whole_number(opcodes, "on_locc64")?;
+        if lowest >= 64 {
+            return Some(Trigger::PedalDown);
+        }
+        return Some(Trigger::PedalUp);
+    }
+    match opcodes.get("trigger").map(String::as_str) {
+        None | Some("attack") => Some(Trigger::Attack),
+        Some("release") | Some("release_key") => Some(Trigger::Release),
+        _ => None,
+    }
+}
+
+// Whether a region's locc and hicc opcodes allow it, with every controller
+// where the file's control heading starts it (set_cc, or set_hdcc from 0 to 1),
+// and at 0 otherwise.
+fn controllers_allow(opcodes: &HashMap<String, String>, control: &HashMap<String, String>) -> bool {
+    for (name, limit) in opcodes {
+        let Ok(limit) = limit.trim().parse::<f64>() else {
+            continue;
+        };
+        if let Some(number) = name.strip_prefix("locc") {
+            if controller_start(control, number) < limit {
+                return false;
+            }
+        }
+        if let Some(number) = name.strip_prefix("hicc") {
+            if controller_start(control, number) > limit {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn controller_start(control: &HashMap<String, String>, number: &str) -> f64 {
+    let exact = number_or(control, &format!("set_hdcc{number}"), 0.0) * 127.0;
+    number_or(control, &format!("set_cc{number}"), exact)
+}
+
+// The frame a region starts on: its offset, and on past any lead-in the file
+// lets a controller labelled "offset" skip, so a chord's notes all speak at
+// once and as soon as the key is pressed.
+fn start_of(opcodes: &HashMap<String, String>, control: &HashMap<String, String>) -> u64 {
+    let mut start = whole_number(opcodes, "offset").unwrap_or(0);
+    for (name, label) in control {
+        let Some(number) = name.strip_prefix("label_cc") else {
+            continue;
+        };
+        if label.trim().to_lowercase() != "offset" {
+            continue;
+        }
+        if let Some(lead_in) = whole_number(opcodes, &format!("offset_oncc{number}")) {
+            start += lead_in;
+        }
+    }
+    start
 }
 
 fn number_or(opcodes: &HashMap<String, String>, name: &str, otherwise: f64) -> f64 {
@@ -675,8 +912,8 @@ fn shifted(note: u8, shift: f64) -> u8 {
 
 // The text of the SFZ file at `path` with its comments taken out, its
 // #include lines replaced by the files they name and its #define names
-// replaced by their values.
-fn sfz_text(path: &Path, defines: &mut Vec<(String, String)>, depth: usize) -> Result<String, String> {
+// replaced by their values. `main_folder` is where the first SFZ file is.
+fn sfz_text(path: &Path, main_folder: &Path, defines: &mut Vec<(String, String)>, depth: usize) -> Result<String, String> {
     if depth > MOST_INCLUDES {
         return Err(String::from("the SFZ files include each other too deeply"));
     }
@@ -695,27 +932,61 @@ fn sfz_text(path: &Path, defines: &mut Vec<(String, String)>, depth: usize) -> R
         if let Some(rest) = trimmed.strip_prefix("#define") {
             let mut words = rest.split_whitespace();
             if let (Some(name), Some(value)) = (words.next(), words.next()) {
+                // A name defined again takes its new value from here on.
+                defines.retain(|(known, _)| known != name);
                 defines.push((String::from(name), String::from(value)));
                 // The longest first, so $NOTE2 is never read as $NOTE.
                 defines.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
             }
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("#include") {
-            let included = rest.trim().trim_matches('"');
-            let included = folder.join(included.replace('\\', "/"));
-            text.push_str(&sfz_text(&included, defines, depth + 1)?);
+        // An #include can sit anywhere on a line, even between opcodes.
+        let mut rest = line;
+        while let Some(start) = rest.find("#include") {
+            push_with_defines(&mut text, &rest[..start], defines);
+            let (included, after) = included_name(&rest[start + "#include".len()..]);
+            let included = included_file(folder, main_folder, included);
+            text.push_str(&sfz_text(&included, main_folder, defines, depth + 1)?);
             text.push('\n');
-            continue;
+            rest = after;
         }
-        let mut line = String::from(line);
-        for (name, value) in defines.iter() {
-            line = line.replace(name.as_str(), value);
-        }
-        text.push_str(&line);
-        text.push('\n');
+        push_with_defines(&mut text, rest, defines);
     }
     Ok(text)
+}
+
+// Adds `line` to `text` as its own line, with #define names replaced.
+fn push_with_defines(text: &mut String, line: &str, defines: &[(String, String)]) {
+    let mut line = String::from(line);
+    for (name, value) in defines {
+        line = line.replace(name.as_str(), value);
+    }
+    text.push_str(&line);
+    text.push('\n');
+}
+
+// Where an #include's file is: beside the file naming it, or else beside
+// the first SFZ file, as some instruments write it.
+fn included_file(folder: &Path, main_folder: &Path, name: &str) -> PathBuf {
+    let name = name.replace('\\', "/");
+    let beside = folder.join(&name);
+    if beside.is_file() {
+        return beside;
+    }
+    main_folder.join(&name)
+}
+
+// The file an #include names, and what comes after it on the line. A name
+// without quotes runs to the end of the line.
+fn included_name(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    if let Some(quoted) = text.strip_prefix('"') {
+        if let Some(end) = quoted.find('"') {
+            return (&quoted[..end], &quoted[end + 1..]);
+        }
+        return (quoted, "");
+    }
+    (text, "")
 }
 
 fn without_block_comments(text: &str) -> String {
@@ -937,6 +1208,9 @@ fn zone_of(region: &Region, recording: &Recording) -> Zone {
     for sample in frames.iter_mut() {
         *sample *= region.gain;
     }
+    if start > 0 {
+        fade_in(&mut frames, recording.channels);
+    }
 
     let mut loop_start = 0;
     let mut loop_end = 0;
@@ -963,10 +1237,27 @@ fn zone_of(region: &Region, recording: &Recording) -> Zone {
         highest: region.highest,
         root: region.root,
         tune_cents: region.tune_cents,
+        lowest_touch: region.lowest_touch,
+        highest_touch: region.highest_touch,
+        trigger: region.trigger,
+        fade_db_per_second: region.fade_db_per_second,
+        touch_share: region.touch_share,
         channels: recording.channels,
         frames,
         loop_start,
         loop_end,
+    }
+}
+
+// Fades the first SKIPPED_START_FADE_FRAMES frames of `frames` in.
+fn fade_in(frames: &mut [f32], channels: u16) {
+    let channels = usize::from(channels);
+    let count = frames.len() / channels;
+    for frame in 0..SKIPPED_START_FADE_FRAMES.min(count) {
+        let share = frame as f32 / SKIPPED_START_FADE_FRAMES as f32;
+        for channel in 0..channels {
+            frames[frame * channels + channel] *= share;
+        }
     }
 }
 
@@ -1038,10 +1329,15 @@ fn cut_long(frames: &mut Vec<f32>, channels: u16) {
 }
 
 // Makes every zone louder or quieter by the same amount, so the loudest
-// frame of all is at PEAK.
+// frame of a medium hit is at PEAK. Harder layers go past it, as they should:
+// the mix keeps the sum in range.
 fn make_as_loud(zones: &mut [Zone]) {
     let mut loudest: f32 = 0.0;
     for zone in zones.iter() {
+        // The notes set it: the sounds around them are meant to be quieter.
+        if zone.trigger != Trigger::Attack || !zone.plays_touch(MEDIUM_VELOCITY) {
+            continue;
+        }
         for sample in &zone.frames {
             loudest = loudest.max(sample.abs());
         }
@@ -1066,6 +1362,14 @@ pub mod testing {
 
     pub const TONE: &str = "Test tone";
     pub const KIT: &str = "Test kit";
+    // Middle C alone: a low C for a soft touch and a high C for a hard one,
+    // told apart by pitch. "Test piano" has every sound around its notes too,
+    // "Test strings" only what a key coming up plays, and "Test notes" none.
+    pub const PIANO: &str = "Test piano";
+    pub const STRINGS: &str = "Test strings";
+    pub const NOTES: &str = "Test notes";
+    pub const SOFT_HZ: f64 = 261.6256;
+    pub const HARD_HZ: f64 = 523.2511;
 
     // How long each test recording lasts, in frames.
     pub const TONE_FRAMES: usize = 48000;
@@ -1087,6 +1391,23 @@ pub mod testing {
             write_wav(&kit.join("kick.wav"), &sine(60.0, KICK_FRAMES));
             write_wav(&kit.join("closed hat.wav"), &sine(3000.0, KICK_FRAMES));
             write_wav(&kit.join("open_hat.wav"), &sine(5000.0, OPEN_HAT_FRAMES));
+
+            let notes = "<region> sample=soft.wav key=60 lovel=1 hivel=64\n\
+                         <region> sample=hard.wav key=60 lovel=65 hivel=127\n";
+            let released = "<region> sample=strings.wav key=60 trigger=release rt_decay=6 amp_veltrack=0 lovel=45\n";
+            let pedal = "<region> sample=down.wav on_locc64=127 on_hicc64=127\n\
+                         <region> sample=up.wav on_locc64=0 on_hicc64=0\n";
+            let makes = [(PIANO, format!("{notes}{released}{pedal}")), (STRINGS, format!("{notes}{released}")), (NOTES, String::from(notes))];
+            for (name, sfz) in makes {
+                let piano = folder.join(name);
+                fs::create_dir_all(&piano).unwrap();
+                fs::write(piano.join("piano.sfz"), sfz).unwrap();
+                write_wav(&piano.join("soft.wav"), &sine(SOFT_HZ, TONE_FRAMES));
+                write_wav(&piano.join("hard.wav"), &sine(HARD_HZ, TONE_FRAMES));
+                write_wav(&piano.join("strings.wav"), &sine(1000.0, TONE_FRAMES));
+                write_wav(&piano.join("down.wav"), &sine(3000.0, KICK_FRAMES));
+                write_wav(&piano.join("up.wav"), &sine(5000.0, KICK_FRAMES));
+            }
             folder
         });
         set_folder(folder.clone());
@@ -1186,7 +1507,7 @@ mod tests {
     }
 
     #[test]
-    fn an_sfz_file_keeps_one_layer_and_reads_its_tuning_loops_and_includes() {
+    fn an_sfz_file_keeps_its_layers_and_reads_its_tuning_loops_and_includes() {
         let folder = scratch("sfz");
         fs::create_dir_all(folder.join("samples")).unwrap();
         write_wav(&folder.join("samples/low soft.wav"), &sine(100.0, 480));
@@ -1215,10 +1536,15 @@ mod tests {
         )
         .unwrap();
         let regions = read_sfz(&folder.join("piano.sfz")).unwrap();
-        assert_eq!(regions.len(), 2);
+        // Both layers, the release and the first round robin of more.sfz.
+        assert_eq!(regions.len(), 4);
+        assert_eq!(regions[0].sample, folder.join("samples/low soft.wav"));
+        assert_eq!((regions[0].lowest_touch, regions[0].highest_touch), (1, 64));
+        assert_eq!(regions[2].trigger, Trigger::Release);
 
-        let low = &regions[0];
+        let low = &regions[1];
         assert_eq!(low.sample, folder.join("samples/low hard.wav"));
+        assert_eq!((low.lowest_touch, low.highest_touch), (65, 127));
         assert_eq!((low.lowest, low.highest, low.root), (0, 40, 36));
         assert!((low.gain - 0.501).abs() < 0.001);
         assert_eq!(low.looping, Looping::Loops);
@@ -1226,12 +1552,236 @@ mod tests {
 
         // Up a half step and down 30 cents: as if recorded 70 cents lower
         // than C5, which is 30 cents above B4.
-        let high = &regions[1];
+        let high = &regions[3];
         assert_eq!((high.lowest, high.highest), (72, 127));
         assert_eq!(high.root, 71);
         assert!((high.tune_cents - 30.0).abs() < 0.001);
         // The global volume reaches every region after it.
         assert!((high.gain - 0.501).abs() < 0.001);
+    }
+
+    #[test]
+    fn an_sfz_file_can_include_mid_line_define_again_and_keyswitch() {
+        let folder = scratch("sfz-switches");
+        for name in ["soft.wav", "hard.wav"] {
+            write_wav(&folder.join(name), &sine(100.0, 480));
+        }
+        // Files in Data name each other from the first SFZ file's folder.
+        fs::create_dir_all(folder.join("Data")).unwrap();
+        fs::write(folder.join("Data/soft.txt"), "#define $LAYER soft\n").unwrap();
+        fs::write(folder.join("Data/hard.txt"), "#define $LAYER hard\n").unwrap();
+        fs::write(folder.join("Data/natural.txt"), "#define $TUNING 0\n").unwrap();
+        fs::write(folder.join("Data/retuned.txt"), "#define $TUNING 25\n").unwrap();
+        fs::write(folder.join("Data/region.txt"), "<region> key=60 tune=$TUNING sample=$LAYER.wav\n").unwrap();
+        fs::write(
+            folder.join("Data/notes.txt"),
+            "<group> #include \"Data/soft.txt\" lovel=1 hivel=64 #include \"Data/region.txt\"\n\
+             <group> #include \"Data/hard.txt\" lovel=65 hivel=127 #include \"Data/region.txt\"\n",
+        )
+        .unwrap();
+        fs::write(
+            folder.join("piano.sfz"),
+            "#define $NATURAL c0\n\
+             <global> sw_default=$NATURAL\n\
+             <master> sw_last=$NATURAL\n\
+             #include \"Data/natural.txt\"\n\
+             #include \"Data/notes.txt\"\n\
+             <master> sw_last=c#0\n\
+             #include \"Data/retuned.txt\"\n\
+             #include \"Data/notes.txt\"\n",
+        )
+        .unwrap();
+
+        let regions = read_sfz(&folder.join("piano.sfz")).unwrap();
+        // Each loudness with the file its own #define named, and only the
+        // keyswitch's default.
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].sample, folder.join("soft.wav"));
+        assert_eq!(regions[1].sample, folder.join("hard.wav"));
+        assert_eq!(regions[0].tune_cents, 0.0);
+    }
+
+    // A region for each of `count` layers of two notes' worth of keys, at
+    // `count` equal velocity ranges with gaps between them.
+    fn layered_regions(count: u8) -> Vec<Region> {
+        let mut regions = Vec::new();
+        for layer in 0..count {
+            let lowest_touch = 1 + layer * 4;
+            regions.push(Region {
+                lowest_touch,
+                highest_touch: lowest_touch + 1,
+                ..plain_region(PathBuf::from(format!("v{layer}.wav")), 60, 61, 60)
+            });
+        }
+        regions
+    }
+
+    #[test]
+    fn at_most_six_layers_are_kept_evenly_and_they_meet_with_no_gaps() {
+        let kept = with_few_layers(layered_regions(16));
+        let names: Vec<String> = kept.iter().map(|region| region.sample.display().to_string()).collect();
+        assert_eq!(names, ["v0.wav", "v3.wav", "v6.wav", "v9.wav", "v12.wav", "v15.wav"]);
+        assert_eq!(kept[0].lowest_touch, 1);
+        for pair in kept.windows(2) {
+            assert_eq!(pair[1].lowest_touch, pair[0].highest_touch + 1);
+        }
+        assert_eq!(kept[5].highest_touch, 127);
+
+        // Fewer are all kept, and still meet.
+        let few = with_few_layers(layered_regions(2));
+        assert_eq!(few.len(), 2);
+        assert_eq!((few[0].lowest_touch, few[0].highest_touch), (1, 2));
+        assert_eq!((few[1].lowest_touch, few[1].highest_touch), (3, 127));
+    }
+
+    #[test]
+    fn only_notes_are_thinned_and_each_group_of_notes_on_its_own() {
+        let mut regions = layered_regions(8);
+        for mut region in layered_regions(2) {
+            region.lowest = 70;
+            region.highest = 71;
+            regions.push(region);
+        }
+        let mut released = plain_region(PathBuf::from("rel.wav"), 60, 60, 60);
+        released.trigger = Trigger::Release;
+        released.lowest_touch = 45;
+        regions.push(released);
+
+        let kept = with_few_layers(regions);
+        let mut in_first_group = 0;
+        let mut in_second_group = 0;
+        for region in &kept {
+            if region.trigger != Trigger::Attack {
+                continue;
+            }
+            if region.lowest == 60 {
+                in_first_group += 1;
+            } else {
+                in_second_group += 1;
+            }
+        }
+        assert_eq!((in_first_group, in_second_group), (6, 2));
+        let release = kept.iter().find(|region| region.trigger == Trigger::Release).unwrap();
+        // A release keeps the velocities its file gives.
+        assert_eq!((release.lowest_touch, release.highest_touch), (45, 127));
+    }
+
+    #[test]
+    fn an_sfz_file_s_releases_pedals_and_lead_ins_are_read() {
+        let folder = scratch("sfz-piano");
+        fs::write(
+            folder.join("piano.sfz"),
+            "<control> label_cc98=Offset label_cc40=Damper label_cc20=String Res set_hdcc20=0.5 set_cc30=10\n\
+             <global> lovel=1 hivel=127\n\
+             <region> sample=note.wav key=60 offset=5 offset_oncc98=100 offset_oncc40=9000\n\
+             <global> trigger=release\n\
+             <master> locc20=1\n\
+             <group> volume=-4 amp_veltrack=94 rt_decay=6 lovel=45\n\
+             <region> sample=strings.wav key=60\n\
+             <master> locc40=1\n\
+             <region> sample=needs a controller nothing starts.wav key=61\n\
+             <master> hicc30=5\n\
+             <region> sample=controller past its top.wav key=62\n\
+             <global>\n\
+             <master> lokey=-1 hikey=-1\n\
+             <group> volume=-20 on_locc64=127 on_hicc64=127 locc64=127 hicc64=127\n\
+             <region> lorand=0 hirand=0.5 sample=down one.wav\n\
+             <region> lorand=0.5 hirand=1 sample=down two.wav\n\
+             <group> on_locc64=0 on_hicc64=0 locc64=0 hicc64=0\n\
+             <region> sample=up.wav\n\
+             <group> on_locc20=1 on_hicc20=127\n\
+             <region> sample=another controller.wav\n\
+             <global> trigger=first\n\
+             <region> sample=first.wav key=63\n",
+        )
+        .unwrap();
+        let regions = read_sfz(&folder.join("piano.sfz")).unwrap();
+        let names: Vec<String> = regions
+            .iter()
+            .map(|region| region.sample.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["note.wav", "strings.wav", "down one.wav", "down two.wav", "up.wav"]);
+
+        // On past the lead-in only the labelled controller skips.
+        assert_eq!(regions[0].offset, 105);
+        assert_eq!(regions[0].trigger, Trigger::Attack);
+
+        let strings = &regions[1];
+        assert_eq!(strings.trigger, Trigger::Release);
+        assert_eq!((strings.lowest_touch, strings.highest_touch), (45, 127));
+        assert_eq!(strings.fade_db_per_second, 6.0);
+        assert_eq!(strings.touch_share, 0.94);
+
+        assert_eq!(regions[2].trigger, Trigger::PedalDown);
+        assert_eq!(regions[3].trigger, Trigger::PedalDown);
+        assert_eq!(regions[4].trigger, Trigger::PedalUp);
+        // A pedal's sound ignores the keys its file gives.
+        assert_eq!((regions[2].lowest, regions[2].highest), (0, 127));
+    }
+
+    #[test]
+    fn a_skipped_start_fades_in_and_the_notes_alone_set_the_loudness() {
+        let region = Region {
+            offset: 10,
+            ..plain_region(PathBuf::new(), 0, 127, 60)
+        };
+        let recording = Recording {
+            channels: 1,
+            rate: SAMPLE_RATE,
+            frames: vec![0.5; 200],
+            loop_points: None,
+        };
+        let zone = zone_of(&region, &recording);
+        assert_eq!(zone.frame_count(), 190);
+        assert_eq!(zone.frames[0], 0.0);
+        assert!(zone.frames[24] > 0.2 && zone.frames[24] < 0.3);
+        assert_eq!(zone.frames[48], 0.5);
+
+        // Right from its start, it needs no fade.
+        let whole = zone_of(&plain_region(PathBuf::new(), 0, 127, 60), &recording);
+        assert_eq!(whole.frames[0], 0.5);
+
+        let mut release = whole.clone();
+        release.trigger = Trigger::Release;
+        release.frames = vec![1.0; 10];
+        let mut zones = vec![whole, release];
+        make_as_loud(&mut zones);
+        assert!((zones[0].frames[0] - PEAK).abs() < 0.001);
+        assert!((zones[1].frames[0] - 2.0 * PEAK).abs() < 0.001);
+
+        // So do the medium hits alone: a hard one goes past them.
+        let mut hard = zones[0].clone();
+        hard.lowest_touch = 100;
+        hard.frames = vec![1.0; 10];
+        let mut medium = zones[0].clone();
+        medium.highest_touch = 99;
+        medium.frames = vec![0.5; 10];
+        let mut zones = vec![medium, hard];
+        make_as_loud(&mut zones);
+        assert!((zones[0].frames[0] - PEAK).abs() < 0.001);
+        assert!((zones[1].frames[0] - 2.0 * PEAK).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_drum_pad_plays_the_medium_hit() {
+        let folder = scratch("sfz-kit");
+        for name in ["soft.wav", "medium.wav", "hard.wav", "off.wav"] {
+            write_wav(&folder.join(name), &sine(100.0, 100));
+        }
+        fs::write(
+            folder.join("kit.sfz"),
+            "<group> key=36\n\
+             <region> sample=soft.wav lovel=1 hivel=40\n\
+             <region> sample=medium.wav lovel=41 hivel=90\n\
+             <region> sample=hard.wav lovel=91 hivel=127\n\
+             <region> sample=off.wav trigger=release\n",
+        )
+        .unwrap();
+        let instrument = read_instrument(&folder).unwrap();
+        assert_eq!(instrument.zones.len(), 4);
+        let pad = instrument.exact_zone(36).unwrap();
+        assert_eq!((pad.lowest_touch, pad.highest_touch), (41, 90));
+        assert_eq!(pad.trigger, Trigger::Attack);
     }
 
     #[test]

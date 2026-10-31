@@ -8,13 +8,14 @@
 #include "filter.h"
 #include "lfo.h"
 #include "oscillator.h"
+#include "release_sounds.h"
 #include "routing.h"
 #include "unison.h"
 #include "voice.h"
 
 // The instrument as a whole (docs/adr/0009-how-notes-become-sound.md). The
 // conductor passes it notes on the audio thread, and it turns them into
-// sound. It has 32 voices, so up to 32 notes sound at once. Only the audio
+// sound. It has 64 voices, so up to 64 notes sound at once. Only the audio
 // thread uses it, so nothing in here locks, allocates or waits.
 class Synth {
 public:
@@ -28,6 +29,9 @@ public:
     // the glide key's (docs/adr/0036-glide.md), one past that.
     static constexpr int vibrato_key_note = 128;
     static constexpr int glide_key_note = 129;
+
+    // And the pedal's, past the drum pads' (drum_kit.h).
+    static constexpr int pedal_key_note = 146;
 
     explicit Synth(int sample_rate);
 
@@ -68,6 +72,12 @@ public:
     // A chord, notes starting together, never glides. It only glides live
     // notes. Letting go of every live note lets go of it too.
     void set_glide_key(bool held);
+
+    // Holds or lets go of the live sustain pedal
+    // (docs/adr/0048-the-grand-piano.md). While a player holds it, its notes
+    // ring on when their keys come up, until it is let go. Letting go of
+    // every live note lets go of it too.
+    void set_pedal_key(bool held);
 
     // Notes started after this take `glide_ms`, from 0 to glide_longest_ms,
     // to slide while the glide key is held. It starts at 100.
@@ -155,7 +165,7 @@ public:
     void render(float* out, int frames);
 
     // How many notes can sound at once.
-    static constexpr int voice_count = 32;
+    static constexpr int voice_count = 64;
 
 private:
     // How many notes a bent voice remembers it took over, still held.
@@ -218,6 +228,13 @@ private:
     // took over stay as they are.
     void remember_melody(int player, const Voice& voice);
 
+    // Holds or lets go of `player`'s pedal, for `source` and `layer`, with
+    // the sound its instruments make.
+    void hold_pedal(int player, bool held, Source source, int layer);
+
+    // Ends `voice`'s note: its key has come up and no pedal holds it.
+    void end_note(Voice& voice);
+
     // Lets go of `note` for `source` and `layer`: a note waiting is let go
     // as soon as it starts, and the others right away.
     void let_go(int note, Source source, int layer);
@@ -259,6 +276,9 @@ private:
     // is fading.
     Voice* find_quietest_fading_voice();
 
+    // The note the pedal has held longest, or nullptr if it holds none.
+    Voice* find_oldest_pedal_voice();
+
     // The voice whose note was pressed longest ago. Only asked when every
     // voice is held, so that is the note held the longest.
     Voice* find_oldest_voice();
@@ -299,6 +319,11 @@ private:
     // Every player's melody.
     std::array<Melody, player_count> melodies_{};
 
-    // The drums, beside the voices.
+    // Which players hold their pedal, and which of its recordings is next.
+    std::array<bool, player_count> pedals_{};
+    int pedal_turn_ = 0;
+
+    // The drums, and the sounds around the notes, beside the voices.
     DrumKit drums_;
+    ReleaseSounds release_sounds_;
 };

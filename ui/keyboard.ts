@@ -32,6 +32,8 @@ export interface KeyLayout {
   vibrato_keys: string[];
   // The keys held to glide: left Option, or right Alt on Windows.
   glide_keys: string[];
+  // The keys that hold the sustain pedal: Space.
+  pedal_keys: string[];
   // The keys that run the beat, each with what it does: right Shift runs
   // the looper, Esc clears it, - slows the beat down and = speeds it up.
   beat_keys: Record<string, BeatKey>;
@@ -73,7 +75,8 @@ export interface KeyRow {
 }
 
 // What a key is for, which decides how it is drawn. A "vibrato" key is held
-// for vibrato, a "glide" key to glide, a "beat" key runs the beat, a
+// for vibrato, a "glide" key to glide, a "pedal" key holds the sustain pedal,
+// a "beat" key runs the beat, a
 // "drum" key hits a drum, the "drum mode" key switches drum mode, and an
 // "action" key does something on the open tab, like Compose's Return.
 export type KeyKind =
@@ -82,6 +85,7 @@ export type KeyKind =
   | "wave"
   | "vibrato"
   | "glide"
+  | "pedal"
   | "beat"
   | "drum"
   | "drum mode"
@@ -293,6 +297,9 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   }
   if (layout.glide_keys.includes(code)) {
     return "glide";
+  }
+  if (layout.pedal_keys.includes(code)) {
+    return "pedal";
   }
   if (layout.beat_keys[code] !== undefined) {
     return "beat";

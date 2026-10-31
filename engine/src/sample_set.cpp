@@ -37,6 +37,10 @@ double hermite(double before, double a, double b, double after, double t) {
     return ((c3 * t + c2) * t + c1) * t + a;
 }
 
+// How much further off a zone counts for not being made for the touch: more
+// than any two notes are apart, so one made for it always comes first.
+constexpr int wrong_touch_distance = 1000;
+
 // How far `note` is outside `zone`'s notes, in notes; 0 inside them.
 int distance_to(const SampleZone& zone, int note) {
     if (note < zone.lowest_note) {
@@ -73,6 +77,9 @@ bool SampleSet::add_zone(const SampleZone& settings, const float* frames) {
     if (settings.lowest_note > settings.highest_note) {
         return false;
     }
+    if (settings.lowest_touch > settings.highest_touch) {
+        return false;
+    }
     if (settings.loop_end > settings.frame_count) {
         return false;
     }
@@ -88,15 +95,26 @@ bool SampleSet::add_zone(const SampleZone& settings, const float* frames) {
     SampleZone zone = settings;
     std::uint64_t count = settings.frame_count * static_cast<std::uint64_t>(settings.channels);
     zone.frames.assign(frames, frames + count);
-    zones_.push_back(std::move(zone));
+    if (settings.trigger == SampleTrigger::release) {
+        release_zones_.push_back(std::move(zone));
+    } else if (settings.trigger == SampleTrigger::pedal_down) {
+        pedal_down_zones_.push_back(std::move(zone));
+    } else if (settings.trigger == SampleTrigger::pedal_up) {
+        pedal_up_zones_.push_back(std::move(zone));
+    } else {
+        zones_.push_back(std::move(zone));
+    }
     return true;
 }
 
-const SampleZone* SampleSet::zone_for(int note) const {
+const SampleZone* SampleSet::zone_for(int note, int touch) const {
     const SampleZone* nearest = nullptr;
     int nearest_distance = 0;
     for (const SampleZone& zone : zones_) {
         int distance = distance_to(zone, note);
+        if (touch < zone.lowest_touch || touch > zone.highest_touch) {
+            distance += wrong_touch_distance;
+        }
         if (distance == 0) {
             return &zone;
         }
@@ -115,6 +133,27 @@ const SampleZone* SampleSet::exact_zone_for(int note) const {
         }
     }
     return nullptr;
+}
+
+const std::vector<SampleZone>& SampleSet::release_zones() const {
+    return release_zones_;
+}
+
+const std::vector<SampleZone>& SampleSet::pedal_zones(bool down) const {
+    if (down) {
+        return pedal_down_zones_;
+    }
+    return pedal_up_zones_;
+}
+
+bool SampleSet::plays(const SampleZone& zone, int note, int touch) {
+    if (distance_to(zone, note) != 0) {
+        return false;
+    }
+    if (touch < zone.lowest_touch) {
+        return false;
+    }
+    return touch <= zone.highest_touch;
 }
 
 Stereo read_zone(const SampleZone& zone, double place) {
