@@ -21,7 +21,7 @@
 use toml::{Table, Value};
 
 use crate::engine::{
-    Filter, FilterEnvelope, FilterType, Kind, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, Unison,
+    Amp, Filter, FilterEnvelope, FilterType, Kind, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, StringSound, Unison,
 };
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, Lfo, LfoShape, LfoSpeed, NO_CONNECTION, Source,
@@ -40,6 +40,7 @@ pub struct Sound {
     pub filter_envelope: FilterEnvelope,
     pub key_tracking: u32,
     pub unison: Unison,
+    pub amp: Amp,
     pub tuning_hz: f32,
     pub lfos: [Lfo; LFO_COUNT],
     pub connections: [Connection; CONNECTION_COUNT],
@@ -89,6 +90,12 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
         write_number(text, "cents", oscillator.cents);
         write_number(text, "width", oscillator.width);
         write_number(text, "touch", oscillator.touch);
+        write_number(text, "string_decay_ms", oscillator.string.decay_ms);
+        write_number(text, "string_tone", oscillator.string.tone);
+        write_number(text, "string_pick", oscillator.string.pick);
+        write_number(text, "string_pickup", oscillator.string.pickup);
+        write_number(text, "string_pickup_tone", oscillator.string.pickup_tone);
+        write_number(text, "string_body", oscillator.string.body);
     }
 
     let loudness = sound.loudness_envelope;
@@ -118,6 +125,17 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
     write_number(text, "copies", unison.copies);
     write_number(text, "detune_cents", unison.detune_cents);
     write_number(text, "spread", unison.spread);
+
+    let amp = sound.amp;
+    start_group(text, &heading(under, "[amp]"));
+    text.push_str(&format!("on = {}\n", amp.on));
+    write_number(text, "gain", amp.gain);
+    write_number(text, "bass", amp.bass);
+    write_number(text, "middle", amp.middle);
+    write_number(text, "treble", amp.treble);
+    write_number(text, "presence", amp.presence);
+    write_number(text, "speaker", amp.speaker);
+    write_number(text, "volume", amp.volume);
 
     let key_times = sound.vibrato_key_times;
     start_group(text, &heading(under, "[vibrato_key]"));
@@ -284,6 +302,19 @@ pub fn sound_of_table(table: &Table, new_song: &SoundProfile) -> Result<Sound, S
         envelope.release_ms = read_count(group, "release_ms", envelope.release_ms);
     }
 
+    if let Some(group) = group(&table, "amp") {
+        let amp = &mut sound.amp;
+        if let Some(on) = group.get("on").and_then(|value| value.as_bool()) {
+            amp.on = on;
+        }
+        amp.gain = read_count(group, "gain", amp.gain);
+        amp.bass = read_count(group, "bass", amp.bass);
+        amp.middle = read_count(group, "middle", amp.middle);
+        amp.treble = read_count(group, "treble", amp.treble);
+        amp.presence = read_count(group, "presence", amp.presence);
+        amp.speaker = read_count(group, "speaker", amp.speaker);
+        amp.volume = read_count(group, "volume", amp.volume);
+    }
     if let Some(group) = group(&table, "unison") {
         let unison = &mut sound.unison;
         unison.copies = read_count(group, "copies", unison.copies);
@@ -351,6 +382,14 @@ fn read_oscillator(group: &Table, missing: Oscillator) -> Oscillator {
         cents: read_signed(group, "cents", missing.cents),
         width: read_count(group, "width", missing.width),
         touch: read_count(group, "touch", missing.touch),
+        string: StringSound {
+            decay_ms: read_count(group, "string_decay_ms", missing.string.decay_ms),
+            tone: read_count(group, "string_tone", missing.string.tone),
+            pick: read_count(group, "string_pick", missing.string.pick),
+            pickup: read_count(group, "string_pickup", missing.string.pickup),
+            pickup_tone: read_count(group, "string_pickup_tone", missing.string.pickup_tone),
+            body: read_count(group, "string_body", missing.string.body),
+        },
     }
 }
 
@@ -590,6 +629,8 @@ mod tests {
         sound.filter_envelope.sustain = 30;
         sound.filter_envelope.release_ms = 800;
 
+        sound.amp.on = true;
+        sound.amp.gain = 77;
         sound.unison.copies = 5;
         sound.unison.detune_cents = 18;
         sound.unison.spread = 70;

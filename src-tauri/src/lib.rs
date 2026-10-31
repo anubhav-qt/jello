@@ -7,6 +7,7 @@ mod attachments;
 mod automation;
 mod audio_file;
 mod cards;
+mod guitar;
 mod commands;
 mod compose;
 mod dictation;
@@ -123,6 +124,10 @@ pub fn run() {
             if let Ok(folder) = commands::instruments_folder(app.handle()) {
                 instruments::set_folder(folder);
             }
+            // The guitars need no download, so their presets are always there.
+            if let Ok(folder) = commands::sounds_folder(app.handle()) {
+                let _ = guitar::save_presets(&folder);
+            }
             let loaded = app.handle().clone();
             instruments::on_loaded(move || play_loaded_instruments(&loaded));
             // The agent's notes about the player, from Music/Jello/Memory.
@@ -200,6 +205,7 @@ pub fn run() {
             commands::set_filter,
             commands::set_filter_envelope,
             commands::set_unison,
+            commands::set_amp,
             commands::set_loudness_envelope,
             commands::set_key_tracking,
             commands::set_tuning,
@@ -227,6 +233,7 @@ pub fn run() {
             keys_tool::mapping_view,
             keys_tool::set_key_notes,
             keys_tool::set_key_locked,
+            keys_tool::set_guitar_strings,
             keys_tool::reset_keys,
             keys_tool::sound_mapped_note,
             keys_tool::try_key_offer,

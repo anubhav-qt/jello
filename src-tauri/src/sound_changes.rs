@@ -18,6 +18,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::engine::{
+    Amp, STRING_FURTHEST, STRING_LONGEST_DECAY_MS, STRING_NEAREST, STRING_SHORTEST_DECAY_MS,
     Engine, FILTER_LONGEST_MS, FILTER_LOWEST_HZ, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT,
     FilterEnvelope, FilterType, GLIDE_LONGEST_MS, Kind, LOUDNESS_LONGEST_MS, LOUDNESS_SHORTEST_MS,
     LoudnessEnvelope, OSCILLATOR_COUNT, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS,
@@ -34,7 +35,7 @@ use crate::sound_file::Sound;
 use crate::sound_profile::SoundProfile;
 
 // The parts of a sound, for the message refusing a part with another name.
-const PARTS: &str = "tuning_hz, glide_ms, oscillators, loudness, filter, filter_envelope, unison, \
+const PARTS: &str = "tuning_hz, glide_ms, oscillators, loudness, filter, filter_envelope, unison, amp, \
                      vibrato_key, lfos and connections";
 
 // `sound` as the agent reads it.
@@ -50,6 +51,12 @@ pub fn json_of(sound: &Sound) -> Value {
             "cents": oscillator.cents,
             "width": oscillator.width,
             "touch": oscillator.touch,
+            "string_decay_ms": oscillator.string.decay_ms,
+            "string_tone": oscillator.string.tone,
+            "string_pick": oscillator.string.pick,
+            "string_pickup": oscillator.string.pickup,
+            "string_pickup_tone": oscillator.string.pickup_tone,
+            "string_body": oscillator.string.body,
             "instrument": sound.instruments[index],
         }));
     }
@@ -110,6 +117,7 @@ pub fn json_of(sound: &Sound) -> Value {
             "detune_cents": unison.detune_cents,
             "spread": unison.spread,
         },
+        "amp": sound.amp,
         "vibrato_key": {
             "rise_ms": key_times.rise_ms,
             "fall_ms": key_times.fall_ms,
@@ -176,6 +184,7 @@ pub fn changed(sound: &Sound, changes: &Value) -> Result<Sound, String> {
             "filter" => change_filter(&mut sound, value)?,
             "filter_envelope" => change_filter_envelope(&mut sound.filter_envelope, value)?,
             "unison" => change_unison(&mut sound.unison, value)?,
+            "amp" => change_amp(&mut sound.amp, value)?,
             "vibrato_key" => change_vibrato_key(&mut sound.vibrato_key_times, value)?,
             "lfos" => change_lfos(&mut sound.lfos, value)?,
             "connections" => change_connections(&mut sound.connections, value)?,
@@ -203,8 +212,20 @@ fn change_oscillators(sound: &mut Sound, value: &Value) -> Result<(), String> {
                 }
                 "touch" => oscillator.touch = count_within(value, &named, TOUCH_SOFTEST, TOUCH_HARDEST, "")?,
                 "instrument" => sound.instruments[index] = instrument_named(value, &named)?,
+                "string_decay_ms" => {
+                    let longest = STRING_LONGEST_DECAY_MS;
+                    oscillator.string.decay_ms = count_within(value, &named, STRING_SHORTEST_DECAY_MS, longest, " ms")?;
+                }
+                "string_tone" => oscillator.string.tone = count_within(value, &named, 0, FULL_PERCENT, "%")?,
+                "string_pick" => {
+                    oscillator.string.pick = count_within(value, &named, STRING_NEAREST, STRING_FURTHEST, "%")?;
+                }
+                "string_pickup" => oscillator.string.pickup = count_within(value, &named, 0, STRING_FURTHEST, "%")?,
+                "string_pickup_tone" => oscillator.string.pickup_tone = count_within(value, &named, 0, FULL_PERCENT, "%")?,
+                "string_body" => oscillator.string.body = count_within(value, &named, 0, FULL_PERCENT, "%")?,
                 _ => {
-                    let names = "kind, level, octaves, half_steps, cents, width, touch and instrument";
+                    let names = "kind, level, octaves, half_steps, cents, width, touch, instrument, string_decay_ms, \
+                                 string_tone, string_pick, string_pickup, string_pickup_tone and string_body";
                     return Err(no_such_value(&place, name, names));
                 }
             }
@@ -264,6 +285,34 @@ fn change_filter_envelope(envelope: &mut FilterEnvelope, value: &Value) -> Resul
                 return Err(no_such_value("filter_envelope", name, names));
             }
         }
+    }
+    Ok(())
+}
+
+fn change_amp(amp: &mut Amp, value: &Value) -> Result<(), String> {
+    for (name, value) in fields(value, "amp")? {
+        let named = format!("amp {name}");
+        if name == "on" {
+            let Some(on) = value.as_bool() else {
+                return Err(format!("{named} is true or false, not {value}"));
+            };
+            amp.on = on;
+            continue;
+        }
+        let knob = match name.as_str() {
+            "gain" => &mut amp.gain,
+            "bass" => &mut amp.bass,
+            "middle" => &mut amp.middle,
+            "treble" => &mut amp.treble,
+            "presence" => &mut amp.presence,
+            "speaker" => &mut amp.speaker,
+            "volume" => &mut amp.volume,
+            _ => {
+                let names = "on, gain, bass, middle, treble, presence, speaker and volume";
+                return Err(no_such_value("amp", name, names));
+            }
+        };
+        *knob = count_within(value, &named, 0, FULL_PERCENT, "%")?;
     }
     Ok(())
 }
@@ -606,6 +655,9 @@ pub fn take_changes(profile: &mut SoundProfile, engine: &mut Engine, before: &So
     if after.key_tracking != before.key_tracking {
         profile.set_key_tracking(engine, after.key_tracking);
     }
+    if after.amp != before.amp {
+        profile.set_amp(engine, after.amp);
+    }
     if after.unison != before.unison {
         profile.set_unison(engine, after.unison);
     }
@@ -854,7 +906,7 @@ mod tests {
     fn unknown_names_and_words_are_refused_with_what_there_is() {
         let before = new_sound();
         let error = changed(&before, &json!({"oscillators": [{"number": 1, "kind": "banjo"}]})).unwrap_err();
-        assert_eq!(error, "oscillator 1 kind is one of sine, triangle, square, saw, noise, sample, not banjo");
+        assert_eq!(error, "oscillator 1 kind is one of sine, triangle, square, saw, noise, sample, string, not banjo");
 
         let error = changed(&before, &json!({"reverb": {"size": 3}})).unwrap_err();
         assert!(error.starts_with("the sound has no part called reverb: it has tuning_hz"));
@@ -925,5 +977,17 @@ mod tests {
             ]
         );
         assert!(change_lines(&after, &after).is_empty());
+    }
+
+    #[test]
+    fn the_amp_changes_by_name_and_refuses_what_it_can_t_be() {
+        let mut amp = crate::engine::START_AMP;
+        change_amp(&mut amp, &serde_json::json!({"on": true, "gain": 77})).unwrap();
+        assert!(amp.on);
+        assert_eq!(amp.gain, 77);
+        assert!(change_amp(&mut amp, &serde_json::json!({"gain": 101})).is_err());
+        assert!(change_amp(&mut amp, &serde_json::json!({"on": "yes"})).is_err());
+        assert!(change_amp(&mut amp, &serde_json::json!({"wah": 3})).is_err());
+        assert_eq!(amp.gain, 77);
     }
 }

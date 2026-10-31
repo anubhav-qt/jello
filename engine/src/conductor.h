@@ -94,6 +94,8 @@ public:
     void set_filter_envelope(int track, const FilterEnvelopeSettings& envelope);
     // Unison's copies (Synth::set_unison).
     void set_unison(int track, const UnisonSettings& unison);
+    // The amp's knobs (Synth::set_amp).
+    void set_amp(int track, const AmpSettings& amp);
     // The loudness envelope, the key tracking and the tuning
     // (Synth::set_loudness_envelope, set_key_tracking and set_tuning).
     void set_loudness_envelope(int track, const LoudnessEnvelopeSettings& envelope);

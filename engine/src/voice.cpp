@@ -68,6 +68,11 @@ constexpr double quietest_release_sound = 0.001;
 // and the song's tuning moves the notes they play instead.
 constexpr double recorded_a4_hz = 440.0;
 
+// A string this quiet or less, for this long, has rung away. About -80 dB, so
+// its voice is free for another note.
+constexpr double quietest_string = 0.0001;
+constexpr int rung_away_ms = 100;
+
 // A note's pitch in Hz, with A4, note 69, at `a4_hz`. Every 12 notes is an
 // octave, and each octave up doubles the pitch.
 double note_to_frequency(int note, double a4_hz) {
@@ -99,9 +104,9 @@ double one_way(double both_ways) {
 
 // `kind` moved `steps` steps through sine, triangle, square, saw and
 // noise, round and round. Steps are rounded to whole ones. A sample stays a
-// sample, since only it has an instrument.
+// sample, since only it has an instrument, and a string stays a string.
 Kind moved_kind(Kind kind, double steps) {
-    if (kind == Kind::sample) {
+    if (kind == Kind::sample || kind == Kind::string) {
         return kind;
     }
     int index = static_cast<int>(kind) + static_cast<int>(std::round(steps));
@@ -183,12 +188,18 @@ Voice::Voice(int sample_rate)
       envelope_(sample_rate),
       filter_(sample_rate),
       volume_step_(1000.0f / static_cast<float>(sample_rate * volume_ease_ms)) {
+    // Left unwritten, so nothing real is used until a string first plays.
+    int string_size = PluckedString::memory_size(sample_rate);
+    string_memory_.reset(new float[static_cast<std::size_t>(string_size) * unison_most_copies * oscillator_count]);
+
     // The first copy starts at 0, so a note of one copy starts where it
     // always did.
     for (int i = 0; i < unison_most_copies; i++) {
         double start = i * copy_start_step;
         for (int o = 0; o < oscillator_count; o++) {
             copies_[i].phases[o] = start - std::floor(start);
+            std::size_t place = static_cast<std::size_t>(i * oscillator_count + o) * string_size;
+            copies_[i].strings[o].attach(string_memory_.get() + place, string_size, sample_rate);
         }
     }
     gain_.head_to(1.0, 0);
@@ -290,6 +301,7 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     // The live settings start right where the routing list puts them, which
     // tunes and places the copies.
     head_for(moves, 0, start_sample_);
+    pluck_strings(velocity, moved);
 
     // The new kinds can be at a different height here. The gap makes up the
     // difference, so the sound carries on from where it was, then shrinks
@@ -308,6 +320,44 @@ void Voice::start(int note, int velocity, const NoteStart& start, float volume, 
     // volume. One still sounding keeps its own and eases there as it renders.
     if (!was_sounding) {
         volume_ = volume;
+    }
+}
+
+void Voice::pluck_strings(int velocity, const NoteSound& sound) {
+    bool any_string = false;
+    bool any_other = false;
+    double hardness = static_cast<double>(velocity) / 127.0;
+    for (int o = 0; o < oscillator_count; o++) {
+        if (kinds_[o] != Kind::string) {
+            if (levels_[o] > 0.0) {
+                any_other = true;
+            }
+            continue;
+        }
+        any_string = true;
+        for (int c = 0; c < copy_count_; c++) {
+            Copy& copy = copies_[c];
+            std::uint64_t place = noise_what + static_cast<std::uint64_t>(c * oscillator_count + o);
+            copy.strings[o].pluck(copy.phase_steps[o].value, hardness, sound.oscillators[o].string, press_number_,
+                                  place);
+        }
+    }
+    only_strings_ = any_string && !any_other;
+    quiet_samples_ = 0;
+}
+
+void Voice::end_when_rung_away(const Stereo& height) {
+    if (!only_strings_ || envelope_.is_releasing()) {
+        return;
+    }
+    bool quiet = std::abs(height.left) < quietest_string && std::abs(height.right) < quietest_string;
+    if (!quiet) {
+        quiet_samples_ = 0;
+        return;
+    }
+    quiet_samples_ += 1;
+    if (quiet_samples_ >= sample_rate_ * rung_away_ms / 1000) {
+        release();
     }
 }
 
@@ -521,6 +571,7 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
         moves.resonance = resonance_move_.value;
         moves.amount = amount_move_.value;
         moves.type = type_move_.value;
+        end_when_rung_away(exact_height);
         Stereo filtered = filter_.next(exact_height, filter, moves);
         float loudness = envelope_.next();
         float gain = static_cast<float>(gain_.value);
@@ -546,6 +597,8 @@ void Voice::render(float* out, int frames, float volume, const FilterTargets& fi
             for (int o = 0; o < oscillator_count; o++) {
                 if (kinds_[o] == Kind::sample) {
                     move_sample(copy, o);
+                } else if (kinds_[o] == Kind::string) {
+                    copy.strings[o].advance(copy.phase_steps[o].value);
                 } else {
                     copy.phases[o] += copy.phase_steps[o].value;
                     if (copy.phases[o] >= 1.0) {
@@ -802,7 +855,9 @@ Stereo Voice::oscillator_height(const Copy& copy, int index) const {
         return read_zone(*zone, copy.phases[index]);
     }
     double mono = 0.0;
-    if (kind == Kind::noise) {
+    if (kind == Kind::string) {
+        mono = copy.strings[index].height();
+    } else if (kind == Kind::noise) {
         mono = copy.noises[index].height() * noise_trim;
     } else {
         Wave wave = wave_of(kind);

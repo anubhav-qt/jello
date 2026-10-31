@@ -20,10 +20,14 @@ constexpr int pedal_velocity = 100;
 constexpr float pedal_level = 0.35f * (pedal_velocity / 127.0f) * (pedal_velocity / 127.0f);
 
 Synth::Synth(int sample_rate)
-    : voices_(voice_count, Voice(sample_rate)),
+    : amp_(sample_rate),
       routing_(sample_rate),
       drums_(sample_rate),
       release_sounds_(sample_rate) {
+    voices_.reserve(voice_count);
+    for (int v = 0; v < voice_count; v++) {
+        voices_.emplace_back(sample_rate);
+    }
     layer_volumes_.fill(1.0f);
 }
 
@@ -547,6 +551,10 @@ void Synth::set_unison(const UnisonSettings& unison) {
     note_sound_.unison = unison;
 }
 
+void Synth::set_amp(const AmpSettings& amp) {
+    amp_.set(amp);
+}
+
 void Synth::set_loudness_envelope(const LoudnessEnvelopeSettings& envelope) {
     note_sound_.loudness_envelope = envelope;
 }
@@ -615,6 +623,7 @@ void Synth::render(float* out, int frames) {
         done += count;
         now_ += count;
     }
+    amp_.process(out, frames);
 }
 
 void Synth::tick() {

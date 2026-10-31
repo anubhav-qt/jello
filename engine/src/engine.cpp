@@ -145,7 +145,7 @@ static_assert(JELLO_OSCILLATOR_MOST_CENTS == static_cast<int>(oscillator_most_ce
               "the C API and the oscillators tune as many cents");
 static_assert(JELLO_KIND_NOISE == static_cast<int>(Kind::noise), "noise is the same kind");
 static_assert(JELLO_KIND_SAMPLE == static_cast<int>(Kind::sample), "the sample is the same kind");
-static_assert(JELLO_KIND_SAMPLE + 1 == kind_count, "every kind has a number");
+static_assert(JELLO_KIND_STRING + 1 == kind_count, "every kind has a number");
 
 // The C API and the sampler agree on how many sets there are, and on the
 // drum pads.
@@ -967,7 +967,8 @@ float jello_engine_gain_reduction(JelloEngine* engine, int chain, int slot) {
 }
 
 void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
-                                 int half_steps, float cents, float width, int touch) {
+                                 int half_steps, float cents, float width, int touch, float decay_seconds, float tone,
+                                 float pick, float pickup, float body, float pickup_tone) {
     // Anything out of range is ignored, so nothing odd reaches the synth.
     if (!is_valid_track(track)) {
         return;
@@ -975,7 +976,7 @@ void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int 
     if (!is_within_int(index, 0, JELLO_OSCILLATOR_COUNT - 1)) {
         return;
     }
-    if (!is_within_int(kind, JELLO_KIND_SINE, JELLO_KIND_SAMPLE)) {
+    if (!is_within_int(kind, JELLO_KIND_SINE, JELLO_KIND_STRING)) {
         return;
     }
     if (!is_within(level, 0.0f, 1.0f)) {
@@ -996,6 +997,18 @@ void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int 
     if (!is_within_int(touch, JELLO_TOUCH_SOFTEST, JELLO_TOUCH_HARDEST)) {
         return;
     }
+    if (!is_within(decay_seconds, string_shortest_decay_seconds, string_longest_decay_seconds)) {
+        return;
+    }
+    if (!is_within(tone, 0.0f, 1.0f) || !is_within(pick, 0.02f, 0.5f) || !is_within(body, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_within(pickup_tone, 0.0f, 1.0f)) {
+        return;
+    }
+    if (!is_within(pickup, 0.0f, 0.5f)) {
+        return;
+    }
 
     OscillatorSettings oscillator;
     oscillator.kind = static_cast<Kind>(kind);
@@ -1005,6 +1018,12 @@ void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int 
     oscillator.cents = cents;
     oscillator.width = width;
     oscillator.touch = touch;
+    oscillator.string.decay_seconds = decay_seconds;
+    oscillator.string.tone = tone;
+    oscillator.string.pick = pick;
+    oscillator.string.pickup = pickup;
+    oscillator.string.pickup_tone = pickup_tone;
+    oscillator.string.body = body;
     engine->conductor.set_oscillator(track, index, oscillator);
 }
 
@@ -1151,6 +1170,32 @@ void jello_engine_set_filter_envelope(JelloEngine* engine, int track, float amou
     envelope.sustain = sustain;
     envelope.release_ms = release_ms;
     engine->conductor.set_filter_envelope(track, envelope);
+}
+
+void jello_engine_set_amp(JelloEngine* engine, int track, int on, float gain, float bass, float middle, float treble,
+                          float presence, float speaker, float volume) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    if (!is_within_int(on, 0, 1)) {
+        return;
+    }
+    const float knobs[] = {gain, bass, middle, treble, presence, speaker, volume};
+    for (float knob : knobs) {
+        if (!is_within(knob, 0.0f, 1.0f)) {
+            return;
+        }
+    }
+    AmpSettings amp;
+    amp.on = on == 1;
+    amp.gain = gain;
+    amp.bass = bass;
+    amp.middle = middle;
+    amp.treble = treble;
+    amp.presence = presence;
+    amp.speaker = speaker;
+    amp.volume = volume;
+    engine->conductor.set_amp(track, amp);
 }
 
 void jello_engine_set_unison(JelloEngine* engine, int track, int copies, float detune_cents, float spread) {

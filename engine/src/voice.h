@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 
 #include "envelope.h"
 #include "filter.h"
@@ -204,6 +205,8 @@ private:
         // Each oscillator's own noise, so no two copies or oscillators hiss
         // alike. Only a noise oscillator moves it on.
         std::array<Noise, oscillator_count> noises{};
+        // Each oscillator's own string, for the string kind.
+        std::array<PluckedString, oscillator_count> strings{};
         // How much of it goes to each speaker: exactly 1 and 1 in the middle.
         Line left;
         Line right;
@@ -268,6 +271,14 @@ private:
     // copy at the start of its recording. With no set or zone it is silent.
     void start_sample(int index, int note, const OscillatorSettings& oscillator, const SampleSet* set);
 
+    // Plucks every copy's string on each string oscillator, once the copies
+    // are tuned, as hard as `velocity`.
+    void pluck_strings(int velocity, const NoteSound& sound);
+
+    // Counts how long the voice's strings have been too quiet to hear, from
+    // this sample's `height`, and ends the note once they have rung away.
+    void end_when_rung_away(const Stereo& height);
+
     // Moves sample oscillator `index` of `copy` on by its step, round its
     // loop or up to its end.
     void move_sample(Copy& copy, int index);
@@ -282,6 +293,13 @@ private:
     Stereo gap_now() const;
 
     int sample_rate_;
+    // The memory of every copy's strings, in one block. It is only written
+    // when a string plays, so a sound without strings costs no real memory.
+    std::unique_ptr<float[]> string_memory_;
+    // Whether the note is only strings, which end by ringing away, and how
+    // many samples they have been too quiet to hear.
+    bool only_strings_ = false;
+    int quiet_samples_ = 0;
     int gap_samples_;  // how many samples a gap takes to shrink away
     Envelope envelope_;
     VoiceFilter filter_;

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "amp.h"
 #include "drum_kit.h"
 #include "filter.h"
 #include "lfo.h"
@@ -122,6 +123,10 @@ public:
     // at 1 copy, which is off.
     void set_unison(const UnisonSettings& unison);
 
+    // The amp every note of this synth plays through. It moves at once, on
+    // notes already sounding too (docs/design.md#guitar).
+    void set_amp(const AmpSettings& amp);
+
     // Notes started after this use `envelope` as their loudness envelope.
     // Notes started before keep theirs.
     void set_loudness_envelope(const LoudnessEnvelopeSettings& envelope);
@@ -168,6 +173,8 @@ public:
     static constexpr int voice_count = 64;
 
 private:
+    Amp amp_;
+
     // How many notes a bent voice remembers it took over, still held.
     static constexpr int most_taken = 16;
 

@@ -43,6 +43,13 @@ export interface KeyLayout {
   drum_mode: boolean;
   drum_mode_keys: string[];
   drums: Record<string, string>;
+  // Whether the keys play a guitar (docs/adr/0049-the-keyboard-guitar.md), the
+  // keys that lay a palm on its strings, its strings and its shape keys. Their
+  // notes and names are in `notes` and `chords`.
+  guitar_mode: boolean;
+  damp_keys: string[];
+  guitar_strings: string[];
+  guitar_shapes: string[];
 }
 
 // What a key that runs the beat does.
@@ -86,6 +93,7 @@ export type KeyKind =
   | "vibrato"
   | "glide"
   | "pedal"
+  | "damp"
   | "beat"
   | "drum"
   | "drum mode"
@@ -300,6 +308,9 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   }
   if (layout.pedal_keys.includes(code)) {
     return "pedal";
+  }
+  if (layout.damp_keys.includes(code)) {
+    return "damp";
   }
   if (layout.beat_keys[code] !== undefined) {
     return "beat";

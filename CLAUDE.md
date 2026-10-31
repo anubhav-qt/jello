@@ -44,6 +44,11 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
   No Mix UI yet; mockups follow backend work and separate approval.
   [Mix design](docs/design.md#mix).
+- Guitar (0049): no recordings; oscillator kind `string`
+  (`engine/src/plucked_string.*`), amp per track (`engine/src/amp.*`, Amp page),
+  `guitar.rs`. U I O P [ ] are strings, 1QAZ to 5TGB hold shapes per scale,
+  songs can change them. Acoustic approved by ear; four electrics not yet heard.
+  [Design](docs/design.md#guitar).
 - Song key mappings (0047): built, replacing the fixed layout. A key plays any
   note set; no scale means keys play nothing. `scales.rs`, `key_mapping.rs`,
   `key_stats.rs`, `key_optimizer.rs`, `keys_tool.rs` (`jello_keys`),

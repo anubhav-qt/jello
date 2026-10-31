@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include "plucked_string.h"
 #include "wave.h"
 
 // Oscillators (docs/adr/0035-oscillators-with-kinds.md): every note is
@@ -21,13 +22,15 @@ enum class Kind {
     saw,
     noise,   // a new random height every sample: every pitch at once, a hiss
     sample,  // a sampled instrument's recording (docs/design.md#sampler)
+    string,  // a plucked string, made as it plays (docs/design.md#guitar)
 };
 
 // How many kinds there are.
-constexpr int kind_count = 6;
+constexpr int kind_count = 7;
 
 // How many kinds the routing list steps through: the waves and noise. A
-// sample needs its instrument, so it is only ever picked, never stepped to.
+// sample needs its instrument and a string is plucked once, so they are only
+// ever picked, never stepped to.
 constexpr int stepped_kind_count = 5;
 
 // How far an oscillator can be tuned from the note, either way: in whole
@@ -61,6 +64,8 @@ struct OscillatorSettings {
     // which of its recordings play. Laptop keys can't feel it, so it is set
     // on the sound. Only a sample uses it.
     int touch = 80;
+    // How a string kind sounds. Only a string uses it.
+    StringSettings string{};
 };
 
 // Where a new song's oscillators start: the first a triangle at full level,

@@ -320,6 +320,9 @@
   {#if kind === "pedal"}
     <span class="key-note">pedal</span>
   {/if}
+  {#if kind === "damp"}
+    <span class="key-note">mute</span>
+  {/if}
   {#if kind === "drum"}
     <span class="key-note">{layout.drums[spec.code]}</span>
   {/if}

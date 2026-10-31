@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::drums::{DRUM_FIRST_NOTE, PAD_NAMES, pad_named};
+use crate::guitar::{MUTED_VELOCITY, STRING_COUNT, STRING_KEYS, shape_keys};
 use crate::harmony::{Chord, chord_name, chord_of_notes};
 #[cfg(test)]
 use crate::harmony::Quality;
@@ -225,6 +226,13 @@ enum KeyRole {
     Drum(usize),
     // Jumps to the drums track and back.
     DrumMode,
+    // A guitar's string, thickest first (src/guitar.rs).
+    GuitarString(usize),
+    // Holds a guitar shape: the mapping says what it plays.
+    GuitarShape,
+    // Lays a palm on a guitar's strings: stops them, and until it comes up
+    // each one only sounds while its key is held.
+    Damp,
     // Moves new notes on to the next wave.
     Wave,
     // Runs the looper.
@@ -253,6 +261,11 @@ pub enum KeyAction {
     // Hits this drum pad, from 0. The hit plays out whole however long the
     // key is held, but the looper keeps how long it was.
     HitDrum(usize),
+    // Plucks a guitar string: stops the notes in `stop`, then plays `note` at
+    // `velocity`, which rings on after the key comes up.
+    Pluck { stop: Vec<u8>, note: u8, velocity: u8 },
+    // Stops these notes, for a guitar's left hand or palm.
+    StopNotes(Vec<u8>),
     // Jumps to the drums track used last, or back to the track it came
     // from (docs/design.md#tracks-and-sections). Drum mode follows.
     JumpToDrums,
@@ -279,6 +292,14 @@ pub struct KeyMap {
     // What each key does in drum mode, and whether it is on.
     drum_layout: HashMap<String, KeyRole>,
     drum_mode: bool,
+    // What each key does on a guitar's track, and whether the picked one is.
+    guitar_layout: HashMap<String, KeyRole>,
+    guitar_mode: bool,
+    // The shape keys held, oldest first: the newest is the one that plays.
+    held_shapes: Vec<String>,
+    // The note each string is ringing, if any, and whether a palm is on them.
+    ringing: [Option<u8>; STRING_COUNT],
+    damped: bool,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
     // The mapping the keys play, at no octave shift.
@@ -337,6 +358,13 @@ pub struct LayoutForUi {
     drum_mode: bool,
     drum_mode_keys: Vec<String>,
     drums: HashMap<String, &'static str>,
+    // Whether the keys play a guitar, and in guitar mode, its strings and its
+    // shape keys. Their notes and names are in `notes` and `chords`.
+    guitar_mode: bool,
+    // The keys that lay a palm on the strings.
+    damp_keys: Vec<String>,
+    guitar_strings: Vec<&'static str>,
+    guitar_shapes: Vec<&'static str>,
 }
 
 impl KeyMap {
@@ -361,11 +389,26 @@ impl KeyMap {
             }
         }
 
+        // A guitar keeps them too, with a palm in the pedal's place.
+        let mut guitar_layout = layout.clone();
+        guitar_layout.insert(String::from(PEDAL_KEY), KeyRole::Damp);
+        for (string, key) in STRING_KEYS.iter().enumerate() {
+            guitar_layout.insert(String::from(*key), KeyRole::GuitarString(string));
+        }
+        for key in shape_keys() {
+            guitar_layout.insert(String::from(key), KeyRole::GuitarShape);
+        }
+
         KeyMap {
             octave: 0,
             layout,
             drum_layout,
             drum_mode: false,
+            guitar_layout,
+            guitar_mode: false,
+            held_shapes: Vec::new(),
+            ringing: [None; STRING_COUNT],
+            damped: false,
             held: HashMap::new(),
             mapping: KeyMapping::default(),
             on_play_tab: false,
@@ -486,6 +529,8 @@ impl KeyMap {
     fn roles(&self) -> &HashMap<String, KeyRole> {
         if self.drum_mode {
             &self.drum_layout
+        } else if self.guitar_mode {
+            &self.guitar_layout
         } else {
             &self.layout
         }
@@ -495,6 +540,81 @@ impl KeyMap {
     // picked track, on for a drums track.
     pub fn set_drum_mode(&mut self, on: bool) {
         self.drum_mode = on;
+    }
+
+    // Turns guitar mode on or off: on, the keys play the mapping's guitar. It
+    // follows the picked track, on for one that plays a string. Strings already
+    // ringing ring away by themselves.
+    pub fn set_guitar_mode(&mut self, on: bool) {
+        if on != self.guitar_mode {
+            self.held_shapes.clear();
+            self.ringing = [None; STRING_COUNT];
+            self.damped = false;
+        }
+        self.guitar_mode = on;
+    }
+
+    // The note string `string` plays now, with the newest shape held or open.
+    fn guitar_note(&self, string: usize) -> Option<u8> {
+        let mut played = self.mapping.guitar.open[string];
+        if let Some(key) = self.held_shapes.last() {
+            if let Some(shape) = self.mapping.guitar.shapes.get(key) {
+                played = shape.strings[string];
+            }
+        }
+        let note = played?;
+        Some((i16::from(note) + i16::from(self.octave) * 12) as u8)
+    }
+
+    // Whether a string other than `string` is ringing `note`: they share a
+    // voice, so it can't stop yet.
+    fn another_string_rings(&self, string: usize, note: u8) -> bool {
+        for (other, ringing) in self.ringing.iter().enumerate() {
+            if other != string && *ringing == Some(note) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // The left hand moved: a string ringing a note it no longer plays stops,
+    // and one still on its note rings on.
+    fn stop_moved_strings(&mut self) -> Vec<u8> {
+        let mut stops = Vec::new();
+        for string in 0..STRING_COUNT {
+            let Some(ringing) = self.ringing[string] else {
+                continue;
+            };
+            if self.guitar_note(string) == Some(ringing) {
+                continue;
+            }
+            self.ringing[string] = None;
+            if !self.another_string_rings(string, ringing) {
+                stops.push(ringing);
+            }
+        }
+        stops
+    }
+
+    fn pluck(&mut self, key: &str, string: usize) -> Option<KeyAction> {
+        let note = self.guitar_note(string)?;
+        let mut stop = Vec::new();
+        if let Some(ringing) = self.ringing[string] {
+            if ringing != note && !self.another_string_rings(string, ringing) {
+                stop.push(ringing);
+            }
+        }
+        let mut velocity = LAPTOP_VELOCITY;
+        if self.damped {
+            // Muted, it ends with its key.
+            velocity = MUTED_VELOCITY;
+            self.ringing[string] = None;
+            self.held.insert(String::from(key), vec![note]);
+        } else {
+            self.ringing[string] = Some(note);
+            self.held.insert(String::from(key), Vec::new());
+        }
+        Some(KeyAction::Pluck { stop, note, velocity })
     }
 
     #[cfg(test)]
@@ -554,6 +674,24 @@ impl KeyMap {
                 self.held.insert(String::from(key), vec![note]);
                 Some(KeyAction::HitDrum(pad))
             }
+            KeyRole::GuitarString(string) => self.pluck(key, string),
+            KeyRole::GuitarShape => {
+                self.held.insert(String::from(key), Vec::new());
+                self.held_shapes.push(String::from(key));
+                Some(KeyAction::StopNotes(self.stop_moved_strings()))
+            }
+            KeyRole::Damp => {
+                self.held.insert(String::from(key), Vec::new());
+                self.damped = true;
+                let mut stops = Vec::new();
+                for ringing in self.ringing.iter().flatten() {
+                    if !stops.contains(ringing) {
+                        stops.push(*ringing);
+                    }
+                }
+                self.ringing = [None; STRING_COUNT];
+                Some(KeyAction::StopNotes(stops))
+            }
             KeyRole::DrumMode => Some(KeyAction::JumpToDrums),
             KeyRole::Wave => Some(KeyAction::SwitchWave),
             KeyRole::Looper => Some(KeyAction::PressLooper),
@@ -574,6 +712,14 @@ impl KeyMap {
         };
 
         let mut to_stop = Vec::new();
+        if key == PEDAL_KEY {
+            self.damped = false;
+        }
+        let shapes_before = self.held_shapes.len();
+        self.held_shapes.retain(|held| held != key);
+        if self.held_shapes.len() != shapes_before {
+            to_stop = self.stop_moved_strings();
+        }
         for note in started {
             if !self.is_note_held(note) {
                 to_stop.push(note);
@@ -622,6 +768,9 @@ impl KeyMap {
     // Forgets every held key, for when every note is let go at once.
     pub fn release_all(&mut self) {
         self.held.clear();
+        self.held_shapes.clear();
+        self.ringing = [None; STRING_COUNT];
+        self.damped = false;
     }
 
     // Each key that plays a major or a minor chord, in any voicing, with
@@ -711,6 +860,7 @@ impl KeyMap {
         let mut beat_keys = HashMap::new();
         let mut drum_mode_keys = Vec::new();
         let mut drums = HashMap::new();
+        let mut damp_keys = Vec::new();
         for (key, role) in self.roles() {
             match role {
                 KeyRole::Notes(played) => {
@@ -731,6 +881,19 @@ impl KeyMap {
                 }
                 KeyRole::Drum(pad) => {
                     drums.insert(key.clone(), PAD_NAMES[*pad]);
+                }
+                KeyRole::GuitarString(string) => {
+                    if let Some(note) = self.guitar_note(*string) {
+                        notes.insert(key.clone(), note);
+                    }
+                }
+                KeyRole::GuitarShape => {
+                    if let Some(shape) = self.mapping.guitar.shapes.get(key) {
+                        chords.insert(key.clone(), self.shape_for_ui(&shape.name, &shape.strings));
+                    }
+                }
+                KeyRole::Damp => {
+                    damp_keys.push(key.clone());
                 }
                 KeyRole::DrumMode => {
                     drum_mode_keys.push(key.clone());
@@ -780,12 +943,40 @@ impl KeyMap {
             drum_mode: self.drum_mode,
             drum_mode_keys,
             drums,
+            guitar_mode: self.guitar_mode,
+            damp_keys,
+            guitar_strings: guitar_list(self.guitar_mode, STRING_KEYS.to_vec()),
+            guitar_shapes: guitar_list(self.guitar_mode, shape_keys()),
+        }
+    }
+
+    // A shape as the UI draws it on its key: its name and its notes, lowest
+    // first, at the octave shift.
+    fn shape_for_ui(&self, name: &str, strings: &[Option<u8>; STRING_COUNT]) -> ChordForUi {
+        let mut notes = Vec::new();
+        for note in strings.iter().flatten() {
+            notes.push((i16::from(*note) + i16::from(self.octave) * 12) as u8);
+        }
+        notes.sort();
+        ChordForUi {
+            name: String::from(name),
+            notes,
         }
     }
 }
 
+fn guitar_list(on: bool, keys: Vec<&'static str>) -> Vec<&'static str> {
+    if on {
+        return keys;
+    }
+    Vec::new()
+}
+
 // Whether every note of `mapping` stays from 0 to 127, moved by `shift`.
 fn fits_when_shifted(mapping: &KeyMapping, shift: i16) -> bool {
+    if !mapping.guitar.fits_when_shifted(shift) {
+        return false;
+    }
     for notes in mapping.keys.values() {
         for note in notes {
             let moved = i16::from(*note) + shift;
@@ -1497,6 +1688,156 @@ mod tests {
         assert_eq!(key_map.note_keys()["KeyJ"], 120);
         key_map.shift_octave(1);
         assert_eq!(key_map.octave(), 0);
+    }
+
+    fn guitar_keys() -> KeyMap {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        key_map.set_guitar_mode(true);
+        key_map
+    }
+
+    fn plucked(action: Option<KeyAction>) -> (Vec<u8>, u8, u8) {
+        match action {
+            Some(KeyAction::Pluck { stop, note, velocity }) => (stop, note, velocity),
+            other => panic!("not a pluck: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_right_hand_plucks_six_strings_with_the_thinnest_on_the_right() {
+        let mut key_map = guitar_keys();
+        let notes = [40, 45, 50, 55, 59, 64];
+        for (key, note) in STRING_KEYS.iter().zip(notes) {
+            assert_eq!(plucked(key_map.press(key)), (vec![], note, LAPTOP_VELOCITY));
+        }
+        // Coming up, a string rings on.
+        assert_eq!(key_map.release("KeyU"), Vec::<u8>::new());
+        // Other right-hand keys play nothing.
+        assert_eq!(key_map.press("KeyJ"), None);
+        assert_eq!(key_map.press("Digit7"), None);
+    }
+
+    #[test]
+    fn a_left_key_gives_the_strings_its_shape_and_leaves_its_silent_ones_silent() {
+        let mut key_map = guitar_keys();
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::StopNotes(vec![])));
+        // C on the A string: its low E is silent.
+        assert_eq!(key_map.press("KeyU"), None);
+        assert_eq!(plucked(key_map.press("KeyI")).1, 48);
+        key_map.release("KeyI");
+        assert_eq!(key_map.release("KeyR"), vec![48]);
+        // Open again.
+        assert_eq!(plucked(key_map.press("KeyI")).1, 45);
+    }
+
+    #[test]
+    fn a_string_stops_its_last_note_when_it_plays_another() {
+        let mut key_map = guitar_keys();
+        assert_eq!(plucked(key_map.press("KeyU")).1, 40);
+        key_map.release("KeyU");
+        key_map.press("Digit1");
+        // Moving the hand stopped it: F2 replaces E2.
+        key_map.release("Digit1");
+        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
+        key_map.release("KeyU");
+        // Plucked again on the same note, there is nothing to stop.
+        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
+    }
+
+    #[test]
+    fn moving_the_left_hand_stops_only_the_strings_that_change() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyR"); // C: x 48 55 60 64 67
+        key_map.press("KeyO");
+        key_map.press("KeyP");
+        key_map.release("KeyO");
+        key_map.release("KeyP");
+        // G: 43 50 55 59 62 67, so 55 rings on and 60 stops.
+        assert_eq!(key_map.press("KeyE"), Some(KeyAction::StopNotes(vec![60])));
+    }
+
+    #[test]
+    fn two_strings_on_one_note_stop_together() {
+        let mut mapping = c_major();
+        mapping.guitar.open = [Some(50), Some(50), None, None, None, None];
+        let mut key_map = KeyMap::new();
+        key_map.follow(&mapping);
+        key_map.set_guitar_mode(true);
+        key_map.press("KeyU");
+        key_map.press("KeyI");
+        key_map.release("KeyU");
+        key_map.release("KeyI");
+        // One string moving leaves the other ringing that note.
+        assert_eq!(key_map.press("Space"), Some(KeyAction::StopNotes(vec![50])));
+    }
+
+    #[test]
+    fn a_palm_stops_the_strings_and_mutes_plucks_until_it_comes_up() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyU");
+        key_map.press("KeyI");
+        key_map.release("KeyU");
+        key_map.release("KeyI");
+        assert_eq!(key_map.press("Space"), Some(KeyAction::StopNotes(vec![40, 45])));
+        assert!(!key_map.holds_pedal("Space"));
+        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, MUTED_VELOCITY));
+        // Muted, it ends with its key.
+        assert_eq!(key_map.release("KeyU"), vec![40]);
+        key_map.release("Space");
+        assert_eq!(plucked(key_map.press("KeyU")).2, LAPTOP_VELOCITY);
+    }
+
+    #[test]
+    fn arrows_shift_a_guitar_s_octave_like_any_other_keys() {
+        let mut key_map = guitar_keys();
+        key_map.shift_octave(1);
+        assert_eq!(plucked(key_map.press("KeyU")).1, 52);
+        key_map.shift_octave(-2);
+        key_map.release("KeyU");
+        assert_eq!(plucked(key_map.press("KeyU")).1, 28);
+    }
+
+    #[test]
+    fn a_section_s_guitar_takes_over_for_the_next_pluck() {
+        let mut key_map = guitar_keys();
+        let mut other = c_major();
+        other.guitar.open[0] = Some(38);
+        key_map.follow(&other);
+        assert_eq!(plucked(key_map.press("KeyU")).1, 38);
+    }
+
+    #[test]
+    fn the_ui_is_told_the_guitar_s_keys_and_the_shape_held() {
+        let mut key_map = guitar_keys();
+        let layout = key_map.layout_for_ui();
+        assert!(layout.guitar_mode);
+        assert_eq!(layout.guitar_strings.len(), 6);
+        assert_eq!(layout.guitar_shapes.len(), 20);
+        assert_eq!(layout.notes["KeyU"], 40);
+        assert_eq!(layout.chords["KeyR"].name, "C");
+        assert_eq!(layout.damp_keys, vec![String::from("Space")]);
+        assert!(layout.pedal_keys.is_empty());
+        key_map.press("KeyR");
+        let layout = key_map.layout_for_ui();
+        assert!(!layout.notes.contains_key("KeyU"));
+        assert_eq!(layout.notes["KeyI"], 48);
+    }
+
+    #[test]
+    fn with_no_scale_a_guitar_plays_nothing() {
+        let mut key_map = KeyMap::new();
+        key_map.set_guitar_mode(true);
+        assert_eq!(key_map.press("KeyU"), None);
+    }
+
+    #[test]
+    fn letting_go_of_everything_forgets_the_guitar_too() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyR");
+        key_map.press("Space");
+        key_map.release_all();
+        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
     }
 
     #[test]

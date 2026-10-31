@@ -5,8 +5,10 @@
      (docs/design.md#pulse-width), and its tuning. A sample shows its
      instrument in the drawing's place (docs/design.md#sampler): clicking
      it lists the instruments over the oscillator until one is picked. Its
-     touch, how hard its keys are struck, takes the width's place. All
-     of them start with the next key pressed. -->
+     touch, how hard its keys are struck, takes the width's place. A string
+     (docs/design.md#guitar) has its decay there, and a row of its own for its
+     tone, where it is plucked, its pickup and its body. All of them start with
+     the next key pressed. -->
 <script lang="ts">
   import {
     evenScale,
@@ -24,12 +26,17 @@
     OSCILLATOR_MOST_OCTAVES,
     PULSE_NARROWEST_PERCENT,
     PULSE_WIDEST_PERCENT,
+    STRING_FURTHEST,
+    STRING_LONGEST_DECAY_MS,
+    STRING_NEAREST,
+    STRING_SHORTEST_DECAY_MS,
     TOUCH_HARDEST,
     TOUCH_SOFTEST,
     type Oscillator,
     type OscillatorView,
     type SoundSender,
     type SoundView,
+    type StringSound,
   } from "./sound";
   import { clickThenLetGo } from "./dom";
   import SoundHandle from "./SoundHandle.svelte";
@@ -53,6 +60,9 @@
   const CENTS = signedScale(OSCILLATOR_MOST_CENTS, "", "");
   const WIDTH_SCALE = evenScale(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, 1, "%", "%");
   const TOUCH_SCALE = evenScale(TOUCH_SOFTEST, TOUCH_HARDEST, 1, "", "");
+  const DECAY_SCALE = evenScale(STRING_SHORTEST_DECAY_MS, STRING_LONGEST_DECAY_MS, 100, " ms", " ms");
+  const PICK_SCALE = evenScale(STRING_NEAREST, STRING_FURTHEST, 1, "%", "%");
+  const PICKUP_SCALE = evenScale(0, STRING_FURTHEST, 1, "%", "%");
 
   // Oscillator `index` as it is now, with `change` made to it.
   function sendOscillator(index: number, change: Partial<Oscillator>) {
@@ -65,9 +75,25 @@
       cents: now.cents,
       width: now.width,
       touch: now.touch,
+      string: now.string,
       ...change,
     };
     send.setOscillator(index, oscillator);
+  }
+
+  function sendString(index: number, change: Partial<StringSound>) {
+    sendOscillator(index, { string: { ...sound.oscillators[index].string, ...change } });
+  }
+
+  // One value of a string, picked by its own id, like "osc 2 tone".
+  function stringSetting(index: number, name: string, field: keyof StringSound, scale: Setting["scale"]): Setting {
+    return {
+      id: `osc ${index + 1} ${field}`,
+      name,
+      scale,
+      now: () => sound.oscillators[index].string[field],
+      set: (value) => sendString(index, { [field]: value }),
+    };
   }
 
   // The six values of oscillator `index`, each picked by its own id, like
@@ -116,7 +142,13 @@
       now: () => sound.oscillators[index].cents,
       set: (newCents) => sendOscillator(index, { cents: newCents }),
     };
-    return { level, width, touch, octaves, halfSteps, cents };
+    const decay = stringSetting(index, "Decay", "decay_ms", DECAY_SCALE);
+    const tone = stringSetting(index, "Tone", "tone", PERCENT);
+    const pick = stringSetting(index, "Pick", "pick", PICK_SCALE);
+    const pickup = stringSetting(index, "Pickup", "pickup", PICKUP_SCALE);
+    const pickupTone = stringSetting(index, "Coil", "pickup_tone", PERCENT);
+    const body = stringSetting(index, "Body", "body", PERCENT);
+    return { level, width, touch, octaves, halfSteps, cents, decay, tone, pick, pickup, pickupTone, body };
   }
 
   const SETTINGS = [settingsOf(0), settingsOf(1), settingsOf(2)];
@@ -226,6 +258,9 @@
       let height = 0;
       if (oscillator.kind === "noise") {
         height = noiseHeight(point);
+      } else if (oscillator.kind === "string") {
+        // Plucked, then ringing away.
+        height = Math.sin(2 * Math.PI * along * cycles * 3) * Math.exp(-3 * along);
       } else {
         const phase = (along * cycles) % 1;
         height = kindHeight(oscillator.kind, phase, oscillator.width);
@@ -358,10 +393,21 @@
           <SoundValue setting={settings.level} dots={11} {picked} {onPick} />
           {#if oscillator.kind === "sample"}
             <SoundValue setting={settings.touch} dots={11} {picked} {onPick} dim={oscillator.level === 0} />
+          {:else if oscillator.kind === "string"}
+            <SoundValue setting={settings.decay} dots={11} {picked} {onPick} dim={oscillator.level === 0} />
           {:else}
             <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
           {/if}
         </div>
+        {#if oscillator.kind === "string"}
+          <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr 1fr 1fr">
+            <SoundValue setting={settings.tone} dots={7} {picked} {onPick} dim={oscillator.level === 0} />
+            <SoundValue setting={settings.pick} dots={7} {picked} {onPick} dim={oscillator.level === 0} />
+            <SoundValue setting={settings.pickup} dots={7} {picked} {onPick} dim={oscillator.level === 0} />
+            <SoundValue setting={settings.pickupTone} dots={7} {picked} {onPick} dim={oscillator.level === 0 || oscillator.string.pickup === 0} />
+            <SoundValue setting={settings.body} dots={7} {picked} {onPick} dim={oscillator.level === 0} />
+          </div>
+        {/if}
         <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr">
           <SoundValue
             setting={settings.octaves}

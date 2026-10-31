@@ -12,8 +12,8 @@ use crate::arrange;
 use crate::sections::{self, SectionEdit, SectionsView};
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{
-    BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
-    LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, TRACK_COUNT, Unison,
+    Amp, BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
+    LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, StringSound, TRACK_COUNT, Unison,
     PEDAL_KEY_NOTE, VIBRATO_KEY_NOTE, drum_note,
 };
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
@@ -53,6 +53,7 @@ pub struct SoundView {
     loudness: LoudnessView,
     filter: FilterView,
     unison: UnisonView,
+    amp: Amp,
     // A4's pitch in Hz, which every other note is tuned from.
     tuning_hz: f32,
     // All 8 LFOs and all 64 connections, in order, and the vibrato key's
@@ -192,6 +193,8 @@ pub struct OscillatorView {
     width: u32,
     // How hard a sample's keys are struck, from 1 to 127.
     touch: u32,
+    // How a string kind sounds.
+    string: StringSound,
 }
 
 fn oscillator_view_of(oscillator: &Oscillator, instrument: InstrumentView) -> OscillatorView {
@@ -204,6 +207,7 @@ fn oscillator_view_of(oscillator: &Oscillator, instrument: InstrumentView) -> Os
         cents: oscillator.cents,
         width: oscillator.width,
         touch: oscillator.touch,
+        string: oscillator.string,
     }
 }
 
@@ -550,6 +554,7 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
         loudness: loudness_view_of(sound_profile),
         filter: filter_view_of(sound_profile),
         unison: unison_view_of(sound_profile),
+        amp: sound_profile.amp(),
         tuning_hz: sound_profile.tuning_hz(),
         lfos,
         connections,
@@ -764,6 +769,7 @@ pub fn set_oscillator(
     cents: i32,
     width: u32,
     touch: u32,
+    string: StringSound,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
     if index >= OSCILLATOR_COUNT {
@@ -777,6 +783,7 @@ pub fn set_oscillator(
         cents,
         width,
         touch,
+        string,
     };
 
     let mut composer = composer.lock().unwrap();
@@ -1089,6 +1096,23 @@ pub fn set_unison(
     Ok(sound_view_of(&mut engine, &composer, now))
 }
 
+// Sets the amp its notes play through (docs/design.md#guitar), at once. Values
+// outside their ranges are brought within them. Returns what the screen shows
+// about the sound.
+#[tauri::command]
+pub fn set_amp(
+    composer: State<'_, Mutex<Composer>>,
+    engine: State<'_, Mutex<Engine>>,
+    amp: Amp,
+) -> Result<SoundView, String> {
+    let now = Instant::now();
+    let mut composer = composer.lock().unwrap();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    composer.sound_profile_mut().set_amp(&mut engine, amp);
+    Ok(sound_view_of(&mut engine, &composer, now))
+}
+
 // Sets the song's loudness envelope for notes started from now on: how long
 // its attack, decay and release take in ms, from 1 to 10000, and its
 // sustain in percent of the peak. Values outside their ranges are brought
@@ -1391,7 +1415,19 @@ pub(crate) fn press_key_on(key_map: &mut KeyMap, composer: &mut Composer, engine
 pub(crate) fn follow_picked_track(key_map: &mut KeyMap, composer: &Composer) {
     let on = composer.tracks().picked_track().is_drums();
     key_map.set_drum_mode(on);
+    key_map.set_guitar_mode(!on && plays_a_string(composer));
     key_map.follow(composer.keys_now());
+}
+
+// Whether the picked track's sound plays a string, which makes its keys a
+// guitar (docs/adr/0049-the-keyboard-guitar.md).
+pub(crate) fn plays_a_string(composer: &Composer) -> bool {
+    for oscillator in composer.sound_profile().oscillators() {
+        if oscillator.kind == Kind::String && oscillator.level > 0 {
+            return true;
+        }
+    }
+    false
 }
 
 // Right Option's jump: to the drums track used last, made if there is
@@ -1444,6 +1480,17 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         }
         KeyAction::HitDrum(pad) => {
             engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
+        }
+        KeyAction::Pluck { stop, note, velocity } => {
+            for stopped in stop {
+                engine.note_off(stopped);
+            }
+            engine.note_on(note, velocity);
+        }
+        KeyAction::StopNotes(notes) => {
+            for note in notes {
+                engine.note_off(note);
+            }
         }
         // press_key_on jumps, since drum mode follows in the key map.
         KeyAction::JumpToDrums => {}
@@ -1527,6 +1574,7 @@ pub(crate) fn key_down(key_map: &mut KeyMap, composer: &mut Composer, key: &str,
     match &action {
         KeyAction::PlayNotes(notes) => composer.notes_pressed(key, notes, now),
         KeyAction::PlayNote(note) => composer.note_pressed(key, *note, now),
+        KeyAction::Pluck { note, .. } => composer.note_pressed(key, *note, now),
         _ => {}
     }
     Some(action)
@@ -2298,6 +2346,7 @@ mod tests {
             cents: -9,
             width: 30,
             touch: 110,
+            string: crate::engine::START_STRING,
         };
         profile.set_oscillator(&mut engine, 2, third);
         profile.set_loudness_envelope(

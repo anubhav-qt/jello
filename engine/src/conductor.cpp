@@ -180,6 +180,13 @@ void Conductor::set_unison(int track, const UnisonSettings& unison) {
     send(event);
 }
 
+void Conductor::set_amp(int track, const AmpSettings& amp) {
+    Event event{EventType::set_amp, 0, 0};
+    event.track = track;
+    event.amp = amp;
+    send(event);
+}
+
 void Conductor::set_loudness_envelope(int track, const LoudnessEnvelopeSettings& envelope) {
     Event event{EventType::set_loudness_envelope, 0, 0};
     event.track = track;
@@ -760,6 +767,8 @@ void Conductor::handle(const Event& event) {
         synth.set_filter_envelope(event.filter_envelope);
     } else if (event.type == EventType::set_unison) {
         synth.set_unison(event.unison);
+    } else if (event.type == EventType::set_amp) {
+        synth.set_amp(event.amp);
     } else if (event.type == EventType::set_loudness_envelope) {
         synth.set_loudness_envelope(event.loudness_envelope);
     } else if (event.type == EventType::set_key_tracking) {

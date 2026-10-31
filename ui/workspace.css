@@ -492,6 +492,30 @@ h3 > .tutor-markdown {
   flex: 1 1 0;
   min-width: 0;
 }
+.keys-strings {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+}
+.keys-string {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.keys-string .tape-label,
+.keys-string .keys-button:last-child {
+  grid-column: 1 / -1;
+}
+.keys-string-note {
+  text-align: center;
+  color: #fff;
+}
+.keys-string-note.is-silent {
+  opacity: 0.5;
+}
+
 .keys-selected {
   flex: 1 1 0;
   min-width: 0;

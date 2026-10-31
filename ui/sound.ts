@@ -17,6 +17,7 @@ export interface SoundView {
   filter: FilterView;
   // The copies new notes are played by.
   unison: UnisonView;
+  amp: Amp;
   // A4's pitch in Hz, which new notes are tuned from.
   tuning_hz: number;
   // All LFO_COUNT LFOs and all CONNECTION_COUNT connections, in order, and
@@ -144,7 +145,24 @@ export interface OscillatorView {
   touch: number;
   // The instrument a sample plays (docs/design.md#sampler).
   instrument: InstrumentView;
+  // How a string kind sounds (docs/design.md#guitar).
+  string: StringSound;
 }
+
+// How a plucked string sounds (`StringSound` in src-tauri/src/engine.rs).
+export interface StringSound {
+  decay_ms: number;
+  tone: number;
+  pick: number;
+  pickup: number;
+  pickup_tone: number;
+  body: number;
+}
+
+export const STRING_SHORTEST_DECAY_MS = 100;
+export const STRING_LONGEST_DECAY_MS = 30000;
+export const STRING_NEAREST = 2;
+export const STRING_FURTHEST = 50;
 
 // An oscillator as the sound panel sends it (`set_oscillator` in
 // src-tauri/src/commands.rs).
@@ -156,6 +174,7 @@ export interface Oscillator {
   cents: number;
   width: number;
   touch: number;
+  string: StringSound;
 }
 
 // The softest and hardest touches (`TOUCH_` in src-tauri/src/engine.rs).
@@ -263,6 +282,18 @@ export interface Unison {
   spread: number;
 }
 
+// A guitar amp (`Amp` in src-tauri/src/engine.rs), its knobs in percent.
+export interface Amp {
+  on: boolean;
+  gain: number;
+  bass: number;
+  middle: number;
+  treble: number;
+  presence: number;
+  speaker: number;
+  volume: number;
+}
+
 // Unison's ranges (`UNISON_` in src-tauri/src/engine.rs): the most copies a
 // note can have, and the most cents the highest is tuned above the note.
 export const UNISON_MOST_COPIES = 7;
@@ -368,6 +399,7 @@ export interface SoundSender {
   // In percent.
   setKeyTracking(keyTracking: number): void;
   setUnison(unison: Unison): void;
+  setAmp(amp: Amp): void;
   // A4's pitch in Hz.
   setTuning(a4Hz: number): void;
   setVibratoKeyTimes(riseMs: number, fallMs: number): void;

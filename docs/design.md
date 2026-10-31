@@ -975,6 +975,46 @@ sixth kind, and a drum kit beside the synth.
   takes, touch picking the recording, release recordings fading and waiting for
   the pedal, thinning layers and the piano's preset.
 
+### Guitar
+
+Guitars play on laptop keys with no recordings
+([ADR 0049](adr/0049-the-keyboard-guitar.md)).
+
+- **The string.** Oscillator kind `string` (`engine/src/plucked_string.*`): a
+  pluck runs round a delay line and loses a little each trip, so its pitch can
+  bend under vibrato and glide. Decay, tone, pick, pickup and body are each the
+  song's own. A pickup reads the line at a second place; body adds three
+  resonances at 105, 210 and 420 Hz. A voice ends once its strings ring away.
+  A pickup's coil darkens what it hears, by pickup tone.
+- **The amp** (`engine/src/amp.*`, the sound panel's Amp page). A track's notes
+  are added up, then go through two preamp stages that bend them, so a chord's
+  strings break up against each other. Then come bass, middle, treble and
+  presence, a speaker that takes off the harsh top, and volume. More gain turns
+  itself down to stay about as loud. Off, which is how every sound starts, it
+  leaves the sound untouched. Its knobs are the song's own, under `[amp]`.
+- **Guitars.** Acoustic Guitar uses body and no amp. Electric Clean, Crunch,
+  Lead and Metal each set their own pickup place, coil and amp, from a bright
+  neck pickup through a clean amp to a thin bridge pickup through a scooped,
+  full-gain one. All are only places to start.
+- **Keys.** A track whose sound plays a string turns the keys into a guitar.
+  U I O P [ ] are the strings, ] the thinnest. The 20 keys from 1QAZ to 5TGB
+  each hold a shape, and with none held the strings play open. Bare arrows
+  shift octaves. Space stops every string, and plucks are softer while it is
+  held.
+- **Ringing.** A string rings after its key comes up, until it is plucked on
+  another note, a left-hand key moves it off its note, or it rings away.
+- **Shapes.** Each scale has a default (`src-tauri/src/guitar.rs`). Its open
+  strings tune down to its notes from E2 A2 D3 G3 B3 E4. The number row walks
+  every string up the scale, QWERT holds its major chords, ASDFG its minor
+  chords and ZXCVB its sevenths, the best under the index finger. Chords are
+  barre shapes with the root on the low E or the A.
+- **Songs.** `[keys]` and `[section.keys]` write `guitar_open` and
+  `guitar = [ {key, name, strings} ]`. `jello_keys` and the Keys page's Guitar
+  side change any shape or open string.
+- Tests check tuning, ringing away, pluck hardness, stopping, glide, every
+  scale's shapes, keys and palm, song files keeping a guitar, every amp knob,
+  and each electric differing from the others at about the acoustic's level.
+
 ## Input
 
 ### Computer keyboard
