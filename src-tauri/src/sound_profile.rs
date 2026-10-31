@@ -7,7 +7,7 @@
 // the song says.
 
 use crate::engine::{
-    Engine, Filter, FilterEnvelope, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, START_FILTER,
+    Amp, Engine, Filter, FilterEnvelope, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, START_AMP, START_FILTER,
     START_FILTER_ENVELOPE, START_GLIDE_MS, START_KEY_TRACKING, START_LOUDNESS_ENVELOPE, START_OSCILLATORS,
     START_TUNING_HZ, START_UNISON, Unison,
 };
@@ -50,6 +50,8 @@ pub struct SoundProfile {
     key_tracking: u32,
     // The copies new notes are played by.
     unison: Unison,
+    // The amp every note plays through, even those already sounding.
+    amp: Amp,
     // A4's pitch in Hz, which new notes are tuned from.
     tuning_hz: f32,
     // The LFOs, the routing list's connections and how long the vibrato key
@@ -83,6 +85,7 @@ impl SoundProfile {
             filter_envelope: START_FILTER_ENVELOPE,
             key_tracking: START_KEY_TRACKING,
             unison: START_UNISON,
+            amp: START_AMP,
             tuning_hz: START_TUNING_HZ,
             lfos: [START_LFO; LFO_COUNT],
             connections,
@@ -103,6 +106,7 @@ impl SoundProfile {
         engine.set_filter_envelope(self.filter_envelope);
         engine.set_key_tracking(self.key_tracking);
         engine.set_unison(self.unison);
+        engine.set_amp(self.amp);
         engine.set_tuning(self.tuning_hz);
         for (index, lfo) in self.lfos.iter().enumerate() {
             engine.set_lfo(index, *lfo);
@@ -127,6 +131,7 @@ impl SoundProfile {
             filter_envelope: self.filter_envelope,
             key_tracking: self.key_tracking,
             unison: self.unison,
+            amp: self.amp,
             tuning_hz: self.tuning_hz,
             lfos: self.lfos,
             connections: self.connections,
@@ -149,6 +154,7 @@ impl SoundProfile {
         self.set_filter_envelope(engine, sound.filter_envelope);
         self.set_key_tracking(engine, sound.key_tracking);
         self.set_unison(engine, sound.unison);
+        self.set_amp(engine, sound.amp);
         self.set_tuning(engine, sound.tuning_hz);
         for (index, lfo) in sound.lfos.iter().enumerate() {
             self.set_lfo(engine, index, *lfo);
@@ -211,6 +217,11 @@ impl SoundProfile {
     // as the engine sent it.
     pub fn set_unison(&mut self, engine: &mut Engine, unison: Unison) {
         self.unison = engine.set_unison(unison);
+    }
+
+    // Sets the amp at once, on `engine` too, kept as the engine sent it.
+    pub fn set_amp(&mut self, engine: &mut Engine, amp: Amp) {
+        self.amp = engine.set_amp(amp);
     }
 
     // Tunes the notes started after this from A4 at `a4_hz`, on `engine`
@@ -281,6 +292,10 @@ impl SoundProfile {
         self.key_tracking
     }
 
+    pub fn amp(&self) -> Amp {
+        self.amp
+    }
+
     pub fn unison(&self) -> Unison {
         self.unison
     }
@@ -338,6 +353,12 @@ mod tests {
         profile.send_all(engine);
         profile.switch_first_kind(engine);
         profile.switch_first_kind(engine);
+        let pushed = Amp {
+            on: true,
+            gain: 60,
+            ..START_AMP
+        };
+        profile.set_amp(engine, pushed);
         let square_below = Oscillator {
             kind: Kind::Square,
             level: 40,
@@ -346,6 +367,7 @@ mod tests {
             cents: 3,
             width: 20,
             touch: crate::engine::START_TOUCH,
+            string: crate::engine::START_STRING,
         };
         profile.set_oscillator(engine, 1, square_below);
         profile.set_loudness_envelope(
@@ -430,13 +452,14 @@ mod tests {
     }
 
     // Every part of a profile, as play_a4_without names them.
-    const PARTS: [&str; 11] = [
+    const PARTS: [&str; 12] = [
         "oscillators",
         "loudness envelope",
         "filter",
         "filter envelope",
         "key tracking",
         "unison",
+        "amp",
         "tuning",
         "lfos",
         "connections",
@@ -467,6 +490,9 @@ mod tests {
         }
         if left_out != "unison" {
             engine.set_unison(profile.unison());
+        }
+        if left_out != "amp" {
+            engine.set_amp(profile.amp());
         }
         if left_out != "tuning" {
             engine.set_tuning(profile.tuning_hz());
@@ -641,6 +667,7 @@ mod tests {
             cents: -4,
             width: SQUARE_WIDTH_PERCENT,
             touch: crate::engine::START_TOUCH,
+            string: crate::engine::START_STRING,
         };
         profile.set_oscillator(&mut engine, 2, fifth_up);
         assert_eq!(profile.oscillators()[2], fifth_up);
@@ -702,6 +729,7 @@ mod tests {
             cents: 300,
             width: 99,
             touch: crate::engine::START_TOUCH,
+            string: crate::engine::START_STRING,
         };
         profile.set_oscillator(&mut engine, 1, too_far_off);
         let too_fast = Lfo {
@@ -763,6 +791,7 @@ mod tests {
             cents: OSCILLATOR_MOST_CENTS,
             width: PULSE_WIDEST_PERCENT,
             touch: crate::engine::START_TOUCH,
+            string: crate::engine::START_STRING,
         };
         assert_eq!(profile.oscillators()[1], at_the_edges);
         let at_the_top = Lfo {

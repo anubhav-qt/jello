@@ -1,5 +1,15 @@
 # Active tasks
 
+## Guitar: left to check
+
+Built ([ADR 0049](adr/0049-the-keyboard-guitar.md), [design](design.md#guitar)).
+Tests were run; these were not checked:
+
+- Hear Electric Clean, Crunch, Lead and Metal, then tune them by ear. The
+  acoustic is approved. Presets saved earlier stay as saved: remove one from
+  the Sounds folder to get the new values.
+- Windows.
+
 ## Grand piano: left to check
 
 Built ([ADR 0048](adr/0048-the-grand-piano.md), [design](design.md#sampler)).
@@ -10,6 +20,10 @@ Tests and the real app's controls were checked; these were not:
 - Windows.
 - Later: a room reverb belongs to Mix, whose UI isn't built; `jello_mix` can
   add one now.
+
+## Drums: later
+
+- Either find a better drum kit, or design this kit's key maps ourselves.
 
 ## Song key mappings: left to check
 

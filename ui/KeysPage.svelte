@@ -1,7 +1,10 @@
 <!-- The mapping page (docs/adr/0047-song-key-mappings.md): press a laptop key,
      then click notes on the drawn piano to add or take them off it, each
      sounding as it is clicked. A song has a main mapping, and a section may
-     have its own. Locked keys never move when the agent optimizes. -->
+     have its own. Locked keys never move when the agent optimizes. Its Guitar
+     side edits what the same keys play on a guitar's track
+     (docs/adr/0049-the-keyboard-guitar.md): press a left-hand key, or none for
+     the open strings, then move each string's note. -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
@@ -12,8 +15,11 @@
     PIANO_HIGHEST,
     PIANO_LOWEST,
     isBlackNote,
+    layoutOfGuitar,
     layoutOfMapping,
     withNoteSwitched,
+    withStringMoved,
+    type GuitarStrings,
     type MappingSender,
     type MappingView,
   } from "./keys";
@@ -36,6 +42,10 @@
   let sounding: number | null = $state(null);
   // The last key pressed that can't play notes, until a key that can.
   let refusedKey: string | null = $state(null);
+  // Whether the page edits the guitar instead of the piano keys, and the
+  // left-hand key it edits, or null for the open strings.
+  let guitar = $state(false);
+  let shape: string | null = $state(null);
 
   onMount(() => {
     load(null);
@@ -65,6 +75,15 @@
     if (view === null) {
       return;
     }
+    if (guitar) {
+      if (view.guitar_shape_keys.includes(code)) {
+        refusedKey = null;
+        shape = code;
+      } else {
+        refusedKey = code;
+      }
+      return;
+    }
     if (!view.mappable.includes(code)) {
       refusedKey = code;
       return;
@@ -92,8 +111,59 @@
     if (view === null) {
       return layout;
     }
+    if (guitar) {
+      return layoutOfGuitar(view, layout, shape);
+    }
     return layoutOfMapping(view, layout);
   });
+
+  // The strings being edited, thickest first.
+  let shownStrings: GuitarStrings = $derived.by(() => {
+    if (view === null) {
+      return [];
+    }
+    if (shape !== null && view.guitar.shapes[shape] !== undefined) {
+      return view.guitar.shapes[shape].strings;
+    }
+    return view.guitar.open;
+  });
+
+  function noteWords(note: number | null): string {
+    if (note === null) {
+      return "silent";
+    }
+    const parts = noteName(note);
+    return `${parts.pitch}${parts.octave}`;
+  }
+
+  function soundOf(note: number | null) {
+    letGoOfNote();
+    if (note === null) {
+      return;
+    }
+    sounding = note;
+    send.soundNote(note, true);
+  }
+
+  async function moveString(string: number, steps: number) {
+    if (view === null) {
+      return;
+    }
+    let from = view.guitar.open[string];
+    if (from === null) {
+      from = 40;
+    }
+    const strings = withStringMoved(shownStrings, string, steps, from);
+    soundOf(strings[string]);
+    show(await send.setGuitar(section, shape, strings));
+  }
+
+  async function silenceString(string: number) {
+    const strings = [...shownStrings];
+    strings[string] = null;
+    letGoOfNote();
+    show(await send.setGuitar(section, shape, strings));
+  }
 
   let selectedNotes = $derived.by(() => {
     if (view === null || selected === null) {
@@ -116,8 +186,12 @@
   // The selected key shows as practice's next key, and locked ones are marked.
   let selectionMarks = $derived.by(() => {
     const marks = new Map<string, PracticeMark>();
-    if (selected !== null) {
-      marks.set(selected, { key: selected, label: "", state: "next" });
+    let marked = selected;
+    if (guitar) {
+      marked = shape;
+    }
+    if (marked !== null) {
+      marks.set(marked, { key: marked, label: "", state: "next" });
     }
     return marks;
   });
@@ -203,7 +277,27 @@
     return "Back to the main mapping";
   });
 
+  function stringWords(string: number): string {
+    if (string === 0) {
+      return "Thickest";
+    }
+    if (string === shownStrings.length - 1) {
+      return "Thinnest";
+    }
+    return `String ${string + 1}`;
+  }
+
   let selectedWords = $derived.by(() => {
+    if (guitar && refusedKey !== null) {
+      return `${refusedKey} can't hold a shape: only the keys from 1QAZ to 5TGB can`;
+    }
+    if (guitar) {
+      if (shape === null) {
+        return "The open strings: press a key from 1QAZ to 5TGB for its shape";
+      }
+      const shown = shape.replace("Key", "").replace("Digit", "");
+      return `${shown} holds ${view?.guitar.shapes[shape]?.name ?? "nothing yet"}`;
+    }
     if (refusedKey !== null) {
       return `${refusedKey} does something else in Jello, so it can't play notes`;
     }
@@ -254,6 +348,24 @@
         {/each}
       {/if}
     </div>
+    <div class="keys-scopes">
+      <button
+        type="button"
+        class="keys-button"
+        class:is-picked={!guitar}
+        onclick={(event) => clickThenLetGo(event, () => { guitar = false; refusedKey = null; })}
+      >
+        Piano
+      </button>
+      <button
+        type="button"
+        class="keys-button"
+        class:is-picked={guitar}
+        onclick={(event) => clickThenLetGo(event, () => { guitar = true; refusedKey = null; })}
+      >
+        Guitar
+      </button>
+    </div>
     <button type="button" class="keys-button" onclick={(event) => clickThenLetGo(event, onClose)}>
       Done
     </button>
@@ -261,23 +373,34 @@
 
   <div class="keys-editing">
     <p class="keys-selected">{selectedWords}</p>
-    <button
-      type="button"
-      class="keys-button"
-      disabled={selected === null || selectedNotes.length === 0}
-      onclick={(event) => clickThenLetGo(event, clearKey)}
-    >
-      Clear key
-    </button>
-    <button
-      type="button"
-      class="keys-button"
-      class:is-picked={selectedLocked}
-      disabled={selected === null}
-      onclick={(event) => clickThenLetGo(event, switchLock)}
-    >
-      {selectedLocked ? "Locked" : "Lock key"}
-    </button>
+    {#if guitar}
+      <button
+        type="button"
+        class="keys-button"
+        disabled={shape === null}
+        onclick={(event) => clickThenLetGo(event, () => { shape = null; refusedKey = null; })}
+      >
+        Open strings
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="keys-button"
+        disabled={selected === null || selectedNotes.length === 0}
+        onclick={(event) => clickThenLetGo(event, clearKey)}
+      >
+        Clear key
+      </button>
+      <button
+        type="button"
+        class="keys-button"
+        class:is-picked={selectedLocked}
+        disabled={selected === null}
+        onclick={(event) => clickThenLetGo(event, switchLock)}
+      >
+        {selectedLocked ? "Locked" : "Lock key"}
+      </button>
+    {/if}
     <button
       type="button"
       class="keys-button"
@@ -288,6 +411,20 @@
     </button>
   </div>
 
+  {#if guitar}
+    <!-- Each string's note sounds as it moves. -->
+    <div class="keys-strings">
+      {#each shownStrings as note, string}
+        <div class="keys-string">
+          <span class="tape-label">{stringWords(string)}</span>
+          <button type="button" class="keys-button" aria-label={`String ${string + 1} down`} disabled={note === 0} onpointerdown={() => moveString(string, -1)}>-</button>
+          <span class="keys-string-note" class:is-silent={note === null}>{noteWords(note)}</span>
+          <button type="button" class="keys-button" aria-label={`String ${string + 1} up`} disabled={note === 127} onpointerdown={() => moveString(string, 1)}>+</button>
+          <button type="button" class="keys-button" disabled={note === null} onclick={(event) => clickThenLetGo(event, () => silenceString(string))}>Silent</button>
+        </div>
+      {/each}
+    </div>
+  {:else}
   <!-- Each note sounds while pressed. -->
   <div class="keys-piano">
     {#each whiteNotes as white (white.note)}
@@ -318,6 +455,7 @@
       </div>
     {/each}
   </div>
+  {/if}
 
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "amp.h"
 #include "drum_kit.h"
 #include "effect.h"
 #include "envelope.h"
@@ -40,6 +41,7 @@ enum class EventType {
     set_filter,
     set_filter_envelope,
     set_unison,
+    set_amp,
     set_loudness_envelope,
     set_key_tracking,
     set_tuning,
@@ -126,6 +128,8 @@ struct Event {
     // Unison's controls; only for set_unison. The other messages can leave
     // them out too.
     UnisonSettings unison{};
+    // The amp's knobs; only for set_amp.
+    AmpSettings amp{};
 
     // The loudness envelope; only for set_loudness_envelope. The key
     // tracking, from 0 to 1; only for set_key_tracking. And A4's pitch in

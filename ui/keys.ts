@@ -15,6 +15,18 @@ export interface MappingView {
   locked: string[];
   // Every key a mapping can use.
   mappable: string[];
+  // What the same keys play on a guitar's track, its strings thickest first.
+  guitar: GuitarMapping;
+  guitar_strings: string[];
+  guitar_shape_keys: string[];
+}
+
+// A guitar's six strings, thickest first: each one's note, or null for silent.
+export type GuitarStrings = (number | null)[];
+
+export interface GuitarMapping {
+  open: GuitarStrings;
+  shapes: Record<string, { name: string; strings: GuitarStrings }>;
 }
 
 // What the mapping page sends to Rust. Each answers with the page as it is
@@ -23,6 +35,8 @@ export interface MappingSender {
   look(section: number | null): Promise<MappingView | null>;
   setNotes(section: number | null, key: string, notes: number[]): Promise<MappingView | null>;
   setLocked(section: number | null, key: string, locked: boolean): Promise<MappingView | null>;
+  // Puts `strings` on shape key `key`, or with null tunes the open strings.
+  setGuitar(section: number | null, key: string | null, strings: GuitarStrings): Promise<MappingView | null>;
   reset(section: number | null): Promise<MappingView | null>;
   soundNote(note: number, on: boolean): void;
 }
@@ -40,6 +54,41 @@ export function layoutOfMapping(view: MappingView, layout: KeyLayout): KeyLayout
     }
   }
   return { ...layout, notes, chords, drums: {}, drum_mode: false };
+}
+
+// The keyboard's layout with `view`'s guitar on it: the shape keys' names, and
+// what the strings play with `shape` held, or open with null.
+export function layoutOfGuitar(view: MappingView, layout: KeyLayout, shape: string | null): KeyLayout {
+  const notes: Record<string, number> = {};
+  const chords: Record<string, { name: string; notes: number[] }> = {};
+  let strings = view.guitar.open;
+  if (shape !== null && view.guitar.shapes[shape] !== undefined) {
+    strings = view.guitar.shapes[shape].strings;
+  }
+  view.guitar_strings.forEach((key, string) => {
+    const note = strings[string];
+    if (note !== null) {
+      notes[key] = note;
+    }
+  });
+  for (const [key, found] of Object.entries(view.guitar.shapes)) {
+    const played = found.strings.filter((note): note is number => note !== null);
+    chords[key] = { name: found.name, notes: played };
+  }
+  return { ...layout, notes, chords, drums: {}, drum_mode: false };
+}
+
+// `strings` with string `string` moved `steps` half steps. A silent one starts
+// from `from`, the note it would play open. It stays from 0 to 127.
+export function withStringMoved(strings: GuitarStrings, string: number, steps: number, from: number): GuitarStrings {
+  const moved = [...strings];
+  const now = moved[string];
+  if (now === null) {
+    moved[string] = from;
+    return moved;
+  }
+  moved[string] = Math.max(0, Math.min(127, now + steps));
+  return moved;
 }
 
 // `notes` with `note` added, lowest first, or taken out if it was there.

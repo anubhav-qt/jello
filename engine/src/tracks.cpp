@@ -1,6 +1,12 @@
 #include "tracks.h"
 
-Tracks::Tracks(int sample_rate) : synths_(count, Synth(sample_rate)) {}
+Tracks::Tracks(int sample_rate) {
+    // Each its own, since a voice's strings have memory that can't be shared.
+    synths_.reserve(count);
+    for (int t = 0; t < count; t++) {
+        synths_.emplace_back(sample_rate);
+    }
+}
 
 Synth& Tracks::synth(int track) {
     return synths_[track];

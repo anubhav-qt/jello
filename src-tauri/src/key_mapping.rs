@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+use crate::guitar::GuitarMapping;
 use crate::harmony::Quality;
 use crate::scales::Scale;
 
@@ -65,6 +66,8 @@ pub fn is_mappable(key: &str) -> bool {
 pub struct KeyMapping {
     pub keys: BTreeMap<String, Vec<u8>>,
     pub locked: BTreeSet<String>,
+    // What the same keys play on a guitar's track (src/guitar.rs).
+    pub guitar: GuitarMapping,
 }
 
 impl KeyMapping {
@@ -77,6 +80,7 @@ impl KeyMapping {
         let mut mapping = KeyMapping::default();
         mapping.place_chords(scale);
         mapping.place_melody(scale);
+        mapping.guitar = GuitarMapping::default_for(scale);
         mapping
     }
 

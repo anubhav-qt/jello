@@ -813,6 +813,7 @@ export const KINDS = [
   { name: "saw", glyph: "M1 6 L 10 1 L 10 11 L 19 6" },
   { name: "noise", glyph: "M1 6 L 3 2 L 5 9 L 7 4 L 9 11 L 11 3 L 13 8 L 15 1 L 17 7 L 19 5" },
   { name: "sample", glyph: "M1 6 L 3 6 L 4 1 L 5 11 L 6 3 L 7 9 L 8 4 L 9 8 L 11 5 L 13 7 L 15 6 L 19 6" },
+  { name: "string", glyph: "M1 6 L 2 1 L 4 11 L 6 2 L 8 10 L 10 3.5 L 12 8.5 L 14 5 L 16 7 L 19 6" },
 ];
 
 // The LFO shapes, in Rust's order, each with a small drawing of it, 20 by

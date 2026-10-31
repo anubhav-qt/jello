@@ -32,6 +32,7 @@
 use toml::{Table, Value};
 
 use crate::drums::{DrumPad, Drums, PAD_NAMES, pad_named, pad_of_note};
+use crate::guitar::{GuitarMapping, STRING_COUNT};
 use crate::key_mapping::{KeyMapping, is_mappable};
 use crate::mix::Mix;
 use crate::mix_automation::is_song_wide;
@@ -438,12 +439,76 @@ fn write_mapping(text: &mut String, mapping: &KeyMapping, heading: &str) {
         text.push_str(&format!("  {{ key = {key}, notes = [{}] }},\n", quoted_notes(notes)));
     }
     text.push_str("]\n");
+    text.push_str(&format!("guitar_open = [{}]\n", quoted_strings(&mapping.guitar.open)));
+    text.push_str("guitar = [\n");
+    for (key, shape) in &mapping.guitar.shapes {
+        let key = quoted(key);
+        let name = quoted(&shape.name);
+        text.push_str(&format!(
+            "  {{ key = {key}, name = {name}, strings = [{}] }},\n",
+            quoted_strings(&shape.strings)
+        ));
+    }
+    text.push_str("]\n");
+}
+
+// A guitar's strings by note name, with "" for one that plays nothing.
+fn quoted_strings(strings: &[Option<u8>; STRING_COUNT]) -> String {
+    let mut names = Vec::new();
+    for note in strings {
+        match note {
+            Some(note) => names.push(quoted(&note_name(*note))),
+            None => names.push(quoted("")),
+        }
+    }
+    names.join(", ")
+}
+
+// The strings `list` names, or None if it doesn't name all of them.
+fn read_strings(list: Option<&Value>) -> Option<[Option<u8>; STRING_COUNT]> {
+    let names = list?.as_array()?;
+    if names.len() != STRING_COUNT {
+        return None;
+    }
+    let mut strings = [None; STRING_COUNT];
+    for (string, name) in names.iter().enumerate() {
+        strings[string] = note_of_name(name.as_str()?);
+    }
+    Some(strings)
+}
+
+// The guitar in `table`, or `scale`'s default if it has none, so a song saved
+// before guitars plays one. Anything it can't read is skipped.
+fn read_guitar(table: &Table, scale: Option<Scale>) -> GuitarMapping {
+    let shapes = items(table, "guitar");
+    let open = read_strings(table.get("guitar_open"));
+    if shapes.is_empty() && open.is_none() {
+        return match scale {
+            Some(scale) => GuitarMapping::default_for(scale),
+            None => GuitarMapping::default(),
+        };
+    }
+    let mut guitar = GuitarMapping::default();
+    if let Some(open) = open {
+        let _ = guitar.set_open(open);
+    }
+    for item in shapes {
+        let Some(key) = read_word(item, "key") else {
+            continue;
+        };
+        let name = read_word(item, "name").unwrap_or_default();
+        if let Some(strings) = read_strings(item.get("strings")) {
+            let _ = guitar.set_shape(key, name, strings);
+        }
+    }
+    guitar
 }
 
 // The mapping in `table`. A key that can't play notes or a note Jello can't
 // read is skipped, like anything else a song file gets wrong.
-fn read_mapping(table: &Table) -> KeyMapping {
+fn read_mapping(table: &Table, scale: Option<Scale>) -> KeyMapping {
     let mut mapping = KeyMapping::default();
+    mapping.guitar = read_guitar(table, scale);
     for item in items(table, "map") {
         let Some(key) = read_word(item, "key") else {
             continue;
@@ -642,7 +707,7 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
         song.key = Some(scale.key());
     }
     if let Some(keys_table) = group(&table, "keys") {
-        song.keys = read_mapping(keys_table);
+        song.keys = read_mapping(keys_table, song.scale);
     }
 
     let tempo = read_count(&table, "tempo", START_TEMPO);
@@ -841,7 +906,7 @@ fn read_section(section_table: &Table, song: &Song) -> Option<SongSection> {
 
     let mut keys = None;
     if let Some(keys_table) = group(section_table, "keys") {
-        keys = Some(read_mapping(keys_table));
+        keys = Some(read_mapping(keys_table, song.scale));
     }
 
     Some(SongSection {
@@ -1712,6 +1777,31 @@ name = "B"
         });
         let read = song_of(&text_of(&song), &SoundProfile::new()).unwrap();
         assert_eq!(read.chords[0].notes, Some(vec![52, 55, 60]));
+    }
+
+    #[test]
+    fn a_guitar_comes_back_as_it_was_or_from_the_scale() {
+        let scale = Scale::of_name("A minor").unwrap();
+        let mut keys = KeyMapping::default_for(scale);
+        let power = [Some(40), Some(47), Some(52), None, None, None];
+        keys.guitar.set_shape("KeyF", "E5", power).unwrap();
+        keys.guitar.set_open([Some(38), Some(45), Some(50), Some(55), Some(59), None]).unwrap();
+
+        let mut text = String::new();
+        write_mapping(&mut text, &keys, "[keys]");
+        let table: Table = text.parse().unwrap();
+        let group = group(&table, "keys").unwrap();
+        assert_eq!(read_mapping(group, Some(scale)).guitar, keys.guitar);
+
+        // A song saved before guitars plays its scale's.
+        let older: Table = "map = []\n".parse().unwrap();
+        assert_eq!(read_mapping(&older, Some(scale)).guitar, GuitarMapping::default_for(scale));
+        assert!(read_mapping(&older, None).guitar.is_empty());
+
+        // A shape it can't read is skipped.
+        let odd = "guitar = [ { key = \"Enter\", name = \"x\", strings = [\"\", \"\", \"\", \"\", \"\", \"\"] }, { key = \"KeyF\", strings = [\"E2\"] } ]\n";
+        let odd: Table = odd.parse().unwrap();
+        assert!(read_mapping(&odd, None).guitar.shapes.is_empty());
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::commands::follow_picked_track;
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{BEATS_PER_BAR, Engine, LooperState};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY, LayoutForUi, name_of_notes};
+use crate::guitar::{GuitarMapping, STRING_COUNT, STRING_KEYS, shape_keys};
 use crate::key_mapping::{KeyMapping, mappable_keys};
 use crate::key_optimizer::{optimize, usage_of};
 use crate::key_stats::KeyStats;
@@ -24,7 +25,7 @@ use crate::song_session::{OpenSong, loop_now, song_now};
 use crate::tools::{Studio, ToolAnswer, optional_text_argument, text_argument};
 
 // The actions jello_keys takes.
-pub const ACTIONS: [&str; 7] = ["look", "scale", "set", "lock", "reset", "own", "optimize"];
+pub const ACTIONS: [&str; 8] = ["look", "scale", "set", "lock", "reset", "own", "optimize", "guitar"];
 
 // The setting that names the scale the Play tab opened on last.
 const PLAY_SCALE: &str = "play_scale";
@@ -52,7 +53,11 @@ pub fn description() -> Value {
             puts it back on the main one. optimize: finds the most comfortable mapping for the \
             song's notes and chords, or a section's, and shows the player a card with the moves and \
             the comfort gain, where Try plays it unsaved and Use saves it. It changes nothing by \
-            itself. set, lock, reset and optimize take an optional section. Refused while the song \
+            itself. guitar: on a track that plays a string kind the same keys are a guitar: U I O P \
+            [ ] are the strings, thickest first, and the keys from 1QAZ to 5TGB hold shapes. Each \
+            scale has a default. With key, name and strings (six note names, thickest first, \
+            \"\" for a silent string) it changes one shape; with strings alone it tunes the open \
+            strings. set, lock, reset, guitar and optimize take an optional section. Refused while the song \
             plays: scale and optimize. Answers with the mapping.",
         "inputSchema": {
             "type": "object",
@@ -61,6 +66,8 @@ pub fn description() -> Value {
                 "scale": {"type": "string"},
                 "key": {"type": "string"},
                 "notes": {"type": "array", "items": {"type": "string"}},
+                "name": {"type": "string"},
+                "strings": {"type": "array", "items": {"type": "string"}},
                 "locked": {"type": "boolean"},
                 "section": {"type": "string"},
                 "on": {"type": "boolean"},
@@ -163,8 +170,51 @@ fn mapping_json(composer: &Composer, section: Option<usize>) -> Result<Value, St
         "section": section_name(composer, section),
         "keys": listed,
         "locked": keys.locked,
+        "guitar": guitar_json(&keys.guitar),
         "sections_with_their_own": own_sections,
     }))
+}
+
+// A guitar as the agent reads it, by note name.
+fn guitar_json(guitar: &GuitarMapping) -> Value {
+    let mut shapes = Vec::new();
+    for (key, shape) in &guitar.shapes {
+        shapes.push(json!({"key": key, "name": shape.name, "strings": string_names(&shape.strings)}));
+    }
+    json!({"open": string_names(&guitar.open), "shapes": shapes})
+}
+
+fn string_names(strings: &[Option<u8>; STRING_COUNT]) -> Vec<String> {
+    let mut names = Vec::new();
+    for note in strings {
+        match note {
+            Some(note) => names.push(note_name(*note)),
+            None => names.push(String::new()),
+        }
+    }
+    names
+}
+
+fn strings_argument(arguments: &Value) -> Result<[Option<u8>; STRING_COUNT], String> {
+    let wanted = "strings is needed: six notes, thickest first, like [\"E2\", \"A2\", \"D3\", \"G3\", \"B3\", \"E4\"], \"\" for a silent string";
+    let Some(names) = arguments.get("strings").and_then(Value::as_array) else {
+        return Err(String::from(wanted));
+    };
+    if names.len() != STRING_COUNT {
+        return Err(String::from(wanted));
+    }
+    let mut strings = [None; STRING_COUNT];
+    for (string, name) in names.iter().enumerate() {
+        let name = name.as_str().unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(note) = note_of_name(name) else {
+            return Err(format!("{name} is not a note, like \"C4\" or \"F#3\""));
+        };
+        strings[string] = Some(note);
+    }
+    Ok(strings)
 }
 
 fn section_name(composer: &Composer, section: Option<usize>) -> Value {
@@ -229,6 +279,23 @@ pub fn answer(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
             keys.set_locked(&key, locked)?;
             keep_mapping(&mut composer, section, keys)?;
             Some(format!("locked {key}"))
+        }
+        "guitar" => {
+            let strings = strings_argument(arguments)?;
+            let mut keys = mapping_of(&composer, section)?;
+            let change = match optional_text_argument(arguments, "key")? {
+                Some(key) => {
+                    let name = optional_text_argument(arguments, "name")?.unwrap_or_default();
+                    keys.guitar.set_shape(&key, &name, strings)?;
+                    format!("guitar shape {key}")
+                }
+                None => {
+                    keys.guitar.set_open(strings)?;
+                    String::from("guitar tuning")
+                }
+            };
+            keep_mapping(&mut composer, section, keys)?;
+            Some(change)
         }
         "reset" => {
             let Some(scale) = composer.scale() else {
@@ -551,6 +618,10 @@ pub struct MappingView {
     names: std::collections::BTreeMap<String, String>,
     locked: Vec<String>,
     mappable: Vec<&'static str>,
+    // What the same keys play on a guitar's track, its strings thickest first.
+    guitar: GuitarMapping,
+    guitar_strings: Vec<&'static str>,
+    guitar_shape_keys: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -584,6 +655,9 @@ fn view_of(composer: &Composer, section: Option<usize>) -> Result<MappingView, S
         names,
         locked: keys.locked.into_iter().collect(),
         mappable: mappable_keys(),
+        guitar: keys.guitar,
+        guitar_strings: STRING_KEYS.to_vec(),
+        guitar_shape_keys: shape_keys(),
     })
 }
 
@@ -607,6 +681,30 @@ pub fn set_key_notes(
     let mut composer = composer.lock().unwrap();
     let mut keys = mapping_of(&composer, section)?;
     keys.set_key(&key, &notes)?;
+    keep_mapping(&mut composer, section, keys)?;
+    follow_picked_track(&mut key_map, &composer);
+    view_of(&composer, section)
+}
+
+// Puts a guitar shape on `key` on the mapping page, or with no key tunes the
+// open strings. Like a key's notes, a section's first edit starts from a copy of
+// the main mapping.
+#[tauri::command]
+pub fn set_guitar_strings(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    section: Option<usize>,
+    key: Option<String>,
+    name: String,
+    strings: [Option<u8>; STRING_COUNT],
+) -> Result<MappingView, String> {
+    let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut keys = mapping_of(&composer, section)?;
+    match key {
+        Some(key) => keys.guitar.set_shape(&key, &name, strings)?,
+        None => keys.guitar.set_open(strings)?,
+    }
     keep_mapping(&mut composer, section, keys)?;
     follow_picked_track(&mut key_map, &composer);
     view_of(&composer, section)

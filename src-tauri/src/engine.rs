@@ -177,6 +177,12 @@ unsafe extern "C" {
         cents: f32,
         width: f32,
         touch: c_int,
+        decay_seconds: f32,
+        tone: f32,
+        pick: f32,
+        pickup: f32,
+        body: f32,
+        pickup_tone: f32,
     );
     // Practice's click (src/practice.rs).
     fn jello_engine_start_click(engine: *mut JelloEngine);
@@ -227,6 +233,18 @@ unsafe extern "C" {
         release_ms: c_int,
     );
     fn jello_engine_set_unison(engine: *mut JelloEngine, track: c_int, copies: c_int, detune_cents: f32, spread: f32);
+    fn jello_engine_set_amp(
+        engine: *mut JelloEngine,
+        track: c_int,
+        on: c_int,
+        gain: f32,
+        bass: f32,
+        middle: f32,
+        treble: f32,
+        presence: f32,
+        speaker: f32,
+        volume: f32,
+    );
     fn jello_engine_set_loudness_envelope(
         engine: *mut JelloEngine,
         track: c_int,
@@ -665,6 +683,32 @@ pub const START_UNISON: Unison = Unison {
     spread: 100,
 };
 
+// A guitar amp (docs/design.md#guitar), its knobs in percent. Bass, middle,
+// treble and presence leave the sound as it is at 50.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Amp {
+    pub on: bool,
+    pub gain: u32,
+    pub bass: u32,
+    pub middle: u32,
+    pub treble: u32,
+    pub presence: u32,
+    pub speaker: u32,
+    pub volume: u32,
+}
+
+// Where the C++ engine's amp starts: off, which leaves the sound untouched.
+pub const START_AMP: Amp = Amp {
+    on: false,
+    gain: 20,
+    bass: 50,
+    middle: 50,
+    treble: 50,
+    presence: 50,
+    speaker: 50,
+    volume: 50,
+};
+
 // The shortest and longest any stage of the loudness envelope takes, in ms
 // (`JELLO_LOUDNESS_` in engine/include/jello_engine.h).
 pub const LOUDNESS_SHORTEST_MS: u32 = 1;
@@ -884,10 +928,20 @@ pub enum Kind {
     // A sampled instrument's recordings (docs/design.md#sampler): which one
     // is the sound profile's to say.
     Sample,
+    // A plucked string, made as it plays (docs/design.md#guitar).
+    String,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [Kind::Sine, Kind::Triangle, Kind::Square, Kind::Saw, Kind::Noise, Kind::Sample];
+    pub const ALL: [Kind; 7] = [
+        Kind::Sine,
+        Kind::Triangle,
+        Kind::Square,
+        Kind::Saw,
+        Kind::Noise,
+        Kind::Sample,
+        Kind::String,
+    ];
 
     // The kind after this one: sine, triangle, square, saw, noise, then sine
     // again. A sample is left for the sine too: stepping never lands on a
@@ -900,6 +954,7 @@ impl Kind {
             Kind::Saw => Kind::Noise,
             Kind::Noise => Kind::Sine,
             Kind::Sample => Kind::Sine,
+            Kind::String => Kind::Sine,
         }
     }
 
@@ -912,6 +967,7 @@ impl Kind {
             Kind::Saw => "saw",
             Kind::Noise => "noise",
             Kind::Sample => "sample",
+            Kind::String => "string",
         }
     }
 
@@ -935,6 +991,7 @@ impl Kind {
             Kind::Saw => 3,
             Kind::Noise => 4,
             Kind::Sample => 5,
+            Kind::String => 6,
         }
     }
 }
@@ -976,6 +1033,57 @@ pub struct Oscillator {
     // TOUCH_HARDEST: which of its recordings play. The other kinds leave it
     // be.
     pub touch: u32,
+    // How a string kind sounds. The other kinds leave it be.
+    pub string: StringSound,
+}
+
+// How a plucked string sounds (docs/design.md#guitar).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StringSound {
+    // How long it takes to fall 60 dB, from STRING_SHORTEST_DECAY_MS to
+    // STRING_LONGEST_DECAY_MS.
+    pub decay_ms: u32,
+    // How much of its top it keeps, in percent.
+    pub tone: u32,
+    // Where it is plucked, in percent from the bridge, from STRING_NEAREST to
+    // STRING_FURTHEST.
+    pub pick: u32,
+    // Where a pickup hears it, the same way, or 0 for no pickup.
+    pub pickup: u32,
+    // How much top that pickup hears, in percent.
+    pub pickup_tone: u32,
+    // How much comes through an acoustic guitar's body, in percent.
+    pub body: u32,
+}
+
+pub const STRING_SHORTEST_DECAY_MS: u32 = 100;
+pub const STRING_LONGEST_DECAY_MS: u32 = 30000;
+pub const STRING_NEAREST: u32 = 2;
+pub const STRING_FURTHEST: u32 = 50;
+
+// How a string sounds in a new song, until its sound says otherwise.
+pub const START_STRING: StringSound = StringSound {
+    decay_ms: 4000,
+    tone: 60,
+    pick: 20,
+    pickup: 0,
+    pickup_tone: 60,
+    body: 0,
+};
+
+fn string_within_ranges(string: StringSound) -> StringSound {
+    let mut pickup = string.pickup.min(STRING_FURTHEST);
+    if pickup > 0 {
+        pickup = pickup.max(STRING_NEAREST);
+    }
+    StringSound {
+        decay_ms: string.decay_ms.clamp(STRING_SHORTEST_DECAY_MS, STRING_LONGEST_DECAY_MS),
+        tone: string.tone.min(FULL_PERCENT),
+        pick: string.pick.clamp(STRING_NEAREST, STRING_FURTHEST),
+        pickup,
+        pickup_tone: string.pickup_tone.min(FULL_PERCENT),
+        body: string.body.min(FULL_PERCENT),
+    }
 }
 
 // The softest and hardest touches, and where one starts
@@ -994,6 +1102,7 @@ const SILENT_OSCILLATOR: Oscillator = Oscillator {
     cents: 0,
     width: SQUARE_WIDTH_PERCENT,
     touch: START_TOUCH,
+    string: START_STRING,
 };
 
 // Where the C++ engine's oscillators start: the first a triangle at full
@@ -1018,6 +1127,7 @@ fn oscillator_within_ranges(oscillator: Oscillator) -> Oscillator {
         cents: oscillator.cents.clamp(-OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_CENTS),
         width: oscillator.width.clamp(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT),
         touch: oscillator.touch.clamp(TOUCH_SOFTEST, TOUCH_HARDEST),
+        string: string_within_ranges(oscillator.string),
     }
 }
 
@@ -1584,6 +1694,12 @@ impl Engine {
                 oscillator.cents as f32,
                 width,
                 oscillator.touch as c_int,
+                oscillator.string.decay_ms as f32 / 1000.0,
+                share_of(oscillator.string.tone) as f32,
+                share_of(oscillator.string.pick) as f32,
+                share_of(oscillator.string.pickup) as f32,
+                share_of(oscillator.string.body) as f32,
+                share_of(oscillator.string.pickup_tone) as f32,
             )
         };
         oscillator
@@ -2605,6 +2721,41 @@ impl Engine {
             detune_cents,
             spread,
         }
+    }
+
+    // Sets the amp (`jello_engine_set_amp`), at once. Values outside its ranges
+    // are brought within them. Returns the amp as sent.
+    pub fn set_amp(&mut self, amp: Amp) -> Amp {
+        let sent = Amp {
+            on: amp.on,
+            gain: amp.gain.min(FULL_PERCENT),
+            bass: amp.bass.min(FULL_PERCENT),
+            middle: amp.middle.min(FULL_PERCENT),
+            treble: amp.treble.min(FULL_PERCENT),
+            presence: amp.presence.min(FULL_PERCENT),
+            speaker: amp.speaker.min(FULL_PERCENT),
+            volume: amp.volume.min(FULL_PERCENT),
+        };
+        let mut on = 0;
+        if sent.on {
+            on = 1;
+        }
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe {
+            jello_engine_set_amp(
+                self.raw,
+                self.track as c_int,
+                on,
+                share_of(sent.gain) as f32,
+                share_of(sent.bass) as f32,
+                share_of(sent.middle) as f32,
+                share_of(sent.treble) as f32,
+                share_of(sent.presence) as f32,
+                share_of(sent.speaker) as f32,
+                share_of(sent.volume) as f32,
+            )
+        };
+        sent
     }
 
     // Sets the loudness envelope (`jello_engine_set_loudness_envelope`) for
@@ -4218,8 +4369,294 @@ mod tests {
         engine.set_first_kind(Kind::Sine);
         let (index, kind, level, octaves, half_steps, cents, width) = call;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_oscillator(engine.raw, 0, index, kind, level, octaves, half_steps, cents, width, START_TOUCH as c_int) };
+        unsafe { jello_engine_set_oscillator(engine.raw, 0, index, kind, level, octaves, half_steps, cents, width, START_TOUCH as c_int, 4.0, 0.6, 0.2, 0.0, 0.0, 0.6) };
         hold(&mut engine, A4, VELOCITY)
+    }
+
+    // An engine plucking `string` on its first oscillator, ringing until it
+    // is let go.
+    fn string_engine(string: StringSound) -> Engine {
+        let mut engine = Engine::new().unwrap();
+        engine.set_oscillator(
+            0,
+            Oscillator {
+                kind: Kind::String,
+                level: FULL_PERCENT,
+                octaves: 0,
+                half_steps: 0,
+                cents: 0,
+                width: SQUARE_WIDTH_PERCENT,
+                touch: START_TOUCH,
+                string,
+            },
+        );
+        engine.set_loudness_envelope(LoudnessEnvelope {
+            attack_ms: LOUDNESS_SHORTEST_MS,
+            decay_ms: LOUDNESS_SHORTEST_MS,
+            sustain: 100,
+            release_ms: 50,
+        });
+        engine
+    }
+
+    fn rms_of(samples: &[f32]) -> f32 {
+        let mut sum = 0.0;
+        for sample in samples {
+            sum += sample * sample;
+        }
+        (sum / samples.len() as f32).sqrt()
+    }
+
+    // The pitch of `samples` in Hz, near `near`, from where they best match
+    // themselves a period later.
+    fn pitch_near(samples: &[f32], near: f64) -> f64 {
+        let rate = 48_000.0;
+        let period = rate / near;
+        let lowest = (period * 0.9) as usize;
+        let highest = (period * 1.1) as usize + 1;
+        let score = |lag: usize| -> f64 {
+            let mut sum = 0.0;
+            for at in 0..samples.len() - lag {
+                sum += f64::from(samples[at]) * f64::from(samples[at + lag]);
+            }
+            sum
+        };
+        let mut best = lowest;
+        for lag in lowest..=highest {
+            if score(lag) > score(best) {
+                best = lag;
+            }
+        }
+        let before = score(best - 1);
+        let here = score(best);
+        let after = score(best + 1);
+        let bend = 0.5 * (before - after) / (before - 2.0 * here + after);
+        rate / (best as f64 + bend)
+    }
+
+    #[test]
+    fn a_string_plays_in_tune_on_every_note_of_a_guitar() {
+        for note in [40u8, 45, 50, 55, 59, 64, 76, 88] {
+            for tone in [30, 62, 90] {
+                let string = StringSound { tone, ..START_STRING };
+                let mut engine = string_engine(string);
+                engine.note_on(note, VELOCITY);
+                render_left(&mut engine, 100);
+                let samples = render_left(&mut engine, 300);
+                let wanted = 440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0);
+                let cents = 1200.0 * (pitch_near(&samples, wanted) / wanted).log2();
+                assert!(cents.abs() < 5.0, "note {note} tone {tone} is {cents} cents out");
+            }
+        }
+    }
+
+    #[test]
+    fn a_string_rings_away_by_itself_in_about_its_decay() {
+        let string = StringSound {
+            decay_ms: 500,
+            tone: 100,
+            ..START_STRING
+        };
+        let mut engine = string_engine(string);
+        engine.note_on(A4, VELOCITY);
+        let first = rms_of(&render_left(&mut engine, 50));
+        render_left(&mut engine, 450);
+        let later = rms_of(&render_left(&mut engine, 50));
+        let fall_db = 20.0 * (first / later).log10();
+        // Bright and at half a second, it has fallen about 60 dB, give or
+        // take what the start's noise adds.
+        assert!((40.0..75.0).contains(&fall_db), "fell {fall_db} dB");
+
+        // No key came up, and still it ends.
+        render_left(&mut engine, 1000);
+        let silent = render_left(&mut engine, 100);
+        assert_eq!(rms_of(&silent), 0.0);
+    }
+
+    #[test]
+    fn a_harder_pluck_is_louder_and_brighter() {
+        let mut soft = string_engine(START_STRING);
+        let mut hard = string_engine(START_STRING);
+        soft.note_on(A4, 40);
+        hard.note_on(A4, 110);
+        let soft = render_left(&mut soft, 100);
+        let hard = render_left(&mut hard, 100);
+        assert!(rms_of(&hard) > 2.0 * rms_of(&soft));
+    }
+
+    #[test]
+    fn a_string_stops_when_let_go_and_starts_again_when_plucked_again() {
+        let mut engine = string_engine(START_STRING);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 100);
+        engine.note_off(A4);
+        render_left(&mut engine, 100);
+        assert_eq!(rms_of(&render_left(&mut engine, 50)), 0.0);
+        engine.note_on(A4, VELOCITY);
+        assert!(rms_of(&render_left(&mut engine, 50)) > 0.01);
+    }
+
+    #[test]
+    fn a_string_with_a_body_and_a_pickup_each_sound_their_own_way_and_stay_finite() {
+        let plain = StringSound { body: 0, pickup: 0, ..START_STRING };
+        let body = StringSound { body: 100, pickup: 0, ..START_STRING };
+        let pickup = StringSound { body: 0, pickup: 14, ..START_STRING };
+        let mut levels = Vec::new();
+        for string in [plain, body, pickup] {
+            let mut engine = string_engine(string);
+            engine.note_on(40, VELOCITY);
+            let samples = render_left(&mut engine, 1000);
+            for sample in &samples {
+                assert!(sample.is_finite() && sample.abs() < 1.5);
+            }
+            levels.push(rms_of(&samples));
+            println!("string rms {:?}: {}", string, rms_of(&samples));
+        }
+        assert_ne!(levels[0], levels[1]);
+        assert_ne!(levels[0], levels[2]);
+    }
+
+    fn electric_string() -> StringSound {
+        StringSound { body: 0, pickup: 14, ..START_STRING }
+    }
+
+    // A low string through `amp`, for half a second.
+    fn string_through_amp(amp: Amp) -> Vec<f32> {
+        let mut engine = string_engine(electric_string());
+        engine.set_amp(amp);
+        engine.note_on(40, VELOCITY);
+        render_left(&mut engine, 500)
+    }
+
+    // How much of the sound is its fast movement: higher is brighter.
+    fn brightness_of(samples: &[f32]) -> f32 {
+        let mut changes = Vec::new();
+        for pair in samples.windows(2) {
+            changes.push(pair[1] - pair[0]);
+        }
+        rms_of(&changes) / rms_of(samples)
+    }
+
+    #[test]
+    fn an_amp_that_is_off_leaves_the_sound_untouched_whatever_its_knobs_say() {
+        let mut engine = string_engine(electric_string());
+        engine.note_on(40, VELOCITY);
+        let without = render_left(&mut engine, 300);
+        let off = Amp { on: false, gain: 100, treble: 0, volume: 100, ..START_AMP };
+        let mut engine = string_engine(electric_string());
+        engine.set_amp(off);
+        engine.note_on(40, VELOCITY);
+        assert_same_samples(&render_left(&mut engine, 300), &without);
+    }
+
+    #[test]
+    fn the_amp_s_gain_squashes_the_wave() {
+        let clean = string_through_amp(Amp { on: true, gain: 0, ..START_AMP });
+        let pushed = string_through_amp(Amp { on: true, gain: 100, ..START_AMP });
+        let crest_of_clean = peak(&clean) / rms_of(&clean);
+        let crest_of_pushed = peak(&pushed) / rms_of(&pushed);
+        assert!(crest_of_pushed < crest_of_clean * 0.75, "{crest_of_pushed} against {crest_of_clean}");
+    }
+
+    #[test]
+    fn each_of_the_amp_s_knobs_moves_its_own_part_of_the_sound() {
+        let on = Amp { on: true, gain: 30, ..START_AMP };
+        let dark = string_through_amp(Amp { treble: 0, ..on });
+        let bright = string_through_amp(Amp { treble: 100, ..on });
+        assert!(brightness_of(&bright) > brightness_of(&dark) * 1.2);
+
+        let no_edge = string_through_amp(Amp { presence: 0, ..on });
+        let edge = string_through_amp(Amp { presence: 100, ..on });
+        assert!(brightness_of(&edge) > brightness_of(&no_edge) * 1.1);
+
+        let closed = string_through_amp(Amp { speaker: 0, ..on });
+        let open = string_through_amp(Amp { speaker: 100, ..on });
+        assert!(brightness_of(&open) > brightness_of(&closed) * 1.2);
+
+        let thin = string_through_amp(Amp { bass: 0, ..on });
+        let full = string_through_amp(Amp { bass: 100, ..on });
+        assert!(brightness_of(&thin) > brightness_of(&full));
+
+        let scooped = string_through_amp(Amp { middle: 0, ..on });
+        let honking = string_through_amp(Amp { middle: 100, ..on });
+        assert!(rms_of(&honking) > rms_of(&scooped));
+
+        let quiet = string_through_amp(Amp { volume: 20, ..on });
+        let loud = string_through_amp(Amp { volume: 80, ..on });
+        assert!(rms_of(&loud) > rms_of(&quiet) * 8.0);
+    }
+
+    #[test]
+    fn the_amp_s_knobs_past_full_come_back_at_full() {
+        let mut engine = Engine::new().unwrap();
+        let too_far = Amp {
+            on: true,
+            gain: 500,
+            bass: 101,
+            middle: 200,
+            treble: 300,
+            presence: 400,
+            speaker: 600,
+            volume: 700,
+        };
+        let sent = engine.set_amp(too_far);
+        let full = Amp {
+            on: true,
+            gain: 100,
+            bass: 100,
+            middle: 100,
+            treble: 100,
+            presence: 100,
+            speaker: 100,
+            volume: 100,
+        };
+        assert_eq!(sent, full);
+    }
+
+    #[test]
+    fn the_pickup_coil_darkens_a_string_and_only_when_there_is_a_pickup() {
+        let dark = StringSound { pickup_tone: 0, ..electric_string() };
+        let bright = StringSound { pickup_tone: 100, ..electric_string() };
+        let mut samples = Vec::new();
+        for string in [dark, bright] {
+            let mut engine = string_engine(string);
+            engine.note_on(52, VELOCITY);
+            samples.push(render_left(&mut engine, 300));
+        }
+        assert!(brightness_of(&samples[1]) > brightness_of(&samples[0]) * 1.2);
+
+        let no_pickup_dark = StringSound { pickup: 0, pickup_tone: 0, ..START_STRING };
+        let no_pickup_bright = StringSound { pickup: 0, pickup_tone: 100, ..START_STRING };
+        let mut engine = string_engine(no_pickup_dark);
+        engine.note_on(52, VELOCITY);
+        let first = render_left(&mut engine, 300);
+        let mut engine = string_engine(no_pickup_bright);
+        engine.note_on(52, VELOCITY);
+        assert_same_samples(&render_left(&mut engine, 300), &first);
+    }
+
+    #[test]
+    fn a_string_bends_with_the_glide_like_any_note() {
+        // Vibrato and glide move its delay, so nothing breaks while it bends.
+        let mut engine = string_engine(START_STRING);
+        engine.set_glide_time(200);
+        engine.note_on(A4, VELOCITY);
+        render_left(&mut engine, 50);
+        engine.set_glide_key(true);
+        engine.note_on(A4 + 12, VELOCITY);
+        for sample in render_left(&mut engine, 400) {
+            assert!(sample.is_finite());
+        }
+    }
+
+    #[test]
+    fn stepping_kinds_never_lands_on_a_string() {
+        let mut kind = Kind::Sine;
+        for _ in 0..10 {
+            kind = kind.next();
+            assert_ne!(kind, Kind::String);
+        }
+        assert_eq!(Kind::String.next(), Kind::Sine);
     }
 
     #[test]
@@ -4269,6 +4706,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         };
         let edges = [
             Oscillator { kind: Kind::Noise, ..saw_on_the_note },
@@ -4334,6 +4772,7 @@ mod tests {
                 cents,
                 width: SQUARE_WIDTH_PERCENT,
                 touch: START_TOUCH,
+                string: START_STRING,
             };
             let mut engine = second_oscillator_engine(tuned);
             let held = hold(&mut engine, A4, VELOCITY);
@@ -4370,6 +4809,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         };
         engine.set_oscillator(1, octave_up);
         let held = hold(&mut engine, A4, VELOCITY);
@@ -4392,6 +4832,7 @@ mod tests {
             cents: 30,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         };
         let noise = Oscillator {
             kind: Kind::Noise,
@@ -4413,6 +4854,7 @@ mod tests {
         cents: 0,
         width: SQUARE_WIDTH_PERCENT,
         touch: START_TOUCH,
+        string: START_STRING,
     };
 
     // A new engine playing `oscillators`, one after another from the first.
@@ -4577,6 +5019,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
         Oscillator {
             kind: Kind::Square,
@@ -4586,6 +5029,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
         Oscillator {
             kind: Kind::Triangle,
@@ -4595,6 +5039,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
     ];
     const THREE_THE_OTHER_WAY: [Oscillator; OSCILLATOR_COUNT] = [
@@ -4606,6 +5051,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
         Oscillator {
             kind: Kind::Noise,
@@ -4615,6 +5061,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
         Oscillator {
             kind: Kind::Saw,
@@ -4624,6 +5071,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         },
     ];
 
@@ -10390,6 +10838,7 @@ mod tests {
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
             touch: START_TOUCH,
+            string: START_STRING,
         }
     }
 
@@ -12244,7 +12693,7 @@ mod tests {
         for touch in [0, 128, -1] {
             let mut odd = piano_engine(NOTES, 100);
             // SAFETY: `raw` points to a live engine until Drop.
-            unsafe { jello_engine_set_oscillator(odd.raw, 0, 0, Kind::Sample.number(), 1.0, 0, 0, 0.0, 0.5, touch) };
+            unsafe { jello_engine_set_oscillator(odd.raw, 0, 0, Kind::Sample.number(), 1.0, 0, 0, 0.0, 0.5, touch, 4.0, 0.6, 0.2, 0.0, 0.0, 0.6) };
             odd.note_on(MIDDLE_C, VELOCITY);
             plain.note_on(MIDDLE_C, VELOCITY);
             let odd_wave = render_left(&mut odd, 100);

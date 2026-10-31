@@ -482,6 +482,7 @@ enum {
     JELLO_KIND_SAW = 3,
     JELLO_KIND_NOISE = 4,
     JELLO_KIND_SAMPLE = 5,
+    JELLO_KIND_STRING = 6,
 };
 
 // How much of each cycle a square can spend up (docs/design.md#pulse-width),
@@ -506,8 +507,16 @@ enum {
     JELLO_TOUCH_SOFTEST = 1,
     JELLO_TOUCH_HARDEST = 127,
 };
+// A string's `decay_seconds` is how long it takes to fall 60 dB, from 0.1 to
+// 30. `tone`, from 0 to 1, is how much of its top it keeps. `pick`, from 0.02
+// to 0.5, is where it is plucked, as a share from the bridge. `pickup`, 0 or
+// from 0.02 to 0.5, is where a pickup hears it, 0 for none. `pickup_tone`, from
+// 0 to 1, is how much top that pickup hears. `body`, from 0 to
+// 1, is how much comes through an acoustic guitar's wooden body
+// (docs/design.md#guitar).
 void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
-                                 int half_steps, float cents, float width, int touch);
+                                 int half_steps, float cents, float width, int touch, float decay_seconds, float tone,
+                                 float pick, float pickup, float body, float pickup_tone);
 
 // Starts the click: a tick on every beat, higher on the first beat of each
 // bar. Its first tick is beat 1 of a bar. Does nothing if the click is
@@ -692,6 +701,14 @@ enum {
 // starts at 1 copy, which is off: notes sound exactly as without unison.
 // Its detune starts at 20 cents and its spread at 1.
 void jello_engine_set_unison(JelloEngine* engine, int track, int copies, float detune_cents, float spread);
+
+// Track `track`'s guitar amp (docs/design.md#guitar): on is 0 or 1, and every
+// knob is from 0 to 1. Bass, middle, treble and presence leave the sound as it
+// is at 0.5. It moves at once, on notes already sounding too. Values outside
+// those ranges are ignored. A new engine starts with it off, which leaves the
+// sound untouched.
+void jello_engine_set_amp(JelloEngine* engine, int track, int on, float gain, float bass, float middle, float treble,
+                          float presence, float speaker, float volume);
 
 // The shortest and longest any stage of the loudness envelope takes, in ms.
 // At 0 ms a stage would jump the loudness in one sample, which clicks.

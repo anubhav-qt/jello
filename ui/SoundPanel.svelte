@@ -15,6 +15,7 @@
   import SoundLfos from "./SoundLfos.svelte";
   import SoundNotes from "./SoundNotes.svelte";
   import SoundOscillators from "./SoundOscillators.svelte";
+  import SoundAmp from "./SoundAmp.svelte";
   import SoundPresets from "./SoundPresets.svelte";
 
   interface Props {
@@ -48,6 +49,7 @@
     | "lfos"
     | "connections"
     | "drums"
+    | "amp"
     | "presets";
 
   const PAGES: { page: Page; name: string; note: string }[] = [
@@ -74,6 +76,11 @@
     {
       page: "connections",
       name: "Connections",
+      note: "Changes here move notes already sounding",
+    },
+    {
+      page: "amp",
+      name: "Amp",
       note: "Changes here move notes already sounding",
     },
     {
@@ -183,6 +190,8 @@
       <SoundLfos {sound} {picked} {onPick} {onLetGo} {send} />
     {:else if page === "connections"}
       <SoundConnections {sound} {picked} {onPick} {onLetGo} {send} />
+    {:else if page === "amp"}
+      <SoundAmp {sound} {picked} {onPick} {send} />
     {:else if page === "drums"}
       <SoundDrums {sound} {picked} {onPick} {onLetGo} {send} />
     {:else}

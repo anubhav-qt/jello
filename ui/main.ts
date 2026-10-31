@@ -19,6 +19,7 @@ import type {
   SoundSender,
   SoundView,
   Unison,
+  Amp,
 } from "./sound";
 import type { SongSender, SongsView } from "./songs";
 import type { PracticeMark, PracticeView } from "./practice";
@@ -74,12 +75,31 @@ function showSound(view: SoundView) {
   if (screen !== null) {
     screen.showSound(view);
   }
+  askForLayoutIfGuitarChanged(view);
   askForSectionsIfLoopChanged(view);
   // Rust sends a looper message once, like "There is no layer 7".
   if (view.looper.message !== null) {
     showStatus(view.looper.message);
   }
   keepWatchingLooper(view);
+}
+
+// Whether the picked track plays a string, as the sound said last. It makes the
+// keys a guitar, so the page asks for the keys again when that changes.
+let playsAString = false;
+
+function askForLayoutIfGuitarChanged(view: SoundView) {
+  let now = false;
+  for (const oscillator of view.oscillators) {
+    if (oscillator.kind === "string" && oscillator.level > 0) {
+      now = true;
+    }
+  }
+  if (now === playsAString) {
+    return;
+  }
+  playsAString = now;
+  void askForLayout();
 }
 
 // While the looper is busy, what it shows changes on the beat with no key
@@ -199,7 +219,7 @@ async function pressKey(key: string) {
   } catch (error) {
     showStatus(`Could not play: ${error}`);
   }
-  if (drumModeKeys.includes(key)) {
+  if (drumModeKeys.includes(key) || guitarShapeKeys.includes(key)) {
     await askForLayout();
   }
 }
@@ -208,8 +228,13 @@ async function pressKey(key: string) {
 // changes what the letters do, so the page asks for the keys again.
 let drumModeKeys: string[] = [];
 
+// A guitar's shape keys, as Rust said last. Holding one changes what the
+// strings play, so the page asks for the keys again as it goes down and up.
+let guitarShapeKeys: string[] = [];
+
 function showLayout(layout: KeyLayout) {
   drumModeKeys = layout.drum_mode_keys;
+  guitarShapeKeys = layout.guitar_shapes;
   screen?.showLayout(layout);
 }
 
@@ -227,6 +252,9 @@ async function releaseKey(key: string) {
     await invoke("release_key", { key });
   } catch (error) {
     showStatus(`Could not let go: ${error}`);
+  }
+  if (guitarShapeKeys.includes(key)) {
+    await askForLayout();
   }
 }
 
@@ -329,6 +357,7 @@ async function setOscillator(index: number, oscillator: Oscillator) {
       cents: oscillator.cents,
       width: oscillator.width,
       touch: oscillator.touch,
+      string: oscillator.string,
     });
     showSound(view);
   } catch (error) {
@@ -404,6 +433,16 @@ async function setTuning(a4Hz: number) {
     showSound(view);
   } catch (error) {
     showStatus(`Could not set the tuning: ${error}`);
+  }
+}
+
+// And it sets the amp, at once.
+async function setAmp(amp: Amp) {
+  try {
+    const view = await invoke<SoundView>("set_amp", { amp });
+    showSound(view);
+  } catch (error) {
+    showStatus(`Could not set the amp: ${error}`);
   }
 }
 
@@ -760,6 +799,7 @@ const mappingSender: MappingSender = {
   look: (section) => askMapping("mapping_view", { section }),
   setNotes: (section, key, notes) => askMapping("set_key_notes", { section, key, notes }),
   setLocked: (section, key, locked) => askMapping("set_key_locked", { section, key, locked }),
+  setGuitar: (section, key, strings) => askMapping("set_guitar_strings", { section, key, name: "", strings }),
   reset: (section) => askMapping("reset_keys", { section }),
   soundNote: (note, on) =>
     sendInOrder(async () => {
@@ -1137,6 +1177,7 @@ const soundSender: SoundSender = {
   setKeyTracking: (keyTracking) =>
     sendInOrder(() => setKeyTracking(keyTracking)),
   setUnison: (unison) => sendInOrder(() => setUnison(unison)),
+  setAmp: (amp) => sendInOrder(() => setAmp(amp)),
   setTuning: (a4Hz) => sendInOrder(() => setTuning(a4Hz)),
   setVibratoKeyTimes: (riseMs, fallMs) =>
     sendInOrder(() => setVibratoKeyTimes(riseMs, fallMs)),
@@ -1250,6 +1291,7 @@ async function start() {
     return;
   }
   drumModeKeys = layout.drum_mode_keys;
+  guitarShapeKeys = layout.guitar_shapes;
 
   screen = mount(Stage, {
     target: page,
