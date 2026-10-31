@@ -261,11 +261,13 @@ pub enum KeyAction {
     // Hits this drum pad, from 0. The hit plays out whole however long the
     // key is held, but the looper keeps how long it was.
     HitDrum(usize),
-    // Plucks a guitar string: stops the notes in `stop`, then plays `note` at
-    // `velocity`, which rings on after the key comes up.
-    Pluck { stop: Vec<u8>, note: u8, velocity: u8 },
-    // Stops these notes, for a guitar's left hand or palm.
+    // Plucks a guitar string, which plays `note` at `velocity` and rings on
+    // after the key comes up. `after` is the note it stops ringing to play it.
+    Pluck { after: Option<u8>, note: u8, velocity: u8 },
+    // Stops these notes, for a palm on a guitar's strings.
     StopNotes(Vec<u8>),
+    // A guitar's left hand moved.
+    ChangeStrings(StringChanges),
     // Jumps to the drums track used last, or back to the track it came
     // from (docs/design.md#tracks-and-sections). Drum mode follows.
     JumpToDrums,
@@ -281,6 +283,74 @@ pub enum KeyAction {
     SlowDown,
     // Speeds the beat up.
     SpeedUp,
+}
+
+// What a guitar's left hand does to the strings ringing. Each (from, to) in
+// `moves` carries on from what is left of `from`, and needs doing in order.
+// `stops` are notes that can't carry on, since `to` already sounds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StringChanges {
+    pub stops: Vec<u8>,
+    pub moves: Vec<(u8, u8)>,
+}
+
+// Whether a string ringing `note` stays on it.
+fn strings_stay_on(before: &[Option<u8>; STRING_COUNT], wanted: &[Option<u8>; STRING_COUNT], note: u8) -> bool {
+    for string in 0..STRING_COUNT {
+        if before[string] == Some(note) && wanted[string] == Some(note) {
+            return true;
+        }
+    }
+    false
+}
+
+// Where a move from `note` goes, if there is one.
+fn moved_from(moves: &[(u8, u8)], note: u8) -> Option<u8> {
+    for (from, to) in moves {
+        if *from == note {
+            return Some(*to);
+        }
+    }
+    None
+}
+
+// Whether a voice sounds `note` once the strings have changed: a string stays
+// on it, or a move already goes there.
+fn is_sounding_after(
+    before: &[Option<u8>; STRING_COUNT],
+    wanted: &[Option<u8>; STRING_COUNT],
+    moves: &[(u8, u8)],
+    note: u8,
+) -> bool {
+    if strings_stay_on(before, wanted, note) {
+        return true;
+    }
+    for (_, to) in moves {
+        if *to == note {
+            return true;
+        }
+    }
+    false
+}
+
+// Puts moves in an order where none lands on a note still to move away. Moves
+// left over only swap notes round among themselves, so the same notes sound
+// without them.
+fn in_safe_order(mut moves: Vec<(u8, u8)>) -> Vec<(u8, u8)> {
+    let mut ordered = Vec::new();
+    loop {
+        let mut free = None;
+        for (place, (_, to)) in moves.iter().enumerate() {
+            if moved_from(&moves, *to).is_none() {
+                free = Some(place);
+                break;
+            }
+        }
+        let Some(place) = free else {
+            return ordered;
+        };
+        ordered.push(moves.remove(place));
+    }
 }
 
 // Cloned only for jello_listen's renders (src/listening.rs).
@@ -300,6 +370,8 @@ pub struct KeyMap {
     // The note each string is ringing, if any, and whether a palm is on them.
     ringing: [Option<u8>; STRING_COUNT],
     damped: bool,
+    // What letting go of the last shape key did to the strings, until taken.
+    released_changes: StringChanges,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
     // The mapping the keys play, at no octave shift.
@@ -409,6 +481,7 @@ impl KeyMap {
             held_shapes: Vec::new(),
             ringing: [None; STRING_COUNT],
             damped: false,
+            released_changes: StringChanges::default(),
             held: HashMap::new(),
             mapping: KeyMapping::default(),
             on_play_tab: false,
@@ -577,31 +650,61 @@ impl KeyMap {
         false
     }
 
-    // The left hand moved: a string ringing a note it no longer plays stops,
-    // and one still on its note rings on.
-    fn stop_moved_strings(&mut self) -> Vec<u8> {
-        let mut stops = Vec::new();
+    // The left hand moved, so a ringing string the new shape gives another note
+    // carries on there with what is left of it. One on the same note, or one
+    // the shape leaves silent, rings on untouched.
+    fn change_strings(&mut self) -> StringChanges {
+        let before = self.ringing;
+        let mut wanted = before;
         for string in 0..STRING_COUNT {
-            let Some(ringing) = self.ringing[string] else {
-                continue;
-            };
-            if self.guitar_note(string) == Some(ringing) {
-                continue;
-            }
-            self.ringing[string] = None;
-            if !self.another_string_rings(string, ringing) {
-                stops.push(ringing);
+            if before[string].is_some() {
+                if let Some(note) = self.guitar_note(string) {
+                    wanted[string] = Some(note);
+                }
             }
         }
-        stops
+
+        let mut changes = StringChanges::default();
+        for string in 0..STRING_COUNT {
+            let (Some(from), Some(to)) = (before[string], wanted[string]) else {
+                continue;
+            };
+            if from == to {
+                continue;
+            }
+            self.ringing[string] = Some(to);
+
+            // Strings on one note share a voice, which only one can take. A
+            // string left without it joins what sounds already.
+            let voice_stays = strings_stay_on(&before, &wanted, from);
+            let voice_gone = changes.stops.contains(&from) || moved_from(&changes.moves, from).is_some();
+            if voice_stays || voice_gone {
+                if !is_sounding_after(&before, &wanted, &changes.moves, to) {
+                    self.ringing[string] = None;
+                }
+                continue;
+            }
+            if is_sounding_after(&before, &wanted, &changes.moves, to) {
+                changes.stops.push(from);
+            } else {
+                changes.moves.push((from, to));
+            }
+        }
+        changes.moves = in_safe_order(changes.moves);
+        changes
+    }
+
+    // What letting go of a shape did to the strings, once.
+    pub fn take_released_changes(&mut self) -> StringChanges {
+        std::mem::take(&mut self.released_changes)
     }
 
     fn pluck(&mut self, key: &str, string: usize) -> Option<KeyAction> {
         let note = self.guitar_note(string)?;
-        let mut stop = Vec::new();
+        let mut after = None;
         if let Some(ringing) = self.ringing[string] {
             if ringing != note && !self.another_string_rings(string, ringing) {
-                stop.push(ringing);
+                after = Some(ringing);
             }
         }
         let mut velocity = LAPTOP_VELOCITY;
@@ -614,7 +717,7 @@ impl KeyMap {
             self.ringing[string] = Some(note);
             self.held.insert(String::from(key), Vec::new());
         }
-        Some(KeyAction::Pluck { stop, note, velocity })
+        Some(KeyAction::Pluck { after, note, velocity })
     }
 
     #[cfg(test)]
@@ -678,7 +781,7 @@ impl KeyMap {
             KeyRole::GuitarShape => {
                 self.held.insert(String::from(key), Vec::new());
                 self.held_shapes.push(String::from(key));
-                Some(KeyAction::StopNotes(self.stop_moved_strings()))
+                Some(KeyAction::ChangeStrings(self.change_strings()))
             }
             KeyRole::Damp => {
                 self.held.insert(String::from(key), Vec::new());
@@ -717,8 +820,15 @@ impl KeyMap {
         }
         let shapes_before = self.held_shapes.len();
         self.held_shapes.retain(|held| held != key);
-        if self.held_shapes.len() != shapes_before {
-            to_stop = self.stop_moved_strings();
+        // With no shape left, the strings ring on until the next key says
+        // otherwise, so changing chords never passes through the open strings.
+        if self.held_shapes.len() != shapes_before && !self.held_shapes.is_empty() {
+            let changes = self.change_strings();
+            to_stop = changes.stops.clone();
+            self.released_changes = StringChanges {
+                stops: Vec::new(),
+                moves: changes.moves,
+            };
         }
         for note in started {
             if !self.is_note_held(note) {
@@ -1697,9 +1807,9 @@ mod tests {
         key_map
     }
 
-    fn plucked(action: Option<KeyAction>) -> (Vec<u8>, u8, u8) {
+    fn plucked(action: Option<KeyAction>) -> (Option<u8>, u8, u8) {
         match action {
-            Some(KeyAction::Pluck { stop, note, velocity }) => (stop, note, velocity),
+            Some(KeyAction::Pluck { after, note, velocity }) => (after, note, velocity),
             other => panic!("not a pluck: {other:?}"),
         }
     }
@@ -1709,7 +1819,7 @@ mod tests {
         let mut key_map = guitar_keys();
         let notes = [40, 45, 50, 55, 59, 64];
         for (key, note) in STRING_KEYS.iter().zip(notes) {
-            assert_eq!(plucked(key_map.press(key)), (vec![], note, LAPTOP_VELOCITY));
+            assert_eq!(plucked(key_map.press(key)), (None, note, LAPTOP_VELOCITY));
         }
         // Coming up, a string rings on.
         assert_eq!(key_map.release("KeyU"), Vec::<u8>::new());
@@ -1721,40 +1831,150 @@ mod tests {
     #[test]
     fn a_left_key_gives_the_strings_its_shape_and_leaves_its_silent_ones_silent() {
         let mut key_map = guitar_keys();
-        assert_eq!(key_map.press("KeyR"), Some(KeyAction::StopNotes(vec![])));
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(StringChanges::default())));
         // C on the A string: its low E is silent.
         assert_eq!(key_map.press("KeyU"), None);
         assert_eq!(plucked(key_map.press("KeyI")).1, 48);
         key_map.release("KeyI");
-        assert_eq!(key_map.release("KeyR"), vec![48]);
-        // Open again.
-        assert_eq!(plucked(key_map.press("KeyI")).1, 45);
+        // It rings on until it is plucked again, now open.
+        assert_eq!(key_map.release("KeyR"), Vec::<u8>::new());
+        assert_eq!(plucked(key_map.press("KeyI")), (Some(48), 45, LAPTOP_VELOCITY));
     }
 
     #[test]
-    fn a_string_stops_its_last_note_when_it_plays_another() {
+    fn a_string_plucked_again_on_its_note_has_nothing_to_stop() {
         let mut key_map = guitar_keys();
         assert_eq!(plucked(key_map.press("KeyU")).1, 40);
         key_map.release("KeyU");
-        key_map.press("Digit1");
-        // Moving the hand stopped it: F2 replaces E2.
-        key_map.release("Digit1");
-        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
-        key_map.release("KeyU");
-        // Plucked again on the same note, there is nothing to stop.
-        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
+        assert_eq!(plucked(key_map.press("KeyU")), (None, 40, LAPTOP_VELOCITY));
     }
 
     #[test]
-    fn moving_the_left_hand_stops_only_the_strings_that_change() {
+    fn moving_the_left_hand_carries_on_only_the_strings_that_change() {
         let mut key_map = guitar_keys();
         key_map.press("KeyR"); // C: x 48 55 60 64 67
         key_map.press("KeyO");
         key_map.press("KeyP");
         key_map.release("KeyO");
         key_map.release("KeyP");
-        // G: 43 50 55 59 62 67, so 55 rings on and 60 stops.
-        assert_eq!(key_map.press("KeyE"), Some(KeyAction::StopNotes(vec![60])));
+        // G: 43 50 55 59 62 67, so 55 rings on and 60 moves to 59.
+        let expected = StringChanges {
+            stops: Vec::new(),
+            moves: vec![(60, 59)],
+        };
+        assert_eq!(key_map.press("KeyE"), Some(KeyAction::ChangeStrings(expected)));
+    }
+
+    #[test]
+    fn a_string_the_new_shape_leaves_silent_rings_on() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyU"); // open low E, 40
+        key_map.release("KeyU");
+        // C leaves the low E silent.
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(StringChanges::default())));
+        assert_eq!(key_map.ringing[0], Some(40));
+    }
+
+    #[test]
+    fn letting_go_of_the_last_shape_leaves_the_strings_ringing() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyR");
+        key_map.press("KeyO"); // 55
+        key_map.press("KeyP"); // 60
+        key_map.release("KeyO");
+        key_map.release("KeyP");
+        assert_eq!(key_map.release("KeyR"), Vec::<u8>::new());
+        assert_eq!(key_map.take_released_changes(), StringChanges::default());
+        assert_eq!(key_map.ringing[3], Some(60));
+
+        // The next shape moves them from where they rang, not from open.
+        let expected = StringChanges {
+            stops: Vec::new(),
+            moves: vec![(60, 59)],
+        };
+        assert_eq!(key_map.press("KeyE"), Some(KeyAction::ChangeStrings(expected)));
+    }
+
+    #[test]
+    fn letting_go_of_a_newer_shape_moves_back_to_the_older() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyR");
+        key_map.press("KeyP"); // 60
+        key_map.release("KeyP");
+        key_map.press("KeyE"); // to 59
+        assert_eq!(key_map.release("KeyE"), Vec::<u8>::new());
+        let expected = StringChanges {
+            stops: Vec::new(),
+            moves: vec![(59, 60)],
+        };
+        assert_eq!(key_map.take_released_changes(), expected);
+        assert_eq!(key_map.take_released_changes(), StringChanges::default());
+    }
+
+    fn ringing_keys(open: [u8; STRING_COUNT], shape: [u8; STRING_COUNT]) -> KeyMap {
+        let mut mapping = c_major();
+        mapping.guitar.open = open.map(Some);
+        mapping.guitar.set_shape("KeyR", "test", shape.map(Some)).unwrap();
+        let mut key_map = KeyMap::new();
+        key_map.follow(&mapping);
+        key_map.set_guitar_mode(true);
+        for key in STRING_KEYS {
+            key_map.press(key);
+            key_map.release(key);
+        }
+        key_map
+    }
+
+    #[test]
+    fn a_move_never_lands_on_a_note_still_to_move_away() {
+        // Each string takes the next one's note, thin strings first.
+        let mut key_map = ringing_keys([40, 45, 50, 55, 59, 64], [45, 50, 55, 59, 64, 69]);
+        let expected = StringChanges {
+            stops: Vec::new(),
+            moves: vec![(64, 69), (59, 64), (55, 59), (50, 55), (45, 50), (40, 45)],
+        };
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(expected)));
+    }
+
+    #[test]
+    fn strings_swapping_notes_leave_the_same_notes_sounding() {
+        let mut key_map = ringing_keys([40, 45, 50, 55, 59, 64], [45, 40, 50, 55, 59, 64]);
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(StringChanges::default())));
+        assert_eq!(key_map.ringing[0], Some(45));
+        assert_eq!(key_map.ringing[1], Some(40));
+    }
+
+    #[test]
+    fn a_string_moving_to_a_note_already_sounding_joins_it() {
+        let mut key_map = ringing_keys([40, 45, 50, 55, 59, 64], [45, 45, 50, 55, 59, 64]);
+        let expected = StringChanges {
+            stops: vec![40],
+            moves: Vec::new(),
+        };
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(expected)));
+        assert_eq!(key_map.ringing[0], Some(45));
+    }
+
+    #[test]
+    fn strings_sharing_a_voice_leave_it_with_the_one_that_stays() {
+        let mut key_map = ringing_keys([50, 50, 50, 55, 59, 64], [50, 52, 50, 55, 59, 64]);
+        // The note 52 has no voice of its own, so nothing moves.
+        assert_eq!(key_map.press("KeyR"), Some(KeyAction::ChangeStrings(StringChanges::default())));
+        assert_eq!(key_map.ringing[1], None);
+    }
+
+    #[test]
+    fn a_string_plucked_on_another_note_says_which_it_leaves() {
+        let mut key_map = guitar_keys();
+        key_map.press("KeyR");
+        key_map.press("KeyP"); // 60
+        key_map.release("KeyP");
+        key_map.release("KeyR"); // Still ringing 60, and now open.
+        let action = key_map.press("KeyP");
+        let Some(KeyAction::Pluck { after, .. }) = action else {
+            panic!("a pluck");
+        };
+        assert_eq!(after, Some(60));
     }
 
     #[test]
@@ -1781,7 +2001,7 @@ mod tests {
         key_map.release("KeyI");
         assert_eq!(key_map.press("Space"), Some(KeyAction::StopNotes(vec![40, 45])));
         assert!(!key_map.holds_pedal("Space"));
-        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, MUTED_VELOCITY));
+        assert_eq!(plucked(key_map.press("KeyU")), (None, 40, MUTED_VELOCITY));
         // Muted, it ends with its key.
         assert_eq!(key_map.release("KeyU"), vec![40]);
         key_map.release("Space");
@@ -1837,7 +2057,7 @@ mod tests {
         key_map.press("KeyR");
         key_map.press("Space");
         key_map.release_all();
-        assert_eq!(plucked(key_map.press("KeyU")), (vec![], 40, LAPTOP_VELOCITY));
+        assert_eq!(plucked(key_map.press("KeyU")), (None, 40, LAPTOP_VELOCITY));
     }
 
     #[test]

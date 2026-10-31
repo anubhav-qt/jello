@@ -15,6 +15,9 @@ constexpr int vibrato_key_velocity = 127;
 constexpr int glide_key_velocity = 127;
 constexpr int pedal_key_velocity = 127;
 
+// How hard a string's move is when the looper records it, as a note of its own.
+constexpr int moved_string_velocity = 100;
+
 }  // namespace
 
 Conductor::Conductor(int sample_rate)
@@ -50,6 +53,20 @@ void Conductor::note_on(int track, int note, int velocity) {
 void Conductor::note_off(int track, int note) {
     Event event{EventType::note_off, note, 0};
     event.track = track;
+    send(event);
+}
+
+void Conductor::move_string(int track, int from, int to) {
+    Event event{EventType::move_string, to, 0};
+    event.track = track;
+    event.from_note = from;
+    send(event);
+}
+
+void Conductor::pluck_string_after(int track, int from, int to, int velocity) {
+    Event event{EventType::pluck_string_after, to, velocity};
+    event.track = track;
+    event.from_note = from;
     send(event);
 }
 
@@ -705,6 +722,14 @@ void Conductor::handle(const Event& event) {
     } else if (event.type == EventType::note_off) {
         synth.note_off(event.note, Source::live);
         looper_.note_off(event.note, now, event.track);
+    } else if (event.type == EventType::move_string) {
+        synth.move_string(event.from_note, event.note);
+        looper_.note_off(event.from_note, now, event.track);
+        looper_.note_on(event.note, moved_string_velocity, now, event.track);
+    } else if (event.type == EventType::pluck_string_after) {
+        synth.pluck_string_after(event.from_note, event.note, event.velocity);
+        looper_.note_off(event.from_note, now, event.track);
+        looper_.note_on(event.note, event.velocity, now, event.track);
     } else if (event.type == EventType::all_notes_off) {
         tracks_.all_notes_off(Source::live);
         looper_.all_notes_off(now);

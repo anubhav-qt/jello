@@ -118,6 +118,11 @@ public:
     void bend_to(int note, std::uint64_t press_number, std::uint64_t now, double a4_hz, int glide_ms,
                  const Routing& routing);
 
+    // Moves this voice's string to `note` with nothing plucked: what is left
+    // of it carries on there (docs/design.md#guitar). It slides over `glide_ms`,
+    // or at 0 jumps as a finger on a fret does.
+    void move_string(int note, std::uint64_t now, double a4_hz, int glide_ms, const Routing& routing);
+
     // Works out how far the routing list moves the note at sample
     // `block_end`, the end of the next control_samples samples, and heads
     // there in straight lines as those samples render. `routing` has just

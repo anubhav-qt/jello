@@ -47,6 +47,13 @@ public:
     // Lets go of `note`, so it fades out. A drum plays to its end anyway,
     // so letting go of one does nothing.
     void note_off(int note, Source source);
+    // A live guitar string (docs/design.md#guitar). It moves from note `from`
+    // to `to` with nothing plucked, what is left of it carrying on, sliding
+    // while the glide key is held. Nothing happens if `from` has fallen silent.
+    void move_string(int from, int to);
+    // It is plucked on `to` while ringing `from`, so `from` stops. While the
+    // glide key is held, the pluck slides in from `from`.
+    void pluck_string_after(int from, int to, int velocity);
     // Lets go of every note `source` plays, every layer's for the loop.
     void all_notes_off(Source source);
 
@@ -219,6 +226,10 @@ private:
     // the first one's place.
     int started_by(int player, int& first) const;
     int waiting_by(int player, int& first) const;
+
+    // Whether new notes play a string. A string glides only on itself, so its
+    // notes never slide in from another string's.
+    bool plays_a_string() const;
 
     // Starts `waiting`'s melody note for `player` with its glide.
     void glide(int player, const Waiting& waiting);

@@ -21,6 +21,8 @@
 enum class EventType {
     note_on,
     note_off,
+    move_string,
+    pluck_string_after,
     all_notes_off,
     set_oscillator,
     start_click,
@@ -80,6 +82,10 @@ struct Event {
     EventType type;
     int note;      // which key, 0 to 127; middle C is 60
     int velocity;  // how hard the key was hit, 1 to 127; only for note_on
+
+    // The note a guitar string was ringing; only for move_string and
+    // pluck_string_after, whose `note` is the one it goes to.
+    int from_note = 0;
 
     // Which track a note or a sound setting is for, from 0
     // (docs/design.md#tracks-in-the-engine). Track 0 to start, so the other

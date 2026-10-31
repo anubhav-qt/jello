@@ -185,13 +185,55 @@ void Synth::set_layer_volume(int layer, float volume) {
     layer_volumes_[layer] = volume;
 }
 
+void Synth::move_string(int from, int to) {
+    Voice* voice = find_ringing_voice(from, Source::live, 0);
+    if (voice == nullptr) {
+        return;
+    }
+    // Another voice already sounds it, and a note never sounds on two.
+    if (find_ringing_voice(to, Source::live, 0) != nullptr) {
+        let_go_now(from, Source::live, 0);
+        return;
+    }
+    int glide_ms = 0;
+    if (melodies_[player_of(Source::live, 0)].glide_key) {
+        glide_ms = note_sound_.glide_ms;
+    }
+    voice->move_string(to, now_, note_sound_.a4_hz, glide_ms, routing_);
+}
+
+void Synth::pluck_string_after(int from, int to, int velocity) {
+    bool slides = false;
+    double from_hz = 0.0;
+    Voice* before = find_ringing_voice(from, Source::live, 0);
+    if (before != nullptr && melodies_[player_of(Source::live, 0)].glide_key) {
+        slides = true;
+        from_hz = before->pitch_at(now_);
+    }
+    let_go_now(from, Source::live, 0);
+
+    Voice* voice = play_note(to, velocity, Source::live, 0, note_sound_);
+    if (slides) {
+        voice->slide_in(from_hz, note_sound_.glide_ms, routing_);
+    }
+}
+
+bool Synth::plays_a_string() const {
+    for (const OscillatorSettings& oscillator : note_sound_.oscillators) {
+        if (oscillator.kind == Kind::string && oscillator.level > 0.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Synth::start_note(int note, int velocity, Source source, int layer) {
     // While its player holds the glide key, a note waits until every note
     // of its moment has come, so settle can tell a melody note from a
     // chord. It keeps how notes sound now. Once every voice's worth of
     // notes is waiting, any more start right away.
     int player = player_of(source, layer);
-    bool waits = melodies_[player].glide_key;
+    bool waits = melodies_[player].glide_key && !plays_a_string();
     bool has_room = waiting_count_ < voice_count;
     if (waits && has_room) {
         Waiting& waiting = waiting_[waiting_count_];
