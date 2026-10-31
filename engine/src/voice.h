@@ -13,6 +13,8 @@
 #include "stereo.h"
 #include "unison.h"
 
+class ReleaseSounds;
+
 // Who started a note: the player at the keys, the looper playing a loop back
 // (docs/adr/0021-a-looper-on-a-beat.md), or the song player playing Compose's
 // song (docs/adr/0022-compose-as-a-tape.md). Each voice remembers it, and for
@@ -152,6 +154,15 @@ public:
     // For a loop's note, its layer's slot.
     int layer() const;
 
+    // The pedal keeps the note sounding though its key came up, until
+    // release. A new note on the voice or a release ends it.
+    void hold_by_pedal();
+    bool is_held_by_pedal() const;
+
+    // Starts what its sample oscillators' instruments play as this note's
+    // key comes up on sample `now`, on `sounds`.
+    void start_release_sounds(ReleaseSounds& sounds, std::uint64_t now) const;
+
     // Sets the bit of every sample set the voice still plays, while it
     // sounds.
     void add_sets_in_use(std::uint32_t& sets) const;
@@ -288,6 +299,10 @@ private:
     // in Hz.
     std::array<const SampleSet*, oscillator_count> sets_{};
     std::array<const SampleZone*, oscillator_count> zones_{};
+    std::array<int, oscillator_count> touches_{};
+    // How loud its velocity makes it, and whether only the pedal holds it.
+    float peak_ = 0.0f;
+    bool held_by_pedal_ = false;
     std::array<double, oscillator_count> root_hz_{};
 
     // What the note started with, which the live moves are added to: its

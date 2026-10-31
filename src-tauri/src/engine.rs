@@ -118,6 +118,11 @@ struct RawSampleZone {
     frame_count: u64,
     loop_start: u64,
     loop_end: u64,
+    lowest_touch: c_int,
+    highest_touch: c_int,
+    trigger: c_int,
+    fade_db_per_second: f32,
+    touch_share: f32,
 }
 
 // What jello_engine_add_sample_set returns when it makes no set.
@@ -171,6 +176,7 @@ unsafe extern "C" {
         half_steps: c_int,
         cents: f32,
         width: f32,
+        touch: c_int,
     );
     // Practice's click (src/practice.rs).
     fn jello_engine_start_click(engine: *mut JelloEngine);
@@ -241,6 +247,7 @@ unsafe extern "C" {
     fn jello_engine_set_vibrato_key_times(engine: *mut JelloEngine, track: c_int, rise_ms: c_int, fall_ms: c_int);
     fn jello_engine_set_vibrato_key(engine: *mut JelloEngine, track: c_int, held: bool);
     fn jello_engine_set_glide_key(engine: *mut JelloEngine, track: c_int, held: bool);
+    fn jello_engine_set_pedal_key(engine: *mut JelloEngine, track: c_int, held: bool);
     fn jello_engine_set_glide_time(engine: *mut JelloEngine, track: c_int, glide_ms: c_int);
     fn jello_engine_time_next(engine: *mut JelloEngine, sample: u64);
     fn jello_engine_send_now(engine: *mut JelloEngine);
@@ -705,6 +712,10 @@ pub const START_TUNING_HZ: f32 = 440.0;
 pub const VIBRATO_KEY_NOTE: u8 = 128;
 pub const GLIDE_KEY_NOTE: u8 = 129;
 
+// And for presses of the sustain pedal (`JELLO_PEDAL_KEY_NOTE`), past the drum
+// pads' (docs/adr/0048-the-grand-piano.md).
+pub const PEDAL_KEY_NOTE: u8 = 146;
+
 // The longest a glide takes, in ms (`JELLO_GLIDE_LONGEST_MS`,
 // docs/adr/0036-glide.md).
 pub const GLIDE_LONGEST_MS: u32 = 10000;
@@ -961,7 +972,17 @@ pub struct Oscillator {
     // PULSE_NARROWEST_PERCENT to PULSE_WIDEST_PERCENT. The other kinds
     // leave it be.
     pub width: u32,
+    // How hard a sample's keys are struck, from TOUCH_SOFTEST to
+    // TOUCH_HARDEST: which of its recordings play. The other kinds leave it
+    // be.
+    pub touch: u32,
 }
+
+// The softest and hardest touches, and where one starts
+// (`JELLO_TOUCH_SOFTEST` and `JELLO_TOUCH_HARDEST`).
+pub const TOUCH_SOFTEST: u32 = 1;
+pub const TOUCH_HARDEST: u32 = 127;
+pub const START_TOUCH: u32 = 80;
 
 // An oscillator that plays nothing: a triangle at level 0, right on the
 // note, with a square's width.
@@ -972,6 +993,7 @@ const SILENT_OSCILLATOR: Oscillator = Oscillator {
     half_steps: 0,
     cents: 0,
     width: SQUARE_WIDTH_PERCENT,
+    touch: START_TOUCH,
 };
 
 // Where the C++ engine's oscillators start: the first a triangle at full
@@ -995,6 +1017,7 @@ fn oscillator_within_ranges(oscillator: Oscillator) -> Oscillator {
         half_steps: oscillator.half_steps.clamp(-OSCILLATOR_MOST_HALF_STEPS, OSCILLATOR_MOST_HALF_STEPS),
         cents: oscillator.cents.clamp(-OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_CENTS),
         width: oscillator.width.clamp(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT),
+        touch: oscillator.touch.clamp(TOUCH_SOFTEST, TOUCH_HARDEST),
     }
 }
 
@@ -1132,6 +1155,7 @@ pub struct Engine {
     // glide keys.
     live_tracks: [usize; PITCH_COUNT],
     vibrato_track: usize,
+    pedal_track: usize,
     glide_track: usize,
     // The beat's tempo in beats per minute. The C++ engine starts there too.
     tempo: u32,
@@ -1204,6 +1228,7 @@ impl Engine {
             track: 0,
             live_tracks: [0; PITCH_COUNT],
             vibrato_track: 0,
+            pedal_track: 0,
             glide_track: 0,
             tempo: START_TEMPO,
             snap: true,
@@ -1558,6 +1583,7 @@ impl Engine {
                 oscillator.half_steps as c_int,
                 oscillator.cents as f32,
                 width,
+                oscillator.touch as c_int,
             )
         };
         oscillator
@@ -2730,6 +2756,18 @@ impl Engine {
         unsafe { jello_engine_set_glide_key(self.raw, track, held) };
     }
 
+    // Holds or lets go of the live sustain pedal
+    // (`jello_engine_set_pedal_key`, docs/adr/0048-the-grand-piano.md).
+    // Held and let go like the vibrato key.
+    pub fn set_pedal_key(&mut self, held: bool) {
+        if held {
+            self.pedal_track = self.track;
+        }
+        let track = self.pedal_track as c_int;
+        // SAFETY: `raw` points to a live engine until Drop.
+        unsafe { jello_engine_set_pedal_key(self.raw, track, held) };
+    }
+
     // Sets how long a glide takes for the notes started after this, in ms
     // (`jello_engine_set_glide_time`), brought within GLIDE_LONGEST_MS.
     // Returns it as sent.
@@ -2948,6 +2986,11 @@ fn raw_zone_of(zone: &Zone, lowest: u8, highest: u8, root: u8) -> RawSampleZone 
         frame_count: zone.frame_count(),
         loop_start: zone.loop_start,
         loop_end: zone.loop_end,
+        lowest_touch: c_int::from(zone.lowest_touch),
+        highest_touch: c_int::from(zone.highest_touch),
+        trigger: zone.trigger.number(),
+        fade_db_per_second: zone.fade_db_per_second,
+        touch_share: zone.touch_share,
     }
 }
 
@@ -3001,7 +3044,7 @@ mod tests {
     const SUSTAIN: f32 = 1.0;
     const RELEASE_MS: u32 = 300;
     const MAILBOX_SLOTS: usize = 1024; // `EventMailbox` in engine/src/mailbox.h
-    const VOICE_COUNT: u8 = 32; // `voice_count` in engine/src/synth.cpp
+    const VOICE_COUNT: u8 = 64; // `voice_count` in engine/src/synth.cpp
     // A new engine's limiter ceiling, -1 dB, as a level
     // (`LimiterSettings` in engine/src/limiter.h).
     const CEILING: f32 = 0.891_250_9;
@@ -3380,8 +3423,17 @@ mod tests {
     // Presses the lowest `count` notes, from note 0 up, at QUIET. They fill
     // voices without covering up the notes a test listens to.
     fn press_quiet_notes(engine: &mut Engine, count: u8) {
-        for note in 0..count {
+        let mut pressed = 0;
+        for note in 0..=127 {
+            if pressed == count {
+                break;
+            }
+            // Never on a note the tests listen for, or it would take its voice.
+            if note == C3 || note == MIDDLE_C || note == C5 {
+                continue;
+            }
             engine.note_on(note, QUIET);
+            pressed += 1;
         }
     }
 
@@ -4166,7 +4218,7 @@ mod tests {
         engine.set_first_kind(Kind::Sine);
         let (index, kind, level, octaves, half_steps, cents, width) = call;
         // SAFETY: `raw` points to a live engine until Drop.
-        unsafe { jello_engine_set_oscillator(engine.raw, 0, index, kind, level, octaves, half_steps, cents, width) };
+        unsafe { jello_engine_set_oscillator(engine.raw, 0, index, kind, level, octaves, half_steps, cents, width, START_TOUCH as c_int) };
         hold(&mut engine, A4, VELOCITY)
     }
 
@@ -4216,6 +4268,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         };
         let edges = [
             Oscillator { kind: Kind::Noise, ..saw_on_the_note },
@@ -4280,6 +4333,7 @@ mod tests {
                 half_steps,
                 cents,
                 width: SQUARE_WIDTH_PERCENT,
+                touch: START_TOUCH,
             };
             let mut engine = second_oscillator_engine(tuned);
             let held = hold(&mut engine, A4, VELOCITY);
@@ -4315,6 +4369,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         };
         engine.set_oscillator(1, octave_up);
         let held = hold(&mut engine, A4, VELOCITY);
@@ -4336,6 +4391,7 @@ mod tests {
             half_steps: 5,
             cents: 30,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         };
         let noise = Oscillator {
             kind: Kind::Noise,
@@ -4356,6 +4412,7 @@ mod tests {
         half_steps: 0,
         cents: 0,
         width: SQUARE_WIDTH_PERCENT,
+        touch: START_TOUCH,
     };
 
     // A new engine playing `oscillators`, one after another from the first.
@@ -4519,6 +4576,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
         Oscillator {
             kind: Kind::Square,
@@ -4527,6 +4585,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
         Oscillator {
             kind: Kind::Triangle,
@@ -4535,6 +4594,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
     ];
     const THREE_THE_OTHER_WAY: [Oscillator; OSCILLATOR_COUNT] = [
@@ -4545,6 +4605,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
         Oscillator {
             kind: Kind::Noise,
@@ -4553,6 +4614,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
         Oscillator {
             kind: Kind::Saw,
@@ -4561,6 +4623,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         },
     ];
 
@@ -5053,6 +5116,8 @@ mod tests {
         LetGoOfVibratoKey,
         HoldGlideKey,
         LetGoOfGlideKey,
+        HoldPedal,
+        LetGoOfPedal,
         // The lane's play and pause for the whole loop, and a layer's number
         // and whether it plays.
         PauseLoop,
@@ -5082,6 +5147,8 @@ mod tests {
             LetGoOfVibratoKey => engine.set_vibrato_key(false),
             HoldGlideKey => engine.set_glide_key(true),
             LetGoOfGlideKey => engine.set_glide_key(false),
+            HoldPedal => engine.set_pedal_key(true),
+            LetGoOfPedal => engine.set_pedal_key(false),
             PauseLoop => engine.pause_loop(),
             PlayLoop => engine.play_loop(),
             LayerPlaying(number, playing) => engine.set_layer_playing(number, playing).unwrap(),
@@ -10322,6 +10389,7 @@ mod tests {
             half_steps: 0,
             cents: 0,
             width: SQUARE_WIDTH_PERCENT,
+            touch: START_TOUCH,
         }
     }
 
@@ -11949,7 +12017,9 @@ mod tests {
     // kit", a kick, a closed hat and an open hat.
 
     use crate::drums::pad_named;
-    use crate::instruments::testing::{KIT, OPEN_HAT_FRAMES, TONE, use_test_folder};
+    use crate::instruments::testing::{
+        HARD_HZ, KIT, NOTES, OPEN_HAT_FRAMES, PIANO, SOFT_HZ, STRINGS, TONE, use_test_folder,
+    };
 
     const D4_HZ: f64 = 293.6648;
 
@@ -11972,6 +12042,354 @@ mod tests {
 
     fn pad(name: &str) -> u8 {
         drum_note(pad_named(name).unwrap())
+    }
+
+    // The sustain pedal and a sample's touch
+    // (docs/adr/0048-the-grand-piano.md).
+
+    // An engine whose first oscillator plays instrument `name` at `touch`.
+    fn piano_engine(name: &str, touch: u32) -> Engine {
+        use_test_folder();
+        let mut engine = Engine::new().unwrap();
+        engine.set_oscillator(
+            0,
+            Oscillator {
+                kind: Kind::Sample,
+                touch,
+                ..START_OSCILLATORS[0]
+            },
+        );
+        engine.set_instrument(0, Some(name));
+        engine
+    }
+
+    // `a` minus `b`, sample by sample.
+    fn difference(a: &[f32], b: &[f32]) -> Vec<f32> {
+        let mut left = Vec::new();
+        for (first, second) in a.iter().zip(b) {
+            left.push(first - second);
+        }
+        left
+    }
+
+    // How strong `hz` is in `wave`: a single bin of its Fourier transform.
+    fn strength_at(wave: &[f32], hz: f64) -> f64 {
+        let mut cosines = 0.0;
+        let mut sines = 0.0;
+        for (frame, sample) in wave.iter().enumerate() {
+            let phase = std::f64::consts::TAU * hz * frame as f64 / 48_000.0;
+            cosines += f64::from(*sample) * phase.cos();
+            sines += f64::from(*sample) * phase.sin();
+        }
+        (cosines * cosines + sines * sines).sqrt() / wave.len() as f64
+    }
+
+    #[test]
+    fn the_pedal_keeps_a_note_ringing_after_its_key_comes_up_until_it_goes_up() {
+        let mut engine = sine_engine();
+        let held = [(0, HoldPedal), (0, NoteOn(A4)), (4_800, NoteOff(A4))];
+        let wave = play(&mut engine, &held, 48_000);
+        // A second on, 900 ms after its key came up, far past the release.
+        assert!(rms(&wave[43_200..]) > 0.05, "the pedal let the note fade");
+
+        // Without it, the same note has faded by then.
+        let plain = [(0, NoteOn(A4)), (4_800, NoteOff(A4))];
+        let plain_wave = play(&mut sine_engine(), &plain, 48_000);
+        assert_eq!(peak(&plain_wave[43_200..]), 0.0);
+
+        // Lifted, the note fades out as if its key had just come up.
+        let mut lifted = held.to_vec();
+        lifted.push((48_000, LetGoOfPedal));
+        let wave = play(&mut sine_engine(), &lifted, 96_000);
+        assert!(rms(&wave[43_200..48_000]) > 0.05);
+        assert_eq!(peak(&wave[72_000..]), 0.0);
+    }
+
+    #[test]
+    fn the_pedal_holds_neither_a_note_already_up_nor_one_whose_key_stays_down() {
+        // Pressed after the key came up, the note fades just the same.
+        let late = [(0, NoteOn(A4)), (4_800, NoteOff(A4)), (6_000, HoldPedal)];
+        let plain = [(0, NoteOn(A4)), (4_800, NoteOff(A4))];
+        let late_wave = play(&mut sine_engine(), &late, 48_000);
+        let plain_wave = play(&mut sine_engine(), &plain, 48_000);
+        assert_same_samples(&late_wave, &plain_wave);
+
+        // Lifted while the key is down, the note carries on until it comes up.
+        let down = [
+            (0, NoteOn(A4)),
+            (1_000, HoldPedal),
+            (2_000, LetGoOfPedal),
+            (24_000, NoteOff(A4)),
+        ];
+        let plain = [(0, NoteOn(A4)), (24_000, NoteOff(A4))];
+        let down_wave = play(&mut sine_engine(), &down, 72_000);
+        let plain_wave = play(&mut sine_engine(), &plain, 72_000);
+        assert_same_samples(&down_wave, &plain_wave);
+    }
+
+    #[test]
+    fn a_note_played_again_under_the_pedal_is_still_one_note() {
+        let again = [
+            (0, HoldPedal),
+            (0, NoteOn(A4)),
+            (4_800, NoteOff(A4)),
+            (9_600, NoteOn(A4)),
+            (14_400, NoteOff(A4)),
+            (24_000, LetGoOfPedal),
+        ];
+        let wave = play(&mut sine_engine(), &again, 72_000);
+        // Its one voice let go when the pedal went up.
+        assert_eq!(peak(&wave[48_000..]), 0.0);
+    }
+
+    #[test]
+    fn letting_go_of_everything_lets_go_of_the_pedal_too() {
+        // The window lost focus with the pedal down. It comes back up, so the
+        // note after it fades as any does.
+        let later = [(24_000, NoteOn(C5)), (28_800, NoteOff(C5))];
+        let mut lost_focus = vec![(0, HoldPedal), (0, NoteOn(A4)), (4_800, NoteOff(A4)), (9_600, AllNotesOff)];
+        lost_focus.extend(later);
+        let wave = play(&mut sine_engine(), &lost_focus, 96_000);
+        assert_eq!(peak(&wave[72_000..]), 0.0);
+    }
+
+    #[test]
+    fn a_new_note_takes_over_one_only_the_pedal_holds_before_one_still_held() {
+        // The oldest note's key stays down, and the next one's comes up. With
+        // every voice taken, the new note takes the second, not the oldest.
+        let oldest = 30;
+        let second = 40;
+        let new_note = 90;
+        let mut engine = sine_engine();
+        engine.set_pedal_key(true);
+        engine.note_on(oldest, VELOCITY);
+        engine.note_on(second, VELOCITY);
+        engine.note_off(second);
+        // Every other note stays well away from those two's.
+        let others = (1..7).chain(50..70).chain(91..127);
+        for note in others {
+            engine.note_on(note, VELOCITY);
+        }
+        render_left(&mut engine, 20);
+        engine.note_on(new_note, VELOCITY);
+        render_left(&mut engine, 100);
+        let wave = render_left(&mut engine, 500);
+
+        let hz_of = |note: u8| 440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0);
+        assert!(strength_at(&wave, hz_of(oldest)) > 0.01, "the note still held was cut off");
+        assert!(strength_at(&wave, hz_of(second)) < 0.002, "the note the pedal held still sounds");
+        assert!(strength_at(&wave, hz_of(new_note)) > 0.01, "the new note did not start");
+
+        // Its key is down, so the pedal coming up leaves it ringing.
+        engine.set_pedal_key(false);
+        render_left(&mut engine, 100);
+        let wave = render_left(&mut engine, 500);
+        assert!(strength_at(&wave, hz_of(new_note)) > 0.01, "the pedal ended a note whose key is down");
+    }
+
+    #[test]
+    fn a_loop_plays_its_pedal_back_on_its_own_notes() {
+        // Recorded with a note under it, the pedal plays back each time
+        // around exactly as played, and the live pedal never touches it.
+        let bar = [
+            (5_000, HoldPedal),
+            (10_000, NoteOn(A4)),
+            (20_000, NoteOff(A4)),
+            (70_000, LetGoOfPedal),
+        ];
+        let start = RECORDING_STARTS;
+        let mut looped = vec![(0, PressLooper), (start + 80_000, PressLooper)];
+        looped.extend(moved(&bar, start));
+        let mut live = vec![(0, StartClick), (start + BAR_AT_120, StopClick)];
+        for time_around in 0..3 {
+            live.extend(moved(&bar, start + time_around * BAR_AT_120));
+        }
+
+        let frames = start + 3 * BAR_AT_120;
+        let mut looper_engine = engine_without_snap();
+        let looped_wave = play(&mut looper_engine, &looped, frames);
+        let live_wave = play(&mut Engine::new().unwrap(), &live, frames);
+        assert_same_samples(&looped_wave, &live_wave);
+
+        // Rust's copy keeps the press as a note on a pitch of its own.
+        let key_press = LoopNote {
+            note: PEDAL_KEY_NOTE,
+            start: 5_000,
+            end: Some(70_000),
+        };
+        assert_eq!(first_layer_notes(&mut looper_engine)[0], key_press);
+    }
+
+    #[test]
+    fn a_sample_s_touch_picks_which_recording_plays() {
+        for (touch, hz) in [(TOUCH_SOFTEST, SOFT_HZ), (64, SOFT_HZ), (65, HARD_HZ), (TOUCH_HARDEST, HARD_HZ)] {
+            let mut engine = piano_engine(NOTES, touch);
+            engine.note_on(MIDDLE_C, VELOCITY);
+            render_left(&mut engine, 50);
+            let wave = render_left(&mut engine, 400);
+            assert_note(&engine, &wave, hz);
+        }
+    }
+
+    #[test]
+    fn touch_is_brought_within_its_range_and_an_odd_one_changes_nothing() {
+        let mut engine = Engine::new().unwrap();
+        let low = Oscillator { touch: 0, ..START_OSCILLATORS[0] };
+        assert_eq!(engine.set_oscillator(0, low).touch, TOUCH_SOFTEST);
+        let high = Oscillator { touch: 500, ..START_OSCILLATORS[0] };
+        assert_eq!(engine.set_oscillator(0, high).touch, TOUCH_HARDEST);
+
+        // Asked directly, the engine ignores a touch out of range.
+        let mut plain = piano_engine(NOTES, 100);
+        for touch in [0, 128, -1] {
+            let mut odd = piano_engine(NOTES, 100);
+            // SAFETY: `raw` points to a live engine until Drop.
+            unsafe { jello_engine_set_oscillator(odd.raw, 0, 0, Kind::Sample.number(), 1.0, 0, 0, 0.0, 0.5, touch) };
+            odd.note_on(MIDDLE_C, VELOCITY);
+            plain.note_on(MIDDLE_C, VELOCITY);
+            let odd_wave = render_left(&mut odd, 100);
+            let plain_wave = render_left(&mut plain, 100);
+            assert_same_samples(&odd_wave, &plain_wave);
+            plain.all_notes_off();
+            render_left(&mut plain, 500);
+            plain = piano_engine(NOTES, 100);
+        }
+    }
+
+    #[test]
+    fn a_key_coming_up_plays_its_release_recording_quieter_the_longer_it_rang() {
+        let steps = |held: usize| [(0, NoteOn(MIDDLE_C)), (held, NoteOff(MIDDLE_C))];
+        let frames = 192_000;
+        let release_after = |held: usize| {
+            let with = play(&mut piano_engine(STRINGS, 100), &steps(held), frames);
+            let without = play(&mut piano_engine(NOTES, 100), &steps(held), frames);
+            let sound = difference(&with, &without);
+            // Nothing before the key comes up.
+            assert_eq!(peak(&sound[..held]), 0.0);
+            rms(&sound[held..held + 4_800])
+        };
+        let soon = release_after(4_800);
+        let later = release_after(148_800);
+        assert!(soon > 0.02, "the release recording did not play: {soon}");
+        // 3 seconds later at 6 dB a second: an eighth, about.
+        let ratio = later / soon;
+        assert!((0.1..0.16).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn a_release_recording_waits_for_the_pedal_and_for_its_touch() {
+        let steps = [
+            (0, HoldPedal),
+            (0, NoteOn(MIDDLE_C)),
+            (4_800, NoteOff(MIDDLE_C)),
+            (24_000, LetGoOfPedal),
+        ];
+        let with = play(&mut piano_engine(STRINGS, 100), &steps, 48_000);
+        let without = play(&mut piano_engine(NOTES, 100), &steps, 48_000);
+        let sound = difference(&with, &without);
+        assert_eq!(peak(&sound[..24_000]), 0.0);
+        assert!(rms(&sound[24_000..28_800]) > 0.02);
+
+        // Only touches from 45 up have one.
+        let with = play(&mut piano_engine(STRINGS, 44), &steps, 48_000);
+        let without = play(&mut piano_engine(NOTES, 44), &steps, 48_000);
+        assert_same_samples(&with, &without);
+    }
+
+    #[test]
+    fn a_note_plays_its_release_recording_once() {
+        // Two keys can share a note, so its key can come up twice.
+        let once = [(0, NoteOn(MIDDLE_C)), (4_800, NoteOff(MIDDLE_C))];
+        let twice = [(0, NoteOn(MIDDLE_C)), (4_800, NoteOff(MIDDLE_C)), (9_600, NoteOff(MIDDLE_C))];
+        let wave_once = play(&mut piano_engine(STRINGS, 100), &once, 48_000);
+        let wave_twice = play(&mut piano_engine(STRINGS, 100), &twice, 48_000);
+        assert_same_samples(&wave_once, &wave_twice);
+
+        // Nor does the pedal going down and up again play it a second time.
+        let pedal_once = [
+            (0, HoldPedal),
+            (0, NoteOn(MIDDLE_C)),
+            (2_400, NoteOff(MIDDLE_C)),
+            (4_800, LetGoOfPedal),
+        ];
+        let pedal_twice = [
+            (0, HoldPedal),
+            (0, NoteOn(MIDDLE_C)),
+            (2_400, NoteOff(MIDDLE_C)),
+            (4_800, LetGoOfPedal),
+            (9_600, HoldPedal),
+            (14_400, LetGoOfPedal),
+        ];
+        let wave_once = play(&mut piano_engine(STRINGS, 100), &pedal_once, 48_000);
+        let wave_twice = play(&mut piano_engine(STRINGS, 100), &pedal_twice, 48_000);
+        assert_same_samples(&wave_once, &wave_twice);
+    }
+
+    #[test]
+    fn the_pedal_s_last_sound_fades_under_its_next_one() {
+        let steps = [(0, HoldPedal), (2_400, LetGoOfPedal)];
+        let wave = play(&mut piano_engine(PIANO, 100), &steps, 9_600);
+        let down_at_first = strength_at(&wave[..1_200], 3000.0);
+        let down_later = strength_at(&wave[3_600..4_800], 3000.0);
+        // Halfway through its window the fade has taken over a third of it.
+        let ratio = down_later / down_at_first;
+        assert!((0.5..0.75).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn a_silent_oscillator_makes_no_sound_around_its_notes() {
+        let silent = |name: &str| {
+            let mut engine = piano_engine(name, 100);
+            engine.set_oscillator(
+                0,
+                Oscillator {
+                    kind: Kind::Sample,
+                    level: 0,
+                    touch: 100,
+                    ..START_OSCILLATORS[0]
+                },
+            );
+            engine
+        };
+        let steps = [(0, HoldPedal), (0, NoteOn(MIDDLE_C)), (4_800, NoteOff(MIDDLE_C)), (24_000, LetGoOfPedal)];
+        let wave = play(&mut silent(PIANO), &steps, 48_000);
+        assert_eq!(peak(&wave), 0.0);
+    }
+
+    #[test]
+    fn the_pedal_makes_its_own_sounds_going_down_and_up() {
+        let steps = [(4_800, HoldPedal), (24_000, LetGoOfPedal)];
+        let wave = play(&mut piano_engine(PIANO, 100), &steps, 48_000);
+        assert_eq!(peak(&wave[..4_800]), 0.0);
+        let down = &wave[4_800..9_600];
+        let up = &wave[24_000..28_800];
+        assert!(strength_at(down, 3000.0) > 0.002, "no sound going down");
+        assert!(strength_at(up, 5000.0) > 0.002, "no sound going up");
+        assert_eq!(peak(&wave[9_600..24_000]), 0.0);
+
+        // An instrument with no pedal recordings is silent, and so is a wave.
+        let wave = play(&mut piano_engine(NOTES, 100), &steps, 48_000);
+        assert_eq!(peak(&wave), 0.0);
+        let wave = play(&mut sine_engine(), &steps, 48_000);
+        assert_eq!(peak(&wave), 0.0);
+    }
+
+    #[test]
+    fn an_instrument_is_kept_while_its_release_recording_still_plays() {
+        let mut engine = piano_engine(PIANO, 100);
+        engine.note_on(MIDDLE_C, VELOCITY);
+        render_left(&mut engine, 10);
+        engine.note_off(MIDDLE_C);
+        render_left(&mut engine, 400);
+        // Changed away with only the release recording sounding, it stays.
+        engine.set_instrument(0, None);
+        render_left(&mut engine, 10);
+        engine.forget_unused_sets();
+        assert_eq!(engine.sample_sets_kept(), 1);
+        // Once it has played out, it goes.
+        render_left(&mut engine, 1_000);
+        engine.tidy_sample_sets();
+        assert_eq!(engine.sample_sets_kept(), 0);
     }
 
     #[test]

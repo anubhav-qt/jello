@@ -12,10 +12,18 @@ static_assert(Synth::layer_count == 8, "the drum kit takes 8 layer volumes");
 
 // The drum pads come right after the glide key's note.
 static_assert(drum_first_note == Synth::glide_key_note + 1, "the drum pads follow the glide key");
-static_assert(loop_pitch_count == drum_first_note + drum_pad_count, "a loop holds every drum pad");
+static_assert(Synth::pedal_key_note == drum_first_note + drum_pad_count, "the pedal follows the drum pads");
+static_assert(loop_pitch_count == Synth::pedal_key_note + 1, "a loop holds every drum pad and the pedal");
+
+// The pedal's own recordings play as loud as a note a laptop key plays.
+constexpr int pedal_velocity = 100;
+constexpr float pedal_level = 0.35f * (pedal_velocity / 127.0f) * (pedal_velocity / 127.0f);
 
 Synth::Synth(int sample_rate)
-    : voices_(voice_count, Voice(sample_rate)), routing_(sample_rate), drums_(sample_rate) {
+    : voices_(voice_count, Voice(sample_rate)),
+      routing_(sample_rate),
+      drums_(sample_rate),
+      release_sounds_(sample_rate) {
     layer_volumes_.fill(1.0f);
 }
 
@@ -47,11 +55,13 @@ void Synth::all_notes_off(Source source) {
         for (int layer = 0; layer < layer_count; layer++) {
             int player = player_of(source, layer);
             routing_.set_vibrato_key(player, false);
+            pedals_[player] = false;
             forget_melody(player);
         }
     } else {
         int player = player_of(source, 0);
         routing_.set_vibrato_key(player, false);
+        pedals_[player] = false;
         forget_melody(player);
     }
 }
@@ -64,6 +74,10 @@ void Synth::loop_note_on(int note, int velocity, int layer) {
     }
     if (note == glide_key_note) {
         melodies_[player].glide_key = true;
+        return;
+    }
+    if (note == pedal_key_note) {
+        hold_pedal(player, true, Source::loop, layer);
         return;
     }
     if (is_drum_note(note)) {
@@ -83,6 +97,10 @@ void Synth::loop_note_off(int note, int layer) {
         melodies_[player].glide_key = false;
         return;
     }
+    if (note == pedal_key_note) {
+        hold_pedal(player, false, Source::loop, layer);
+        return;
+    }
     if (is_drum_note(note)) {
         return;
     }
@@ -100,6 +118,7 @@ void Synth::layer_notes_off(int layer) {
     }
     int player = player_of(Source::loop, layer);
     routing_.set_vibrato_key(player, false);
+    pedals_[player] = false;
     forget_melody(player);
 }
 
@@ -109,6 +128,49 @@ void Synth::set_vibrato_key(bool held) {
 
 void Synth::set_glide_key(bool held) {
     melodies_[live_player].glide_key = held;
+}
+
+void Synth::set_pedal_key(bool held) {
+    hold_pedal(live_player, held, Source::live, 0);
+}
+
+void Synth::hold_pedal(int player, bool held, Source source, int layer) {
+    if (pedals_[player] == held) {
+        return;
+    }
+    pedals_[player] = held;
+
+    pedal_turn_ += 1;
+    for (int o = 0; o < oscillator_count; o++) {
+        const OscillatorSettings& oscillator = note_sound_.oscillators[o];
+        const SampleSet* set = note_sound_.instruments[o];
+        if (oscillator.kind != Kind::sample || set == nullptr) {
+            continue;
+        }
+        const std::vector<SampleZone>& zones = set->pedal_zones(held);
+        if (zones.empty()) {
+            continue;
+        }
+        const SampleZone& zone = zones[static_cast<std::size_t>(pedal_turn_) % zones.size()];
+        release_sounds_.play_pedal(set, &zone, oscillator.level * pedal_level, source, layer);
+    }
+
+    if (held) {
+        return;
+    }
+    for (Voice& voice : voices_) {
+        if (!voice.is_held_by_pedal()) {
+            continue;
+        }
+        if (player_of(voice.source(), voice.layer()) == player) {
+            end_note(voice);
+        }
+    }
+}
+
+void Synth::end_note(Voice& voice) {
+    voice.start_release_sounds(release_sounds_, now_);
+    voice.release();
 }
 
 void Synth::set_glide_time(int glide_ms) {
@@ -151,13 +213,17 @@ Voice* Synth::play_note(int note, int velocity, Source source, int layer, const 
     // A note that is still ringing keeps its own voice, so it never sounds
     // twice. Otherwise it takes a free voice. When every voice is busy, it
     // takes over the quietest voice fading out, since that one is nearly gone
-    // anyway, or else the note held the longest.
+    // anyway, then the note the pedal has held longest, whose key is up, or
+    // else the note held the longest.
     Voice* voice = find_ringing_voice(note, source, layer);
     if (voice == nullptr) {
         voice = find_free_voice();
     }
     if (voice == nullptr) {
         voice = find_quietest_fading_voice();
+    }
+    if (voice == nullptr) {
+        voice = find_oldest_pedal_voice();
     }
     if (voice == nullptr) {
         voice = find_oldest_voice();
@@ -254,7 +320,7 @@ void Synth::glide(int player, const Waiting& waiting) {
 
     bool last_held = false;
     if (last != nullptr) {
-        last_held = !last->is_releasing();
+        last_held = !last->is_releasing() && !last->is_held_by_pedal();
     }
 
     // The last melody key is still held, so its voice bends to the new
@@ -381,7 +447,15 @@ void Synth::let_go_now(int note, Source source, int layer) {
         bends_back = melody.taken_count > 0;
     }
     if (!bends_back) {
-        voice->release();
+        // A note already fading or held only by the pedal has let go before.
+        if (voice->is_releasing() || voice->is_held_by_pedal()) {
+            return;
+        }
+        if (pedals_[player]) {
+            voice->hold_by_pedal();
+            return;
+        }
+        end_note(*voice);
         return;
     }
 
@@ -454,6 +528,7 @@ std::uint32_t Synth::sets_in_use() const {
         voice.add_sets_in_use(sets);
     }
     drums_.add_sets_in_use(sets);
+    release_sounds_.add_sets_in_use(sets);
     return sets;
 }
 
@@ -536,6 +611,7 @@ void Synth::render(float* out, int frames) {
             voice.render(out + 2 * done, count, volume_for(voice), filter_targets_);
         }
         drums_.render(out + 2 * done, count, layer_volumes_);
+        release_sounds_.render(out + 2 * done, count, layer_volumes_);
         done += count;
         now_ += count;
     }
@@ -606,6 +682,19 @@ Voice* Synth::find_quietest_fading_voice() {
         }
     }
     return quietest;
+}
+
+Voice* Synth::find_oldest_pedal_voice() {
+    Voice* oldest = nullptr;
+    for (Voice& voice : voices_) {
+        if (!voice.is_held_by_pedal()) {
+            continue;
+        }
+        if (oldest == nullptr || voice.press_number() < oldest->press_number()) {
+            oldest = &voice;
+        }
+    }
+    return oldest;
 }
 
 Voice* Synth::find_oldest_voice() {

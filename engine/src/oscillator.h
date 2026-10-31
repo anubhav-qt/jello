@@ -57,6 +57,10 @@ struct OscillatorSettings {
     // the square; narrower or wider, a thinner pulse. Only the square uses
     // it.
     float width = 0.5f;
+    // How hard a sample's keys are struck, from 1 (softest) to 127 (hardest):
+    // which of its recordings play. Laptop keys can't feel it, so it is set
+    // on the sound. Only a sample uses it.
+    int touch = 80;
 };
 
 // Where a new song's oscillators start: the first a triangle at full level,

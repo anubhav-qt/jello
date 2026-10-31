@@ -345,6 +345,7 @@ mod tests {
             half_steps: -5,
             cents: 3,
             width: 20,
+            touch: crate::engine::START_TOUCH,
         };
         profile.set_oscillator(engine, 1, square_below);
         profile.set_loudness_envelope(
@@ -639,6 +640,7 @@ mod tests {
             half_steps: 7,
             cents: -4,
             width: SQUARE_WIDTH_PERCENT,
+            touch: crate::engine::START_TOUCH,
         };
         profile.set_oscillator(&mut engine, 2, fifth_up);
         assert_eq!(profile.oscillators()[2], fifth_up);
@@ -699,6 +701,7 @@ mod tests {
             half_steps: -20,
             cents: 300,
             width: 99,
+            touch: crate::engine::START_TOUCH,
         };
         profile.set_oscillator(&mut engine, 1, too_far_off);
         let too_fast = Lfo {
@@ -759,6 +762,7 @@ mod tests {
             half_steps: -OSCILLATOR_MOST_HALF_STEPS,
             cents: OSCILLATOR_MOST_CENTS,
             width: PULSE_WIDEST_PERCENT,
+            touch: crate::engine::START_TOUCH,
         };
         assert_eq!(profile.oscillators()[1], at_the_edges);
         let at_the_top = Lfo {

@@ -23,6 +23,7 @@ fn build_engine() {
         .file("../engine/src/sample_set.cpp")
         .file("../engine/src/voice.cpp")
         .file("../engine/src/drum_kit.cpp")
+        .file("../engine/src/release_sounds.cpp")
         .file("../engine/src/synth.cpp")
         .file("../engine/src/tracks.cpp")
         .file("../engine/src/mixer.cpp")

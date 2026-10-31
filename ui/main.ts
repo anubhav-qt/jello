@@ -328,6 +328,7 @@ async function setOscillator(index: number, oscillator: Oscillator) {
       halfSteps: oscillator.halfSteps,
       cents: oscillator.cents,
       width: oscillator.width,
+      touch: oscillator.touch,
     });
     showSound(view);
   } catch (error) {

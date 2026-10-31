@@ -21,15 +21,17 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - Fullscreen workspace (0039): plain page, 24 chords left, 24 melody notes
   right; panels stay fixed, contents scroll without bars.
 - Keys: bare arrows shift octaves; left Cmd+arrows edit sound values (left
-  Alt Windows); Shift vibrato, Option glide (right Alt Windows); F12 steps
-  the wave in Sound. Left Cmd+1..9 picks or makes a track, +Return saves a
+  Alt Windows); Shift vibrato, Option glide (right Alt Windows), Space sustain
+  pedal; F12 steps the wave in Sound. Left Cmd+1..9 picks or makes a track, +Return saves a
   section, +Delete removes the last; right Option jumps to the drums track.
 - Agent (0041, 0043): MCP tool server in Rust (`tool_server.rs`,
   `tools.rs`, `listening.rs`, `undo.rs`); steps 1 to 9 done, step 10 asks
   first. Providers: Anthropic, OpenAI, Google. Input box: Type, Speak and
   Hum tabs ([design](docs/design.md#the-input-box)).
-- Sampler (0044): `instruments.rs`, `drums.rs`, `starters.rs` (download
-  only on click), `engine/src/sample_set.*`, `drum_kit.*`.
+- Sampler (0044, 0048): `instruments.rs`, `drums.rs`, `starters.rs` (download
+  only on click), `engine/src/sample_set.*`, `drum_kit.*`, `release_sounds.*`.
+  Piano: 6 velocity layers picked by an oscillator's touch, release and pedal
+  recordings, Grand Piano preset.
 - Tracks and sections (0045): built. `tracks.rs`, `sections.rs`,
   `arrange.rs`, `automation.rs`; engine `tracks.*`, `sequencer.*`. Agent:
   `jello_tracks`, `jello_arrange`, `track` on the other tools.

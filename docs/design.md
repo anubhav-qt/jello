@@ -173,7 +173,7 @@ release, no jumps when a voice is stolen, and never going above 1.0.
    middle C to `Music/Jello/test-note.wav`, and the dev panel gets a button
    that plays middle C while it is held. Done. (Render WAV now renders the
    song; see [tracks and sections](#tracks-and-sections).)
-3. **32 voices.** Finding a free voice, stealing, reusing a ringing note's
+3. **64 voices** (32 until [ADR 0048](adr/0048-the-grand-piano.md)). Finding a free voice, stealing, reusing a ringing note's
    voice, and the soft clip. The C API and the dev panel stay the same, so
    only the tests play chords until slice 5. Done.
 4. **Four waves.** Sine, square and saw join triangle, with PolyBLEP, the
@@ -622,7 +622,7 @@ and being built.
   - Some values stay the same for every song, since they are about how the
     engine works, not how a song sounds: the 5 ms takeover gap, the 10 ms
     volume ease, the 20 ms filter glide, the wave and noise trims, where the
-    copies start, the 32 voices, 48 kHz, the filter's limits and the click.
+    copies start, the 64 voices, 48 kHz, the filter's limits and the click.
     The voice level became each track's volume in step 5, and the soft
     clip the master limiter in step 6 ([Mix](#mix-in-the-engine)).
   - Play plays the open song's profile. Song files keep it
@@ -653,7 +653,7 @@ and being built.
   beat, wherever that falls in a chunk. A tick is a sine wave that starts
   from zero at 0.25 and halves in loudness every 4 ms, then stops after
   40 ms. Beat 1 of each bar ticks at A6 (1,760 Hz) and the others at A5
-  (880 Hz). It is not one of the 32 voices, so it never takes a note's
+  (880 Hz). It is not one of the 64 voices, so it never takes a note's
   voice. Starting the click begins a new bar, starting it while it is on
   does nothing, and stopping it lets a sounding tick ring out. Kept by ear
   as they first were (2026-10-20).
@@ -889,13 +889,18 @@ sixth kind, and a drum kit beside the synth.
   instrument: an SFZ file, or WAV and FLAC files named by note (C4.wav,
   F#2.flac) or by drum (kick.wav, closed hat.wav). Of SFZ Jello reads
   regions, groups, masters, globals, control's default_path and offsets,
-  #include, keys, pitch_keycenter, tune, transpose, volume, amplitude and
-  loops. It keeps only the layer for velocity 80, the first round robin
-  and attack triggers. An SFZ drum kit's notes are matched to pads by the
-  General MIDI drum map. Rust (`instruments.rs`) reads every recording on
-  a background thread, turns it into 48 kHz, cuts one-shots at 15 seconds
-  with a fade, and makes each instrument as loud as the others. Every
-  engine shares the one read.
+  #define, #include (anywhere on a line, beside the file or the first SFZ
+  file), keys, pitch_keycenter, tune, transpose, volume, amplitude, loops,
+  velocities, locc and hicc at the control heading's values, a lead-in on a
+  controller labelled "offset", releases with rt_decay and amp_veltrack, and
+  the pedal's on_locc64 sounds. It keeps at most 6 velocity layers of each
+  note, spread evenly and meeting with no gaps, the first round robin and a
+  keyswitch's default. An SFZ drum kit's notes are matched to pads by the
+  General MIDI drum map, its pads playing the layer for velocity 80. Rust
+  (`instruments.rs`) reads every recording on a thread per core, turns it into
+  48 kHz, cuts one-shots at 15 seconds with a 1 second fade, and makes each
+  instrument as loud as the others by its velocity 80 notes. Every engine
+  shares the one read.
 - **Loading.** Picking an instrument never holds up the keys: until it is
   ready the oscillator stays silent and the screen says "loading". Once
   read, the live engine gets it (`send_loaded_instruments`) and the screen
@@ -906,7 +911,23 @@ sixth kind, and a drum kit beside the synth.
   whole voice: tuning, filter, envelopes, LFOs, unison, glide and vibrato,
   layered with waves on the other oscillators. A held note loops where the
   recording says; otherwise it plays to its end. The song file keeps each
-  oscillator's `instrument` by name.
+  oscillator's `instrument` by name and its `touch`.
+- **Touch.** How hard a sample's keys are struck, 1 to 127, in the Width
+  field's place on the Oscillators page: which recording plays, read as the
+  note starts. Laptop keys can't feel it, so it is set on the sound; 80 in a
+  new song ([ADR 0048](adr/0048-the-grand-piano.md)).
+- **Pedal.** Space, or the Pedal lamp on the transport, holds the sustain
+  pedal, on any sound: a note whose key comes up rings on until it goes up, and
+  one played again restarts on its own voice. It belongs to the track it was
+  pressed on. Letting go of every note lifts it. The looper records it as pitch
+  146, song files write it as "pedal", and the lane leaves it out. Going down
+  and up, it plays the instrument's pedal recordings by turns, the last one
+  fading out in 100 ms.
+- **Release recordings.** A key coming up with no pedal, or the pedal lifting
+  off it, plays every release zone for its note and touch
+  (`release_sounds.*`), up to 64 at once. Each is quieter the longer the note
+  rang (rt_decay) and for a softer touch (amp_veltrack), and is skipped under
+  -60 dB. They and the pedal's skip the filter and the envelope.
 - **Drums.** A kit with 16 voices of its own, so drums and chords play
   together. Pads: kick, snare, rim, clap, closed hat, pedal hat, open hat,
   low tom, mid tom, high tom, crash, crash 2, ride, ride bell, china and
@@ -925,11 +946,12 @@ sixth kind, and a drum kit beside the synth.
   keep working.
 - **Starters.** Nothing comes with Jello. The sound panel offers two free
   starters, each fetched only by its own Download button, which says its
-  size: Salamander Grand Piano (742 MB, CC BY 3.0, Alexander Holm) on a
+  size: Salamander Grand Piano (748 MB from GitHub, CC BY 3.0, Alexander Holm) on a
   sample oscillator and AVL Black Pearl (14 MB, CC BY-SA 3.0, Glen
   MacArthur) on the Drums page. `starters.rs` fetches with curl, checks the
   size, unpacks with tar (both come with macOS and Windows) and keeps the
-  folder holding the SFZ file with its license.
+  folder holding the SFZ file with its license. The piano adds a Grand Piano
+  preset, unless one has that name: full level, 1 ms attack, a 400 ms release.
 - **Screens.** A sample oscillator shows its instrument in the drawing's
   place; clicking it lists the instruments over that oscillator, with
   None, the starters and Open Instruments folder, until one is picked. The
@@ -939,15 +961,19 @@ sixth kind, and a drum kit beside the synth.
   `jello_drums` picks the kit and sets pads by name; `jello_notes` writes
   drums by pad name; `jello_look` reads "drums" and "instruments". The
   agent never downloads: the player clicks.
-- **Todo.** Velocity layers (keys have no velocity, so an accent or level
-  pick), round robin, slicing loops, recording from the mic, and the
-  memory doubling: Rust and C++ each keep a copy of every recording.
+- **Todo.** Round robin, half pedal, sympathetic resonance, a routing target
+  for touch, slicing loops, recording from the mic, and the memory doubling:
+  Rust and C++ each keep a copy of every recording, so the piano holds about
+  1.8 GB.
 - Tests check SFZ and named-file reading, other rates, stereo, FLAC and
   loops, the voice playing a sample at pitch, tuned and layered with
   waves, one-shots, choke groups, drums with notes, the looper recording
   hits, freeing unused instruments, drum mode's keys, song files keeping
   drums by name and the kit and pads within their ranges, the agent's
-  drum changes and refusals, and unpacking a starter.
+  drum changes and refusals, unpacking a starter, the pedal holding and
+  lifting notes, its recordings, the looper keeping it, which voice a new note
+  takes, touch picking the recording, release recordings fading and waiting for
+  the pedal, thinning layers and the piano's preset.
 
 ## Input
 
@@ -991,8 +1017,9 @@ Then each key press gets the next note. Details:
 - Ignore auto-repeat (`event.repeat`).
 - Release every note when the window loses focus, and forget which keys were
   held.
-- Block right Option/Alt, Cmd/Win, Fn and Caps Lock. Space, Tab and left
-  Control play chords like any other key, left Shift holds the vibrato
+- Block right Option/Alt, Cmd/Win, Fn and Caps Lock. Tab and left
+  Control play chords like any other key, Space holds the sustain pedal
+  ([ADR 0048](adr/0048-the-grand-piano.md)), left Shift holds the vibrato
   key and left Option (left Alt on Windows) holds the glide key. While Cmd
   is held, no key plays, so shortcuts like Cmd+Q still work. Pressing Cmd
   also releases every note, because a Mac may never report a key let go

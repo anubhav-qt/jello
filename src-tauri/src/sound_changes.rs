@@ -21,7 +21,7 @@ use crate::engine::{
     Engine, FILTER_LONGEST_MS, FILTER_LOWEST_HZ, FILTER_MOST_OCTAVES, FILTER_OPEN_HZ, FULL_PERCENT,
     FilterEnvelope, FilterType, GLIDE_LONGEST_MS, Kind, LOUDNESS_LONGEST_MS, LOUDNESS_SHORTEST_MS,
     LoudnessEnvelope, OSCILLATOR_COUNT, OSCILLATOR_MOST_CENTS, OSCILLATOR_MOST_HALF_STEPS,
-    OSCILLATOR_MOST_OCTAVES, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT,
+    OSCILLATOR_MOST_OCTAVES, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, TOUCH_HARDEST, TOUCH_SOFTEST,
     TUNING_HIGHEST_HZ, TUNING_LOWEST_HZ, UNISON_MOST_COPIES, UNISON_MOST_DETUNE_CENTS, Unison,
 };
 use crate::modulation::{
@@ -49,6 +49,7 @@ pub fn json_of(sound: &Sound) -> Value {
             "half_steps": oscillator.half_steps,
             "cents": oscillator.cents,
             "width": oscillator.width,
+            "touch": oscillator.touch,
             "instrument": sound.instruments[index],
         }));
     }
@@ -200,9 +201,10 @@ fn change_oscillators(sound: &mut Sound, value: &Value) -> Result<(), String> {
                 "width" => {
                     oscillator.width = count_within(value, &named, PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, "%")?;
                 }
+                "touch" => oscillator.touch = count_within(value, &named, TOUCH_SOFTEST, TOUCH_HARDEST, "")?,
                 "instrument" => sound.instruments[index] = instrument_named(value, &named)?,
                 _ => {
-                    let names = "kind, level, octaves, half_steps, cents, width and instrument";
+                    let names = "kind, level, octaves, half_steps, cents, width, touch and instrument";
                     return Err(no_such_value(&place, name, names));
                 }
             }
@@ -820,6 +822,19 @@ mod tests {
         let before = new_sound();
         let after = changed(&before, &json_of(&before)).unwrap();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn a_touch_can_be_changed_within_its_range() {
+        let before = new_sound();
+        let after = changed(&before, &json!({"oscillators": [{"number": 2, "touch": 127}]})).unwrap();
+        assert_eq!(after.oscillators[1].touch, 127);
+        assert_eq!(json_of(&after)["oscillators"][1]["touch"], 127);
+        for touch in [0, 128] {
+            let change = json!({"oscillators": [{"number": 2, "touch": touch}]});
+            let error = changed(&before, &change).unwrap_err();
+            assert_eq!(error, format!("oscillator 2 touch is 1 to 127, not {touch}"));
+        }
     }
 
     #[test]

@@ -88,6 +88,7 @@ pub fn write_sound(text: &mut String, sound: &Sound, under: &str) {
         write_number(text, "half_steps", oscillator.half_steps);
         write_number(text, "cents", oscillator.cents);
         write_number(text, "width", oscillator.width);
+        write_number(text, "touch", oscillator.touch);
     }
 
     let loudness = sound.loudness_envelope;
@@ -349,6 +350,7 @@ fn read_oscillator(group: &Table, missing: Oscillator) -> Oscillator {
         half_steps: read_signed(group, "half_steps", missing.half_steps),
         cents: read_signed(group, "cents", missing.cents),
         width: read_count(group, "width", missing.width),
+        touch: read_count(group, "touch", missing.touch),
     }
 }
 
@@ -568,6 +570,7 @@ mod tests {
         sound.oscillators[1].octaves = -1;
         sound.oscillators[1].half_steps = 7;
         sound.oscillators[1].cents = -12;
+        sound.oscillators[1].touch = 110;
         sound.oscillators[2].kind = Kind::Noise;
         sound.oscillators[2].level = 5;
 

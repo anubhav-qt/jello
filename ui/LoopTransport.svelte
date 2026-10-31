@@ -14,8 +14,10 @@
     onRecord: () => void;
     onTempo: (tempo: number) => void;
     onExpression: (key: string, held: boolean) => void;
+    // In drum mode Space hits the kick, so the pedal's lamp can't hold it.
+    drumMode: boolean;
   }
-  let { sound, onRecord, onTempo, onExpression }: Props = $props();
+  let { sound, onRecord, onTempo, onExpression, drumMode }: Props = $props();
 
   // The recording lengths to pick from, in bars; 0 is free.
   const LENGTHS = [0, 1, 2, 3, 4, 6, 8, 12, 16];
@@ -25,6 +27,7 @@
   let bars = $state(8);
   let vibrato = $state(false);
   let glide = $state(false);
+  let pedal = $state(false);
   let looperState = $derived(sound.looper.state);
   let tempo = $derived(sound.tempo);
   let recording = $derived(
@@ -101,9 +104,14 @@
     glide = !glide;
     onExpression("AltLeft", glide);
   }
+
+  function switchPedal() {
+    pedal = !pedal;
+    onExpression("Space", pedal);
+  }
 </script>
 
-<svelte:window onblur={() => { vibrato = false; glide = false; }} />
+<svelte:window onblur={() => { vibrato = false; glide = false; pedal = false; }} />
 <div class="loop-transport">
   <button
     type="button"
@@ -196,6 +204,17 @@
       onclick={(event) => clickThenLetGo(event, switchGlide)}
     >
       <span class="transport-lamp-light"></span>Glide
+    </button>
+    <button
+      type="button"
+      class="transport-lamp"
+      class:is-on={pedal}
+      aria-pressed={pedal}
+      aria-label="Hold the pedal"
+      disabled={drumMode && !pedal}
+      onclick={(event) => clickThenLetGo(event, switchPedal)}
+    >
+      <span class="transport-lamp-light"></span>Pedal
     </button>
   </div>
 </div>

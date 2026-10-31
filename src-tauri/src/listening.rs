@@ -279,6 +279,9 @@ fn press(keys: &mut KeyMap, engine: &mut Engine, key: &str) {
         KeyAction::HoldGlideKey => {
             engine.set_glide_key(true);
         }
+        KeyAction::HoldPedal => {
+            engine.set_pedal_key(true);
+        }
         _ => {}
     }
 }
@@ -288,12 +291,16 @@ fn press(keys: &mut KeyMap, engine: &mut Engine, key: &str) {
 fn release(keys: &mut KeyMap, engine: &mut Engine, key: &str) {
     let lets_go_of_vibrato_key = keys.holds_vibrato_key(key);
     let lets_go_of_glide_key = keys.holds_glide_key(key);
+    let lets_go_of_pedal = keys.holds_pedal(key);
     let notes = keys.release(key);
     if lets_go_of_vibrato_key {
         engine.set_vibrato_key(false);
     }
     if lets_go_of_glide_key {
         engine.set_glide_key(false);
+    }
+    if lets_go_of_pedal {
+        engine.set_pedal_key(false);
     }
     for note in notes {
         engine.note_off(note);
@@ -483,6 +490,21 @@ mod tests {
         assert!(loudness(&beats[1]).unwrap() > -30.0);
         let rings_on = answer["rings_on_ms"].as_u64().unwrap();
         assert!(rings_on >= 250 && rings_on <= 400, "rang on {rings_on} ms");
+    }
+
+    #[test]
+    fn a_render_s_copy_of_the_keys_holds_the_pedal_too() {
+        let mut keys = KeyMap::new();
+        let mut engine = Engine::new().unwrap();
+        press(&mut keys, &mut engine, "Space");
+        engine.note_on(69, 100);
+        engine.render(4_800);
+        engine.note_off(69);
+        engine.render(48_000);
+        assert!(engine.render(4_800).iter().any(|sample| *sample != 0.0), "the pedal let the note go");
+        release(&mut keys, &mut engine, "Space");
+        engine.render(48_000);
+        assert!(engine.render(4_800).iter().all(|sample| *sample == 0.0), "the pedal stayed down");
     }
 
     #[test]

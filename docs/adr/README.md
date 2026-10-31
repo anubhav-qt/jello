@@ -56,6 +56,7 @@ To change a decision, write a new ADR and mark the old one as
 | [0045](0045-tracks-and-sections.md) | Tracks and sections | Accepted |
 | [0046](0046-the-mix.md) | The mix | Accepted |
 | [0047](0047-song-key-mappings.md) | Song key mappings | Accepted |
+| [0048](0048-the-grand-piano.md) | The grand piano | Accepted |
 
 ## Template
 

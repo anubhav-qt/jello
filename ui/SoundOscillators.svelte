@@ -4,7 +4,8 @@
      plays, its six kind tiles, its level and a square's width
      (docs/design.md#pulse-width), and its tuning. A sample shows its
      instrument in the drawing's place (docs/design.md#sampler): clicking
-     it lists the instruments over the oscillator until one is picked. All
+     it lists the instruments over the oscillator until one is picked. Its
+     touch, how hard its keys are struck, takes the width's place. All
      of them start with the next key pressed. -->
 <script lang="ts">
   import {
@@ -23,6 +24,8 @@
     OSCILLATOR_MOST_OCTAVES,
     PULSE_NARROWEST_PERCENT,
     PULSE_WIDEST_PERCENT,
+    TOUCH_HARDEST,
+    TOUCH_SOFTEST,
     type Oscillator,
     type OscillatorView,
     type SoundSender,
@@ -49,6 +52,7 @@
   const HALF_STEPS = signedScale(OSCILLATOR_MOST_HALF_STEPS, "", "");
   const CENTS = signedScale(OSCILLATOR_MOST_CENTS, "", "");
   const WIDTH_SCALE = evenScale(PULSE_NARROWEST_PERCENT, PULSE_WIDEST_PERCENT, 1, "%", "%");
+  const TOUCH_SCALE = evenScale(TOUCH_SOFTEST, TOUCH_HARDEST, 1, "", "");
 
   // Oscillator `index` as it is now, with `change` made to it.
   function sendOscillator(index: number, change: Partial<Oscillator>) {
@@ -60,12 +64,13 @@
       halfSteps: now.half_steps,
       cents: now.cents,
       width: now.width,
+      touch: now.touch,
       ...change,
     };
     send.setOscillator(index, oscillator);
   }
 
-  // The five values of oscillator `index`, each picked by its own id, like
+  // The six values of oscillator `index`, each picked by its own id, like
   // "osc 2 level".
   function settingsOf(index: number) {
     const prefix = `osc ${index + 1}`;
@@ -82,6 +87,13 @@
       scale: WIDTH_SCALE,
       now: () => sound.oscillators[index].width,
       set: (newWidth) => sendOscillator(index, { width: newWidth }),
+    };
+    const touch: Setting = {
+      id: `${prefix} touch`,
+      name: "Touch",
+      scale: TOUCH_SCALE,
+      now: () => sound.oscillators[index].touch,
+      set: (newTouch) => sendOscillator(index, { touch: newTouch }),
     };
     const octaves: Setting = {
       id: `${prefix} octaves`,
@@ -104,7 +116,7 @@
       now: () => sound.oscillators[index].cents,
       set: (newCents) => sendOscillator(index, { cents: newCents }),
     };
-    return { level, width, octaves, halfSteps, cents };
+    return { level, width, touch, octaves, halfSteps, cents };
   }
 
   const SETTINGS = [settingsOf(0), settingsOf(1), settingsOf(2)];
@@ -344,7 +356,11 @@
         </div>
         <div class="sound-fields" style:grid-template-columns="1fr 1fr">
           <SoundValue setting={settings.level} dots={11} {picked} {onPick} />
-          <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
+          {#if oscillator.kind === "sample"}
+            <SoundValue setting={settings.touch} dots={11} {picked} {onPick} dim={oscillator.level === 0} />
+          {:else}
+            <SoundValue setting={settings.width} dots={11} {picked} {onPick} dim={widthDoesNothing(oscillator)} />
+          {/if}
         </div>
         <div class="sound-fields" style:grid-template-columns="1fr 1fr 1fr">
           <SoundValue

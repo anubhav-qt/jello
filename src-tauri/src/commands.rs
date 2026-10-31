@@ -14,7 +14,7 @@ use crate::compose::{ComposeView, Composer};
 use crate::engine::{
     BEATS_PER_BAR, Engine, Filter, FilterEnvelope, FilterType, GLIDE_KEY_NOTE, Kind, LoopLayer, LoopNote,
     LooperState, LooperStatus, LoudnessEnvelope, OSCILLATOR_COUNT, Oscillator, TRACK_COUNT, Unison,
-    VIBRATO_KEY_NOTE, drum_note,
+    PEDAL_KEY_NOTE, VIBRATO_KEY_NOTE, drum_note,
 };
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
@@ -190,6 +190,8 @@ pub struct OscillatorView {
     // How much of each cycle a square spends up, in percent
     // (docs/design.md#pulse-width).
     width: u32,
+    // How hard a sample's keys are struck, from 1 to 127.
+    touch: u32,
 }
 
 fn oscillator_view_of(oscillator: &Oscillator, instrument: InstrumentView) -> OscillatorView {
@@ -201,6 +203,7 @@ fn oscillator_view_of(oscillator: &Oscillator, instrument: InstrumentView) -> Os
         half_steps: oscillator.half_steps,
         cents: oscillator.cents,
         width: oscillator.width,
+        touch: oscillator.touch,
     }
 }
 
@@ -563,12 +566,15 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
 }
 
 // Whether the lane draws a loop note of pitch `note`: every real note, but
-// not the presses of the vibrato key or the glide key.
+// not the presses of the vibrato key, the glide key or the pedal.
 fn is_drawn_in_lane(note: u8) -> bool {
     if note == VIBRATO_KEY_NOTE {
         return false;
     }
     if note == GLIDE_KEY_NOTE {
+        return false;
+    }
+    if note == PEDAL_KEY_NOTE {
         return false;
     }
     true
@@ -757,6 +763,7 @@ pub fn set_oscillator(
     half_steps: i32,
     cents: i32,
     width: u32,
+    touch: u32,
 ) -> Result<SoundView, String> {
     let now = Instant::now();
     if index >= OSCILLATOR_COUNT {
@@ -769,6 +776,7 @@ pub fn set_oscillator(
         half_steps,
         cents,
         width,
+        touch,
     };
 
     let mut composer = composer.lock().unwrap();
@@ -1431,6 +1439,9 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HoldGlideKey => {
             engine.set_glide_key(true);
         }
+        KeyAction::HoldPedal => {
+            engine.set_pedal_key(true);
+        }
         KeyAction::HitDrum(pad) => {
             engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
         }
@@ -1459,7 +1470,7 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
 }
 
 // Lets go of the notes a laptop key started, except any that another held
-// key is still playing, or of the vibrato key or the glide key.
+// key is still playing, or of the vibrato key, the glide key or the pedal.
 #[tauri::command]
 pub fn release_key(
     engine: State<'_, Mutex<Engine>>,
@@ -1480,6 +1491,7 @@ pub(crate) fn release_key_on(key_map: &mut KeyMap, composer: &mut Composer, engi
     // Forget the key first, whether or not the speakers are open.
     let lets_go_of_vibrato_key = key_map.holds_vibrato_key(key);
     let lets_go_of_glide_key = key_map.holds_glide_key(key);
+    let lets_go_of_pedal = key_map.holds_pedal(key);
     let notes = key_up(key_map, composer, key, now);
 
     // Same reason as in `release_note`.
@@ -1491,6 +1503,9 @@ pub(crate) fn release_key_on(key_map: &mut KeyMap, composer: &mut Composer, engi
     }
     if lets_go_of_glide_key {
         engine.set_glide_key(false);
+    }
+    if lets_go_of_pedal {
+        engine.set_pedal_key(false);
     }
     for note in notes {
         engine.note_off(note);
@@ -2282,6 +2297,7 @@ mod tests {
             half_steps: 4,
             cents: -9,
             width: 30,
+            touch: 110,
         };
         profile.set_oscillator(&mut engine, 2, third);
         profile.set_loudness_envelope(
@@ -2303,6 +2319,7 @@ mod tests {
         assert_eq!(json["oscillators"][2]["half_steps"], 4);
         assert_eq!(json["oscillators"][2]["cents"], -9);
         assert_eq!(json["oscillators"][2]["width"], 30);
+        assert_eq!(json["oscillators"][2]["touch"], 110);
         assert_eq!(json["unison"]["copies"], 5);
         assert_eq!(json["unison"]["detune_cents"], 30);
         assert_eq!(json["unison"]["spread"], 70);
@@ -2360,6 +2377,24 @@ mod tests {
             by_hand.note_on(note, LAPTOP_VELOCITY);
         }
         assert!(control.render(4800) == by_hand.render(4800), "left Control did not play F#m");
+    }
+
+    #[test]
+    fn space_holds_the_pedal() {
+        // Without a test layout's notes on Space, as a song's mapping has it.
+        let mut key_map = KeyMap::new();
+        let mut composer = Composer::new();
+        let mut engine = Engine::new().unwrap();
+        composer.send_all(&mut engine);
+        let now = Instant::now();
+        let action = key_down(&mut key_map, &mut composer, "Space", now).unwrap();
+        take_key_action(&mut engine, &mut composer, action, now);
+        engine.note_on(A4, 100);
+        engine.render(4_800);
+        engine.note_off(A4);
+        engine.render(48_000);
+        assert!(engine.render(4_800).iter().any(|sample| *sample != 0.0), "the pedal let the note go");
+        assert!(key_map.holds_pedal("Space"));
     }
 
     #[test]
@@ -2607,6 +2642,12 @@ mod tests {
             end: Some(0.5),
         };
         assert_eq!(view.looper.layers[0].notes, vec![a4]);
+    }
+
+    #[test]
+    fn the_lane_leaves_out_the_pedal_s_presses() {
+        assert!(!is_drawn_in_lane(PEDAL_KEY_NOTE));
+        assert!(is_drawn_in_lane(A4));
     }
 
     #[test]

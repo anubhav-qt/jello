@@ -23,9 +23,8 @@ const CHORD_KEYS_BY_ROLE: [&str; 14] = [
 ];
 
 // The left hand's other keys. They hold other voicings of the best chords.
-const SPARE_CHORD_KEYS: [&str; 10] = [
+const SPARE_CHORD_KEYS: [&str; 9] = [
     "KeyB",
-    "Space",
     "ControlLeft",
     "Tab",
     "Backquote",
@@ -317,12 +316,12 @@ mod tests {
     }
 
     #[test]
-    fn every_scale_on_every_home_note_fills_all_48_keys_with_its_own_notes() {
+    fn every_scale_on_every_home_note_fills_all_47_keys_with_its_own_notes() {
         for kind in SCALE_KINDS {
             for tonic in 0..12 {
                 let scale = test_scale(kind, tonic);
                 let mapping = KeyMapping::default_for(scale);
-                assert_eq!(mapping.keys.len(), 48, "{}", scale.name());
+                assert_eq!(mapping.keys.len(), 47, "{}", scale.name());
                 for key in HOME_ROW.iter().chain(&NUMBER_ROW).chain(&UPPER_ROW).chain(&UPPER_END).chain(&BOTTOM_ROW) {
                     let notes = &mapping.keys[*key];
                     assert_eq!(notes.len(), 1, "{} {key}", scale.name());

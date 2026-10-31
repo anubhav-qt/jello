@@ -160,7 +160,8 @@ pub fn list() -> Value {
                 {\"cutoff_hz\": 800}, \"oscillators\": [{\"number\": 2, \"kind\": \"saw\"}]}}. \
                 Oscillators (1 to 3), LFOs (1 to 8) and connections (1 to 64) are named by their \
                 number. An oscillator of kind \"sample\" plays its instrument, named as jello_look's \
-                instruments lists them, or null for none. A connection with source \"none\" is \
+                instruments lists them, or null for none, with its touch, 1 to 127, saying how hard \
+                its keys are struck: which of its recordings play. A connection with source \"none\" is \
                 removed; an empty one needs a source and a target. A value outside its range, or a name Jello doesn't know, is refused \
                 with what is allowed, and then nothing changes. track: the track whose sound \
                 changes, from 1, by default the picked one. Answers with what changed and the \
@@ -214,7 +215,7 @@ pub fn list() -> Value {
             "name": "jello_play",
             "description": "Plays a timed phrase of key presses through the same path as the \
                 player's keys, so the keys light, the looper records and Compose follows. Each \
-                press names a key (\"KeyC\", \"ShiftLeft\" for the vibrato key, \"AltLeft\" for \
+                press names a key (\"KeyC\", \"ShiftLeft\" for the vibrato key, \"Space\" for the sustain pedal, \"AltLeft\" for \
                 glide), a note (\"E4\", found on the melody keys at the current octave) or a chord \
                 (\"Am\", found on the chord keys), with its start and hold in the phrase's unit: \
                 beats at the song's tempo (the default) or ms. Example: {\"presses\": [{\"chord\": \

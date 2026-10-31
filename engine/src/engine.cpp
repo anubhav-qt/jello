@@ -166,6 +166,9 @@ static_assert(JELLO_TUNING_HIGHEST_HZ == static_cast<int>(tuning_highest_hz), "t
 // The C API and the synth agree on how long a glide can take, and on the
 // pitch the looper records the glide key on.
 static_assert(JELLO_GLIDE_LONGEST_MS == glide_longest_ms, "the C API and the voices glide as long");
+static_assert(JELLO_PEDAL_KEY_NOTE == Synth::pedal_key_note, "the C API and the synth record the pedal alike");
+static_assert(JELLO_TRIGGER_RELEASE == static_cast<int>(SampleTrigger::release), "the triggers have the same numbers");
+static_assert(JELLO_TRIGGER_PEDAL_UP == static_cast<int>(SampleTrigger::pedal_up), "the triggers have the same numbers");
 static_assert(JELLO_GLIDE_KEY_NOTE == Synth::glide_key_note, "the C API and the synth record the glide key alike");
 
 // True if `value` is a number from `lowest` to `highest`. NaN, not a number
@@ -964,7 +967,7 @@ float jello_engine_gain_reduction(JelloEngine* engine, int chain, int slot) {
 }
 
 void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int kind, float level, int octaves,
-                                 int half_steps, float cents, float width) {
+                                 int half_steps, float cents, float width, int touch) {
     // Anything out of range is ignored, so nothing odd reaches the synth.
     if (!is_valid_track(track)) {
         return;
@@ -990,6 +993,9 @@ void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int 
     if (!is_within(width, oscillator_narrowest_width, oscillator_widest_width)) {
         return;
     }
+    if (!is_within_int(touch, JELLO_TOUCH_SOFTEST, JELLO_TOUCH_HARDEST)) {
+        return;
+    }
 
     OscillatorSettings oscillator;
     oscillator.kind = static_cast<Kind>(kind);
@@ -998,6 +1004,7 @@ void jello_engine_set_oscillator(JelloEngine* engine, int track, int index, int 
     oscillator.half_steps = half_steps;
     oscillator.cents = cents;
     oscillator.width = width;
+    oscillator.touch = touch;
     engine->conductor.set_oscillator(track, index, oscillator);
 }
 
@@ -1270,6 +1277,13 @@ void jello_engine_set_glide_key(JelloEngine* engine, int track, bool held) {
         return;
     }
     engine->conductor.set_glide_key(track, held);
+}
+
+void jello_engine_set_pedal_key(JelloEngine* engine, int track, bool held) {
+    if (!is_valid_track(track)) {
+        return;
+    }
+    engine->conductor.set_pedal_key(track, held);
 }
 
 void jello_engine_set_glide_time(JelloEngine* engine, int track, int glide_ms) {
@@ -1667,6 +1681,21 @@ int jello_engine_add_sample_set(JelloEngine* engine, const JelloSampleZone* zone
         if (given.loop_start > given.loop_end) {
             return -1;
         }
+        if (!is_within_int(given.lowest_touch, JELLO_TOUCH_SOFTEST, JELLO_TOUCH_HARDEST)) {
+            return -1;
+        }
+        if (!is_within_int(given.highest_touch, JELLO_TOUCH_SOFTEST, JELLO_TOUCH_HARDEST)) {
+            return -1;
+        }
+        if (!is_within_int(given.trigger, JELLO_TRIGGER_ATTACK, JELLO_TRIGGER_PEDAL_UP)) {
+            return -1;
+        }
+        if (!is_within(given.fade_db_per_second, 0.0f, 1000.0f)) {
+            return -1;
+        }
+        if (!is_within(given.touch_share, 0.0f, 1.0f)) {
+            return -1;
+        }
         SampleZone zone;
         zone.lowest_note = given.lowest_note;
         zone.highest_note = given.highest_note;
@@ -1676,6 +1705,11 @@ int jello_engine_add_sample_set(JelloEngine* engine, const JelloSampleZone* zone
         zone.frame_count = given.frame_count;
         zone.loop_start = given.loop_start;
         zone.loop_end = given.loop_end;
+        zone.lowest_touch = given.lowest_touch;
+        zone.highest_touch = given.highest_touch;
+        zone.trigger = static_cast<SampleTrigger>(given.trigger);
+        zone.fade_db_per_second = given.fade_db_per_second;
+        zone.touch_share = given.touch_share;
         if (!set->add_zone(zone, given.frames)) {
             return -1;
         }

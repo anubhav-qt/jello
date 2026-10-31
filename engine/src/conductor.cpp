@@ -13,6 +13,7 @@ double beats_per_sample(BeatLength beat) {
 // them. Only that they are held matters, so any velocity would do.
 constexpr int vibrato_key_velocity = 127;
 constexpr int glide_key_velocity = 127;
+constexpr int pedal_key_velocity = 127;
 
 }  // namespace
 
@@ -244,6 +245,13 @@ void Conductor::set_vibrato_key(int track, bool held) {
 
 void Conductor::set_glide_key(int track, bool held) {
     Event event{EventType::set_glide_key, 0, 0};
+    event.track = track;
+    event.held = held;
+    send(event);
+}
+
+void Conductor::set_pedal_key(int track, bool held) {
+    Event event{EventType::set_pedal_key, 0, 0};
     event.track = track;
     event.held = held;
     send(event);
@@ -779,6 +787,14 @@ void Conductor::handle(const Event& event) {
             looper_.note_on(Synth::glide_key_note, glide_key_velocity, now, event.track);
         } else {
             looper_.note_off(Synth::glide_key_note, now, event.track);
+        }
+    } else if (event.type == EventType::set_pedal_key) {
+        // The same for the pedal.
+        synth.set_pedal_key(event.held);
+        if (event.held) {
+            looper_.note_on(Synth::pedal_key_note, pedal_key_velocity, now, event.track);
+        } else {
+            looper_.note_off(Synth::pedal_key_note, now, event.track);
         }
     } else if (event.type == EventType::set_glide_time) {
         synth.set_glide_time(event.glide_ms);

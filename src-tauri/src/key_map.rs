@@ -133,6 +133,10 @@ pub(crate) const GLIDE_KEY: &str = "AltLeft";
 #[cfg(target_os = "windows")]
 pub(crate) const GLIDE_KEY: &str = "AltRight";
 
+// The sustain pedal, held under the thumbs
+// (docs/adr/0048-the-grand-piano.md). In drum mode Space hits the kick instead.
+const PEDAL_KEY: &str = "Space";
+
 // The key that switches drum mode on and off (docs/design.md#sampler):
 // right Option on Mac, right Control on Windows, where right Alt glides.
 #[cfg(not(target_os = "windows"))]
@@ -215,6 +219,8 @@ enum KeyRole {
     Vibrato,
     // Holds the glide key.
     Glide,
+    // Holds the sustain pedal.
+    Pedal,
     // Hits this drum pad, from 0.
     Drum(usize),
     // Jumps to the drums track and back.
@@ -242,6 +248,8 @@ pub enum KeyAction {
     HoldVibratoKey,
     // Holds the glide key until the key is let go.
     HoldGlideKey,
+    // Holds the sustain pedal until the key is let go.
+    HoldPedal,
     // Hits this drum pad, from 0. The hit plays out whole however long the
     // key is held, but the looper keeps how long it was.
     HitDrum(usize),
@@ -319,6 +327,8 @@ pub struct LayoutForUi {
     vibrato_keys: Vec<String>,
     // The keys that hold the glide key.
     glide_keys: Vec<String>,
+    // The keys that hold the sustain pedal.
+    pedal_keys: Vec<String>,
     // The keys that run the beat and the looper, each with what it does:
     // "looper", "clear", "slower" or "faster".
     beat_keys: HashMap<String, &'static str>,
@@ -336,6 +346,7 @@ impl KeyMap {
         layout.insert(String::from(WAVE_KEY), KeyRole::Wave);
         layout.insert(String::from(VIBRATO_KEY), KeyRole::Vibrato);
         layout.insert(String::from(GLIDE_KEY), KeyRole::Glide);
+        layout.insert(String::from(PEDAL_KEY), KeyRole::Pedal);
         layout.insert(String::from(LOOPER_KEY), KeyRole::Looper);
         layout.insert(String::from(CLEAR_KEY), KeyRole::RemoveLayer);
         layout.insert(String::from(SLOWER_KEY), KeyRole::Slower);
@@ -531,6 +542,11 @@ impl KeyMap {
                 self.held.insert(String::from(key), Vec::new());
                 Some(KeyAction::HoldGlideKey)
             }
+            // The same for the pedal.
+            KeyRole::Pedal => {
+                self.held.insert(String::from(key), Vec::new());
+                Some(KeyAction::HoldPedal)
+            }
             // Held with its pad's note, so letting go of it ends the note
             // the looper records.
             KeyRole::Drum(pad) => {
@@ -582,6 +598,15 @@ impl KeyMap {
             return false;
         }
         self.roles().get(key) == Some(&KeyRole::Glide)
+    }
+
+    // Whether `key` is held down holding the sustain pedal, so letting go of
+    // it lets go of the pedal. Ask before `release`.
+    pub fn holds_pedal(&self, key: &str) -> bool {
+        if !self.held.contains_key(key) {
+            return false;
+        }
+        self.roles().get(key) == Some(&KeyRole::Pedal)
     }
 
     // Whether any held key is playing `note`.
@@ -682,6 +707,7 @@ impl KeyMap {
         let mut wave_keys = Vec::new();
         let mut vibrato_keys = Vec::new();
         let mut glide_keys = Vec::new();
+        let mut pedal_keys = Vec::new();
         let mut beat_keys = HashMap::new();
         let mut drum_mode_keys = Vec::new();
         let mut drums = HashMap::new();
@@ -699,6 +725,9 @@ impl KeyMap {
                 }
                 KeyRole::Glide => {
                     glide_keys.push(key.clone());
+                }
+                KeyRole::Pedal => {
+                    pedal_keys.push(key.clone());
                 }
                 KeyRole::Drum(pad) => {
                     drums.insert(key.clone(), PAD_NAMES[*pad]);
@@ -729,6 +758,7 @@ impl KeyMap {
         wave_keys.sort();
         vibrato_keys.sort();
         glide_keys.sort();
+        pedal_keys.sort();
 
         let mut play_scale = None;
         if let Some(scale) = self.play_scale {
@@ -745,6 +775,7 @@ impl KeyMap {
             wave_keys,
             vibrato_keys,
             glide_keys,
+            pedal_keys,
             beat_keys,
             drum_mode: self.drum_mode,
             drum_mode_keys,
@@ -983,6 +1014,40 @@ mod tests {
         let mut key_map = KeyMap::with_test_layout();
         assert_eq!(key_map.press("Minus"), Some(KeyAction::SlowDown));
         assert_eq!(key_map.press("Equal"), Some(KeyAction::SpeedUp));
+    }
+
+    #[test]
+    fn space_holds_the_pedal_until_it_is_let_go() {
+        let mut key_map = KeyMap::new();
+        assert!(!key_map.holds_pedal("Space"));
+        assert_eq!(key_map.press("Space"), Some(KeyAction::HoldPedal));
+        assert!(key_map.holds_pedal("Space"));
+        // Held already, it does nothing more.
+        assert_eq!(key_map.press("Space"), None);
+        assert_eq!(key_map.release("Space"), Vec::<u8>::new());
+        assert!(!key_map.holds_pedal("Space"));
+        assert_eq!(key_map.layout_for_ui().pedal_keys, vec![String::from("Space")]);
+        assert!(!key_map.holds_pedal("KeyA"));
+    }
+
+    #[test]
+    fn in_drum_mode_space_hits_the_kick_and_a_scale_never_takes_it() {
+        let mut key_map = KeyMap::new();
+        key_map.set_drum_mode(true);
+        assert!(key_map.layout_for_ui().pedal_keys.is_empty());
+        assert!(matches!(key_map.press("Space"), Some(KeyAction::HitDrum(_))));
+        assert!(!key_map.holds_pedal("Space"));
+        key_map.release("Space");
+        key_map.set_drum_mode(false);
+
+        for scale in ["C major", "F# minor"] {
+            let scale = Scale::of_name(scale).unwrap();
+            key_map.use_mapping(KeyMapping::default_for(scale));
+            assert_eq!(key_map.press("Space"), Some(KeyAction::HoldPedal));
+            key_map.release("Space");
+        }
+        let mut mapping = KeyMapping::default();
+        assert!(mapping.set_key("Space", &[60]).is_err());
     }
 
     #[test]

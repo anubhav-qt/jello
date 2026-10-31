@@ -424,11 +424,12 @@
 }
 
 /* Keys that do something other than play: the wave key, the vibrato and
-   glide keys, the beat keys, the drum mode key and the open tab's action
+   glide keys, the pedal, the beat keys, the drum mode key and the open tab's action
    keys. Drum keys say their drum the same way. */
 .stage .key[data-kind="wave"] .key-note,
 .stage .key[data-kind="vibrato"] .key-note,
 .stage .key[data-kind="glide"] .key-note,
+.stage .key[data-kind="pedal"] .key-note,
 .stage .key[data-kind="beat"] .key-note,
 .stage .key[data-kind="drum"] .key-note,
 .stage .key[data-kind="drum mode"] .key-note,
