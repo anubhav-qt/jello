@@ -109,6 +109,4 @@ have no remaining actionable static findings after corrections.
   Accessibility is trusted, but no browser control tool is available.
   Audible testing requires the established sound-demo approval. The app
   has no supported isolated data root, so plan disposable song handling.
-- Preexisting: README and CI invoke nonexistent `test:tutor`; package.json
-  defines `test:agent`. This mismatch is not fixed.
 - No Mix UI yet. Mockups follow backend verification and separate approval.

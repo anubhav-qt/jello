@@ -76,7 +76,7 @@ calls have been verified locally. Future work: bundle the runtime and provider
 sign-in, extend the harness to song editing/render/listen tools, and check
 teaching quality over complete practice sessions.
 
-Checks: `npm run build`, `npm run test:tutor`, and `cargo test` in `src-tauri`.
+Checks: `npm run build`, `npm run test:agent`, and `cargo test` in `src-tauri`.
 Native macOS checks use `tools/build/jello-drive`; its `combo cmd up` command
 also tests modifier shortcuts. Windows native shortcut behavior still needs
 a Windows run; CI compiles and tests the shared mapping and tutor tools.
