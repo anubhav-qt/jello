@@ -43,7 +43,7 @@ Tutor can then suggest practice keys and give feedback on measured pitches
 and timing. It does not listen to audio. Packaged apps currently need Node
 22.19+ and a separate pi installation; see [setup details](docs/design.md#current-workspace-and-tutor-2026-10-23).
 
-Checks: `npm run build`, `npm run test:tutor`, and `cargo test` in `src-tauri`.
+Checks: `npm run build`, `npm run test:agent`, and `cargo test` in `src-tauri`.
 
 ## Docs
 
