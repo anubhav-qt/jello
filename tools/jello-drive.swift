@@ -22,7 +22,8 @@
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
 //                                 esc, return, space, tab, delete, rshift
 //                                 for the looper, roption for drum mode,
-//                                 a to z, 0 to 9)
+//                                 rcmd for takes and talking, a to z,
+//                                 0 to 9)
 //   jello-drive hold <name> <ms>  hold a key down for <ms> milliseconds, the
 //                                 way Compose's chords get their length
 //   jello-drive shot <file.png>   capture the window
@@ -268,6 +269,7 @@ let keyCodes: [String: CGKeyCode] = [
   "delete": 51,
   "rshift": 60,
   "roption": 61,
+  "rcmd": 54,
   "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
   "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
   "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
@@ -282,6 +284,22 @@ func pressKey(_ code: CGKeyCode, holdMs: UInt32 = 60) {
   down.post(tap: .cghidEventTap)
   usleep(holdMs * 1000)
   let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)!
+  up.post(tap: .cghidEventTap)
+  usleep(60_000)
+}
+
+// Right Command goes down and up as a modifier change with its flag, like
+// a real keyboard, so a tap or a hold reaches the webview as MetaRight.
+func pressRightCommand(holdMs: UInt32) {
+  let source = CGEventSource(stateID: .hidSystemState)
+  let down = CGEvent(keyboardEventSource: source, virtualKey: 54, keyDown: true)!
+  down.type = .flagsChanged
+  down.flags = .maskCommand
+  down.post(tap: .cghidEventTap)
+  usleep(holdMs * 1000)
+  let up = CGEvent(keyboardEventSource: source, virtualKey: 54, keyDown: false)!
+  up.type = .flagsChanged
+  up.flags = []
   up.post(tap: .cghidEventTap)
   usleep(60_000)
 }
@@ -417,7 +435,11 @@ if command == "info" {
   }
   requireFront(jello)
   for _ in 0..<count {
-    pressKey(code)
+    if arguments[1] == "rcmd" {
+      pressRightCommand(holdMs: 60)
+    } else {
+      pressKey(code)
+    }
   }
   print("pressed \(arguments[1]) x\(count)")
 } else if command == "hold" {
@@ -431,7 +453,11 @@ if command == "info" {
     fail("hold needs a time in milliseconds, like 1000")
   }
   requireFront(jello)
-  pressKey(code, holdMs: holdMs)
+  if arguments[1] == "rcmd" {
+    pressRightCommand(holdMs: holdMs)
+  } else {
+    pressKey(code, holdMs: holdMs)
+  }
   print("held \(arguments[1]) for \(holdMs) ms")
 } else if command == "shot" {
   if arguments.count < 2 {
