@@ -31,9 +31,18 @@
    - Built: the rail (one agent, no jobs, "Open now" lines), takes
      (`takes.rs`: flip, keep, drop, drop a part; right Cmd, Return, Esc),
      lesson and task cards, the jam card (`jam.rs`).
-   - Next: the AI picking and naming jam moments, the jam partner,
-     practice with two hand lanes, skills from songs, taste drills, tools
-     that do the work. Lyrics and the reference card get mockups first.
+   - Built, not yet tested or heard: the AI picking and naming jam
+     moments (`jam.rs`, host `pickMoments`), practice from a section with
+     two hand lanes (`practice_song.rs`, `PracticeLanes.svelte`, Practice
+     buttons in section details, `RailPractice.svelte`, `jello_practice`
+     action `section`), skills from songs (`song_skills.rs`, Memory page,
+     look part `song_skills`), taste drills (`drills.rs`,
+     `RailDrill.svelte`, while Learn is on: chord, interval, sound), the
+     jam partner's call and answer (`jam_partner.rs`, `RailPartner.svelte`).
+   - Next: the full test pass of all of the above; then the jam partner
+     looping everything so far while the AI works, and the groove that
+     follows; the EQ and reference drills; the keyboard marking the next
+     key in song practice. Lyrics and the reference card get mockups first.
    - Known gaps: right Cmd blocks nothing while talking (Cmd Q still
      quits); a take that changes another song than the one open reopens
      its song.

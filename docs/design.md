@@ -2629,11 +2629,29 @@ attachments stay underneath.
   within 30% or 80 ms), and phrases of 3 or more presses ending on a hold
   of 1.2 s or more. The best three, never sharing a press, show after
   10 s with no press. Section saves a new section from the loop as it
-  plays once the moment is a layer. The AI naming and picking the moments
-  is still to come.
-- **Next:** practice with two hand lanes, skills from songs, taste drills,
-  the jam partner, tools that do the work, then lyrics and references
-  (mockups first). The Windows talk key is still open.
+  plays once the moment is a layer. After the pause Rust sends up to 8
+  candidates to the model outside the chat; it picks and names up to
+  three, and the card shows Jello's own until it answers.
+- **Practicing a section** (built 2026-11-03, `practice_song.rs`). Each
+  track that plays in a section has a Practice button in its details, and
+  `jello_practice` has action `section`. Keys left of Y, H and N (and
+  left modifiers) are the left hand. The ladder starts at 70% of the
+  section's tempo in three steps, 2 clean tries a step; after a try that
+  isn't clean the hardest bar loops until it is clean twice.
+- **Taste drills** (built 2026-11-03, `drills.rs`). In the rail while
+  Learn is on. Chord: one of the song's held chords. Interval: two notes
+  in a row from the loop's instrument layers. Answered by four choices or
+  by playing back (checked 0.9 s after the last key goes up); three wrong
+  tries say the answer. Sound: another preset, heard on the picked track
+  and measured against it (brightness, bands, loudness), close at 85%.
+- **Jam partner** (built 2026-11-03, `jam_partner.rs`). A bar of count
+  in, then a 2 bar call; the call goes to the model in words and its
+  answer (a note per line) plays on the live voices. Turns until 8 bars,
+  then the click keeps going and answers come in on the next phrase
+  line. Two silent calls, a missing agent or 30 s without an answer stop
+  it. Looping everything so far while it waits, and the groove, come next.
+- **Next:** the test pass, then lyrics and references (mockups first).
+  The Windows talk key is still open.
 
 ## Learning mode (v2)
 
