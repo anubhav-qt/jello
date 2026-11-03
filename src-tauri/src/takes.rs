@@ -476,6 +476,7 @@ mod tests {
         let number = start_take(&mut takes, &open, &composer, &mut engine);
         assert_eq!(takes.end(number, text_now(&composer, &mut engine)).unwrap(), None);
         assert_eq!(takes.open_now(), None);
+        assert!(takes.takes.is_empty());
     }
 
     #[test]
@@ -529,7 +530,8 @@ mod tests {
         let mut takes = Takes::default();
         let number = take_with_two_parts(&mut open, &mut composer, &mut engine, &mut takes);
         act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None).unwrap();
-        act(&mut open, &mut composer, &mut engine, &mut takes, number, "keep", None).unwrap();
+        let view = act(&mut open, &mut composer, &mut engine, &mut takes, number, "keep", None).unwrap();
+        assert!(view.showing_take);
         assert_eq!(composer.key(), Some(key("A minor")));
         assert_eq!(key_in_file(&open), Some(key("A minor")));
     }
@@ -543,6 +545,18 @@ mod tests {
         composer.pick_key(key("D major"));
         act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None).unwrap();
         act(&mut open, &mut composer, &mut engine, &mut takes, number, "drop", None).unwrap();
+        assert_eq!(composer.key(), Some(key("D major")));
+    }
+
+    #[test]
+    fn the_players_edits_on_the_take_stay_when_flipping_back() {
+        let (mut open, mut composer, mut engine) = starting("takes-take-edits");
+        let mut takes = Takes::default();
+        let number = take_with_two_parts(&mut open, &mut composer, &mut engine, &mut takes);
+        composer.pick_key(key("D major"));
+        act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None).unwrap();
+        assert_eq!(composer.key(), None);
+        act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None).unwrap();
         assert_eq!(composer.key(), Some(key("D major")));
     }
 
