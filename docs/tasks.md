@@ -27,10 +27,16 @@
      file `learn` and `stages_done`; topics covered in
      Memory/topics.json), the stage strip and topic map on the tape
      (`ComposeTape.svelte`, `TopicMap.svelte`), the Learn switch (in the
-     agent panel until the rail replaces it) and the Learn line the agent
-     gets. Lessons, tasks and tries in the rail come with the rail.
-   - Next: the rail and takes, then one agent with no jobs, then the rest.
-     Lyrics and the reference card get mockups before their pieces.
+     rail's header) and the Learn line the agent gets.
+   - Built: the rail (one agent, no jobs, "Open now" lines), takes
+     (`takes.rs`: flip, keep, drop, drop a part; right Cmd, Return, Esc),
+     lesson and task cards, the jam card (`jam.rs`).
+   - Next: the AI picking and naming jam moments, the jam partner,
+     practice with two hand lanes, skills from songs, taste drills, tools
+     that do the work. Lyrics and the reference card get mockups first.
+   - Known gaps: right Cmd blocks nothing while talking (Cmd Q still
+     quits); a take that changes another song than the one open reopens
+     its song.
 3. **Later:** Produce (after everything else is final), Windows checks, and the
    finish line song.
 

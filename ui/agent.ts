@@ -1,10 +1,10 @@
+import type { TakeView } from "./takes";
+
 // What the agent's panel shows (docs/design.md#the-agent-mode). The agent
 // host tells the panel everything pi does as it happens, as "agent-host"
 // events (src-tauri/src/agent.rs); this file turns them into turns: what
 // the player said, then each step the agent took, live.
 
-// The agent's job in each tab.
-export type Job = "tutor" | "composer" | "producer";
 
 export interface ModelView {
   provider: string;
@@ -57,6 +57,25 @@ export interface KeysCard {
   kind: "keys";
   title: string;
   keys: { key: string; what: string; label: string }[];
+}
+
+// A short lesson on one topic of the path, with Learn on.
+export interface LessonCard {
+  kind: "lesson";
+  title: string;
+  topic: string;
+  stage: string;
+  text: string;
+  chords: { name: string; role: string; numeral: string; pitch: number }[];
+  reference: string;
+}
+
+// What the player plays now, with the keys marked if it says.
+export interface TaskCard {
+  kind: "task";
+  title: string;
+  text: string;
+  keys?: { key: string; what: string; label: string }[];
 }
 
 export interface LaneNote {
@@ -244,7 +263,9 @@ export type Card =
   | PracticeCard
   | MemoryCard
   | OptionsCard
-  | MappingCard;
+  | MappingCard
+  | LessonCard
+  | TaskCard;
 
 // Text from the agent, as it arrives.
 export interface TextStep {
@@ -306,16 +327,15 @@ export interface Turn {
   said: string;
   // The files that went with it.
   attachments: AttachedFile[];
-  job: Job;
-  // Whether the job changed for this turn, so the panel says "Now Composer".
-  jobChanged: boolean;
-  // The number Undo takes this turn back with, or null if it can't be.
-  reply: number | null;
+  // The number of the take this answer makes, or null if it can't make
+  // one, and the take once the answer ends (src-tauri/src/takes.rs). It
+  // stays null for an answer that changed nothing.
+  takeNumber: number | null;
+  take: TakeView | null;
   steps: Step[];
   questions: Question[];
   running: boolean;
   stopped: boolean;
-  undone: boolean;
   errors: string[];
   // Tokens sent and how many of them the cache already had.
   input: number;
@@ -329,7 +349,6 @@ export interface ChatView {
   path: string;
   title: string;
   song: string;
-  jobs: Job[];
   // When it last changed, in ms since 1970.
   modified: number;
   // Its text, for searching.
@@ -341,29 +360,23 @@ export interface ChatView {
 export interface SavedTurn {
   said: string;
   attachments?: AttachedFile[];
-  job: Job | null;
-  jobChanged: boolean;
   events: HostEvent[];
 }
 
 export function newTurn(
   said: string,
-  job: Job,
-  jobChanged: boolean,
-  reply: number | null,
+  takeNumber: number | null,
   attachments: AttachedFile[] = [],
 ): Turn {
   return {
     said,
     attachments,
-    job,
-    jobChanged,
-    reply,
+    takeNumber,
+    take: null,
     steps: [],
     questions: [],
     running: true,
     stopped: false,
-    undone: false,
     errors: [],
     input: 0,
     cacheRead: 0,
@@ -373,11 +386,7 @@ export function newTurn(
 
 // The turn `saved` drew when it ran.
 export function replayedTurn(saved: SavedTurn): Turn {
-  let job: Job = "tutor";
-  if (saved.job !== null) {
-    job = saved.job;
-  }
-  const turn = newTurn(saved.said, job, saved.jobChanged, null, saved.attachments ?? []);
+  const turn = newTurn(saved.said, null, saved.attachments ?? []);
   turn.replayed = true;
   let stopped = false;
   for (const event of saved.events) {
@@ -389,17 +398,6 @@ export function replayedTurn(saved: SavedTurn): Turn {
   }
   addToTurn(turn, { type: "run_end", stopped }, 0);
   return turn;
-}
-
-// The letter each job is marked with on the Chats page.
-export function jobLetter(job: Job): string {
-  if (job === "composer") {
-    return "C";
-  }
-  if (job === "producer") {
-    return "P";
-  }
-  return "T";
 }
 
 // The chats whose title, song or text has `search` in it, in any case.
@@ -813,12 +811,3 @@ export function cachedPercent(turn: Turn): number | null {
   return Math.round((turn.cacheRead / turn.input) * 100);
 }
 
-export function jobName(job: Job): string {
-  if (job === "composer") {
-    return "Composer";
-  }
-  if (job === "producer") {
-    return "Producer";
-  }
-  return "Tutor";
-}

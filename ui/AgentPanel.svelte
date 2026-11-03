@@ -1,8 +1,10 @@
-<!-- The agent's panel, docked on the right in every tab
-     (docs/design.md#the-agent-mode): Tutor in Play, Composer in Compose,
-     Producer in Produce, all one chat. Each run draws its steps live as
-     rows: thinking, every tool with what it changed, the text as it comes.
-     Stop, or Escape, ends a run. Before a model is signed in to, the panel
+<!-- The rail: Jello AI, docked on the right in every tab
+     (docs/design.md#ai-and-learning-rethought-2026-11-03). One agent with
+     no jobs; each message says what is open. Each run draws its steps live
+     as rows: thinking, every tool with what it changed, the text as it
+     comes. What an answer changes is one take, shown as a chip under it:
+     flip (right Command), Keep (Return), Drop (Esc), or drop one part.
+     Stop, or Escape, ends a run. Before a model is signed in to, the rail
      shows where to sign in. -->
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
@@ -24,8 +26,6 @@
     chatsByDay,
     chatsMatching,
     hostEndedWhy,
-    jobLetter,
-    jobName,
     newTurn,
     replayedTurn,
     thoughtSeconds,
@@ -35,19 +35,24 @@
     type Card,
     type ChatView,
     type HostEvent,
-    type Job,
     type ModelView,
     type ProviderView,
     type SavedTurn,
     type Turn,
   } from "./agent";
+  import { takeStateWord, takeTitle, type TakeView } from "./takes";
+  import { momentSeconds, type JamView } from "./jam";
 
   interface Props {
     visible: boolean;
-    job: Job;
-    // The song may have changed, by Undo: redraw the sound, Compose and
+    // What is open, in words the agent reads, like "Compose tab, Sound
+    // panel on the Filter page".
+    place: string;
+    // The song may have changed, by a take: redraw the sound, Compose and
     // the songs.
     onSongChanged: () => void;
+    // The open take changed, or there is none now.
+    onTake: (take: TakeView | null) => void;
     // The player sent a message, so the agent's marks on the keys go.
     onSent: () => void;
     // Whether the song's Learn switch is on, or null until Rust has said,
@@ -55,7 +60,7 @@
     learn: boolean | null;
     onLearn: (on: boolean) => void;
   }
-  let { visible, job, onSongChanged, onSent, learn, onLearn }: Props = $props();
+  let { visible, place, onSongChanged, onTake, onSent, learn, onLearn }: Props = $props();
 
   interface Status {
     models: ModelView[];
@@ -100,8 +105,6 @@
   let memoryOpen = $state(false);
   // The thinking rows opened to their text, by turn and step.
   let openThoughts: string[] = $state([]);
-  // The job the chat was told last.
-  let lastJob: Job | null = null;
   // The clock thinking rows count by, while a run goes.
   let now = $state(performance.now());
   let list: HTMLDivElement | undefined = $state();
@@ -271,7 +274,6 @@
     }
     if (event.type === "new_chat") {
       turns = [];
-      lastJob = null;
       openChatPath = null;
       return;
     }
@@ -297,6 +299,9 @@
     if (inRun) {
       addToTurn(turn, event, performance.now());
       showLatest();
+      if (event.type === "run_end") {
+        endTake(turn);
+      }
       return;
     }
     if (event.type === "error") {
@@ -311,7 +316,6 @@
   async function hearChatOpened(event: HostEvent) {
     const saved = event.turns as SavedTurn[];
     turns = saved.map((turn) => replayedTurn(turn));
-    lastJob = event.job as Job | null;
     openChatPath = String(event.path);
     openThoughts = [];
     chatsOpen = false;
@@ -520,6 +524,12 @@
       await invoke("start_dictation", { input: chosenMic() });
       problem = "";
       speech = "listening";
+      if (stopWhenListening) {
+        stopWhenListening = false;
+        sendWhenHeard = true;
+        finishSpeaking();
+        return;
+      }
     } catch (error) {
       problem = String(error);
       speech = "off";
@@ -813,22 +823,22 @@
       return;
     }
     sending = true;
-    // Before the agent acts, Jello keeps the song, so the reply can be
-    // undone.
-    let reply: number | null = null;
+    // Before the agent acts, Jello starts a take, keeping the song as the
+    // player has it. A take still open is kept, since the answer builds on
+    // it.
+    let takeNumber: number | null = null;
     try {
-      reply = await invoke<number>("agent_reply_starts");
+      takeNumber = await invoke<number>("take_starts");
     } catch {
-      reply = null;
+      takeNumber = null;
     }
-    const jobChanged = lastJob !== job;
-    lastJob = job;
+    keepOpenTakesInRail();
     onSent();
     const attached = [];
     for (const card of waiting) {
       attached.push({ name: card.name, kind: card.kind });
     }
-    turns.push(newTurn(said, job, jobChanged, reply, attached));
+    turns.push(newTurn(said, takeNumber, attached));
     sending = false;
     draft = "";
     waiting = [];
@@ -842,7 +852,7 @@
       list.scrollTop = list.scrollHeight;
     }
     try {
-      await invoke("agent_say", { text: said, job });
+      await invoke("agent_say", { text: said, place });
     } catch (error) {
       const turn = turns[turns.length - 1];
       turn.errors.push(String(error));
@@ -857,6 +867,57 @@
 
   export function isWorking(): boolean {
     return working;
+  }
+
+  // The jam card: the moments of the last jam, what each became, and the
+  // press the next jam starts from.
+  let jam: JamView | null = $state(null);
+  let jamKept: Record<number, string> = $state({});
+  let jamProblem = $state("");
+  let jamSince = 0;
+
+  // A pause in playing: the card shows the moments worth keeping, if any.
+  // It makes no sound and takes no key.
+  export async function jamPaused() {
+    let view: JamView;
+    try {
+      view = await invoke<JamView>("jam_moments", { since: jamSince });
+    } catch {
+      return;
+    }
+    jamSince = view.next;
+    if (view.moments.length === 0) {
+      return;
+    }
+    jam = view;
+    jamKept = {};
+    jamProblem = "";
+    showLatest();
+  }
+
+  async function playMoment(place: number) {
+    jamProblem = "";
+    try {
+      await invoke("play_jam_moment", { place });
+    } catch (error) {
+      jamProblem = String(error);
+    }
+  }
+
+  // Loop or Section on a moment.
+  async function keepMoment(place: number, how: string) {
+    jamProblem = "";
+    try {
+      await invoke<string>("keep_jam_moment", { place, how });
+      if (how === "loop") {
+        jamKept[place] = "Looped";
+      } else {
+        jamKept[place] = "Saved as a section";
+      }
+    } catch (error) {
+      jamProblem = String(error);
+    }
+    onSongChanged();
   }
 
   // Coaching after a practice try: the try's results go with the message
@@ -880,23 +941,125 @@
     }
   }
 
-  async function undo(turn: Turn) {
-    if (turn.reply === null) {
+  // The answer ended: its take opens, if it changed anything.
+  async function endTake(turn: Turn) {
+    if (turn.takeNumber === null) {
       return;
     }
     try {
-      const left = await invoke<number[]>("undo_agent_reply", {
-        reply: turn.reply,
-      });
-      for (const other of turns) {
-        if (other.reply !== null && !left.includes(other.reply)) {
-          other.undone = true;
-        }
+      turn.take = await invoke<TakeView | null>("take_ends", { take: turn.takeNumber });
+    } catch (error) {
+      turn.errors.push(String(error));
+      turn.take = null;
+    }
+    onTake(openTake());
+  }
+
+  // A take from a used option, on the turn whose card offered it.
+  function tookOption(turn: Turn, take: TakeView | null) {
+    keepOpenTakesInRail();
+    turn.take = take;
+    onTake(openTake());
+    onSongChanged();
+  }
+
+  // Rust keeps an open take once a new one starts; the rail says so too.
+  function keepOpenTakesInRail() {
+    for (const turn of turns) {
+      if (turn.take !== null && turn.take.state === "open") {
+        turn.take.state = "kept";
       }
+    }
+  }
+
+  // The turn whose take is open, if there is one.
+  function openTakeTurn(): Turn | null {
+    for (const turn of turns) {
+      if (turn.take !== null && turn.take.state === "open") {
+        return turn;
+      }
+    }
+    return null;
+  }
+
+  function openTake(): TakeView | null {
+    const turn = openTakeTurn();
+    if (turn === null) {
+      return null;
+    }
+    return turn.take;
+  }
+
+  // "flip", "keep", "drop" or "drop part" on `turn`'s take.
+  async function changeTake(turn: Turn, action: string, part: string | null = null) {
+    if (turn.take === null) {
+      return;
+    }
+    try {
+      turn.take = await invoke<TakeView>("change_agent_take", {
+        take: turn.take.number,
+        action,
+        part,
+      });
     } catch (error) {
       turn.errors.push(String(error));
     }
+    onTake(openTake());
     onSongChanged();
+  }
+
+  // Right Command tapped, Return and Esc: they act on the open take, and
+  // say whether there was one.
+  export function flipOpenTake(): boolean {
+    return actOnOpenTake("flip");
+  }
+
+  export function keepOpenTake(): boolean {
+    return actOnOpenTake("keep");
+  }
+
+  export function dropOpenTake(): boolean {
+    return actOnOpenTake("drop");
+  }
+
+  function actOnOpenTake(action: string): boolean {
+    if (working) {
+      return false;
+    }
+    const turn = openTakeTurn();
+    if (turn === null) {
+      return false;
+    }
+    changeTake(turn, action);
+    return true;
+  }
+
+  // Right Command held: talk into the rail. Let go, and what was heard is
+  // sent.
+  let stopWhenListening = false;
+
+  export function talkStarts() {
+    if (status === null || needsSignIn || working) {
+      return;
+    }
+    if (speech !== "off" || mode === "hum") {
+      return;
+    }
+    stopWhenListening = false;
+    mode = "speak";
+    speak();
+  }
+
+  export function talkEnds() {
+    if (speech === "starting") {
+      stopWhenListening = true;
+      return;
+    }
+    if (speech !== "listening") {
+      return;
+    }
+    sendWhenHeard = true;
+    finishSpeaking();
   }
 
   function answerQuestion(number: number, yes: boolean) {
@@ -1125,27 +1288,17 @@
     return `${(ms / 1000).toFixed(1)} s`;
   }
 
-  const STARTERS: Record<Job, { label: string; text: string }[]> = {
-    tutor: [
-      { label: "First melody", text: "Teach me a first melody, one small step at a time." },
-      { label: "Chords that fit", text: "Show me chords that work together, and play them for me." },
-      { label: "Check my timing", text: "Look at what I just played and tell me how my timing was." },
-    ],
-    composer: [
-      { label: "Start a song", text: "Help me start a song: suggest a key and a few chords, and play them." },
-      { label: "What comes next", text: "Play me three chords that could come next in my song." },
-      { label: "Find a sound", text: "Give the song a soft, warm pad sound." },
-    ],
-    producer: [
-      { label: "Check the loop", text: "Listen to my loop and tell me what the measures say." },
-      { label: "Balance layers", text: "Balance my loop layers' volumes." },
-    ],
-  };
+  const STARTERS: { label: string; text: string }[] = [
+    { label: "Start a song", text: "Help me start a song: suggest a key and a few chords, and play them." },
+    { label: "What comes next", text: "Play me three chords that could come next in my song." },
+    { label: "Check my timing", text: "Look at what I just played and tell me how my timing was." },
+    { label: "Find a sound", text: "Give the song a soft, warm pad sound." },
+  ];
 </script>
 
-<section class="agent-panel" class:is-hidden={!visible} aria-label="Agent">
+<section class="agent-panel" class:is-hidden={!visible} aria-label="Jello AI">
   <header class="agent-top">
-    <h2>{jobName(job)}</h2>
+    <h2>Jello AI</h2>
     <div class="agent-top-buttons">
       <button
         type="button"
@@ -1318,11 +1471,6 @@
               disabled={working}
               onclick={() => openChat(chat)}
             >
-              <span class="agent-chat-jobs">
-                {#each chat.jobs as chatJob (chatJob)}
-                  <span title={jobName(chatJob)}>{jobLetter(chatJob)}</span>
-                {/each}
-              </span>
               <span class="agent-chat-title">{chat.title}</span>
               <span class="agent-chat-song">{chat.song}</span>
               <span class="agent-step-time">{chatTime(chat)}</span>
@@ -1332,8 +1480,7 @@
       </div>
     {:else if turns.length === 0 && status !== null}
       <div class="agent-empty">
-        <h1>{jobName(job)}</h1>
-        {#each STARTERS[job] as starter (starter.label)}
+        {#each STARTERS as starter (starter.label)}
           <button
             type="button"
             class="agent-button-plain"
@@ -1343,9 +1490,6 @@
       </div>
     {:else}
       {#each turns as turn, turnPlace (turnPlace)}
-        {#if turn.jobChanged && turnPlace > 0}
-          <p class="agent-job-line">Now {jobName(turn.job)}</p>
-        {/if}
         {#if turn.attachments.length > 0}
           <p class="agent-attached">
             {#each turn.attachments as file, filePlace (filePlace)}
@@ -1401,7 +1545,13 @@
               {#if step.failed}
                 <p class="agent-error agent-step-why">{step.answer}</p>
               {:else if step.card !== null && step.card.kind === "options"}
-                <AgentOptions card={step.card} {working} {onSongChanged} />
+                <AgentOptions
+                  card={step.card}
+                  {working}
+                  take={turn.take}
+                  onTook={(take) => tookOption(turn, take)}
+                  onDrop={() => changeTake(turn, "drop")}
+                />
               {:else if step.card !== null}
                 {@const place = `${turnPlace}-${stepPlace}`}
                 <AgentCard card={step.card} playhead={playheadOf(place, step.card)} />
@@ -1446,22 +1596,100 @@
               {#if cachedPercent(turn) !== null}
                 <span class="agent-quiet">Cached {cachedPercent(turn)}%</span>
               {/if}
-              {#if changedSomething(turn) && turn.reply !== null}
-                {#if turn.undone}
-                  <span class="agent-quiet">Undone</span>
-                {:else}
-                  <button
-                    type="button"
-                    class="agent-button-plain"
-                    disabled={working}
-                    onclick={() => undo(turn)}>Undo</button
-                  >
-                {/if}
-              {/if}
             </div>
+            {#if turn.take !== null}
+              {@const take = turn.take}
+              <div class="agent-take" class:is-open={take.state === "open"}>
+                <span class="agent-take-title">{takeTitle(take)}</span>
+                {#if take.state === "open"}
+                  <span class="agent-take-parts">
+                    {#each take.parts as part (part)}
+                      <button
+                        type="button"
+                        class="agent-take-part"
+                        disabled={working}
+                        title="Drop the {part} part of this take"
+                        onclick={() => changeTake(turn, "drop part", part)}
+                        >{part} <span aria-hidden="true">×</span></button
+                      >
+                    {/each}
+                  </span>
+                  <span class="agent-take-buttons">
+                    <button
+                      type="button"
+                      class="agent-button-plain"
+                      disabled={working}
+                      title="Right ⌘ flips between your version and the take"
+                      onclick={() => changeTake(turn, "flip")}
+                      >{take.showingTake ? "Hear mine" : "Hear take"}</button
+                    >
+                    <button
+                      type="button"
+                      class="agent-button-plain is-lit"
+                      disabled={working}
+                      title="Return keeps it"
+                      onclick={() => changeTake(turn, "keep")}>Keep</button
+                    >
+                    <button
+                      type="button"
+                      class="agent-button-plain"
+                      disabled={working}
+                      title="Esc drops it"
+                      onclick={() => changeTake(turn, "drop")}>Drop</button
+                    >
+                  </span>
+                {:else}
+                  <span class="agent-quiet">{takeStateWord(take)}</span>
+                {/if}
+              </div>
+            {:else if changedSomething(turn) && turn.takeNumber === null && !turn.replayed}
+              <p class="agent-quiet">No take: this change can't be dropped.</p>
+            {/if}
           {/if}
         </div>
       {/each}
+    {/if}
+    {#if jam !== null && !chatsOpen && !memoryOpen && !needsSignIn}
+      <div class="agent-jam">
+        <div class="agent-jam-top">
+          <span class="agent-jam-title">From your jam</span>
+          <button
+            type="button"
+            class="agent-button-plain"
+            title="Close the jam card"
+            onclick={() => (jam = null)}>Close</button
+          >
+        </div>
+        {#each jam.moments as moment, place (place)}
+          <div class="agent-moment">
+            <span class="agent-moment-name">{moment.name}</span>
+            <span class="agent-quiet">{momentSeconds(moment)}</span>
+            <span class="agent-moment-notes">{moment.notes}</span>
+            <span class="agent-moment-buttons">
+              <button type="button" class="agent-button-plain" onclick={() => playMoment(place)}
+                >Play</button
+              >
+              {#if jamKept[place] === undefined}
+                <button
+                  type="button"
+                  class="agent-button-plain"
+                  onclick={() => keepMoment(place, "loop")}>Loop</button
+                >
+                <button
+                  type="button"
+                  class="agent-button-plain"
+                  onclick={() => keepMoment(place, "section")}>Section</button
+                >
+              {:else}
+                <span class="agent-quiet">{jamKept[place]}</span>
+              {/if}
+            </span>
+          </div>
+        {/each}
+        {#if jamProblem !== ""}
+          <p class="agent-error">{jamProblem}</p>
+        {/if}
+      </div>
     {/if}
     {#if problem !== ""}
       <p class="agent-error">{problem}</p>
@@ -1573,8 +1801,8 @@
           rows="3"
           maxlength="12000"
           readonly={speech === "listening"}
-          placeholder={mode === "hum" ? "Describe it" : `Ask your ${jobName(job)}…`}
-          aria-label={mode === "hum" ? "Describe the hum" : `Ask your ${jobName(job)}`}
+          placeholder={mode === "hum" ? "Describe it" : "Ask, or hold right ⌘ and talk"}
+          aria-label={mode === "hum" ? "Describe the hum" : "Ask Jello AI"}
           disabled={needsSignIn || status === null}
           onkeydown={onFieldKey}
         ></textarea>

@@ -1,6 +1,7 @@
 <!-- The choices jello_options offers (docs/design.md#showing-instead-of-telling):
      2 to 4 chords, melodies or sounds, each with Play and Use. Play plays
-     it on the keys; Use puts it in the song, and its Undo takes it back.
+     it on the keys; Use puts it in the song as a take, which Drop takes
+     back.
      A melody also has Practice, which sets it on the Play tab.
      Rust keeps the choices, so the panel only sends the offer's number and
      the choice's place (src-tauri/src/cards.rs). -->
@@ -8,19 +9,22 @@
   import { invoke } from "@tauri-apps/api/core";
   import AgentCard from "./AgentCard.svelte";
   import type { OptionsCard, OptionView } from "./agent";
+  import type { TakeView } from "./takes";
 
   interface Props {
     card: OptionsCard;
     // Whether the agent is still answering, so nothing is used meanwhile.
     working: boolean;
-    // The song changed, by Use or Undo: redraw.
-    onSongChanged: () => void;
+    // The take of the turn this card is in, which a Use replaces.
+    take: TakeView | null;
+    // Use made a take (null if it changed nothing), and Drop on it.
+    onTook: (take: TakeView | null) => void;
+    onDrop: () => void;
   }
-  let { card, working, onSongChanged }: Props = $props();
+  let { card, working, take, onTook, onDrop }: Props = $props();
 
-  // The choice used, with the number its Undo takes, or null.
-  let used: { choice: number; reply: number } | null = $state(null);
-  let undone = $state(false);
+  // The choice used, with the number of the take it made, or null.
+  let used: { choice: number; take: number } | null = $state(null);
   let problem = $state("");
 
   async function play(choice: number) {
@@ -34,14 +38,19 @@
 
   async function use(choice: number) {
     problem = "";
+    let number: number;
     try {
-      const reply = await invoke<number>("use_agent_option", { offer: card.offer, choice });
-      used = { choice, reply };
-      undone = false;
+      number = await invoke<number>("use_agent_option", { offer: card.offer, choice });
+    } catch (error) {
+      problem = String(error);
+      return;
+    }
+    used = { choice, take: number };
+    try {
+      onTook(await invoke<TakeView | null>("take_ends", { take: number }));
     } catch (error) {
       problem = String(error);
     }
-    onSongChanged();
   }
 
   // A melody goes to the Play tab to practise.
@@ -52,20 +61,6 @@
     } catch (error) {
       problem = String(error);
     }
-  }
-
-  async function undo() {
-    if (used === null) {
-      return;
-    }
-    problem = "";
-    try {
-      await invoke("undo_agent_reply", { reply: used.reply });
-      undone = true;
-    } catch (error) {
-      problem = String(error);
-    }
-    onSongChanged();
   }
 
   // What a melody option plays, short: its first notes.
@@ -81,15 +76,23 @@
     return words;
   }
 
-  // One choice is used at a time: Undo it to use another.
+  // Whether the take Use made is still open, to keep or drop.
+  let usedTakeOpen = $derived.by(() => {
+    if (used === null || take === null) {
+      return false;
+    }
+    if (take.number !== used.take) {
+      return false;
+    }
+    return take.state === "open";
+  });
+
+  // One choice is used at a time: drop its take to use another.
   function useLocked(): boolean {
     if (working) {
       return true;
     }
-    if (used === null) {
-      return false;
-    }
-    return !undone;
+    return usedTakeOpen;
   }
 
   function soundBefore(option: OptionView) {
@@ -100,7 +103,10 @@
   }
 
   function isUsed(choice: number): boolean {
-    if (used === null || undone) {
+    if (used === null || take === null || take.number !== used.take) {
+      return false;
+    }
+    if (take.state === "dropped") {
       return false;
     }
     return used.choice === choice;
@@ -117,8 +123,10 @@
         <span class="agent-option-name">{option.name}</span>
         <span class="agent-option-buttons">
           <button type="button" class="agent-button-plain" onclick={() => play(place)}>Play</button>
-          {#if isUsed(place)}
-            <button type="button" class="agent-button-plain" disabled={working} onclick={undo}>Undo</button>
+          {#if isUsed(place) && usedTakeOpen}
+            <button type="button" class="agent-button-plain" disabled={working} onclick={onDrop}>Drop</button>
+          {:else if isUsed(place)}
+            <span class="agent-quiet">Kept</span>
           {:else}
             <button
               type="button"

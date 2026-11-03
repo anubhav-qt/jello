@@ -1,4 +1,4 @@
-/* The agent's panel (ui/AgentPanel.svelte), docked on the right in every
+/* The rail, Jello AI (ui/AgentPanel.svelte), docked on the right in every
    tab. Labels and values in Doto, text in Open Sans, lavender only for
    what is live or picked, and white text on every button. */
 
@@ -12,7 +12,7 @@
   );
 }
 .screen {
-  --agent-width: 440px;
+  --agent-width: 360px;
 }
 .screen-body,
 .screen-body.is-composing {
@@ -224,7 +224,6 @@
   align-items: flex-start;
   gap: 8px;
 }
-.agent-empty h1,
 .agent-sign-in h1 {
   margin: 14px 0 4px;
   font:
@@ -337,16 +336,6 @@
   border-color: rgba(var(--accent), 0.75);
   background: rgba(var(--accent), 0.12);
 }
-.agent-chat-jobs {
-  flex: none;
-  display: flex;
-  gap: 3px;
-  min-width: 30px;
-  font:
-    800 12px Doto,
-    monospace;
-  color: #fff;
-}
 .agent-chat-title {
   min-width: 0;
   flex: 1;
@@ -451,15 +440,6 @@
 }
 
 /* A turn: what the player said, then the run's steps. */
-.agent-job-line {
-  margin: 16px 0 6px;
-  font:
-    800 11px Doto,
-    monospace;
-  text-transform: uppercase;
-  color: var(--text-3);
-  text-align: center;
-}
 .agent-said {
   margin: 12px 0 8px auto;
   width: fit-content;
@@ -1178,4 +1158,158 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+/* A take (docs/design.md#ai-and-learning-rethought-2026-11-03): one chip
+   under the answer that made it. Open, it is edged lavender and names its
+   parts, each with a cross that drops that part; kept or dropped, it is
+   dim. */
+.agent-take {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 8px 0 4px;
+  padding: 7px 9px;
+  border: 1px dashed rgba(var(--ink), 0.18);
+  border-radius: 4px;
+  color: var(--text-3);
+}
+.agent-take.is-open {
+  border-color: rgb(var(--accent));
+  color: #fff;
+}
+.agent-take-title {
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-take.is-open .agent-take-title {
+  color: rgb(var(--accent));
+}
+.agent-take-parts {
+  display: flex;
+  gap: 4px;
+}
+.agent-take-part {
+  padding: 2px 6px;
+  border: 1px solid rgba(var(--ink), 0.16);
+  border-radius: 3px;
+  background: transparent;
+  color: #fff;
+  font:
+    700 11px Doto,
+    monospace;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.agent-take-part:hover:not(:disabled) {
+  border-color: rgba(var(--ink), 0.4);
+}
+.agent-take-part:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.agent-take-buttons {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Lesson and task cards (Learn on): the topic in lavender, the text in
+   Open Sans, chords as boxes edged in their note's color. */
+.agent-lesson-topic,
+.agent-task-label {
+  margin: 0 0 6px;
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+}
+.agent-lesson-topic {
+  color: rgb(var(--accent));
+}
+.agent-task-label {
+  color: #fff;
+}
+.agent-lesson-text {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #fff;
+}
+.agent-lesson-chords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.agent-lesson-chord {
+  display: grid;
+  gap: 2px;
+  min-width: 56px;
+  padding: 5px 7px;
+  border: 1px solid;
+  border-radius: 4px;
+}
+.agent-lesson-chord-name {
+  font:
+    900 15px Doto,
+    monospace;
+}
+.agent-lesson-reference {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid rgba(var(--ink), 0.2);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.agent-card[data-kind="task"] {
+  border: 1px dashed rgb(var(--accent));
+}
+
+/* The jam card: after a pause, the moments worth keeping, each with Play,
+   Loop and Section. Quiet: dim edge, no lavender until something plays. */
+.agent-jam {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 4px;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ink), 0.14);
+  border-radius: 4px;
+}
+.agent-jam-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.agent-jam-title,
+.agent-moment-name {
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+  color: #fff;
+}
+.agent-moment {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--ink), 0.08);
+}
+.agent-moment-notes {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-moment-buttons {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }

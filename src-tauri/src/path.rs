@@ -317,7 +317,19 @@ pub fn is_topic(name: &str) -> bool {
     false
 }
 
-fn topic_names() -> String {
+// The stage `topic` is taught at, or None if there is no such topic.
+pub fn stage_of_topic(topic: &str) -> Option<&'static str> {
+    for (_, topics) in AREAS {
+        for (name, stage) in topics.iter() {
+            if *name == topic {
+                return Some(*stage);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn topic_names() -> String {
     let mut names = Vec::new();
     for (_, topics) in AREAS {
         for (topic, _) in topics.iter() {

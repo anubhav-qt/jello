@@ -30,6 +30,8 @@ use crate::tool_server::{self, Questions, ToolServer};
 
 // The longest message the player can send.
 const MOST_MESSAGE_CHARACTERS: usize = 12000;
+// The longest description of what is open that a message may carry.
+const MOST_PLACE_CHARACTERS: usize = 300;
 
 // How much of the host's error output is kept, to say why it ended.
 const MOST_ERROR_BYTES: usize = 4000;
@@ -204,10 +206,11 @@ pub fn agent_status(app: AppHandle) -> Result<(), String> {
     send(&app, json!({"type": "status"}))
 }
 
-// The player sends `text` to the agent, doing `job`: "tutor", "composer"
-// or "producer". A new chat is noted as begun on the open song.
+// The player sends `text` to the agent, with `place`, the UI's words for
+// what is open (like "Compose tab, Sound panel on the Filter page"). A new
+// chat is noted as begun on the open song.
 #[tauri::command]
-pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String> {
+pub fn agent_say(app: AppHandle, text: String, place: String) -> Result<(), String> {
     let text = text.trim();
     let nothing_attached = app.state::<Mutex<Attachments>>().lock().unwrap().is_empty();
     if text.is_empty() && nothing_attached {
@@ -216,8 +219,8 @@ pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String
     if text.chars().count() > MOST_MESSAGE_CHARACTERS {
         return Err(format!("a message is at most {MOST_MESSAGE_CHARACTERS} characters"));
     }
-    if !["tutor", "composer", "producer"].contains(&job.as_str()) {
-        return Err(format!("the agent has no job called {job}"));
+    if place.chars().count() > MOST_PLACE_CHARACTERS {
+        return Err(format!("what is open is said in at most {MOST_PLACE_CHARACTERS} characters"));
     }
     let song = app.state::<Mutex<OpenSong>>().lock().unwrap().name().to_string();
     // Whether the song's Learn switch is on, so the agent teaches or acts.
@@ -237,7 +240,7 @@ pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String
     let message = json!({
         "type": "send",
         "text": text,
-        "job": job,
+        "place": place.trim(),
         "song": song,
         "used": used,
         "memory": memory,

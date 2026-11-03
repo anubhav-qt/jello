@@ -58,7 +58,8 @@ mod theory;
 mod tool_server;
 mod tools;
 mod tracks;
-mod undo;
+mod takes;
+mod jam;
 mod wav;
 
 use std::sync::Mutex;
@@ -99,7 +100,8 @@ pub fn run() {
         .manage(agent::AgentHost::default())
         .manage(Mutex::new(tool_server::Questions::default()))
         .manage(phrases::Phrases::default())
-        .manage(Mutex::new(undo::Replies::default()))
+        .manage(Mutex::new(takes::Takes::default()))
+        .manage(Mutex::new(jam::Jam::default()))
         .manage(Mutex::new(cards::Offers::default()))
         .manage(Mutex::new(practice::Practice::default()))
         .manage(Mutex::new(attachments::Attachments::default()))
@@ -181,8 +183,13 @@ pub fn run() {
             hum::start_hum,
             hum::stop_hum,
             hum::cancel_hum,
-            undo::agent_reply_starts,
-            undo::undo_agent_reply,
+            takes::take_starts,
+            takes::take_ends,
+            takes::change_agent_take,
+            takes::open_take,
+            jam::jam_moments,
+            jam::play_jam_moment,
+            jam::keep_jam_moment,
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,

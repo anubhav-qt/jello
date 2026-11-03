@@ -745,6 +745,12 @@
   flex-direction: column;
   width: calc(var(--u) * var(--keys-across) + 2 * var(--panel-padding));
 }
+/* An open take changed the tape: it is a draft until kept or dropped. */
+.tape.is-draft {
+  outline: 1px dashed rgb(var(--accent));
+  outline-offset: 3px;
+  border-radius: 5px;
+}
 
 .tape::before {
   content: "";

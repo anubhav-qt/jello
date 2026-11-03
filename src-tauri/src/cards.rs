@@ -19,6 +19,7 @@ use crate::engine::Engine;
 use crate::harmony::{Chord, Key, Quality, chord_name, chord_of_name, guide, key_name, key_of_name};
 use crate::key_map::KeyMap;
 use crate::layer_notes::{self, WrittenNote};
+use crate::path;
 use crate::phrases::{self, Phrases};
 use crate::practice::{self, Practice};
 use crate::song_file::{note_name, pitch_of_note_name};
@@ -27,10 +28,10 @@ use crate::sound_changes;
 use crate::sound_file::Sound;
 use crate::tool_server;
 use crate::tools::{Studio, ToolAnswer};
-use crate::undo::{self, Replies};
+use crate::takes::{self, Takes};
 
 // The kinds of card jello_show draws.
-pub const CARD_KINDS: [&str; 6] = ["keys", "lane", "progression", "compare", "chart", "sound"];
+pub const CARD_KINDS: [&str; 8] = ["keys", "lane", "progression", "compare", "chart", "sound", "lesson", "task"];
 
 // The kinds of choice jello_options offers.
 pub const OPTION_KINDS: [&str; 3] = ["chords", "melody", "sound"];
@@ -49,6 +50,11 @@ const MOST_CHART_POINTS: usize = 64;
 const MOST_OPTIONS: usize = 4;
 const MOST_OPTION_CHORDS: usize = 16;
 const MOST_CHORD_BEATS: f64 = 16.0;
+const MOST_LESSON_CHARACTERS: usize = 600;
+const MOST_LESSON_CHORDS: usize = 8;
+const MOST_ROLE_CHARACTERS: usize = 12;
+const MOST_REFERENCE_CHARACTERS: usize = 200;
+const MOST_TASK_CHARACTERS: usize = 300;
 
 // How long each chord of a chord option is held when it doesn't say.
 const CHORD_BEATS: f64 = 2.0;
@@ -74,6 +80,8 @@ pub fn show(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
         "compare" => compare_card(card)?,
         "chart" => chart_card(card)?,
         "sound" => sound_card(studio, card)?,
+        "lesson" => lesson_card(studio, card)?,
+        "task" => task_card(studio, card)?,
         _ => {
             let all = CARD_KINDS.join(", ");
             return Err(format!("there is no card called {kind}: there are {all}"));
@@ -81,7 +89,8 @@ pub fn show(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
     };
     checked["kind"] = json!(kind);
     checked["title"] = json!(title_of(card)?);
-    if kind == "keys" {
+    let marks_keys = kind == "keys" || kind == "task";
+    if marks_keys && checked.get("keys").is_some() {
         studio.screen.show_marks(&checked["keys"]);
     }
     let answer = json!({"shown": kind});
@@ -217,6 +226,71 @@ fn progression_card(studio: &Studio, card: &Map<String, Value>) -> Result<Value,
         }));
     }
     Ok(json!({"key": key_name(key), "chords": chords}))
+}
+
+// A lesson card (docs/design.md#ai-and-learning-rethought-2026-11-03): a
+// topic of the path, a short text, and up to 8 chords, each with a role
+// like "home" or "pull" and its numeral in the song's key, and a line
+// about a reference song.
+fn lesson_card(studio: &Studio, card: &Map<String, Value>) -> Result<Value, String> {
+    let topic = text_field(card, "topic", "a lesson card")?;
+    let Some(stage) = path::stage_of_topic(&topic) else {
+        return Err(format!("{topic} is not a topic: the topics are {}", path::topic_names()));
+    };
+    let text = text_field(card, "text", "a lesson card")?;
+    if text.chars().count() > MOST_LESSON_CHARACTERS {
+        return Err(format!("a lesson's text is at most {MOST_LESSON_CHARACTERS} characters"));
+    }
+    let key = studio.composer.lock().unwrap().key();
+    let mut chords = Vec::new();
+    if card.contains_key("chords") {
+        let listed = list_field(card, "chords", "a lesson card", 1, MOST_LESSON_CHORDS)?;
+        for (index, listed_chord) in listed.iter().enumerate() {
+            chords.push(lesson_chord(listed_chord, index, key)?);
+        }
+    }
+    let reference = optional_text_field(card, "reference", "a lesson card")?.unwrap_or_default();
+    if reference.chars().count() > MOST_REFERENCE_CHARACTERS {
+        return Err(format!("a lesson's reference is at most {MOST_REFERENCE_CHARACTERS} characters"));
+    }
+    Ok(json!({"topic": topic, "stage": stage, "text": text, "chords": chords, "reference": reference}))
+}
+
+// One chord of a lesson: {chord, role}, with its numeral when the song has
+// a key.
+fn lesson_chord(listed: &Value, index: usize, key: Option<Key>) -> Result<Value, String> {
+    let place = format!("chord {}", index + 1);
+    let Some(fields) = listed.as_object() else {
+        return Err(format!("{place} is an object, like {{\"chord\": \"E\", \"role\": \"pull\"}}"));
+    };
+    let name = text_field(fields, "chord", &place)?;
+    let Some(chord) = chord_of_name(&name) else {
+        return Err(format!("{place}: \"{name}\" is not a chord, like \"Am\" or \"Bb\""));
+    };
+    let role = optional_text_field(fields, "role", &place)?.unwrap_or_default();
+    if role.chars().count() > MOST_ROLE_CHARACTERS {
+        return Err(format!("{place}'s role is at most {MOST_ROLE_CHARACTERS} characters, like \"home\""));
+    }
+    let mut numeral = String::new();
+    if let Some(key) = key {
+        numeral = numeral_of(key, chord);
+    }
+    Ok(json!({"name": name, "role": role, "numeral": numeral, "pitch": chord.pitch()}))
+}
+
+// A task card: what the player plays now, and optionally the keys to
+// press, marked on the keyboard like a keys card.
+fn task_card(studio: &Studio, card: &Map<String, Value>) -> Result<Value, String> {
+    let text = text_field(card, "text", "a task card")?;
+    if text.chars().count() > MOST_TASK_CHARACTERS {
+        return Err(format!("a task's text is at most {MOST_TASK_CHARACTERS} characters"));
+    }
+    let mut checked = json!({"text": text});
+    if card.contains_key("keys") {
+        let marked = keys_card(studio, card)?;
+        checked["keys"] = marked["keys"].clone();
+    }
+    Ok(checked)
 }
 
 // `chord`'s roman numeral in `key`, counted from the key's home note:
@@ -801,13 +875,13 @@ fn restore_sound_choice(composer: &mut Composer, engine: &mut Engine, track: u64
 
 // The panel's Use on choice `choice` (from 0) of offer `offer`: chords go
 // on the end of the song, a melody becomes a new loop layer, a sound
-// becomes the song's. The song is kept first, so it can be undone, and the
-// number its Undo takes is returned.
+// becomes the song's. It starts a take first (src/takes.rs) and returns its
+// number; the panel ends it at once, so the change can be kept or dropped.
 #[tauri::command]
 pub fn use_agent_option(
     app: AppHandle,
     offers: State<'_, Mutex<Offers>>,
-    replies: State<'_, Mutex<Replies>>,
+    takes: State<'_, Mutex<Takes>>,
     offer: u64,
     choice: usize,
 ) -> Result<u64, String> {
@@ -825,9 +899,9 @@ pub fn use_agent_option(
         checked_sound_choice(&composer, &picked.changes)?;
     }
     engine.start_audio()?;
-    let reply = {
-        let mut replies = replies.lock().unwrap();
-        undo::start_reply(&mut replies, &open, &composer, &mut engine)
+    let take = {
+        let mut takes = takes.lock().unwrap();
+        takes::start_take(&mut takes, &open, &composer, &mut engine)
     };
     let lines = use_choice_on(&mut composer, &mut engine, &kind, &picked, Instant::now())?;
     drop(engine);
@@ -836,7 +910,7 @@ pub fn use_agent_option(
     let used = format!("the player used option {}, {}, of offer {offer}", choice + 1, picked.name);
     offers.lock().unwrap().used.push(used);
     let _ = app.emit("agent-acted", json!({"tool": "jello_options", "changes": lines}));
-    Ok(reply)
+    Ok(take)
 }
 
 #[cfg(test)]

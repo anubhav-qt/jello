@@ -28,6 +28,7 @@ import type { Limiter, MixSender, MixView, Written } from "./mix";
 import type { Tab } from "./tabs";
 import type { PathView } from "./path";
 import Stage from "./Stage.svelte";
+import { JAM_PAUSE_MS } from "./jam";
 
 const page = findElement<HTMLElement>("#app");
 
@@ -73,6 +74,16 @@ interface StageControls {
   // Whether the mapping page takes the keys, and a key it took.
   keysPageWants(): boolean;
   keysPageKey(code: string): void;
+  // The open take: right Command tapped flips it, Return keeps it, Esc
+  // drops it. Each says whether there was one.
+  flipTake(): boolean;
+  keepTake(): boolean;
+  dropTake(): boolean;
+  // Right Command held talks into the rail.
+  talkStarts(): void;
+  // A pause in playing, for the jam card.
+  jamPaused(): void;
+  talkEnds(): void;
 }
 
 // The page, once Rust has said what each key does.
@@ -226,7 +237,19 @@ async function askForSound() {
 // `key` is the key's place on the keyboard, like "KeyQ". Rust decides what it
 // does, and answers with the song's sound, the tempo and what the looper is
 // doing.
+// Every press starts the jam pause over; once it runs out, the rail's jam
+// card shows (docs/design.md#ai-and-learning-rethought-2026-11-03).
+let jamTimer = 0;
+
+function startJamPause() {
+  window.clearTimeout(jamTimer);
+  jamTimer = window.setTimeout(() => {
+    screen?.jamPaused();
+  }, JAM_PAUSE_MS);
+}
+
 async function pressKey(key: string) {
+  startJamPause();
   try {
     const view = await invoke<SoundView>("press_key", { key });
     showSound(view);
@@ -946,6 +969,53 @@ function typeInField(event: KeyboardEvent) {
   }
 }
 
+// Right Command (docs/design.md#ai-and-learning-rethought-2026-11-03): a
+// tap flips the open take, holding it talks into the rail. Windows has no
+// free key for it yet.
+const TALK_KEY = detectPlatform() === "mac" ? "MetaRight" : null;
+// How long right Command is held before it talks, in ms.
+const TALK_AFTER_MS = 350;
+let talkKeyDown = false;
+let talking = false;
+// Another key went down with right Command, so it was a shortcut.
+let talkKeyUsed = false;
+let talkTimer = 0;
+
+function talkKeyGoesDown() {
+  talkKeyDown = true;
+  talkKeyUsed = false;
+  talking = false;
+  letGoOfEverything();
+  talkTimer = window.setTimeout(() => {
+    if (talkKeyDown && !talkKeyUsed) {
+      talking = true;
+      screen?.talkStarts();
+    }
+  }, TALK_AFTER_MS);
+}
+
+function talkKeyComesUp() {
+  window.clearTimeout(talkTimer);
+  const wasTalking = talking;
+  const wasUsed = talkKeyUsed;
+  talkKeyDown = false;
+  talking = false;
+  if (wasTalking) {
+    screen?.talkEnds();
+    return;
+  }
+  if (!wasUsed) {
+    screen?.flipTake();
+  }
+}
+
+function isReturn(code: string): boolean {
+  if (code === "Enter") {
+    return true;
+  }
+  return code === "NumpadEnter";
+}
+
 const octaveSteps: Record<string, number> = {
   ArrowUp: 1,
   ArrowDown: -1,
@@ -1046,6 +1116,16 @@ async function editComposition(action: string, place: number) {
 }
 
 window.addEventListener("keydown", (event) => {
+  if (event.code === TALK_KEY) {
+    event.preventDefault();
+    if (!event.repeat) {
+      talkKeyGoesDown();
+    }
+    return;
+  }
+  if (talkKeyDown) {
+    talkKeyUsed = true;
+  }
   if (event.code === soundModifier) {
     soundModifierHeld = true;
     if (soundModifier === "AltLeft" && !isTyping(event)) {
@@ -1079,6 +1159,17 @@ window.addEventListener("keydown", (event) => {
       sendInOrder(() => editSections(sectionEdit));
     }
     return;
+  }
+  // With a take open, Esc drops it and Return keeps it.
+  if (!isTyping(event) && !event.metaKey && !event.repeat) {
+    if (event.code === "Escape" && screen?.dropTake()) {
+      event.preventDefault();
+      return;
+    }
+    if (isReturn(event.code) && screen?.keepTake()) {
+      event.preventDefault();
+      return;
+    }
   }
   if (event.code === "Escape" && screen?.closePanel()) {
     event.preventDefault();
@@ -1168,6 +1259,10 @@ function sendComposeKey(key: string) {
 // ignores keys that did not start a note.
 window.addEventListener("keyup", (event) => {
   const key = event.code;
+  if (key === TALK_KEY) {
+    talkKeyComesUp();
+    return;
+  }
   if (key === soundModifier) {
     soundModifierHeld = false;
     screen?.showSoundModifier(false);
@@ -1190,6 +1285,14 @@ window.addEventListener("keyup", (event) => {
 // If the window loses focus (say, Cmd+Tab), let-gos may never reach it, so
 // let go of every key right away.
 window.addEventListener("blur", () => {
+  if (talkKeyDown) {
+    window.clearTimeout(talkTimer);
+    talkKeyDown = false;
+    if (talking) {
+      talking = false;
+      screen?.talkEnds();
+    }
+  }
   soundModifierHeld = false;
   screen?.showSoundModifier(false);
   letGoOfEverything();

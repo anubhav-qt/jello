@@ -2605,8 +2605,35 @@ attachments stay underneath.
   being learned now. The agent reads and marks all of it with
   `jello_path`, and each message says when Learn changed ("Learn is on for
   this song."). Esc closes the topic map before Sound or Mix.
-- **Next:** the rail and takes. Lyrics and the reference card get mockups
-  before their own pieces are built. The Windows talk key is still open.
+- **How takes are kept** (built 2026-11-03, `src-tauri/src/takes.rs`).
+  Rust keeps two copies of the song as file text: the player's, from before
+  the answer, and the take, from after it. Flipping keeps the side being
+  left up to date, so the player's own edits on either side stay. A take
+  names its parts by comparing the two: Tape (chords, loop, sections,
+  arrangement, tempo), Sound (key, scale, keys, tracks) and Mix. Dropping
+  a part puts the player's version of it into the take. Learn and the
+  stages are never part of a take. A new answer keeps the open take. An
+  answer that changed nothing makes no take. Using an option from a card
+  is a take too. The tape is outlined dashed lavender while a take that
+  changed it is on screen.
+- **What is open, for the agent** (built 2026-11-03). Each message carries
+  the UI's words for what is open (tab, Sound, Mix or Songs panel, the
+  picked track, the section playing); the host puts "Open now: ..." in
+  front when it changes.
+- **Lessons and tasks in the rail** (built 2026-11-03): `jello_show` cards
+  `lesson` (a topic of the path, a text, chords with roles and numerals, a
+  reference line) and `task` (what to play, keys marked on the keyboard).
+- **The jam card** (built 2026-11-03, `src-tauri/src/jam.rs`). Rust
+  measures the presses since the last card: phrases of 3 to 8 presses
+  played again with the same notes in about the same rhythm (each gap
+  within 30% or 80 ms), and phrases of 3 or more presses ending on a hold
+  of 1.2 s or more. The best three, never sharing a press, show after
+  10 s with no press. Section saves a new section from the loop as it
+  plays once the moment is a layer. The AI naming and picking the moments
+  is still to come.
+- **Next:** practice with two hand lanes, skills from songs, taste drills,
+  the jam partner, tools that do the work, then lyrics and references
+  (mockups first). The Windows talk key is still open.
 
 ## Learning mode (v2)
 

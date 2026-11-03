@@ -14,7 +14,7 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { attachedBlock, attachedFiles, Host, jelloTools, toolServer, withoutJobLine } from "../../src-tauri/agent-host/host.mjs";
+import { attachedBlock, attachedFiles, Host, jelloTools, toolServer, withoutJelloLines } from "../../src-tauri/agent-host/host.mjs";
 import { INSTRUCTIONS } from "../../src-tauri/agent-host/instructions.mjs";
 
 const PASSWORD = "secret";
@@ -149,7 +149,7 @@ test("a message runs live: thinking, the tool call with its changes, text, the e
     assert.equal(made.events[0].model.id, made.model.id);
 
     made.events.length = 0;
-    await made.host.send("Make it darker", "composer");
+    await made.host.send("Make it darker", "Compose tab");
     const types = typesOf(made.events);
     assert.equal(types[0], "run_start");
     assert.ok(types.indexOf("thinking_start") < types.indexOf("tool_start"));
@@ -175,19 +175,20 @@ test("a message runs live: thinking, the tool call with its changes, text, the e
     }
     assert.equal(text, "Darker now.");
 
-    // The model gets Jello's instructions, only Jello's tools, and the job.
+    // The model gets Jello's instructions, only Jello's tools, and what is
+    // open.
     assert.ok(JSON.stringify(seen[0]).includes(JSON.stringify(INSTRUCTIONS).slice(1, -1)));
     assert.deepEqual(made.host.session.getActiveToolNames(), ["jello_sound"]);
     const first = JSON.stringify(playerMessages(seen[0])[0]);
-    assert.ok(first.includes("Now Composer, in the Compose tab."));
+    assert.ok(first.includes("Open now: Compose tab."));
     assert.ok(first.includes("Make it darker"));
 
-    // The same job again gets no new line, so the start stays cached.
-    await made.host.send("Thanks", "composer");
+    // The same place again gets no new line.
+    await made.host.send("Thanks", "Compose tab");
     const said = playerMessages(seen[1]);
     const last = JSON.stringify(said[said.length - 1]);
     assert.ok(last.includes("Thanks"));
-    assert.ok(!last.includes("Now Composer"));
+    assert.ok(!last.includes("Open now"));
 
     // Fetch sends no Origin header, which Jello's server would refuse.
     for (const header of tools.headers) {
@@ -203,7 +204,7 @@ test("Stop ends a run part way", async () => {
   const made = await fakeHost([]);
   try {
     made.faux.setResponses([fauxAssistantMessage([fauxText("word ".repeat(400))])]);
-    const running = made.host.send("Talk a lot", "tutor");
+    const running = made.host.send("Talk a lot", "Play tab");
     // Stop once the text starts coming.
     await new Promise((done) => {
       const timer = setInterval(() => {
@@ -223,15 +224,15 @@ test("Stop ends a run part way", async () => {
   }
 });
 
-test("one run at a time, a model that can't be used is refused, and a new chat forgets the job", async () => {
+test("one run at a time, a model that can't be used is refused, and a new chat forgets what was open", async () => {
   const made = await fakeHost([]);
   try {
     made.faux.setResponses([
       fauxAssistantMessage([fauxText("one")]),
       fauxAssistantMessage([fauxText("two")]),
     ]);
-    const first = made.host.send("One", "tutor");
-    await made.host.send("Two", "tutor");
+    const first = made.host.send("One", "Play tab");
+    await made.host.send("Two", "Play tab");
     await first;
     assert.ok(made.events.some((event) => event.message === "The agent is still answering. Stop it first."));
 
@@ -241,7 +242,7 @@ test("one run at a time, a model that can't be used is refused, and a new chat f
 
     await made.host.newChat();
     assert.equal(made.host.session, null);
-    assert.equal(made.host.job, null);
+    assert.equal(made.host.place, null);
     assert.equal(made.events[made.events.length - 1].type, "new_chat");
   } finally {
     rmSync(made.agentDir, { recursive: true, force: true });
@@ -273,7 +274,7 @@ test("signing in asks through the panel and opens only web pages", async () => {
   }
 });
 
-test("chats are saved with their song, jobs and memory, listed, and carried on once opened", async () => {
+test("chats are saved with their song, places and memory, listed, and carried on once opened", async () => {
   const tools = await fakeToolServer();
   const made = await fakeHost(await jelloTools(toolServer(tools.url, PASSWORD)));
   const seen = [];
@@ -290,8 +291,8 @@ test("chats are saved with their song, jobs and memory, listed, and carried on o
         return fauxAssistantMessage([fauxText("Again, slower.")]);
       },
     ]);
-    await made.host.send("Make it darker", "composer", "Prism Drift", [], "Habits:\n- [1] Rushes bar 3 (2026-10-24)");
-    await made.host.send("Teach me the chorus", "tutor", "Other song", ["the player used option 2, Darker, of offer 1"]);
+    await made.host.send("Make it darker", "Compose tab", "Prism Drift", [], "Habits:\n- [1] Rushes bar 3 (2026-10-24)");
+    await made.host.send("Teach me the chorus", "Play tab", "Other song", ["the player used option 2, Darker, of offer 1"]);
     const path = made.events.find((event) => event.type === "chat").path;
 
     await made.host.tellChats();
@@ -303,32 +304,27 @@ test("chats are saved with their song, jobs and memory, listed, and carried on o
     assert.equal(chat.path, path);
     assert.equal(chat.title, "Make it darker");
     assert.equal(chat.song, "Prism Drift");
-    assert.deepEqual(chat.jobs, ["composer", "tutor"]);
     assert.ok(chat.text.includes("Teach me the chorus"));
 
     await made.host.newChat();
     await made.host.openChat(path);
     const opened = made.events[made.events.length - 1];
     assert.equal(opened.type, "chat_opened");
-    assert.equal(opened.job, "tutor");
-    assert.equal(made.host.job, "tutor");
+    assert.equal(made.host.place, "Play tab");
     assert.equal(opened.turns.length, 2);
     const [first, second] = opened.turns;
     assert.equal(first.said, "Make it darker");
-    assert.equal(first.job, "composer");
-    // The player's message drops the job line and the options used.
+    // The player's message drops the place line and the options used.
     assert.equal(second.said, "Teach me the chorus");
-    assert.equal(second.job, "tutor");
-    assert.equal(second.jobChanged, true);
     const ended = first.events.find((event) => event.type === "tool_end");
     assert.deepEqual(ended.changes, ["Filter cutoff 1200 -> 800 Hz"]);
     assert.deepEqual(ended.card, { kind: "sound", title: "" });
     assert.ok(first.events.some((event) => event.type === "thinking" && event.text === "Lower cutoff."));
     assert.ok(first.events.some((event) => event.type === "text" && event.text === "Darker now."));
 
-    // Carrying on: the model gets the whole chat, the same job needs no
+    // Carrying on: the model gets the whole chat, the same place needs no
     // new line, and it stays one file.
-    await made.host.send("Once more", "tutor", "Other song", [], "Goals:\n- [2] Play at 90 (2026-10-24)");
+    await made.host.send("Once more", "Play tab", "Other song", [], "Goals:\n- [2] Play at 90 (2026-10-24)");
     const sent = JSON.stringify(seen[0]);
     // The chat keeps the memory it began with, so its start stays cached.
     assert.ok(sent.includes("Rushes bar 3"));
@@ -336,7 +332,7 @@ test("chats are saved with their song, jobs and memory, listed, and carried on o
     assert.ok(sent.includes("Make it darker"));
     assert.ok(sent.includes("(Jello: the player used option 2, Darker, of offer 1.)"));
     const said = playerMessages(seen[0]);
-    assert.ok(!JSON.stringify(said[said.length - 1]).includes("Now Tutor"));
+    assert.ok(!JSON.stringify(said[said.length - 1]).includes("Open now"));
     await made.host.tellChats();
     assert.equal(made.events[made.events.length - 1].chats.length, 1);
   } finally {
@@ -370,7 +366,7 @@ test("attached files go with one message, are kept beside the chat and show agai
         return fauxAssistantMessage([fauxText("Sure.")]);
       },
     ]);
-    await made.host.send("What key is this?", "tutor", "Song", [], "", attachments);
+    await made.host.send("What key is this?", "Play tab", "Song", [], "", attachments);
     const path = made.events.find((event) => event.type === "chat").path;
     const sent = playerMessages(seen[0])[0];
     const text = JSON.stringify(sent.content);
@@ -383,7 +379,7 @@ test("attached files go with one message, are kept beside the chat and show agai
     assert.equal(readFileSync(kept, "utf8"), "pdf bytes");
 
     // The next message has none.
-    await made.host.send("Thanks", "tutor", "Song");
+    await made.host.send("Thanks", "Play tab", "Song");
     const later = playerMessages(seen[1]);
     assert.ok(!JSON.stringify(later[later.length - 1]).includes("Attached"));
 
@@ -404,7 +400,7 @@ test("a model that can't see pictures is told they were left out", () => {
   assert.ok(blind.includes("can't see pictures"));
   assert.ok(!attachedBlock(files, true).includes("can't see pictures"));
   const said = `${blind}Look at this`;
-  assert.equal(withoutJobLine(said), "Look at this");
+  assert.equal(withoutJelloLines(said), "Look at this");
   assert.deepEqual(attachedFiles(said), [{ kind: "image", name: "a.png" }]);
   assert.deepEqual(attachedFiles("no files"), []);
 });
@@ -438,10 +434,10 @@ test("the Learn line comes when the switch changes, and is left out of what the 
       return fauxAssistantMessage([fauxText("Ok.")]);
     };
     made.faux.setResponses([answer, answer, answer, answer]);
-    await made.host.send("Why does my chorus float?", "composer", "Song", [], "", [], true);
-    await made.host.send("Hint?", "composer", "Song", [], "", [], true);
-    await made.host.send("Just do it", "composer", "Song", [], "", [], false);
-    await made.host.send("Thanks", "composer", "Song");
+    await made.host.send("Why does my chorus float?", "Compose tab", "Song", [], "", [], true);
+    await made.host.send("Hint?", "Compose tab", "Song", [], "", [], true);
+    await made.host.send("Just do it", "Compose tab", "Song", [], "", [], false);
+    await made.host.send("Thanks", "Compose tab", "Song");
 
     const lastSaid = (context) => {
       const said = playerMessages(context);
@@ -453,8 +449,10 @@ test("the Learn line comes when the switch changes, and is left out of what the 
     assert.ok(!lastSaid(seen[3]).includes("Learn is"));
 
     const said = "Now Composer, in the Compose tab.\n\nLearn is on for this song.\n\nWhy?";
-    assert.equal(withoutJobLine(said), "Why?");
-    assert.equal(withoutJobLine("Learn is off for this song.\n\nDo it"), "Do it");
+    assert.equal(withoutJelloLines(said), "Why?");
+    assert.equal(withoutJelloLines("Learn is off for this song.\n\nDo it"), "Do it");
+    const placed = "Open now: Compose tab, Mix panel.\n\nLearn is on for this song.\n\nWhy?";
+    assert.equal(withoutJelloLines(placed), "Why?");
   } finally {
     tools.server.close();
     rmSync(made.agentDir, { recursive: true, force: true });

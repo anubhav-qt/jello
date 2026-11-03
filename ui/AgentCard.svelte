@@ -87,6 +87,14 @@
     outside: "outside",
   };
 
+  // A stage's name as the path strip says it, like "Chords".
+  function stageName(stage: string): string {
+    if (stage === "") {
+      return "";
+    }
+    return stage[0].toUpperCase() + stage.slice(1);
+  }
+
   function color(pitch: number | null): string {
     if (pitch === null) {
       return "var(--ink)";
@@ -237,6 +245,36 @@
       {/each}
     </div>
     <p class="agent-quiet agent-card-note">Marked on the keyboard</p>
+  {:else if card.kind === "lesson"}
+    <p class="agent-lesson-topic">{stageName(card.stage)} · {card.topic}</p>
+    <p class="agent-lesson-text">{card.text}</p>
+    {#if card.chords.length > 0}
+      <div class="agent-lesson-chords">
+        {#each card.chords as chord, place (place)}
+          {@const color = `rgb(${colorForNote(chord.pitch).accent})`}
+          <div class="agent-lesson-chord" style:border-color={color}>
+            <span class="agent-lesson-chord-name" style:color={color}>{chord.name}</span>
+            <span class="agent-quiet">{chord.numeral} {chord.role}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if card.reference !== ""}
+      <p class="agent-lesson-reference">{card.reference}</p>
+    {/if}
+  {:else if card.kind === "task"}
+    <p class="agent-task-label">Your turn</p>
+    <p class="agent-lesson-text">{card.text}</p>
+    {#if card.keys !== undefined}
+      <div class="agent-card-keys">
+        {#each card.keys as key, place (place)}
+          <span class="agent-mark-chip">
+            <span class="agent-mark">{key.label}</span>
+            <span>{key.what}</span>
+          </span>
+        {/each}
+      </div>
+    {/if}
   {:else if card.kind === "lane"}
     {@const height = laneHeight(card)}
     <div class="agent-lane-parts">

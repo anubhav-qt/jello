@@ -348,8 +348,14 @@ pub fn list() -> Value {
                 compare: 2 to 4 takes or choices side by side (items: [{name, measures: [{name, \
                 value}]}], up to 8 measures each). chart: a skill over time (unit, points: \
                 [{label, value}], 2 to 64). sound: the song's sound drawn, or with changes (as \
-                jello_sound takes them) the sound they would make over it; nothing changes. A \
-                wrong field is refused with what is allowed. Answers only that it was shown.",
+                jello_sound takes them) the sound they would make over it; nothing changes. \
+                lesson (with Learn on): a short lesson on one topic of the path (topic, like \
+                \"Functions\"; text, 600 characters; chords: optional [{chord, role}], role like \
+                \"home\" or \"pull\" in 12 characters, up to 8, drawn with their numerals; \
+                reference: optional line about a song the player knows, 200 characters). task: \
+                what the player plays now (text, 300 characters; keys: optional, as a keys card \
+                takes them, marked on the keyboard). A wrong field is refused with what is \
+                allowed. Answers only that it was shown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1856,6 +1862,23 @@ mod tests {
         let wrong = test.call("jello_show", json!({"card": {"kind": "lane", "parts": []}}));
         assert_eq!(wrong.text, "a lane card has 1 to 4 parts, not 0");
         assert!(wrong.card.is_none());
+        let lesson = json!({"card": {"kind": "lesson", "topic": "Functions", "text": "E pulls home.",
+            "chords": [{"chord": "Am", "role": "home"}, {"chord": "E", "role": "pull"}],
+            "reference": "Creep: G B C Cm"}});
+        let card = test.call("jello_show", lesson).card.unwrap();
+        assert_eq!(card["stage"], "chords");
+        assert_eq!(card["chords"][1]["numeral"], "V");
+        assert_eq!(card["chords"][0]["role"], "home");
+        let wrong_topic = test.call("jello_show", json!({"card": {"kind": "lesson", "topic": "Juggling", "text": "x"}}));
+        assert!(wrong_topic.text.starts_with("Juggling is not a topic"));
+        let long_role = json!({"card": {"kind": "lesson", "topic": "Functions", "text": "x",
+            "chords": [{"chord": "Am", "role": "home sweet home"}]}});
+        assert!(test.call("jello_show", long_role).text.contains("at most 12 characters"));
+        let task = json!({"card": {"kind": "task", "text": "Play four chords that end on Am."}});
+        let card = test.call("jello_show", task).card.unwrap();
+        assert!(card.get("keys").is_none());
+        let long_task = json!({"card": {"kind": "task", "text": "x".repeat(301)}});
+        assert!(test.call("jello_show", long_task).card.is_none());
         let unknown = test.call("jello_show", json!({"card": {"kind": "mixer"}}));
         assert!(unknown.text.starts_with("there is no card called mixer: there are keys, lane"));
         assert!(!changes_something("jello_show"));

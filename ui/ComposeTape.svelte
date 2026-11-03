@@ -53,6 +53,9 @@
     // The song's learning path, or null until Rust has said. With Learn
     // on, a strip of its stages sits on top of the tape.
     path: PathView | null;
+    // Whether an open take from the agent changed the tape and is on
+    // screen: the tape is drawn as a draft, dashed lavender.
+    draft: boolean;
   }
 
   let {
@@ -69,6 +72,7 @@
     modifierName,
     onSectionEdit,
     path,
+    draft,
   }: Props = $props();
 
   // Whether the stage strip shows: only with Learn on.
@@ -367,7 +371,12 @@
   }
 </script>
 
-<section class="tape" class:has-path={pathShown} style:--keys-across={keysAcross}>
+<section
+  class="tape"
+  class:has-path={pathShown}
+  class:is-draft={draft}
+  style:--keys-across={keysAcross}
+>
   {#if view !== null}
     {#if pathShown && path !== null}
       <button

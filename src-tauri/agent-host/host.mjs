@@ -13,8 +13,8 @@
 //
 // Every chat is saved as pi saves its sessions, one JSONL file each, in
 // Music/Jello/Chats. Jello's own notes go in the file as custom entries,
-// which the model is never sent: the song the chat began on, and each job
-// it went through.
+// which the model is never sent: the song the chat began on, and each
+// change of what was open.
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -29,7 +29,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { JOBS, jobLine, learnLine, systemPromptWith } from "./instructions.mjs";
+import { learnLine, OLD_JOB_LINES, PLACE_START, placeLine, systemPromptWith } from "./instructions.mjs";
 
 // How much of a tool's answer the panel is told. A look at the whole song
 // can be long; the model still gets all of it.
@@ -38,10 +38,10 @@ const MOST_ANSWER_CHARACTERS = 50000;
 // Providers shown first when signing in.
 const FIRST_PROVIDERS = ["anthropic", "openai", "google"];
 
-// The custom entries Jello keeps in a chat's file: how it began, and each
-// job it was switched to.
+// The custom entries Jello keeps in a chat's file: how it began, and what
+// was open each time it changed.
 const CHAT_ENTRY = "jello.chat";
-const JOB_ENTRY = "jello.job";
+const PLACE_ENTRY = "jello.place";
 
 // How much of a chat's text is kept for searching the Chats page.
 const MOST_SEARCH_CHARACTERS = 20000;
@@ -212,14 +212,21 @@ function contentText(content) {
   return text;
 }
 
-// What the player said, without the job line, the used options and the
-// attached files Jello put before it.
-export function withoutJobLine(text) {
+// What the player said, without the lines Jello put before it: what is
+// open, Learn, the used options and the attached files. Older chats' job
+// lines go too.
+export function withoutJelloLines(text) {
   let said = text;
-  for (const job of JOBS) {
-    const line = `${jobLine(job)}\n\n`;
+  for (const old of OLD_JOB_LINES) {
+    const line = `${old}\n\n`;
     if (said.startsWith(line)) {
       said = said.slice(line.length);
+    }
+  }
+  if (said.startsWith(PLACE_START)) {
+    const end = said.indexOf("\n\n");
+    if (end !== -1) {
+      said = said.slice(end + 2);
     }
   }
   for (const on of [true, false]) {
@@ -343,10 +350,9 @@ export function usedLine(used) {
   return `${USED_START}${used.join("; ")}.)`;
 }
 
-// The song a chat began on and the jobs it went through, from the custom
-// entries in its file at `path`.
+// The song a chat began on, from the custom entries in its file at `path`.
 export function chatFacts(path) {
-  const facts = { song: "", jobs: [] };
+  const facts = { song: "" };
   let lines = [];
   try {
     lines = readFileSync(path, "utf8").split("\n");
@@ -368,8 +374,6 @@ export function chatFacts(path) {
     }
     if (entry.customType === CHAT_ENTRY) {
       facts.song = String(entry.data.song ?? "");
-    } else if (entry.customType === JOB_ENTRY && !facts.jobs.includes(entry.data.job)) {
-      facts.jobs.push(entry.data.job);
     }
   }
   return facts;
@@ -379,24 +383,16 @@ export function chatFacts(path) {
 // an opened chat looks as it did. `entries` are the chat's, root first.
 export function replayedTurns(entries) {
   const turns = [];
-  let job = null;
-  let jobChanged = false;
   let turn = null;
   for (const entry of entries) {
-    if (entry.type === "custom" && entry.customType === JOB_ENTRY) {
-      job = entry.data.job;
-      jobChanged = true;
-      continue;
-    }
     if (entry.type !== "message") {
       continue;
     }
     const message = entry.message;
     if (message.role === "user") {
       const text = contentText(message.content);
-      turn = { said: withoutJobLine(text), attachments: attachedFiles(text), job, jobChanged, events: [] };
+      turn = { said: withoutJelloLines(text), attachments: attachedFiles(text), events: [] };
       turns.push(turn);
-      jobChanged = false;
     } else if (turn !== null && message.role === "assistant") {
       replayAnswer(turn.events, message);
     } else if (turn !== null && message.role === "toolResult") {
@@ -461,8 +457,8 @@ export class Host {
     // The chat's saved file, kept by pi's session manager.
     this.chat = null;
     this.model = null;
-    // The job the chat was told last, so a new one gets its line.
-    this.job = null;
+    // What the chat was told is open last, so a change gets its line.
+    this.place = null;
     // Whether the chat was told last that Learn is on, or null before it
     // was told.
     this.learn = null;
@@ -570,7 +566,7 @@ export class Host {
       // Not waited for, so Stop can come in while it answers.
       this.send(
         message.text,
-        message.job,
+        message.place ?? "",
         message.song ?? "",
         message.used ?? [],
         message.memory ?? "",
@@ -647,12 +643,12 @@ export class Host {
     await this.makeSession(chat, memory);
   }
 
-  // Sends the player's `text` to the chat, as `job`: "tutor", "composer"
-  // or "producer". A new chat begins on the song `song`, with the notes
+  // Sends the player's `text` to the chat, with `place`, Jello's words for
+  // what is open (a line goes first when it changes). A new chat begins on the song `song`, with the notes
   // `memory`. `attachments` are the files attached ({name, path, kind,
   // text, images}). `learn` says whether the song's Learn switch is on, or
   // is null when Jello didn't say.
-  async send(text, job, song, used = [], memory = "", attachments = [], learn = null) {
+  async send(text, place, song, used = [], memory = "", attachments = [], learn = null) {
     if (this.answering) {
       this.tell({ type: "error", message: "The agent is still answering. Stop it first." });
       return;
@@ -688,10 +684,10 @@ export class Host {
         prompt = `${learnLine(learn)}\n\n${prompt}`;
         this.learn = learn;
       }
-      if (job !== this.job) {
-        prompt = `${jobLine(job)}\n\n${prompt}`;
-        this.job = job;
-        this.chat.appendCustomEntry(JOB_ENTRY, { job });
+      if (place !== "" && place !== this.place) {
+        prompt = `${placeLine(place)}\n\n${prompt}`;
+        this.place = place;
+        this.chat.appendCustomEntry(PLACE_ENTRY, { place });
       }
       await this.session.prompt(prompt, { images });
     } catch (error) {
@@ -797,13 +793,12 @@ export class Host {
     }
     this.session = null;
     this.chat = null;
-    this.job = null;
+    this.place = null;
     this.learn = null;
   }
 
   // Tells Jello every saved chat, newest first: its first message, the
-  // song it began on, its jobs, when it last changed, and its text to
-  // search.
+  // song it began on, when it last changed, and its text to search.
   async tellChats() {
     const listed = await SessionManager.list(this.agentDir, this.chatsDir);
     const chats = [];
@@ -811,9 +806,8 @@ export class Host {
       const facts = chatFacts(info.path);
       chats.push({
         path: info.path,
-        title: withoutJobLine(info.firstMessage).slice(0, 200),
+        title: withoutJelloLines(info.firstMessage).slice(0, 200),
         song: facts.song,
-        jobs: facts.jobs,
         modified: info.modified.getTime(),
         text: info.allMessagesText.slice(0, MOST_SEARCH_CHARACTERS),
       });
@@ -853,22 +847,22 @@ export class Host {
     await this.closeChat();
     const chat = SessionManager.open(path, this.chatsDir);
     const entries = chat.getBranch();
-    let job = null;
+    let place = null;
     let memory = "";
     for (const entry of entries) {
       if (entry.type !== "custom") {
         continue;
       }
-      if (entry.customType === JOB_ENTRY) {
-        job = entry.data.job;
+      if (entry.customType === PLACE_ENTRY) {
+        place = entry.data.place;
       }
       if (entry.customType === CHAT_ENTRY) {
         memory = String(entry.data.memory ?? "");
       }
     }
     await this.makeSession(chat, memory);
-    this.job = job;
-    this.tell({ type: "chat_opened", path, job, turns: replayedTurns(entries) });
+    this.place = place;
+    this.tell({ type: "chat_opened", path, turns: replayedTurns(entries) });
   }
 
   async pick(providerId, modelId) {

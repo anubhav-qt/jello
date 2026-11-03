@@ -51,7 +51,7 @@
   import KeysPage from "./KeysPage.svelte";
   import ScalePicker from "./ScalePicker.svelte";
   import type { MappingSender } from "./keys";
-  import type { Job } from "./agent";
+  import { draftOnTape, type TakeView } from "./takes";
   import type { PathView } from "./path";
 
   interface Props {
@@ -229,16 +229,8 @@
   // Whether the agent's panel is open, and the panel, for Stop.
   let agentOpen = $state(false);
   let agentPanel: AgentPanel | undefined = $state();
-  // The agent's job in the tab open now.
-  let job: Job = $derived.by(() => {
-    if (tab === "compose") {
-      return "composer";
-    }
-    if (tab === "produce") {
-      return "producer";
-    }
-    return "tutor";
-  });
+  // The take open now, from the rail, or null.
+  let take: TakeView | null = $state(null);
   // What Compose shows, or null until Rust has said, and when it said, by
   // performance.now().
   let compose: ComposeView | null = $state(null);
@@ -654,6 +646,90 @@
     return tape.closeSection();
   }
 
+  // What is open, in words for the agent: the tab, a panel, the picked
+  // track and the section playing.
+  let place = $derived.by(() => {
+    const parts = [`${tabName(tab)} tab`];
+    if (soundPanelOpen) {
+      parts.push("Sound panel");
+    } else if (mixPanelOpen) {
+      parts.push("Mix panel");
+    } else if (songsOpen) {
+      parts.push("Songs panel");
+    }
+    if (sound !== null) {
+      const track = sound.tracks[sound.picked_track];
+      if (track !== undefined) {
+        parts.push(`track ${sound.picked_track + 1} (${track.name})`);
+      }
+    }
+    if (sections !== null && sections.playing !== null) {
+      const number = sections.order[sections.playing];
+      const section = sections.sections[number];
+      if (section !== undefined) {
+        parts.push(`section ${section.name} playing`);
+      }
+    }
+    return parts.join(", ");
+  });
+
+  function tabName(name: Tab): string {
+    if (name === "compose") {
+      return "Compose";
+    }
+    if (name === "produce") {
+      return "Produce";
+    }
+    return "Play";
+  }
+
+  // Right Command tapped flips the open take; Return keeps it and Esc
+  // drops it. Each says whether there was one.
+  export function flipTake(): boolean {
+    if (agentPanel === undefined) {
+      return false;
+    }
+    return agentPanel.flipOpenTake();
+  }
+
+  export function keepTake(): boolean {
+    if (agentPanel === undefined) {
+      return false;
+    }
+    return agentPanel.keepOpenTake();
+  }
+
+  export function dropTake(): boolean {
+    if (agentPanel === undefined) {
+      return false;
+    }
+    return agentPanel.dropOpenTake();
+  }
+
+  // A pause in playing: the rail's jam card shows what was worth keeping.
+  export function jamPaused() {
+    if (agentPanel === undefined) {
+      return;
+    }
+    agentPanel.jamPaused();
+  }
+
+  // Right Command held talks into the rail, which opens for it.
+  export function talkStarts() {
+    if (agentPanel === undefined) {
+      return;
+    }
+    agentOpen = true;
+    agentPanel.talkStarts();
+  }
+
+  export function talkEnds() {
+    if (agentPanel === undefined) {
+      return;
+    }
+    agentPanel.talkEnds();
+  }
+
   // The agent pressed or let go of `code`, playing a phrase. Its key lights
   // as the agent's, and its notes show in Play's readout.
   export function showAgentKey(code: string, down: boolean) {
@@ -1001,6 +1077,7 @@
               {modifierName}
               {onSectionEdit}
               {path}
+              draft={draftOnTape(take)}
               bind:this={tape}
             />
           {/if}
@@ -1057,8 +1134,9 @@
     <AgentPanel
       bind:this={agentPanel}
       visible={agentOpen}
-      {job}
+      {place}
       {onSongChanged}
+      onTake={(next) => (take = next)}
       onSent={clearAgentMarks}
       learn={path === null ? null : path.learn}
       onLearn={switchLearn}

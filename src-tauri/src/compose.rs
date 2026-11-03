@@ -760,6 +760,27 @@ impl Composer {
         presses
     }
 
+    // The presses from press `first_id` on that have been let go, for the
+    // jam card (src/jam.rs): their keys, notes, and times from the first.
+    pub fn jam_presses_from(&self, first_id: u64) -> Vec<crate::jam::JamPress> {
+        let mut presses = Vec::new();
+        for event in &self.performance {
+            if event.id < first_id {
+                continue;
+            }
+            let Some(held_ms) = event.held_ms else {
+                continue;
+            };
+            presses.push(crate::jam::JamPress {
+                key: event.key.clone(),
+                notes: event.notes.clone(),
+                start_ms: event.pressed_ms,
+                hold_ms: held_ms,
+            });
+        }
+        presses
+    }
+
     // The number the next press will get.
     pub fn next_press_id(&self) -> u64 {
         self.performance_id + 1
