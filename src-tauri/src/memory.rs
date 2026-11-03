@@ -331,6 +331,7 @@ pub fn folder_of(app: &AppHandle) -> Option<PathBuf> {
 pub fn memory_view(app: AppHandle, memory: State<'_, Mutex<Memory>>) -> Value {
     let mut view = memory.lock().unwrap().view();
     view["skills"] = crate::skills::skills_view(folder_of(&app).as_deref());
+    view["song_skills"] = crate::skills::song_skills_view(folder_of(&app).as_deref());
     view
 }
 

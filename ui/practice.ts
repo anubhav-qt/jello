@@ -65,10 +65,13 @@ export interface PracticeTry {
   tempo: number;
   level: string;
   clean: boolean;
+  // The piece's section played, like "Bar 2", or null for all of it.
+  section?: string | null;
   whole?: Tally;
   left?: Tally | null;
   right?: Tally | null;
   sections?: { name: string; tally: Tally }[];
+  notes?: NoteResult[];
   wrong?: number;
   extras?: number;
   together_ms?: number | null;
@@ -92,15 +95,76 @@ export interface PracticeView {
     octave: number;
     parts: { name: string; hand: string; notes: number; player: boolean }[];
     sections: { name: string; from_bar: number; to_bar: number }[];
+    // Set when the piece is a section of the player's own song.
+    song?: SongPiece | null;
   };
   settings?: PracticeSettings;
   window_ms?: number;
   tempo_now?: number;
   tempo_note?: string | null;
   lane?: PracticeLane;
+  // A song piece's lane over all its bars.
+  whole_lane?: PracticeLane | null;
+  clean_in_row?: number;
   running?: boolean;
   phase?: string;
   tries?: PracticeTry[];
+}
+
+// A section of the player's song as a piece (src-tauri/src/practice_song.rs):
+// the key each note is played on, by the note's place, and what each bar
+// needs, from bar 1.
+export interface SongPiece {
+  song: string;
+  section: string;
+  track: string;
+  keys: string[];
+  bar_skills: string[][];
+}
+
+// One note's result in a try.
+export interface NoteResult {
+  index: number;
+  hit: boolean;
+  offset_ms: number | null;
+}
+
+// The key's letter as printed, like "C" for "KeyC" or "6" for "Digit6".
+export function keyLetter(key: string): string {
+  if (key.startsWith("Key")) {
+    return key.slice(3);
+  }
+  if (key.startsWith("Digit")) {
+    return key.slice(5);
+  }
+  const printed: Record<string, string> = {
+    Backquote: "`",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+  };
+  return printed[key] ?? key;
+}
+
+// The tempos of a ladder from `start` to its top, in its steps.
+export function ladderSteps(start: number, ladder: Ladder | null): number[] {
+  if (ladder === null) {
+    return [start];
+  }
+  const steps = [start];
+  let tempo = start;
+  while (tempo < ladder.top) {
+    tempo = Math.min(tempo + ladder.step, ladder.top);
+    steps.push(tempo);
+  }
+  return steps;
 }
 
 // A key practice marks: the next to press, or one after it, numbered.

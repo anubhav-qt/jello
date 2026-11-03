@@ -29,7 +29,15 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { learnLine, OLD_JOB_LINES, PLACE_START, placeLine, systemPromptWith } from "./instructions.mjs";
+import {
+  JAM_PICK_INSTRUCTIONS,
+  PARTNER_INSTRUCTIONS,
+  learnLine,
+  OLD_JOB_LINES,
+  PLACE_START,
+  placeLine,
+  systemPromptWith,
+} from "./instructions.mjs";
 
 // How much of a tool's answer the panel is told. A look at the whole song
 // can be long; the model still gets all of it.
@@ -45,6 +53,10 @@ const PLACE_ENTRY = "jello.place";
 
 // How much of a chat's text is kept for searching the Chats page.
 const MOST_SEARCH_CHARACTERS = 20000;
+
+// The most moments the AI picks from a jam, and the longest name it gives.
+const MOST_PICKS = 3;
+const MOST_PICK_NAME_CHARACTERS = 40;
 
 // A client for Jello's tool server at `url`, sending `password`. It speaks
 // MCP's JSON-RPC: one message posted, one answer back.
@@ -350,6 +362,38 @@ export function usedLine(used) {
   return `${USED_START}${used.join("; ")}.)`;
 }
 
+// The picks in the model's answer `text`: lines like "3: Rising hook",
+// for candidates numbered 1 to `count`. Each is {place, name}, place from
+// 0, best first, at most MOST_PICKS, no candidate twice. Lines that name
+// no candidate are left out.
+export function picksFrom(text, count) {
+  const picks = [];
+  const taken = new Set();
+  for (const line of text.split("\n")) {
+    if (picks.length === MOST_PICKS) {
+      break;
+    }
+    const found = /^\s*(\d+)\s*[:.)-]\s*(.+)$/.exec(line);
+    if (found === null) {
+      continue;
+    }
+    const number = Number(found[1]);
+    if (number < 1 || number > count || taken.has(number)) {
+      continue;
+    }
+    let name = found[2].trim().replace(/^["*]+|["*]+$/g, "").trim();
+    if (name === "") {
+      continue;
+    }
+    if (name.length > MOST_PICK_NAME_CHARACTERS) {
+      name = `${name.slice(0, MOST_PICK_NAME_CHARACTERS - 1).trimEnd()}…`;
+    }
+    taken.add(number);
+    picks.push({ place: number - 1, name });
+  }
+  return picks;
+}
+
 // The song a chat began on, from the custom entries in its file at `path`.
 export function chatFacts(path) {
   const facts = { song: "" };
@@ -611,7 +655,67 @@ export class Host {
       this.cancelSignIn();
       return;
     }
+    if (message.type === "partner_call") {
+      // Not waited for: it runs beside the chat.
+      this.answerCall(message.round, message.call ?? "");
+      return;
+    }
+    if (message.type === "pick_moments") {
+      // Not waited for: it runs beside the chat.
+      this.pickMoments(message.jam, message.moments ?? []);
+      return;
+    }
     this.tell({ type: "error", message: `The agent host doesn't know "${message.type}"` });
+  }
+
+  // Asks the model which of a jam's candidate `moments` (lines, numbered
+  // from 1) are worth keeping, outside the chat, and tells Jello
+  // "moments_picked" with the jam's `jam` number and the picks ({place,
+  // name}, place from 0), or with picks null and why.
+  async pickMoments(jam, moments) {
+    if (this.model === null) {
+      this.tell({ type: "moments_picked", jam, picks: null, why: "no model" });
+      return;
+    }
+    let text = "";
+    try {
+      const answer = await this.runtime.completeSimple(this.model, {
+        systemPrompt: JAM_PICK_INSTRUCTIONS,
+        messages: [{ role: "user", content: moments.join("\n"), timestamp: Date.now() }],
+      });
+      text = contentText(answer.content);
+    } catch (error) {
+      this.tell({ type: "moments_picked", jam, picks: null, why: String(error.message ?? error) });
+      return;
+    }
+    const picks = picksFrom(text, moments.length);
+    if (picks.length === 0) {
+      this.tell({ type: "moments_picked", jam, picks: null, why: "the answer named no moment" });
+      return;
+    }
+    this.tell({ type: "moments_picked", jam, picks });
+  }
+
+  // The jam partner's answer to the player's `call`, in words, outside the
+  // chat: tells "partner_answer" with the round and the model's text, or
+  // with text null and why. Rust reads the notes (src-tauri/src/jam_partner.rs).
+  async answerCall(round, call) {
+    if (this.model === null) {
+      this.tell({ type: "partner_answer", round, text: null, why: "no model" });
+      return;
+    }
+    let text = "";
+    try {
+      const answer = await this.runtime.completeSimple(this.model, {
+        systemPrompt: PARTNER_INSTRUCTIONS,
+        messages: [{ role: "user", content: call, timestamp: Date.now() }],
+      });
+      text = contentText(answer.content);
+    } catch (error) {
+      this.tell({ type: "partner_answer", round, text: null, why: String(error.message ?? error) });
+      return;
+    }
+    this.tell({ type: "partner_answer", round, text });
   }
 
   // The session for the chat in `chat`, pi's session manager, begun with

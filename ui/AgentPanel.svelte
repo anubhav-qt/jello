@@ -12,6 +12,9 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open as openPicker } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
+  import RailPractice from "./RailPractice.svelte";
+  import RailDrill from "./RailDrill.svelte";
+  import RailPartner from "./RailPartner.svelte";
   import AgentCard from "./AgentCard.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import AgentOptions from "./AgentOptions.svelte";
@@ -41,7 +44,15 @@
     type Turn,
   } from "./agent";
   import { takeStateWord, takeTitle, type TakeView } from "./takes";
-  import { momentSeconds, type JamView } from "./jam";
+  import {
+    measuredMoments,
+    momentMs,
+    momentSeconds,
+    pickedMoments,
+    type JamView,
+    type MomentPick,
+    type ShownMoment,
+  } from "./jam";
 
   interface Props {
     visible: boolean;
@@ -292,6 +303,10 @@
     }
     if (event.type === "log") {
       console.debug("agent host:", event.text);
+      return;
+    }
+    if (event.type === "moments_picked") {
+      hearMomentsPicked(event);
       return;
     }
     const turn = turns[turns.length - 1];
@@ -875,6 +890,10 @@
   let jamKept: Record<number, string> = $state({});
   let jamProblem = $state("");
   let jamSince = 0;
+  // The moments the card shows, by place among the candidates. Jello's
+  // best three at first; the AI's picks and names once they come.
+  let jamShown: ShownMoment[] = $state([]);
+  let jamPicking = $state(false);
 
   // A pause in playing: the card shows the moments worth keeping, if any.
   // It makes no sound and takes no key.
@@ -892,20 +911,60 @@
     jam = view;
     jamKept = {};
     jamProblem = "";
+    jamShown = measuredMoments(view);
+    jamPicking = false;
     showLatest();
+    try {
+      jamPicking = await invoke<boolean>("pick_jam_moments", { next: view.next });
+    } catch {
+      jamPicking = false;
+    }
   }
 
+  // The AI's picks for the jam card. They replace Jello's own unless the
+  // card is gone, is for another jam, or one of its moments was kept.
+  function hearMomentsPicked(event: HostEvent) {
+    if (jam === null || event.jam !== jam.next) {
+      return;
+    }
+    jamPicking = false;
+    if (event.picks === null || Object.keys(jamKept).length > 0) {
+      return;
+    }
+    jamShown = pickedMoments(jam, event.picks as MomentPick[]);
+  }
+
+  // The moment playing now, so its Play waits until it ends, and whether
+  // a Loop or Section is on its way, so a quick second click makes nothing.
+  let jamPlaying: number | null = $state(null);
+  let jamKeeping = false;
+  let jamPlayTimer = 0;
+
   async function playMoment(place: number) {
+    if (jam === null || jamPlaying !== null) {
+      return;
+    }
     jamProblem = "";
+    jamPlaying = place;
     try {
       await invoke("play_jam_moment", { place });
     } catch (error) {
       jamProblem = String(error);
+      jamPlaying = null;
+      return;
     }
+    window.clearTimeout(jamPlayTimer);
+    jamPlayTimer = window.setTimeout(() => {
+      jamPlaying = null;
+    }, momentMs(jam.moments[place]));
   }
 
   // Loop or Section on a moment.
   async function keepMoment(place: number, how: string) {
+    if (jamKeeping) {
+      return;
+    }
+    jamKeeping = true;
     jamProblem = "";
     try {
       await invoke<string>("keep_jam_moment", { place, how });
@@ -917,6 +976,7 @@
     } catch (error) {
       jamProblem = String(error);
     }
+    jamKeeping = false;
     onSongChanged();
   }
 
@@ -1649,10 +1709,22 @@
         </div>
       {/each}
     {/if}
+    {#if !chatsOpen && !memoryOpen}
+      <RailPractice onCoach={coach} {working} />
+    {/if}
+    {#if learn === true && !chatsOpen && !memoryOpen && !needsSignIn}
+      <RailDrill />
+    {/if}
+    {#if status !== null && !chatsOpen && !memoryOpen && !needsSignIn}
+      <RailPartner />
+    {/if}
     {#if jam !== null && !chatsOpen && !memoryOpen && !needsSignIn}
       <div class="agent-jam">
         <div class="agent-jam-top">
           <span class="agent-jam-title">From your jam</span>
+          {#if jamPicking}
+            <span class="agent-quiet">Picking</span>
+          {/if}
           <button
             type="button"
             class="agent-button-plain"
@@ -1660,15 +1732,31 @@
             onclick={() => (jam = null)}>Close</button
           >
         </div>
-        {#each jam.moments as moment, place (place)}
+        {#each jamShown as shown (shown.place)}
+          {@const place = shown.place}
+          {@const moment = jam.moments[place]}
           <div class="agent-moment">
-            <span class="agent-moment-name">{moment.name}</span>
-            <span class="agent-quiet">{momentSeconds(moment)}</span>
+            <span class="agent-moment-name">{shown.name}</span>
+            {#if shown.picked}
+              <span class="agent-quiet">{moment.name} · {momentSeconds(moment)}</span>
+            {:else}
+              <span class="agent-quiet">{momentSeconds(moment)}</span>
+            {/if}
             <span class="agent-moment-notes">{moment.notes}</span>
             <span class="agent-moment-buttons">
-              <button type="button" class="agent-button-plain" onclick={() => playMoment(place)}
-                >Play</button
+              <button
+                type="button"
+                class="agent-button-plain agent-moment-play"
+                class:is-open={jamPlaying === place}
+                disabled={jamPlaying !== null && jamPlaying !== place}
+                onclick={() => playMoment(place)}
               >
+                {#if jamPlaying === place}
+                  Playing
+                {:else}
+                  Play
+                {/if}
+              </button>
               {#if jamKept[place] === undefined}
                 <button
                   type="button"

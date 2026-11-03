@@ -171,6 +171,7 @@ fn send(app: &AppHandle, message: Value) -> Result<(), String> {
         let handle = app.clone();
         let tell = Arc::new(move |event: Value| {
             note_chat(&handle, &event);
+            crate::jam_partner::hear_host(&handle, &event);
             let _ = handle.emit("agent-host", event);
         });
         *running = Some(start_host(host_command(app)?, tell)?);
@@ -192,11 +193,21 @@ fn note_chat(app: &AppHandle, event: &Value) {
 
 // Sends `message` to the host only if it is running already.
 fn send_if_running(app: &AppHandle, message: Value) {
+    tell_host_if_running(app, message);
+}
+
+// Sends `message` to the host if it is running and hasn't ended, and says
+// whether it was sent.
+pub fn tell_host_if_running(app: &AppHandle, message: Value) -> bool {
     let host = app.state::<AgentHost>();
     let mut running = host.running.lock().unwrap();
-    if let Some(started) = running.as_mut() {
-        let _ = write_line(started, &message);
+    let Some(started) = running.as_mut() else {
+        return false;
+    };
+    if has_ended(started) {
+        return false;
     }
+    write_line(started, &message).is_ok()
 }
 
 // The panel opened: the host starts if it hasn't, and says the models it

@@ -57,7 +57,9 @@
   background-position: bottom left;
 }
 .agent-top h2 {
+  flex: none;
   margin: 0;
+  white-space: nowrap;
   font:
     800 16px Doto,
     monospace;
@@ -65,8 +67,12 @@
 }
 .agent-top-buttons {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
+}
+/* The header's buttons sit closer, so the row fits the rail. */
+.agent-top-buttons .agent-button-plain {
+  padding: 5px 7px;
 }
 
 /* Plain square buttons: a thin edge, white text. Lit ones are lavender
@@ -1284,6 +1290,10 @@
   align-items: center;
   justify-content: space-between;
 }
+.agent-jam-top .agent-quiet {
+  margin-right: auto;
+  margin-left: 8px;
+}
 .agent-jam-title,
 .agent-moment-name {
   font:
@@ -1312,4 +1322,34 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* Play keeps one width while it says Playing, so Loop doesn't move. */
+.agent-moment-play {
+  min-width: 76px;
+}
+
+/* Practice lines in the rail (RailPractice.svelte). */
+.agent-practice-try {
+  margin: 0;
+  font-size: 11px;
+  color: #fff;
+}
+.agent-practice-coach {
+  justify-self: start;
+}
+
+/* Taste drills in the rail (RailDrill.svelte), while Learn is on. */
+.agent-drill-buttons,
+.agent-drill-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.agent-drill-said {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.agent-drill-said.is-right {
+  color: #fff;
 }

@@ -6,7 +6,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
-  import { NOTE_KINDS, type MemoryNote, type MemoryView, type SkillView } from "./agent";
+  import { NOTE_KINDS, type MemoryNote, type MemoryView, type SkillView, type SongSkillView } from "./agent";
 
   let view: MemoryView | null = $state(null);
   let problem = $state("");
@@ -90,6 +90,17 @@
     return `${tries}${trend}`;
   }
 
+  // A song skill's area, tries and where it was last met, like
+  // "Rhythm · 3 tries · Verse bar 2 of Racing Riff".
+  function songSkillWords(skill: SongSkillView): string {
+    const area = AREA_WORDS[skill.area] ?? skill.area;
+    let words = `${area} · ${skillWords(skill)}`;
+    if (skill.from !== null) {
+      words = `${words} · ${skill.from.section} bar ${skill.from.bar} of ${skill.from.song}`;
+    }
+    return words;
+  }
+
   function level(skill: SkillView): number {
     if (skill.level === null || skill.level === undefined) {
       return 0;
@@ -136,6 +147,20 @@
         <span class="agent-quiet agent-skill-words">{skillWords(skill)}</span>
       </div>
     {/each}
+    {#if (view.song_skills ?? []).length > 0}
+      <h3 class="agent-chat-day">From your songs</h3>
+      {#each view.song_skills ?? [] as skill (skill.skill)}
+        <div class="agent-skill">
+          <span class="agent-skill-name">{skill.skill}</span>
+          <span class="agent-skill-dots" aria-label="{level(skill)} of 10">
+            {#each DOTS as dot (dot)}
+              <span class:is-on={dot <= level(skill)}></span>
+            {/each}
+          </span>
+          <span class="agent-quiet agent-skill-words">{songSkillWords(skill)}</span>
+        </div>
+      {/each}
+    {/if}
 
     <div class="agent-memory-ask">
       <h3 class="agent-chat-day">Notes</h3>

@@ -14,7 +14,15 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { attachedBlock, attachedFiles, Host, jelloTools, toolServer, withoutJelloLines } from "../../src-tauri/agent-host/host.mjs";
+import {
+  attachedBlock,
+  attachedFiles,
+  Host,
+  jelloTools,
+  picksFrom,
+  toolServer,
+  withoutJelloLines,
+} from "../../src-tauri/agent-host/host.mjs";
 import { INSTRUCTIONS } from "../../src-tauri/agent-host/instructions.mjs";
 
 const PASSWORD = "secret";
@@ -457,4 +465,104 @@ test("the Learn line comes when the switch changes, and is left out of what the 
     tools.server.close();
     rmSync(made.agentDir, { recursive: true, force: true });
   }
+});
+
+test("a jam's moments are picked and named outside the chat", async () => {
+  const tools = await fakeToolServer();
+  const made = await fakeHost(await jelloTools(toolServer(tools.url, PASSWORD)));
+  const seen = [];
+  try {
+    made.faux.setResponses([
+      (context) => {
+        seen.push(context);
+        return fauxAssistantMessage([fauxText("2: Rising hook\n1: Falling line to a long G")]);
+      },
+      fauxAssistantMessage([fauxText("Nothing here is worth it.")]),
+    ]);
+    const moments = ["1. Held ending: 3 presses over 2.0 s, C4 D4 G4", "2. Played 2 times: 4 presses over 1.2 s, C4 E4 G4 C5"];
+    await made.host.pickMoments(41, moments);
+    const picked = made.events[made.events.length - 1];
+    assert.deepEqual(picked, {
+      type: "moments_picked",
+      jam: 41,
+      picks: [
+        { place: 1, name: "Rising hook" },
+        { place: 0, name: "Falling line to a long G" },
+      ],
+    });
+    assert.equal(seen[0].messages.length, 2);
+    assert.ok(seen[0].messages[0].content.includes("moments worth keeping"));
+    assert.equal(playerMessages(seen[0])[0].content, moments.join("\n"));
+    assert.equal(made.host.session, null);
+
+    await made.host.pickMoments(42, moments);
+    const none = made.events[made.events.length - 1];
+    assert.equal(none.picks, null);
+    assert.equal(none.jam, 42);
+
+    made.host.model = null;
+    await made.host.pickMoments(43, moments);
+    assert.equal(made.events[made.events.length - 1].why, "no model");
+  } finally {
+    tools.server.close();
+    rmSync(made.agentDir, { recursive: true, force: true });
+  }
+});
+
+test("the jam partner answers a call outside the chat", async () => {
+  const tools = await fakeToolServer();
+  const made = await fakeHost(await jelloTools(toolServer(tools.url, PASSWORD)));
+  const seen = [];
+  try {
+    made.faux.setResponses([
+      (context) => {
+        seen.push(context);
+        return fauxAssistantMessage([fauxText("E4 0 1\nG4 1 3")]);
+      },
+    ]);
+    const call = "Call, 2 bars of 4 beats at 96 bpm, in C major:\nC4 at 0 for 1 beats";
+    await made.host.answerCall(3, call);
+    assert.deepEqual(made.events[made.events.length - 1], { type: "partner_answer", round: 3, text: "E4 0 1\nG4 1 3" });
+    assert.ok(seen[0].messages[0].content.includes("jam partner"));
+    assert.equal(playerMessages(seen[0])[0].content, call);
+    assert.equal(made.host.session, null);
+
+    const complete = made.host.runtime.completeSimple;
+    made.host.runtime.completeSimple = async () => {
+      throw new Error("the line dropped");
+    };
+    await made.host.answerCall(5, call);
+    assert.deepEqual(made.events[made.events.length - 1], { type: "partner_answer", round: 5, text: null, why: "the line dropped" });
+    made.host.runtime.completeSimple = complete;
+
+    made.host.model = null;
+    await made.host.answerCall(4, call);
+    assert.deepEqual(made.events[made.events.length - 1], { type: "partner_answer", round: 4, text: null, why: "no model" });
+  } finally {
+    tools.server.close();
+    rmSync(made.agentDir, { recursive: true, force: true });
+  }
+});
+
+test("picks name only real candidates, once each, at most three, with short names", () => {
+  const answer = [
+    "Here you go:",
+    "9: Not a candidate",
+    "0: Not one either",
+    "2: \"Rising hook\"",
+    "2) The same again",
+    "3. **Bold answer**",
+    "1 - A very long name that goes on and on past what fits in a rail line",
+    "4: One too many",
+    "5:",
+  ].join("\n");
+  const picks = picksFrom(answer, 5);
+  assert.equal(picks.length, 3);
+  assert.deepEqual(picks[0], { place: 1, name: "Rising hook" });
+  assert.deepEqual(picks[1], { place: 2, name: "Bold answer" });
+  assert.equal(picks[2].place, 0);
+  assert.ok(picks[2].name.length <= 40);
+  assert.ok(picks[2].name.endsWith("…"));
+  assert.deepEqual(picksFrom("", 3), []);
+  assert.deepEqual(picksFrom("1: Hook", 0), []);
 });

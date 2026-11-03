@@ -47,6 +47,7 @@
   import TrackRow from "./TrackRow.svelte";
   import AgentPanel from "./AgentPanel.svelte";
   import PracticeView from "./PracticeView.svelte";
+  import PracticeLanes from "./PracticeLanes.svelte";
   import type { PracticeMark, PracticeView as Practice } from "./practice";
   import KeysPage from "./KeysPage.svelte";
   import ScalePicker from "./ScalePicker.svelte";
@@ -636,6 +637,10 @@
       letGo();
       return true;
     }
+    if (tab === "compose" && isSongPractice(practice)) {
+      invoke("close_practice");
+      return true;
+    }
     if (agentOpen) {
       agentOpen = false;
       return true;
@@ -759,8 +764,8 @@
     agentMarks.clear();
   }
 
-  // The Tutor set a piece, or practice changed. A new piece opens the Play
-  // tab, where practice shows.
+  // A piece was set, or practice changed. A new piece opens the Play tab,
+  // where practice shows, or Compose for a section of the song.
   export function showPractice(view: Practice) {
     const isNew = view.set && (practice === null || !practice.set);
     if (view.set) {
@@ -769,9 +774,26 @@
       practice = null;
       practiceMarks.clear();
     }
-    if (isNew && tab !== "play") {
+    if (!isNew) {
+      return;
+    }
+    // A section of the player's own song is practiced in the tape's place.
+    if (isSongPractice(view)) {
+      if (tab !== "compose") {
+        openTab("compose");
+      }
+      return;
+    }
+    if (tab !== "play") {
       openTab("play");
     }
+  }
+
+  function isSongPractice(view: Practice | null): view is Practice {
+    if (view === null || !view.set) {
+      return false;
+    }
+    return view.piece?.song !== undefined && view.piece?.song !== null;
   }
 
   export function showPracticeMarks(marks: PracticeMark[]) {
@@ -1062,7 +1084,11 @@
           <!-- Compose shows its tape where Play shows the notes held, with the
            sound panel over it while open, and Produce a dev panel until it is
            designed. -->
-          {#if tab === "compose"}
+          {#if tab === "compose" && isSongPractice(practice)}
+            <div class="tape" style:--keys-across={keysAcross(platform)}>
+              <PracticeLanes view={practice} onTry={onPracticeTry} />
+            </div>
+          {:else if tab === "compose"}
             <ComposeTape
               view={compose}
               answeredAt={composeAt}

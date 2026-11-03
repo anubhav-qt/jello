@@ -2,8 +2,10 @@
      while its block is picked (docs/design.md#tracks-and-sections): its name,
      bars, tempo and key shift, each track's layers on or off, and the
      values it moves. Every change is the section's, so every place in the
-     order that uses it changes too. -->
+     order that uses it changes too. Practice on a track plays the section
+     as a practice piece for that track. -->
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import {
     barsWords,
     type SectionEdit,
@@ -21,6 +23,34 @@
   let { sections, number, onEdit, onClose }: Props = $props();
 
   let section = $derived(sections.sections[number - 1]);
+
+  // Practicing a track of this section (src-tauri/src/practice_song.rs),
+  // and why it couldn't start, if it couldn't.
+  let practiceProblem = $state("");
+  let practicing = false;
+
+  function playsHere(track: number): boolean {
+    for (const [onTrack] of section.layers) {
+      if (onTrack === track) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function practice(track: number) {
+    if (practicing) {
+      return;
+    }
+    practicing = true;
+    practiceProblem = "";
+    try {
+      await invoke("practice_section", { section: number - 1, track: track - 1 });
+    } catch (error) {
+      practiceProblem = String(error);
+    }
+    practicing = false;
+  }
 
   // The move being added: its track, from 1, or 0 for the tempo.
   let newTrack = $state(1);
@@ -182,8 +212,18 @@
           {:else}
             <span class="section-quiet">No layers</span>
           {/each}
+          {#if playsHere(trackNumber)}
+            <button
+              class="section-practice"
+              title="Practice this track's part of the section, scored per hand"
+              onclick={(event) => clickThenLetGo(event, () => practice(trackNumber))}>Practice</button
+            >
+          {/if}
         </div>
       {/each}
+      {#if practiceProblem !== ""}
+        <p class="section-problem">{practiceProblem}</p>
+      {/if}
     </div>
 
     <div class="section-column">
@@ -326,6 +366,13 @@
   .section-quiet {
     margin: 0;
     color: var(--text-3);
+  }
+  .section-practice {
+    margin-left: auto;
+  }
+  .section-problem {
+    margin: 4px 0 0;
+    color: rgb(var(--rec));
   }
   .section-move {
     display: flex;

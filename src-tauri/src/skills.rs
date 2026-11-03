@@ -2,6 +2,10 @@
 // Music/Jello/Memory/practice.jsonl (docs/design.md#the-tutor-to-mastery).
 // Each area gets a level out of ten and a trend, from the tries of that
 // area. Writing isn't measured yet: the Composer works with it.
+//
+// A try of a section of the player's own song (practice_song.rs) also
+// counts per bar: each bar's points go to every skill it needs
+// (song_skills.rs), and to that skill's area.
 
 use std::fs;
 use std::path::Path;
@@ -9,6 +13,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::practice::LEVELS;
+use crate::song_skills;
 
 // The areas a try can count toward, then writing, which none does.
 pub const AREAS: [&str; 6] = ["technique", "rhythm", "harmony", "ear", "improvising", "pieces"];
@@ -92,10 +97,107 @@ pub fn skills_of(lines: &[Value]) -> Value {
                 points.push(worth);
             }
         }
+        for line in lines {
+            for (worth, skills) in bar_points(line) {
+                for skill in skills {
+                    if song_skills::area_of(&skill) == Some(area) {
+                        points.push(worth);
+                    }
+                }
+            }
+        }
         areas.push(area_view(area, &points));
     }
     areas.push(json!({"area": "writing", "measured": false}));
     json!(areas)
+}
+
+// The points of each bar a song try played, with what the bar needs.
+// Not a song try, or a wait-mode one, gives none.
+fn bar_points(line: &Value) -> Vec<(f64, Vec<String>)> {
+    let mut found = Vec::new();
+    let Some(bars) = line["song"]["bars"].as_array() else {
+        return found;
+    };
+    let sections = line["sections"].as_array().cloned().unwrap_or_default();
+    for bar in bars {
+        let Some(number) = bar["bar"].as_u64() else {
+            continue;
+        };
+        let name = format!("Bar {number}");
+        let mut tally = Value::Null;
+        for section in &sections {
+            if section["name"] == json!(name) {
+                tally = section["tally"].clone();
+            }
+        }
+        if tally.is_null() {
+            continue;
+        }
+        let notes = tally["notes"].as_u64().unwrap_or(0);
+        let hits = tally["hits"].as_u64().unwrap_or(0);
+        let bar_line = json!({
+            "level": line["level"],
+            "wait": line["wait"],
+            "clean": notes > 0 && hits == notes && tally["missed"] == json!(0),
+            "whole": {"accuracy_percent": tally["accuracy_percent"]},
+        });
+        let Some(worth) = points_of(&bar_line) else {
+            continue;
+        };
+        let mut skills = Vec::new();
+        for skill in bar["skills"].as_array().cloned().unwrap_or_default() {
+            if let Some(skill) = skill.as_str() {
+                skills.push(skill.to_string());
+            }
+        }
+        found.push((worth, skills));
+    }
+    found
+}
+
+// Every skill from songs the player practiced, in the order first met:
+// its area, level and trend from the tries of bars that need it, and the
+// song, section and bar it was last met in.
+pub fn song_skills_of(lines: &[Value]) -> Value {
+    let mut names: Vec<String> = Vec::new();
+    let mut points: Vec<Vec<f64>> = Vec::new();
+    let mut last_seen: Vec<Value> = Vec::new();
+    for line in lines {
+        let Some(bars) = line["song"]["bars"].as_array() else {
+            continue;
+        };
+        let worths = bar_points(line);
+        for (place, (worth, skills)) in worths.into_iter().enumerate() {
+            let bar = bars.get(place).map(|found| found["bar"].clone()).unwrap_or(Value::Null);
+            for skill in skills {
+                let known = names.iter().position(|name| *name == skill);
+                let at;
+                if let Some(known) = known {
+                    at = known;
+                } else {
+                    names.push(skill.clone());
+                    points.push(Vec::new());
+                    last_seen.push(Value::Null);
+                    at = names.len() - 1;
+                }
+                points[at].push(worth);
+                last_seen[at] = json!({
+                    "song": line["song"]["song"],
+                    "section": line["song"]["section"],
+                    "bar": bar,
+                });
+            }
+        }
+    }
+    let mut skills = Vec::new();
+    for (place, name) in names.iter().enumerate() {
+        let mut view = area_view(song_skills::area_of(name).unwrap_or("pieces"), &points[place]);
+        view["skill"] = json!(name);
+        view["from"] = last_seen[place].clone();
+        skills.push(view);
+    }
+    json!(skills)
 }
 
 fn area_view(area: &str, points: &[f64]) -> Value {
@@ -177,10 +279,73 @@ pub fn skills_view(folder: Option<&Path>) -> Value {
     skills_of(&tries)
 }
 
+// The skills from songs, for jello_look and the Memory page, the same way.
+pub fn song_skills_view(folder: Option<&Path>) -> Value {
+    let mut tries = Vec::new();
+    if let Some(folder) = folder {
+        tries = tries_in(folder);
+    }
+    song_skills_of(&tries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::presets::test_folder;
+
+    // A song try at `level` whose bars each had `notes` notes and these
+    // misses, needing these skills.
+    fn song_try(level: &str, bars: &[(u64, &[&str])]) -> Value {
+        let mut sections = Vec::new();
+        let mut listed = Vec::new();
+        for (place, (missed, skills)) in bars.iter().enumerate() {
+            let bar = place + 1;
+            let accuracy = 100.0 * (4 - missed) as f64 / 4.0;
+            sections.push(json!({
+                "name": format!("Bar {bar}"),
+                "tally": {"notes": 4, "hits": 4 - missed, "missed": missed, "accuracy_percent": accuracy},
+            }));
+            listed.push(json!({"bar": bar, "skills": skills}));
+        }
+        json!({
+            "level": level,
+            "mode": "along",
+            "clean": false,
+            "whole": {"accuracy_percent": 50.0},
+            "sections": sections,
+            "song": {"song": "Song", "section": "Verse", "track": "Piano", "bars": listed},
+        })
+    }
+
+    #[test]
+    fn each_bar_counts_toward_the_skills_it_needs_and_their_areas() {
+        let lines = vec![
+            song_try("beginner", &[(0, &["run of eighths"]), (2, &["hands together"])]),
+            song_try("beginner", &[(0, &["run of eighths"])]),
+        ];
+        let skills = song_skills_of(&lines);
+        assert_eq!(skills.as_array().unwrap().len(), 2);
+        assert_eq!(skills[0]["skill"], json!("run of eighths"));
+        assert_eq!(skills[0]["area"], json!("rhythm"));
+        assert_eq!(skills[0]["tries"], json!(2));
+        // A clean bar at beginner is worth 10 * (0 + 1) / 6, rounded: 2.
+        assert_eq!(skills[0]["level"], json!(2.0));
+        assert_eq!(skills[0]["from"], json!({"song": "Song", "section": "Verse", "bar": 1}));
+        assert_eq!(skills[1]["skill"], json!("hands together"));
+        assert_eq!(skills[1]["area"], json!("technique"));
+
+        let areas = skills_of(&lines);
+        let rhythm = areas.as_array().unwrap().iter().find(|area| area["area"] == json!("rhythm")).unwrap();
+        assert_eq!(rhythm["tries"], json!(2));
+        let pieces = areas.as_array().unwrap().iter().find(|area| area["area"] == json!("pieces")).unwrap();
+        assert_eq!(pieces["tries"], json!(2));
+    }
+
+    #[test]
+    fn tries_that_are_not_from_songs_name_no_song_skills() {
+        let lines = vec![along("beginner", 80.0, false)];
+        assert_eq!(song_skills_of(&lines), json!([]));
+    }
 
     fn along(level: &str, accuracy: f64, clean: bool) -> Value {
         json!({"mode": "along", "wait": false, "level": level, "clean": clean, "whole": {"accuracy_percent": accuracy}})

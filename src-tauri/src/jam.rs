@@ -1,15 +1,18 @@
 // Never lose an idea (docs/design.md#ai-and-learning-rethought-2026-11-03).
 // Jello records every press. After a pause in a jam, the rail asks for the
-// moments worth keeping, and Rust measures them: phrases played again in
-// about the same rhythm, and phrases that end on a long hold. The best
-// three are shown, each with Play, Loop (a new loop layer) and Section (a
-// new section).
+// moments worth keeping, and Rust measures candidates: phrases played again
+// in about the same rhythm, and phrases that end on a long hold. With a
+// model, the AI picks the ones worth keeping and names each; without one,
+// the card shows the best three by measure. Each has Play, Loop (a new loop
+// layer) and Section (a new section).
 
 use std::sync::Mutex;
 
 use serde::Serialize;
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::agent;
 use crate::compose::Composer;
 use crate::engine::Engine;
 use crate::layer_notes::{self, WrittenNote};
@@ -18,8 +21,8 @@ use crate::sections::{self, SectionEdit};
 use crate::song_file::note_name;
 use crate::tool_server;
 
-// How many moments the card shows at most.
-const MOST_MOMENTS: usize = 3;
+// How many candidates are measured at most, for the AI to pick from.
+const MOST_CANDIDATES: usize = 8;
 // The shortest and longest phrase looked for, in presses.
 const FEWEST_PRESSES: usize = 3;
 const MOST_PRESSES: usize = 8;
@@ -61,9 +64,9 @@ struct Candidate {
     score: f64,
 }
 
-// The jam's best moments, best first, at most MOST_MOMENTS, never two
-// sharing a press. `presses` are in the order they went down.
-pub fn moments_of(presses: &[JamPress]) -> Vec<Moment> {
+// The jam's best moments, best first, at most `most`, never two sharing a
+// press. `presses` are in the order they went down.
+pub fn moments_of(presses: &[JamPress], most: usize) -> Vec<Moment> {
     let mut candidates = repeated_phrases(presses);
     candidates.extend(held_endings(presses));
     candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -71,7 +74,7 @@ pub fn moments_of(presses: &[JamPress]) -> Vec<Moment> {
     let mut taken = vec![false; presses.len()];
     let mut moments = Vec::new();
     for candidate in candidates {
-        if moments.len() == MOST_MOMENTS {
+        if moments.len() == most {
             break;
         }
         let places = candidate.first..candidate.first + candidate.count;
@@ -232,9 +235,44 @@ pub fn jam_moments(composer: State<'_, Mutex<Composer>>, jam: State<'_, Mutex<Ja
     let presses = composer.jam_presses_from(since);
     let next = composer.next_press_id();
     drop(composer);
-    let moments = moments_of(&presses);
+    let moments = moments_of(&presses, MOST_CANDIDATES);
     jam.lock().unwrap().moments = moments.clone();
     JamView { moments, next }
+}
+
+// A moment in one line for the AI, like "1. Played 2 times: 4 presses over
+// 2.4 s, D4 E4 F#4 G#4".
+fn moment_line(place: usize, moment: &Moment) -> String {
+    let mut end_ms = 0;
+    for press in &moment.presses {
+        end_ms = end_ms.max(press.start_ms + press.hold_ms);
+    }
+    let seconds = end_ms as f64 / 1000.0;
+    format!(
+        "{}. {}: {} presses over {seconds:.1} s, {}",
+        place + 1,
+        moment.name,
+        moment.presses.len(),
+        moment.notes
+    )
+}
+
+// The AI picks the moments worth keeping from the candidates of the jam
+// that ends at press `jam`, and names each. The host answers with a
+// "moments_picked" event. Without a running agent nothing is asked and the
+// answer is false, so the card keeps Jello's own picks.
+#[tauri::command]
+pub fn pick_jam_moments(app: AppHandle, jam: State<'_, Mutex<Jam>>, next: u64) -> bool {
+    let moments = jam.lock().unwrap().moments.clone();
+    if moments.is_empty() {
+        return false;
+    }
+    let mut lines = Vec::new();
+    for (place, moment) in moments.iter().enumerate() {
+        lines.push(moment_line(place, moment));
+    }
+    let message = json!({"type": "pick_moments", "jam": next, "moments": lines});
+    agent::tell_host_if_running(&app, message)
 }
 
 // The moment as a phrase to play on the keys.
@@ -342,7 +380,7 @@ mod tests {
         let mut presses = run(&[60, 62, 64, 65], 0, 300);
         presses.extend(run(&[70, 71], 2000, 300));
         presses.extend(run(&[60, 62, 64, 65], 4000, 320));
-        let moments = moments_of(&presses);
+        let moments = moments_of(&presses, 3);
         assert_eq!(moments[0].name, "Played 2 times");
         assert_eq!(moments[0].presses.len(), 4);
         assert_eq!(moments[0].presses[0].start_ms, 0);
@@ -353,14 +391,14 @@ mod tests {
     fn the_same_notes_in_another_rhythm_are_not_a_repeat() {
         let mut presses = run(&[60, 62, 64], 0, 300);
         presses.extend(run(&[60, 62, 64], 3000, 900));
-        assert!(moments_of(&presses).is_empty());
+        assert!(moments_of(&presses, 3).is_empty());
     }
 
     #[test]
     fn a_phrase_ending_on_a_long_hold_is_a_moment() {
         let mut presses = run(&[67, 69], 0, 250);
         presses.push(press(72, 500, 1500));
-        let moments = moments_of(&presses);
+        let moments = moments_of(&presses, 3);
         assert_eq!(moments.len(), 1);
         assert_eq!(moments[0].name, "Held ending");
         assert_eq!(moments[0].presses.len(), 3);
@@ -370,7 +408,7 @@ mod tests {
     fn a_long_hold_after_a_long_gap_stands_alone_and_is_no_moment() {
         let mut presses = run(&[67, 69], 0, 250);
         presses.push(press(72, 9000, 1500));
-        assert!(moments_of(&presses).is_empty());
+        assert!(moments_of(&presses, 3).is_empty());
     }
 
     #[test]
@@ -383,7 +421,7 @@ mod tests {
                 at += 1500;
             }
         }
-        let moments = moments_of(&presses);
+        let moments = moments_of(&presses, 3);
         assert_eq!(moments.len(), 3);
         let mut firsts = Vec::new();
         for moment in &moments {
@@ -394,9 +432,34 @@ mod tests {
     }
 
     #[test]
+    fn a_moment_sharing_only_some_presses_with_a_better_one_is_left_out() {
+        // The repeat takes C4 D4 E4; the held ending would take B3 too.
+        let mut presses = vec![press(59, 0, 200)];
+        presses.push(press(60, 250, 200));
+        presses.push(press(62, 500, 200));
+        presses.push(press(64, 750, 1500));
+        presses.extend(run(&[60, 62, 64], 5000, 250));
+        let moments = moments_of(&presses, 3);
+        let mut used = 0;
+        for moment in &moments {
+            used += moment.presses.len();
+        }
+        assert!(used <= presses.len() - 1, "{moments:?}");
+    }
+
+    #[test]
     fn nothing_played_gives_nothing() {
-        assert!(moments_of(&[]).is_empty());
-        assert!(moments_of(&run(&[60, 62], 0, 300)).is_empty());
+        assert!(moments_of(&[], 3).is_empty());
+        assert!(moments_of(&run(&[60, 62], 0, 300), 3).is_empty());
+    }
+
+    #[test]
+    fn a_moment_is_told_to_the_ai_in_one_line() {
+        let mut presses = run(&[60, 62, 64], 0, 300);
+        presses.extend(run(&[60, 62, 64], 1500, 300));
+        let moments = moments_of(&presses, 3);
+        let line = moment_line(0, &moments[0]);
+        assert_eq!(line, "1. Played 2 times: 3 presses over 0.8 s, C4 D4 E4");
     }
 
     #[test]

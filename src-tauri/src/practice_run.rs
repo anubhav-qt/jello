@@ -25,6 +25,7 @@ use crate::compose::Composer;
 use crate::engine::{Engine, LooperState};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::key_stats::KeyStats;
+use crate::practice_song;
 use crate::practice::{self, BEATS_PER_BAR, MOST_PASSES, Piece, Plan, Practice, Settings, Sounding};
 use crate::scoring::{self, Expected, Heard};
 use crate::skills;
@@ -254,11 +255,11 @@ impl Backing {
     fn play_until(&mut self, engine: &mut Engine, now_ms: f64) {
         for (place, note) in self.notes.iter().enumerate() {
             if !self.started[place] && note.at_ms <= now_ms {
-                engine.note_on(note.pitch, LAPTOP_VELOCITY);
+                start_note(engine, note);
                 self.started[place] = true;
             }
             if self.started[place] && !self.ended[place] && note.end_ms <= now_ms {
-                engine.note_off(note.pitch);
+                end_note(engine, note);
                 self.ended[place] = true;
             }
         }
@@ -268,7 +269,7 @@ impl Backing {
     fn silence(&mut self, engine: &mut Engine) {
         for (place, note) in self.notes.iter().enumerate() {
             if self.started[place] && !self.ended[place] {
-                engine.note_off(note.pitch);
+                end_note(engine, note);
                 self.ended[place] = true;
             }
         }
@@ -280,6 +281,24 @@ impl Backing {
             last = last.max(note.end_ms);
         }
         last
+    }
+}
+
+// A note of Jello's starts: on its track's layer slot, in that track's
+// sound, or else on the picked track.
+fn start_note(engine: &mut Engine, note: &Sounding) {
+    if let Some((track, slot)) = note.slot {
+        engine.layer_note_on(track, slot, note.pitch, LAPTOP_VELOCITY);
+    } else {
+        engine.note_on(note.pitch, LAPTOP_VELOCITY);
+    }
+}
+
+fn end_note(engine: &mut Engine, note: &Sounding) {
+    if let Some((track, slot)) = note.slot {
+        engine.layer_note_off(track, slot, note.pitch);
+    } else {
+        engine.note_off(note.pitch);
     }
 }
 
@@ -818,7 +837,12 @@ fn keep_try(app: &AppHandle, results: Value, settings: &Settings, piece: &Piece,
     practice.tries.push(summary.clone());
     practice.tell_agent(format!("practice try {number} ended: {coach}"));
     keep_last_unsent(&mut practice);
-    let done = practice::climb(&mut practice, clean);
+    let done;
+    if piece.song.is_some() {
+        done = practice_song::after_try(&mut practice, clean, &summary);
+    } else {
+        done = practice::climb(&mut practice, clean);
+    }
     drop(practice);
 
     let _ = append_to_file(app, &summary);
@@ -861,6 +885,9 @@ pub fn summary_of(number: usize, results: Value, settings: &Settings, piece: &Pi
         for (name, value) in results {
             fields.insert(name.clone(), value.clone());
         }
+    }
+    if let Some(song) = &piece.song {
+        summary["song"] = practice_song::song_line(song, &summary);
     }
     summary
 }
@@ -943,9 +970,9 @@ mod tests {
         let plan = Plan {
             expected: Vec::new(),
             jello: vec![
-                Sounding { pitch: 48, at_ms: 0.0, end_ms: 1000.0 },
-                Sounding { pitch: 52, at_ms: 0.0, end_ms: 1000.0 },
-                Sounding { pitch: 53, at_ms: 1500.0, end_ms: 2000.0 },
+                Sounding { pitch: 48, at_ms: 0.0, end_ms: 1000.0, slot: None },
+                Sounding { pitch: 52, at_ms: 0.0, end_ms: 1000.0, slot: None },
+                Sounding { pitch: 53, at_ms: 1500.0, end_ms: 2000.0, slot: None },
             ],
             length_ms: 2000.0,
             ms_per_beat: 500.0,

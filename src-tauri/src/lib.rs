@@ -11,6 +11,7 @@ mod guitar;
 mod commands;
 mod compose;
 mod dictation;
+mod drills;
 mod drum_changes;
 mod drums;
 mod effects;
@@ -42,11 +43,13 @@ mod phrases;
 mod pitch;
 mod practice;
 mod practice_run;
+mod practice_song;
 mod presets;
 mod scales;
 mod scoring;
 mod sections;
 mod skills;
+mod song_skills;
 mod song_file;
 mod song_session;
 mod songs;
@@ -60,6 +63,7 @@ mod tools;
 mod tracks;
 mod takes;
 mod jam;
+mod jam_partner;
 mod wav;
 
 use std::sync::Mutex;
@@ -102,6 +106,8 @@ pub fn run() {
         .manage(phrases::Phrases::default())
         .manage(Mutex::new(takes::Takes::default()))
         .manage(Mutex::new(jam::Jam::default()))
+        .manage(Mutex::new(drills::Drills::default()))
+        .manage(Mutex::new(jam_partner::Partner::default()))
         .manage(Mutex::new(cards::Offers::default()))
         .manage(Mutex::new(practice::Practice::default()))
         .manage(Mutex::new(attachments::Attachments::default()))
@@ -190,6 +196,15 @@ pub fn run() {
             jam::jam_moments,
             jam::play_jam_moment,
             jam::keep_jam_moment,
+            jam::pick_jam_moments,
+            practice_song::practice_section,
+            drills::start_drill,
+            drills::hear_drill,
+            drills::answer_drill,
+            drills::check_drill,
+            drills::end_drill,
+            jam_partner::start_partner,
+            jam_partner::stop_partner,
             commands::play_note,
             commands::release_note,
             commands::release_all_notes,

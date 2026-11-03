@@ -542,12 +542,12 @@ fn shifted(note: u8, shift: i32) -> Option<u8> {
 
 // Layer `layer` of track `track`, both from 0, in the order the track
 // recorded them, or None if there is no such layer.
-fn layer_of(looped: &SongLoop, track: usize, layer: usize) -> Option<&SongLayer> {
+pub fn layer_of(looped: &SongLoop, track: usize, layer: usize) -> Option<&SongLayer> {
     looped.layers.iter().filter(|each| each.track == track).nth(layer)
 }
 
 // How many beats `layer` takes to repeat: its own bars, or the loop's.
-fn period_beats(layer: &SongLayer, looped: &SongLoop) -> f64 {
+pub fn period_beats(layer: &SongLayer, looped: &SongLoop) -> f64 {
     if layer.bars > 0 {
         return layer.bars as f64 * BAR_BEATS;
     }

@@ -118,8 +118,8 @@ impl ToolAnswer {
 }
 
 // The parts jello_look can read.
-const LOOK_PARTS: [&str; 15] = [
-    "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "memory", "drums",
+const LOOK_PARTS: [&str; 16] = [
+    "sound", "keys", "song", "looper", "compose", "presses", "presets", "songs", "skills", "song_skills", "memory", "drums",
     "instruments", "tracks", "sections", "mix",
 ];
 
@@ -135,7 +135,9 @@ pub fn list() -> Value {
                 snap. compose: Compose's key, chords, guidance and history. presses: the player's \
                 recent presses. presets: every preset and the starting sound. songs: every song and \
                 the one open. skills: each skill area's level out of 10 (the median of its last 5 \
-                tries), trend and recent points, measured from every practice try. memory: your \
+                tries), trend and recent points, measured from every practice try. song_skills: \
+                what bars of the player's own songs needed (like \"run of sixteenths\"), each \
+                skill's area, level, trend and the song, section and bar it was last met in. memory: your \
                 notes about the player, and whether you ask before saving one. drums: the drum \
                 kit's instrument, whether it is ready, and every pad. instruments: the instruments \
                 in Music/Jello/Instruments, by name. tracks: the song's tracks, which is picked, \
@@ -488,13 +490,18 @@ pub fn list() -> Value {
                 intermediate|advanced|expert|master (the window: 150, 120, 90, 65, 50, 40 ms)}. \
                 ear: Jello plays the player's parts, the player plays them back. improvise: Jello \
                 plays its parts and the player's notes are measured against them. memory: one \
-                listen, then the lane hides. action start, stop: a try. action results: every try. \
+                listen, then the lane hides. action section: a section of the \
+                player's own song as the piece, section and track numbers from 1: they play \
+                that track's presses, scored per hand, while Jello plays the other tracks, \
+                with a tempo ladder and the hardest bar looped. action start, stop: a try. action results: every try. \
                 action close: ends practice. Results come back in the player's next message as \
                 (Jello: practice try N ended: ...).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["set", "settings", "start", "stop", "results", "close"]},
+                    "action": {"type": "string", "enum": ["set", "section", "settings", "start", "stop", "results", "close"]},
+                    "section": {"type": "integer"},
+                    "track": {"type": "integer"},
                     "piece": {"type": "object"},
                     "settings": {"type": "object"},
                 },
@@ -697,6 +704,10 @@ fn look(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
             "skills" => {
                 let memory = studio.memory.lock().unwrap();
                 skills::skills_view(memory.folder())
+            }
+            "song_skills" => {
+                let memory = studio.memory.lock().unwrap();
+                skills::song_skills_view(memory.folder())
             }
             "memory" => studio.memory.lock().unwrap().view(),
             "drums" => drum_changes::json_of(composer.drums(), &engine),

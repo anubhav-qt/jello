@@ -22,6 +22,7 @@ use crate::engine::{FASTEST_TEMPO, SLOWEST_TEMPO};
 use crate::harmony::{chord_name, chord_of_name};
 use crate::key_map::KeyMap;
 use crate::scoring::{Expected, Hand};
+use crate::practice_song;
 use crate::skills;
 use crate::song_file::{note_name, pitch_of_note_name};
 use crate::tools::{Studio, ToolAnswer};
@@ -64,6 +65,21 @@ pub struct Piece {
     pub bars: u32,
     pub parts: Vec<Part>,
     pub sections: Vec<Section>,
+    // Where it came from, when it is a section of the player's own song
+    // (practice_song.rs).
+    pub song: Option<SongPiece>,
+}
+
+// A piece made from a section of the player's song: the section and the
+// track practiced, the key each note is played on, by the note's place,
+// and what each bar needs (song_skills.rs), from bar 1.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SongPiece {
+    pub song: String,
+    pub section: String,
+    pub track: String,
+    pub keys: Vec<String>,
+    pub bar_skills: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -71,6 +87,9 @@ pub struct Part {
     pub name: String,
     pub hand: Hand,
     pub notes: Vec<PieceNote>,
+    // For Jello's part of a song piece: the track and layer slot it plays
+    // on, in that track's own sound. None plays on the picked track.
+    pub slot: Option<(usize, usize)>,
 }
 
 // Whether a note is played on the melody keys or a chord key.
@@ -240,12 +259,15 @@ impl Practice {
                 "octave": piece.octave,
                 "parts": parts_view(piece, &self.settings),
                 "sections": piece.sections,
+                "song": piece.song,
             },
             "settings": self.settings,
             "window_ms": self.settings.window_ms(),
             "tempo_now": self.tempo_now,
+            "clean_in_row": self.clean_in_row,
             "tempo_note": self.tempo_note,
             "lane": lane_of(piece, &self.settings, self.tempo_now),
+            "whole_lane": whole_lane(piece, &self.settings, self.tempo_now),
             "running": self.is_running(),
             "phase": self.phase,
             "tries": self.tries,
@@ -304,6 +326,17 @@ pub fn lane_of(piece: &Piece, settings: &Settings, tempo: u32) -> Value {
     })
 }
 
+// A song piece's lane over all its bars, so the practice screen shows the
+// bars around the one looped; null for other pieces.
+fn whole_lane(piece: &Piece, settings: &Settings, tempo: u32) -> Value {
+    if piece.song.is_none() {
+        return Value::Null;
+    }
+    let mut whole = settings.clone();
+    whole.section = None;
+    lane_of(piece, &whole, tempo)
+}
+
 // The beats a try plays: the section's, or the whole piece's.
 pub fn beats_played(piece: &Piece, settings: &Settings) -> (f64, f64) {
     if let Some(name) = &settings.section {
@@ -325,6 +358,8 @@ pub struct Sounding {
     pub pitch: u8,
     pub at_ms: f64,
     pub end_ms: f64,
+    // The track and layer slot it plays on, or None for the picked track.
+    pub slot: Option<(usize, usize)>,
 }
 
 // One try, worked out at a tempo: the notes the player should play, the
@@ -357,6 +392,7 @@ pub fn listen_plan(piece: &Piece, settings: &Settings, tempo: u32) -> Plan {
                 pitch,
                 at_ms: expected.at_ms,
                 end_ms: expected.at_ms + expected.hold_ms,
+                slot: None,
             });
         }
     }
@@ -383,6 +419,7 @@ fn plan_with(piece: &Piece, settings: &Settings, tempo: u32, is_player: impl Fn(
                         pitch: *pitch,
                         at_ms,
                         end_ms: at_ms + hold_ms,
+                        slot: part.slot,
                     });
                 }
                 continue;
@@ -490,6 +527,7 @@ pub fn piece_of(fields: &Value) -> Result<Piece, String> {
         bars,
         parts,
         sections,
+        song: None,
     })
 }
 
@@ -537,7 +575,7 @@ fn part_of(listed: &Value, place: &str, count: &mut usize) -> Result<Part, Strin
         *count += 1;
         notes.push(note);
     }
-    Ok(Part { name, hand, notes })
+    Ok(Part { name, hand, notes, slot: None })
 }
 
 // A note as written. Its octave is given after, in time order.
@@ -905,10 +943,11 @@ pub fn climb(practice: &mut Practice, clean: bool) -> bool {
 // try, reads the results, or closes practice.
 pub fn answer(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
     let Some(action) = arguments["action"].as_str() else {
-        return Err(String::from("action is needed: set, settings, start, stop, results or close"));
+        return Err(String::from("action is needed: set, section, settings, start, stop, results or close"));
     };
     match action {
         "set" => set(studio, arguments),
+        "section" => set_song_section(studio, arguments),
         "settings" => change_settings(studio, arguments),
         "start" => {
             studio.screen.start_practice()?;
@@ -937,8 +976,35 @@ pub fn answer(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
             studio.screen.show_practice(&view);
             Ok(ToolAnswer::of(json!({"closed": true}), vec![String::from("Closed practice")]))
         }
-        _ => Err(format!("practice has no action called {action}: set, settings, start, stop, results or close")),
+        _ => Err(format!("practice has no action called {action}: set, section, settings, start, stop, results or close")),
     }
+}
+
+// A section of the player's own song, one track of it, as the piece:
+// section and track count from 1.
+fn set_song_section(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
+    let Some(section) = arguments["section"].as_u64() else {
+        return Err(String::from("section is needed: its number, from 1"));
+    };
+    let Some(track) = arguments["track"].as_u64() else {
+        return Err(String::from("track is needed: its number, from 1"));
+    };
+    if section == 0 || track == 0 {
+        return Err(String::from("section and track count from 1"));
+    }
+    let song = studio.open_song.lock().unwrap().name().to_string();
+    let open = practice_song::OpenParts {
+        song: &song,
+        composer: studio.composer,
+        engine: studio.engine,
+        key_map: studio.key_map,
+        practice: studio.practice,
+    };
+    let view = practice_song::set_section(&open, section as usize - 1, track as usize - 1)?;
+    studio.screen.show_practice(&view);
+    let lines = vec![format!("Set section {section}, track {track} to practice")];
+    let card = json!({"kind": "practice", "title": "", "view": short_view(&view)});
+    Ok(ToolAnswer::of(short_view(&view), lines).with_card(card))
 }
 
 fn set(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> {
@@ -1170,7 +1236,7 @@ mod tests {
         let e4 = plan.expected.iter().find(|note| note.pitches == vec![64]).unwrap();
         assert_eq!(e4.at_ms, 330.0);
         assert_eq!(e4.section.as_deref(), Some("A"));
-        assert_eq!(plan.jello, vec![Sounding { pitch: 36, at_ms: 0.0, end_ms: 4000.0 }]);
+        assert_eq!(plan.jello, vec![Sounding { pitch: 36, at_ms: 0.0, end_ms: 4000.0, slot: None }]);
     }
 
     #[test]

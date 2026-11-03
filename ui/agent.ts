@@ -226,11 +226,19 @@ export interface SkillView {
   recent?: number[];
 }
 
+// A skill a bar of the player's own song needed (src-tauri/src/song_skills.rs),
+// like "run of sixteenths", under its area, and where it was last met.
+export interface SongSkillView extends SkillView {
+  skill: string;
+  from: { song: string; section: string; bar: number } | null;
+}
+
 // What the Memory page shows.
 export interface MemoryView {
   ask_first: boolean;
   notes: MemoryNote[];
   skills: SkillView[];
+  song_skills?: SongSkillView[];
 }
 
 export const NOTE_KINDS: { kind: MemoryNote["kind"]; words: string; one: string }[] = [
