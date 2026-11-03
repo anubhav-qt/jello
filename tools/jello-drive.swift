@@ -14,6 +14,10 @@
 //   jello-drive tree [depth]      list what is on the page (buttons, text)
 //   jello-drive press <text>      press the first button whose name has <text>
 //   jello-drive click <x> <y>     click at a point in the window
+//   jello-drive drag <x> <y> <x2> <y2>  press at one point, move to the other
+//                                 in steps, and let go there
+//   jello-drive scroll <x> <y> <lines>  turn the wheel over a point, down
+//                                 for more than 0
 //   jello-drive combo <cmd|option> <name>  press a modifier and a key
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
 //                                 esc, return, space, tab, delete, rshift
@@ -219,6 +223,38 @@ func click(at point: CGPoint) {
   }
 }
 
+// Presses at `from`, moves to `to` in small steps, as a hand would, and
+// lets go there.
+func drag(from: CGPoint, to: CGPoint) {
+  let source = CGEventSource(stateID: .hidSystemState)
+  let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left)!
+  down.post(tap: .cghidEventTap)
+  usleep(80_000)
+  let steps = 12
+  for step in 1...steps {
+    let share = CGFloat(step) / CGFloat(steps)
+    let point = CGPoint(x: from.x + (to.x - from.x) * share, y: from.y + (to.y - from.y) * share)
+    let moved = CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left)!
+    moved.post(tap: .cghidEventTap)
+    usleep(25_000)
+  }
+  let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left)!
+  up.post(tap: .cghidEventTap)
+  usleep(80_000)
+}
+
+// Turns the wheel `lines` lines over `point`, down for more than 0.
+func scroll(at point: CGPoint, lines: Int32) {
+  let source = CGEventSource(stateID: .hidSystemState)
+  let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!
+  move.post(tap: .cghidEventTap)
+  usleep(50_000)
+  let wheel = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 1, wheel1: -lines, wheel2: 0, wheel3: 0)!
+  wheel.location = point
+  wheel.post(tap: .cghidEventTap)
+  usleep(80_000)
+}
+
 // macOS key codes, the place of each key on the keyboard.
 let keyCodes: [String: CGKeyCode] = [
   "left": 123,
@@ -289,7 +325,7 @@ if !AXIsProcessTrusted() {
 }
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments.isEmpty {
-  fail("usage: jello-drive info|front|back|tree|press|click|key|hold|shot")
+  fail("usage: jello-drive info|front|back|tree|press|click|drag|scroll|key|hold|shot")
 }
 let command = arguments[0]
 
@@ -341,6 +377,25 @@ if command == "info" {
   let y = jello.bounds.minY + CGFloat(Double(arguments[2]) ?? 0)
   click(at: CGPoint(x: x, y: y))
   print("clicked \(Int(x)),\(Int(y)) on screen")
+} else if command == "drag" {
+  if arguments.count < 5 {
+    fail("usage: jello-drive drag <x> <y> <x2> <y2>")
+  }
+  requireFront(jello)
+  let numbers = arguments[1...4].map { CGFloat(Double($0) ?? 0) }
+  let from = CGPoint(x: jello.bounds.minX + numbers[0], y: jello.bounds.minY + numbers[1])
+  let to = CGPoint(x: jello.bounds.minX + numbers[2], y: jello.bounds.minY + numbers[3])
+  drag(from: from, to: to)
+  print("dragged from \(Int(from.x)),\(Int(from.y)) to \(Int(to.x)),\(Int(to.y)) on screen")
+} else if command == "scroll" {
+  if arguments.count < 4 {
+    fail("usage: jello-drive scroll <x> <y> <lines>")
+  }
+  requireFront(jello)
+  let x = jello.bounds.minX + CGFloat(Double(arguments[1]) ?? 0)
+  let y = jello.bounds.minY + CGFloat(Double(arguments[2]) ?? 0)
+  scroll(at: CGPoint(x: x, y: y), lines: Int32(arguments[3]) ?? 0)
+  print("scrolled \(arguments[3]) lines at \(Int(x)),\(Int(y)) on screen")
 } else if command == "combo" {
   if arguments.count != 3 || !["cmd", "option"].contains(arguments[1]) {
     fail("usage: jello-drive combo <cmd|option> <name>")

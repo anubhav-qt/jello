@@ -1,43 +1,46 @@
 # Active tasks
 
-## Guitar: left to check
+## Order (2026-11-03)
+
+1. **Mix UI.** Built 2026-11-03 (`ui/MixPanel.svelte` and the `Mix*`
+   pages, `ui/mix.ts`, `src-tauri/src/mix_commands.rs`, engine meters in
+   `engine/src/meter.*`). Checked in the real app with tools/jello-drive
+   (add, reorder, on dot, remove, arrow keys, fader, + Bus, remove bus,
+   every page, meters while playing). Left: hear it, and look at it full
+   screen (checked only in a 1352x849 window, where the chain and the add
+   list scroll). Not checked by driving: EQ and shaper squares, bus
+   rename, delay and reverb tiles.
+2. **Learning and composing, rethought.** Tutoring, composing through the
+   agent harness, guided mode and everything about learning and using the
+   instrument well. Nothing that exists now has to stay, its UI included.
+   Designed one topic at a time.
+3. **Later:** Produce (after everything else is final), Windows checks, and the
+   finish line song.
+
+Heard and approved by ear: guitar presets, grand piano, song key mappings
+while playing, and Mix sound.
+
+## Guitar: known limits
 
 Built ([ADR 0049](adr/0049-the-keyboard-guitar.md), [design](design.md#guitar)).
-Tests were run; these were not checked:
 
-- Hear Electric Clean, Crunch, Lead and Metal, then tune them by ear. The
-  acoustic is approved. Presets saved earlier stay as saved: remove one from
-  the Sounds folder to get the new values.
 - Loops replay a string's move as a fresh pluck, and Compose doesn't time moves.
-- Windows.
+- Presets saved earlier stay as saved: remove one from the Sounds folder to get
+  the new values.
 
-## Grand piano: left to check
+## Grand piano: later
 
 Built ([ADR 0048](adr/0048-the-grand-piano.md), [design](design.md#sampler)).
-Tests and the real app's controls were checked; these were not:
 
-- Hear it: the touches, the release recordings, the pedal's own sounds and a
-  held chord under the pedal, on the Grand Piano preset.
-- Windows.
-- Later: a room reverb belongs to Mix, whose UI isn't built; `jello_mix` can
-  add one now.
+- A room reverb belongs to Mix; `jello_mix` can add one now.
 
 ## Drums: later
 
 - Either find a better drum kit, or design this kit's key maps ourselves.
 
-## Song key mappings: left to check
+## Song key mappings: known limits
 
 Built ([ADR 0047](adr/0047-song-key-mappings.md), [design](design.md#song-key-mappings)).
-Tests and silent controls were checked; these were not:
-
-- Hear it: the piano's sounding notes, a section switching keys while the
-  arrangement plays, and Try and Use on a real agent card.
-- Tune by ear: the melody shape, and the scales other than major and minor,
-  which rest on theory.
-- Windows.
-
-Known limits:
 
 - The next-key marks cover the looper's picked track, not arrangement playback
   or further progression chords. Compose's now and next chord lights remain.
@@ -46,10 +49,9 @@ Known limits:
   page.
 - Melody labels spell with sharps (D#4) beside chords in flats (Eb).
 
-## Finish Mix backend integration
+## Mix backend: left over
 
-Changes are uncommitted. Runtime checks pass; sound by ear and Windows are
-still unchecked. Do this before starting Mix UI work.
+Built and committed (151f94c).
 
 ### Settled decisions
 
@@ -70,43 +72,12 @@ still unchecked. Do this before starting Mix UI work.
 - Temporary internal track IDs identify preview targets across selection
   and reindexing. These IDs are not persisted or sent to the engine.
 
-### Implemented and reviewed
-
-Mix modulation model, persistence and tools; checked preset and sound edits;
-card Play/Use/restore routing; drum LFO/routing save and undo; sparse ordinary
-connection indices with legacy file support; percentage-point tool amounts;
-bus automation cleanup; listener initialization. Independent Sol reviews
-have no remaining actionable static findings after corrections.
-
-### Fixed after review (2026-10-30)
-
-`cargo test --lib`: 935 passed, 0 failed.
-
-- Song open and WAV render lost settings to the full 1,024-slot mailbox. They
-  now pace their batches (`Engine::make_room`), every lost message is counted
-  (`Conductor::send_counted`), and both report an error instead of going on.
-- Stalled audio is waited for once, up to 500 ms, not once per batch.
-- Stopping an arrangement now puts back what its automation moved.
-
 ### Next
 
-- Real app, audio on (2026-10-30): six songs opened about 40 times with no
-  error and no file changed. Once, "Untitled" and "Untitled 4" ignored clicks
-  and presses for about a minute, with no message; not reproduced in 26 more
-  tries. If it returns, log `open_song` in Rust and `open` in `SongsPanel`.
 - Tests miss two deliberate mistakes: a send ignoring its amount
   (`engine/src/mixer.cpp`) and a replaced effect never freed
   (`engine/src/conductor.cpp`). Add a test for each.
-
-### Other verification and follow-up
-
-- Listener and bus regressions pass, including the previously failing
-  master-listens-to-bus case.
-- Under Node 24.21.0, `npm run build` passed with 0 errors and warnings;
-  `npm run test:agent` passed 8 tests. No UI/JS changes in this task.
-- `git diff --check` passed; no added source em dashes were found.
-- Real-app/browser QA was not run. Jello is not running; native driver
-  Accessibility is trusted, but no browser control tool is available.
-  Audible testing requires the established sound-demo approval. The app
-  has no supported isolated data root, so plan disposable song handling.
-- No Mix UI yet. Mockups follow backend verification and separate approval.
+- Once (2026-10-30), "Untitled" and "Untitled 4" ignored clicks and presses
+  for about a minute after opening, with no message; not reproduced in 26
+  more tries. If it returns, log `open_song` in Rust and `open` in
+  `SongsPanel`.

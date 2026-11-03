@@ -24,6 +24,7 @@ import type {
 import type { SongSender, SongsView } from "./songs";
 import type { PracticeMark, PracticeView } from "./practice";
 import type { MappingSender, MappingView } from "./keys";
+import type { Limiter, MixSender, MixView, Written } from "./mix";
 import type { Tab } from "./tabs";
 import Stage from "./Stage.svelte";
 
@@ -41,6 +42,8 @@ interface StageControls {
   releaseAll(): void;
   // The song's sound, the tempo and what the looper is doing.
   showSound(view: SoundView): void;
+  // The song's mix, as Rust answered (docs/design.md#mix).
+  showMix(view: MixView): void;
   // A message for the player, like where a file was saved.
   showStatus(message: string): void;
   // An arrow key steps the value picked in the sound panel, if any.
@@ -695,6 +698,7 @@ async function openSong(name: string) {
   }
   await askForSound();
   await askForCompose();
+  await askForMix();
 }
 
 async function makeNewSong() {
@@ -706,6 +710,7 @@ async function makeNewSong() {
   }
   await askForSound();
   await askForCompose();
+  await askForMix();
 }
 
 async function renameSong(name: string) {
@@ -1164,6 +1169,54 @@ window.addEventListener("blur", () => {
   letGoOfEverything();
 });
 
+// The Mix panel's messages (src-tauri/src/mix_commands.rs): each answers
+// with the whole mix.
+
+async function askForMix() {
+  try {
+    const view = await invoke<MixView>("mix_view");
+    screen?.showMix(view);
+  } catch (error) {
+    showStatus(`Could not get the mix: ${error}`);
+  }
+}
+
+// Sends `command` with `args` and shows the mix it answers with, or says
+// why it couldn't.
+async function changeMix(command: string, args: Record<string, unknown>) {
+  try {
+    const view = await invoke<MixView>(command, args);
+    screen?.showMix(view);
+  } catch (error) {
+    showStatus(`Could not change the mix: ${error}`);
+  }
+}
+
+// What the Mix panel sends, each in order with the keys.
+const mixSender: MixSender = {
+  setEffect: (place: string, slot: number, kind: string) =>
+    sendInOrder(() => changeMix("set_mix_effect", { place, slot, kind })),
+  moveEffect: (place: string, from: number, to: number) =>
+    sendInOrder(() => changeMix("move_mix_effect", { place, from, to })),
+  setEffectOn: (place: string, slot: number, on: boolean) =>
+    sendInOrder(() => changeMix("set_mix_effect_on", { place, slot, on })),
+  setEffectValue: (place: string, slot: number, word: string, value: Written) =>
+    sendInOrder(() => changeMix("set_mix_effect_value", { place, slot, word, value })),
+  setPan: (place: string, pan: number) =>
+    sendInOrder(() => changeMix("set_mix_pan", { place, pan })),
+  setSend: (track: number, bus: number, amount: number) =>
+    sendInOrder(() => changeMix("set_mix_send", { track, bus, amount })),
+  setBusVolume: (bus: number, volume: number) =>
+    sendInOrder(() => changeMix("set_bus_volume", { bus, volume })),
+  addBus: () => sendInOrder(() => changeMix("add_bus", {})),
+  removeBus: (bus: number) => sendInOrder(() => changeMix("remove_bus", { bus })),
+  renameBus: (bus: number, name: string) =>
+    sendInOrder(() => changeMix("rename_bus", { bus, name })),
+  setLimiter: (limiter: Limiter) =>
+    sendInOrder(() => changeMix("set_limiter", { limiter })),
+  refresh: () => sendInOrder(askForMix),
+};
+
 // What the sound panel sends, each in order with the keys.
 const soundSender: SoundSender = {
   setOscillator: (index, oscillator) =>
@@ -1226,6 +1279,7 @@ function listSongsInOrder(): Promise<SongsView | null> {
 // asks Rust again for everything it shows.
 function redrawAfterAgent() {
   sendInOrder(askForSound);
+  sendInOrder(askForMix);
   sendInOrder(askForCompose);
   sendInOrder(askForSections);
   sendInOrder(async () => {
@@ -1332,6 +1386,7 @@ async function start() {
       onSectionEdit: (edit: SectionEdit) =>
         sendInOrder(() => editSections(edit)),
       soundSender,
+      mixSender,
       songSender,
       onSongChanged: redrawAfterAgent,
     },
@@ -1341,6 +1396,7 @@ async function start() {
   hearTheSections();
   sendInOrder(askForSound);
   sendInOrder(askForCompose);
+  sendInOrder(askForMix);
   sendInOrder(async () => {
     await askForSongs();
   });

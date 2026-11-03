@@ -9,6 +9,7 @@
 #include "limiter.h"
 #include "looper.h"
 #include "mailbox.h"
+#include "meter.h"
 #include "mixer.h"
 #include "sequencer.h"
 #include "song_player.h"
@@ -189,6 +190,20 @@ public:
     // The most the limiter turned the sound down in the last chunk, in dB.
     float limiter_reduction_db() const;
 
+    // What the Mix panel's meters read since the last take, then each
+    // starts again: every track's and bus's loudest sample after its volume
+    // and pan, by chain number, and the master's after the limiter; the
+    // output's true peak and the most the limiter turned it down, in dB;
+    // and the output's short-term loudness now, in LUFS (OutputMeter). Only
+    // one thread may take them.
+    struct Meters {
+        std::array<float, Mixer::chain_count> peaks{};
+        float true_peak = 0.0f;
+        float limiter_reduction_db = 0.0f;
+        float short_term_lufs = OutputMeter::lowest_lufs;
+    };
+    Meters take_meters();
+
     // A layer's notes and volume for the sequencer, which plays the
     // arrangement's layers on the tracks' layer slots, from 0 to
     // Synth::layer_count - 1, while the loop is cleared
@@ -292,6 +307,7 @@ private:
     void publish_sequence_position();
     void publish_sets_in_use();
     void publish_reductions();
+    void publish_meters(const float* out, int frames);
 
     int sample_rate_;
 
@@ -321,6 +337,7 @@ private:
     Tracks tracks_;
     Mixer mixer_;
     Limiter limiter_;
+    OutputMeter meter_;
     Clock clock_;
     Click click_;
     Looper looper_;
@@ -387,4 +404,10 @@ private:
     std::atomic<float> shown_limiter_reduction_{0.0f};
     std::array<std::array<std::atomic<float>, Chain::slot_count>, Mixer::chain_count> shown_reductions_{};
     std::atomic<std::uint64_t> shown_sample_handled_{0};
+
+    // What the meters read since the last take (take_meters).
+    std::array<std::atomic<float>, Mixer::chain_count> shown_peaks_{};
+    std::atomic<float> shown_true_peak_{0.0f};
+    std::atomic<float> shown_most_limiter_reduction_{0.0f};
+    std::atomic<float> shown_short_term_lufs_{OutputMeter::lowest_lufs};
 };

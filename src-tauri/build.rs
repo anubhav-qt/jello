@@ -29,6 +29,7 @@ fn build_engine() {
         .file("../engine/src/tracks.cpp")
         .file("../engine/src/mixer.cpp")
         .file("../engine/src/limiter.cpp")
+        .file("../engine/src/meter.cpp")
         .file("../engine/src/chain.cpp")
         .file("../engine/src/effect.cpp")
         .file("../engine/src/biquad.cpp")

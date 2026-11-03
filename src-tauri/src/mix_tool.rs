@@ -405,7 +405,7 @@ fn number_in(arguments: &Value, name: &str, lowest: f64, highest: f64) -> Result
 }
 
 // A JSON value as a written one, or None for a sort no value has.
-fn written_of_json(given: &Value) -> Option<Written> {
+pub(crate) fn written_of_json(given: &Value) -> Option<Written> {
     if let Some(on) = given.as_bool() {
         return Some(Written::Switch(on));
     }
@@ -418,7 +418,7 @@ fn written_of_json(given: &Value) -> Option<Written> {
     None
 }
 
-fn json_of_written(written: &Written) -> Value {
+pub(crate) fn json_of_written(written: &Written) -> Value {
     match written {
         Written::Number(number) => json!(number),
         Written::Switch(on) => json!(on),

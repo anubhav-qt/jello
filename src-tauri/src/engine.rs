@@ -158,6 +158,13 @@ unsafe extern "C" {
     fn jello_engine_set_limiter(engine: *mut JelloEngine, boost_db: f32, ceiling_db: f32, release_ms: c_int);
     fn jello_engine_use_lookahead(engine: *mut JelloEngine) -> c_int;
     fn jello_engine_limiter_reduction(engine: *mut JelloEngine) -> f32;
+    fn jello_engine_take_meters(
+        engine: *mut JelloEngine,
+        peaks: *mut f32,
+        true_peak: *mut f32,
+        limiter_reduction_db: *mut f32,
+        short_term_lufs: *mut f32,
+    );
     fn jello_engine_set_effect(engine: *mut JelloEngine, chain: c_int, slot: c_int, kind: c_int) -> bool;
     fn jello_engine_move_effect(engine: *mut JelloEngine, chain: c_int, from: c_int, to: c_int) -> bool;
     fn jello_engine_set_effect_on(engine: *mut JelloEngine, chain: c_int, slot: c_int, on: bool);
@@ -363,7 +370,7 @@ pub const PAN_MOST: i32 = 100;
 // The master limiter's settings (docs/design.md#mix-in-the-engine): how
 // much louder the sound is made, the loudest it may get, and how long it
 // takes to come back up after turning the sound down.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Limiter {
     pub boost_db: f32,
     pub ceiling_db: f32,
@@ -384,6 +391,20 @@ pub const START_LIMITER: Limiter = Limiter {
 pub const EFFECT_SLOTS: usize = 8;
 pub const FIRST_BUS_CHAIN: usize = 9;
 pub const MASTER_CHAIN: usize = 13;
+pub const CHAIN_COUNT: usize = 14;
+
+// What the Mix panel's meters read (`Engine::take_meters`): each track's
+// and bus's loudest sample after its volume and pan, by chain number, and
+// at MASTER_CHAIN the loudest leaving the limiter, all as levels from 0;
+// the output's loudest true peak, also a level; the most the limiter
+// turned it down, in dB; and its loudness over the last 3 s, in LUFS.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Meters {
+    pub peaks: [f32; CHAIN_COUNT],
+    pub true_peak: f32,
+    pub limiter_reduction_db: f32,
+    pub short_term_lufs: f32,
+}
 
 // How many values an effect can have, numbered from 0, and the most a
 // connection moves one either way, in its own units
@@ -1623,6 +1644,29 @@ impl Engine {
     pub fn limiter_reduction_db(&self) -> f32 {
         // SAFETY: `raw` points to a live engine until Drop.
         unsafe { jello_engine_limiter_reduction(self.raw) }
+    }
+
+    // What the Mix panel's meters read since the last take, then each
+    // starts again (`jello_engine_take_meters`).
+    pub fn take_meters(&mut self) -> Meters {
+        let mut meters = Meters {
+            peaks: [0.0; CHAIN_COUNT],
+            true_peak: 0.0,
+            limiter_reduction_db: 0.0,
+            short_term_lufs: 0.0,
+        };
+        // SAFETY: `raw` points to a live engine until Drop, and `peaks`
+        // holds CHAIN_COUNT levels, as many as the engine fills.
+        unsafe {
+            jello_engine_take_meters(
+                self.raw,
+                meters.peaks.as_mut_ptr(),
+                &mut meters.true_peak,
+                &mut meters.limiter_reduction_db,
+                &mut meters.short_term_lufs,
+            )
+        };
+        meters
     }
 
     // Puts a new effect of `kind`, or none, in slot `slot` of chain `chain`
@@ -3771,6 +3815,85 @@ mod tests {
         assert!(peak(&samples) <= CEILING);
         assert!(peak(&samples) > CEILING * 0.99);
         assert!(engine.limiter_reduction_db() > 3.0);
+    }
+
+    #[test]
+    fn the_meters_read_silence_as_silence() {
+        let mut engine = Engine::new().unwrap();
+        engine.render(frames_in_ms(&engine, 500));
+        let meters = engine.take_meters();
+        assert_eq!(meters.peaks, [0.0; CHAIN_COUNT]);
+        assert_eq!(meters.true_peak, 0.0);
+        assert_eq!(meters.limiter_reduction_db, 0.0);
+        assert_eq!(meters.short_term_lufs, -70.0);
+    }
+
+    #[test]
+    fn a_track_s_meter_reads_its_loudest_sample_after_its_volume() {
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        let loud = engine.render(frames_in_ms(&engine, 300));
+        let meters = engine.take_meters();
+        assert_eq!(meters.peaks[0], peak(&loud));
+        assert_eq!(meters.peaks[MASTER_CHAIN], peak(&loud));
+        assert_eq!(meters.peaks[1], 0.0);
+        assert_eq!(meters.peaks[FIRST_BUS_CHAIN], 0.0);
+
+        // At half volume, once it has eased there, it reads half.
+        engine.set_track_volume(0, 50);
+        engine.render(frames_in_ms(&engine, 50));
+        engine.take_meters();
+        let half = engine.render(frames_in_ms(&engine, 300));
+        let meters = engine.take_meters();
+        assert_eq!(meters.peaks[0], peak(&half));
+        assert_within_percent(meters.peaks[0], peak(&loud) / 2.0, 2.0);
+    }
+
+    #[test]
+    fn a_take_starts_the_meters_again() {
+        let mut engine = Engine::new().unwrap();
+        engine.note_on(A4, VELOCITY);
+        engine.render(frames_in_ms(&engine, 300));
+        assert!(engine.take_meters().peaks[0] > 0.0);
+        engine.note_off(A4);
+        engine.render(frames_in_ms(&engine, 3000));
+        engine.take_meters();
+        engine.render(frames_in_ms(&engine, 100));
+        let meters = engine.take_meters();
+        assert_eq!(meters.peaks[0], 0.0);
+        assert_eq!(meters.true_peak, 0.0);
+    }
+
+    #[test]
+    fn the_output_s_loudness_and_true_peak_match_a_render_s() {
+        // Three seconds of a held chord: the live short-term loudness is the
+        // whole render's, as listening measures it, and the true peak is at
+        // least the loudest sample.
+        let mut engine = Engine::new().unwrap();
+        for note in [C3, C3 + 4, C3 + 7] {
+            engine.note_on(note, VELOCITY);
+        }
+        engine.render(frames_in_ms(&engine, 1000));
+        engine.take_meters();
+        let held = engine.render(frames_in_ms(&engine, 3000));
+        let meters = engine.take_meters();
+        let measured = crate::loudness::integrated_lufs(&held, engine.sample_rate()).unwrap();
+        assert!((f64::from(meters.short_term_lufs) - measured).abs() < 0.5, "{} {measured}", meters.short_term_lufs);
+        assert!(meters.true_peak >= peak(&held));
+        assert!(meters.true_peak < peak(&held) * 1.1);
+    }
+
+    #[test]
+    fn the_limiter_s_meter_keeps_the_most_it_turned_down() {
+        let mut engine = Engine::new().unwrap();
+        for note in C3..C3 + VOICE_COUNT {
+            engine.note_on(note, 127);
+        }
+        engine.render(frames_in_ms(&engine, 1000));
+        let meters = engine.take_meters();
+        assert!(meters.limiter_reduction_db > 3.0);
+        assert!(meters.peaks[MASTER_CHAIN] <= CEILING);
+        assert!(meters.peaks[0] > CEILING);
     }
 
     #[test]

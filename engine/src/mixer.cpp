@@ -189,6 +189,7 @@ void Mixer::run_track(Tracks& tracks, int track, int frames, const EffectContext
     }
     effects.process(sound, frames, context);
     apply_strip(tracks_[track], sound, frames);
+    keep_peak(track, sound, frames);
     heard_[track] = sound;
 
     for (int i = 0; i < 2 * frames; i++) {
@@ -208,6 +209,7 @@ void Mixer::run_bus(int bus, int frames, const EffectContext& context) {
     }
     effects.process(sound, frames, context);
     apply_strip(buses_[bus], sound, frames);
+    keep_peak(number, sound, frames);
     heard_[number] = sound;
 
     for (int i = 0; i < 2 * frames; i++) {
@@ -246,4 +248,21 @@ void Mixer::send_to_bus(int track, int bus, const float* sound, int frames) {
         input[2 * i] += sound[2 * i] * share;
         input[2 * i + 1] += sound[2 * i + 1] * share;
     }
+}
+
+void Mixer::keep_peak(int number, const float* sound, int frames) {
+    float loudest = peaks_[number];
+    for (int i = 0; i < 2 * frames; i++) {
+        float level = std::fabs(sound[i]);
+        if (level > loudest) {
+            loudest = level;
+        }
+    }
+    peaks_[number] = loudest;
+}
+
+float Mixer::take_peak(int number) {
+    float peak = peaks_[number];
+    peaks_[number] = 0.0f;
+    return peak;
 }

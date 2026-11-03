@@ -42,7 +42,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   Files: `effects.rs` (values), `mix.rs`, `mix_file.rs`,
   `mix_tool.rs` (`jello_mix`), `mix_automation.rs`, `loudness.rs` (LUFS,
   true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
-  No Mix UI yet; mockups follow backend work and separate approval.
+  Mix panel built (`ui/MixPanel.svelte`, `Mix*.svelte`, `ui/mix.ts`,
+  `mix_commands.rs`, meters in `engine/src/meter.*`); not yet heard.
   [Mix design](docs/design.md#mix).
 - Guitar (0049): no recordings; oscillator kind `string`
   (`engine/src/plucked_string.*`), amp per track (`engine/src/amp.*`, Amp page),
