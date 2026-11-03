@@ -125,6 +125,16 @@ int jello_engine_use_lookahead(JelloEngine* engine);
 // for not at all.
 float jello_engine_limiter_reduction(JelloEngine* engine);
 
+// The Mix panel's meters since the last call, then each starts again from
+// silence. `peaks` gets JELLO_CHAIN_COUNT levels, from 0: each track's and
+// bus's loudest sample after its volume and pan, by chain number, and at
+// JELLO_MASTER_CHAIN the loudest leaving the limiter. Then the output's
+// loudest true peak as a level, the most the limiter turned it down in dB,
+// and its loudness over the last 3 s in LUFS, -70 for silence. Only one
+// thread may call it.
+void jello_engine_take_meters(JelloEngine* engine, float* peaks, float* true_peak, float* limiter_reduction_db,
+                              float* short_term_lufs);
+
 // Effects. Every track, bus and the master has a chain of JELLO_EFFECT_SLOTS
 // slots, and the sound goes through them in order. Chains are numbered:
 // the tracks' from 0, the buses' from JELLO_FIRST_BUS_CHAIN, and the

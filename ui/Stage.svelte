@@ -4,7 +4,7 @@
      on from the top down. Its tabs share the
      keyboard: Play shows the notes held, Compose adds its tape, outlines
      the chord keys and guides the melody keys, and Produce is a placeholder
-     for now. Compose also has the sound panel. In every tab, right
+     for now. Compose also has the sound and Mix panels. In every tab, right
      Shift and a lane under the keyboard show the looper, messages are
      typed out in the top bar, and the open song's name there opens the
      Songs panel (docs/adr/0038-song-files.md). The agent's panel docks on
@@ -37,6 +37,8 @@
   } from "./keyboard";
   import { beatsNow, type SoundSender, type SoundView } from "./sound";
   import SoundPanel from "./SoundPanel.svelte";
+  import MixPanel from "./MixPanel.svelte";
+  import type { MixSender, MixView } from "./mix";
   import type { SongSender, SongsView } from "./songs";
   import SongsPanel from "./SongsPanel.svelte";
   import type { Picked } from "./sound-scales";
@@ -79,8 +81,9 @@
     onComposeEdit: (action: string, place: number) => void;
     // One change to the song's sections (docs/design.md#tracks-and-sections).
     onSectionEdit: (edit: SectionEdit) => void;
-    // What the sound panel and the Songs panel send to Rust.
+    // What the sound panel, the Mix panel and the Songs panel send to Rust.
     soundSender: SoundSender;
+    mixSender: MixSender;
     songSender: SongSender;
     // The agent's Undo may have changed the song: ask Rust for it again.
     onSongChanged: () => void;
@@ -107,6 +110,7 @@
     onComposeEdit,
     onSectionEdit,
     soundSender,
+    mixSender,
     songSender,
     onSongChanged,
   }: Props = $props();
@@ -244,7 +248,11 @@
   let tried: string | null = $state(null);
   // Whether the sound panel is open. It opens over Compose's tape.
   let soundPanelOpen = $state(false);
-  // The sound panel's value picked for the arrow keys, if any.
+  // Whether the Mix panel is open, in the same place (docs/design.md#mix),
+  // and the mix as Rust answered last.
+  let mixPanelOpen = $state(false);
+  let mix: MixView | null = $state(null);
+  // The sound or Mix panel's value picked for the arrow keys, if any.
   let picked: Picked | null = $state(null);
   let soundModifierHeld = $state(false);
 
@@ -294,6 +302,7 @@
     }
     keysPageOpen = !keysPageOpen;
     soundPanelOpen = false;
+    mixPanelOpen = false;
     songsOpen = false;
     letGo();
     tick().then(placeLane);
@@ -342,6 +351,7 @@
     songsOpen = !songsOpen;
     if (songsOpen) {
       soundPanelOpen = false;
+      mixPanelOpen = false;
     }
     letGo();
   }
@@ -350,6 +360,16 @@
     soundPanelOpen = !soundPanelOpen;
     if (soundPanelOpen) {
       songsOpen = false;
+      mixPanelOpen = false;
+    }
+    letGo();
+  }
+
+  function switchMixPanel() {
+    mixPanelOpen = !mixPanelOpen;
+    if (mixPanelOpen) {
+      songsOpen = false;
+      soundPanelOpen = false;
     }
     letGo();
   }
@@ -610,8 +630,9 @@
       closeKeysPage();
       return true;
     }
-    if (soundPanelOpen || songsOpen) {
+    if (soundPanelOpen || mixPanelOpen || songsOpen) {
       soundPanelOpen = false;
+      mixPanelOpen = false;
       songsOpen = false;
       letGo();
       return true;
@@ -745,6 +766,10 @@
     songs = view;
   }
 
+  export function showMix(view: MixView) {
+    mix = view;
+  }
+
   export function showSound(view: SoundView) {
     sound = view;
     soundAt = performance.now();
@@ -818,6 +843,30 @@
       <span class="action-name">Sound</span>
       <span class="action-value">{wave}</span>
     </button>
+    <button
+      type="button"
+      class="action top-button"
+      class:is-open={mixPanelOpen}
+      title="The Mix panel: levels, effects and the master"
+      onclick={(event) => clickThenLetGo(event, switchMixPanel)}
+    >
+      <svg
+        class="tab-icon"
+        viewBox="0 0 16 16"
+        width="16"
+        height="16"
+        aria-hidden="true"
+      >
+        <path
+          d="M4 2v12M8 2v12M12 2v12M2.5 10h3M6.5 5h3M10.5 8h3"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+      </svg>
+      <span class="action-name">Mix</span>
+    </button>
   {/snippet}
 
   <TopBar
@@ -869,6 +918,18 @@
             onPick={pick}
             onLetGo={letGo}
             send={soundSender}
+          />
+        {:else if mixPanelOpen && sound !== null}
+          <MixPanel
+            {sound}
+            {mix}
+            keysAcross={keysAcross(platform)}
+            adjustModifier={platform === "mac" ? "Left ⌘" : "Left Alt"}
+            {picked}
+            onPick={pick}
+            onLetGo={letGo}
+            send={mixSender}
+            {soundSender}
           />
         {:else}
           {#if tab === "play" && practice !== null}

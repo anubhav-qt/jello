@@ -92,6 +92,12 @@ public:
     // the start of each, so they move the same however the sound is split.
     void render(Tracks& tracks, float* out, int frames);
 
+    // The loudest sample chain `number`'s sound reached, after its volume
+    // and pan, since the last take, then starts again from silence. Tracks
+    // and buses only: from 0 to master_chain - 1, which the caller makes
+    // sure of.
+    float take_peak(int number);
+
 private:
     // How many frames each track renders into its own buffer at a time.
     static constexpr int buffer_frames = Chain::most_frames;
@@ -122,6 +128,9 @@ private:
     // Puts `frames` frames of `sound` through `strip`, in place.
     void apply_strip(Strip& strip, float* sound, int frames);
 
+    // Keeps the loudest sample of `frames` frames of chain `number`'s sound.
+    void keep_peak(int number, const float* sound, int frames);
+
     // Adds `frames` frames of `sound` to bus `bus`'s input at track
     // `track`'s send.
     void send_to_bus(int track, int bus, const float* sound, int frames);
@@ -140,6 +149,9 @@ private:
     std::vector<std::unique_ptr<Chain>> chains_;
 
     std::array<int, master_chain> order_;
+
+    // Each track's and bus's loudest sample since the last take.
+    std::array<float, master_chain> peaks_{};
 
     // Each track's and bus's sound in this piece, by chain number, after
     // its chain and strip. A bus's holds what the tracks send it until it

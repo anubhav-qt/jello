@@ -25,6 +25,7 @@ Conductor::Conductor(int sample_rate)
       tracks_(sample_rate),
       mixer_(sample_rate),
       limiter_(sample_rate),
+      meter_(sample_rate),
       clock_(sample_rate),
       click_(sample_rate),
       looper_(loop_changes_),
@@ -452,6 +453,17 @@ float Conductor::limiter_reduction_db() const {
     return shown_limiter_reduction_.load();
 }
 
+Conductor::Meters Conductor::take_meters() {
+    Meters meters;
+    for (int chain = 0; chain < Mixer::chain_count; chain++) {
+        meters.peaks[chain] = shown_peaks_[chain].exchange(0.0f);
+    }
+    meters.true_peak = shown_true_peak_.exchange(0.0f);
+    meters.limiter_reduction_db = shown_most_limiter_reduction_.exchange(0.0f);
+    meters.short_term_lufs = shown_short_term_lufs_.load();
+    return meters;
+}
+
 void Conductor::layer_note_on(int track, int slot, int note, int velocity) {
     Event event{EventType::layer_note_on, note, velocity};
     event.track = track;
@@ -697,6 +709,7 @@ void Conductor::render(float* out, int frames) {
     shown_limiter_reduction_.store(limiter_.reduction_db());
 
     publish_reductions();
+    publish_meters(out, frames);
     publish_looper_status();
     publish_song_position();
     publish_sequence_position();
@@ -979,4 +992,36 @@ void Conductor::publish_reductions() {
             shown_reductions_[chain][slot].store(reduction);
         }
     }
+}
+
+namespace {
+
+// Keeps `number` in `shown` if it is more than what is there. Only the
+// audio thread raises it and only the taker lowers it, to 0, so a raise
+// lost to a take in between is one chunk's reading.
+void keep_most(std::atomic<float>& shown, float number) {
+    if (number > shown.load()) {
+        shown.store(number);
+    }
+}
+
+}  // namespace
+
+void Conductor::publish_meters(const float* out, int frames) {
+    for (int chain = 0; chain < Mixer::master_chain; chain++) {
+        keep_most(shown_peaks_[chain], mixer_.take_peak(chain));
+    }
+    float loudest = 0.0f;
+    for (int i = 0; i < 2 * frames; i++) {
+        float level = std::fabs(out[i]);
+        if (level > loudest) {
+            loudest = level;
+        }
+    }
+    keep_most(shown_peaks_[Mixer::master_chain], loudest);
+
+    meter_.process(out, frames);
+    keep_most(shown_true_peak_, meter_.take_true_peak());
+    keep_most(shown_most_limiter_reduction_, limiter_.reduction_db());
+    shown_short_term_lufs_.store(meter_.short_term_lufs());
 }

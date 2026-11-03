@@ -32,6 +32,7 @@ mod memory;
 mod mic;
 mod mix;
 mod mix_automation;
+mod mix_commands;
 mod mix_file;
 mod mix_tool;
 mod modulation;
@@ -252,6 +253,19 @@ pub fn run() {
             commands::edit_sections,
             commands::render_wav,
             commands::stop_song,
+            mix_commands::mix_view,
+            mix_commands::mix_meters,
+            mix_commands::set_mix_effect,
+            mix_commands::move_mix_effect,
+            mix_commands::set_mix_effect_on,
+            mix_commands::set_mix_effect_value,
+            mix_commands::set_mix_pan,
+            mix_commands::set_mix_send,
+            mix_commands::set_bus_volume,
+            mix_commands::add_bus,
+            mix_commands::remove_bus,
+            mix_commands::rename_bus,
+            mix_commands::set_limiter,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1791,7 +1791,38 @@ Mix panel's mockups come next, each approved before it is built.
   Decided 2026-10-25.
 - **Screen.** A Mix button beside Sound in Compose opens a Mix panel in
   the tape's slot, like the Sound panel; the keyboard stays. Its look gets
-  a few mockups first. Decided 2026-10-25.
+  a few mockups first. Decided 2026-10-25. Frame picked 2026-11-03: levels
+  and one strip. On the left, every track, bus and the master as a thin
+  strip with its meter, volume and pan; a click picks one, as left Cmd and
+  a number pick a track. In the middle, the picked strip's 8 slots, top to
+  bottom. On the right, the open effect in the Sound panel's look. Turned
+  down: a board of every strip whose effect replaces it, and one strip at a
+  time with buses and master as tabs. The chain's last row, Out (picked
+  2026-11-03), is where the sound leaves: it reads the volume, pan and
+  sends, and a click opens them on the right in an effect's place. A bus's
+  Out holds its volume and pan, the master's its limiter. Turned down:
+  pan and sends always under the chain, which leaves no room for 4 buses.
+  Effect pages, each in the Sound panel's look (a drawing with squares to
+  drag, dot rows, arrow keys). Approved 2026-11-03, dynamics: the
+  compressor draws input against output with a square at the threshold
+  and a meter of how far it turns down; the gate draws the drop by its
+  range below the threshold, with a dot when open; the master's Out
+  draws the last 4 s of peaks against the limiter's ceiling, with what it
+  cut faint, and reads loudness in LUFS and true peak. Approved
+  2026-11-03, tone: the EQ draws its curve from 20 Hz to 20 kHz with a
+  numbered square per band, and tiles 1 to 8 under it pick a band (dim
+  when off); the filter draws its curve with one square for cutoff and
+  resonance and a faint curve where loudness takes it; saturation draws
+  input against output, bending harder with drive, and its output is
+  either matched to the input's loudness or set. Approved 2026-11-03,
+  time and movement: the chorus draws one wobbling line per copy; the
+  delay draws its echoes as bars bouncing between left and right, each
+  quieter, with a square on the first; the reverb draws the gap before
+  the room answers and the tail dying away, with Room, Hall and Plate
+  as starting points and Freeze; the volume shaper draws volume over its
+  cycle with squares to drag, a click on the line adds one (up to 16)
+  and a double click removes one. Built 2026-11-03
+  (`ui/MixPanel.svelte`).
 - **Agent.** One `jello_mix` tool edits slots, buses, sends, sidechain
   and the master, like `jello_sound` for sound. Listening gains loudness
   in LUFS and true peak. Decided 2026-10-25.

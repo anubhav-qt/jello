@@ -856,6 +856,17 @@ float jello_engine_limiter_reduction(JelloEngine* engine) {
     return engine->conductor.limiter_reduction_db();
 }
 
+void jello_engine_take_meters(JelloEngine* engine, float* peaks, float* true_peak, float* limiter_reduction_db,
+                              float* short_term_lufs) {
+    Conductor::Meters meters = engine->conductor.take_meters();
+    for (int chain = 0; chain < JELLO_CHAIN_COUNT; chain++) {
+        peaks[chain] = meters.peaks[chain];
+    }
+    *true_peak = meters.true_peak;
+    *limiter_reduction_db = meters.limiter_reduction_db;
+    *short_term_lufs = meters.short_term_lufs;
+}
+
 bool jello_engine_set_effect(JelloEngine* engine, int chain, int slot, int kind) {
     if (!is_valid_chain(chain)) {
         return false;
