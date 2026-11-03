@@ -71,6 +71,57 @@
 
 /* Plain square buttons: a thin edge, white text. Lit ones are lavender
    around the text, never in it. */
+/* The song's Learn switch: a small box, filled lavender while on. */
+.agent-learn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font:
+    800 12px Doto,
+    monospace;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.agent-learn.is-on {
+  color: #fff;
+}
+.agent-learn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.agent-learn-box {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border: 1px solid rgba(var(--ink), 0.3);
+  border-radius: 2px;
+}
+.agent-learn-box::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 8px;
+  border-radius: 1px;
+  background: rgba(var(--ink), 0.3);
+}
+.agent-learn.is-on .agent-learn-box {
+  border-color: rgb(var(--accent));
+}
+.agent-learn.is-on .agent-learn-box::after {
+  left: auto;
+  right: 2px;
+  background: rgb(var(--accent));
+}
+.agent-learn:not(:disabled):hover .agent-learn-box {
+  border-color: rgba(var(--accent), 0.75);
+}
 .agent-button-plain {
   padding: 5px 10px;
   border: 1px solid rgba(var(--ink), 0.2);

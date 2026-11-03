@@ -26,6 +26,7 @@ import type { PracticeMark, PracticeView } from "./practice";
 import type { MappingSender, MappingView } from "./keys";
 import type { Limiter, MixSender, MixView, Written } from "./mix";
 import type { Tab } from "./tabs";
+import type { PathView } from "./path";
 import Stage from "./Stage.svelte";
 
 const page = findElement<HTMLElement>("#app");
@@ -57,6 +58,8 @@ interface StageControls {
   showSections(view: SectionsView): void;
   // The songs and the one open, as Rust answered.
   showSongs(view: SongsView): void;
+  // The song's learning path, as Rust answered.
+  showPath(view: PathView): void;
   // The agent pressed or let go of a key, playing a phrase.
   showAgentKey(code: string, down: boolean): void;
   // The agent marked keys with a keys card.
@@ -162,11 +165,19 @@ function showStatus(message: string) {
   }
 }
 
+// How many chords the song had at the last answer, so the path, which
+// counts them, is asked again only when that changes.
+let chordCountBefore = -1;
+
 function showCompose(view: ComposeView) {
   if (screen !== null) {
     screen.showCompose(view);
   }
   keepWatchingSong(view);
+  if (view.progression.length !== chordCountBefore) {
+    chordCountBefore = view.progression.length;
+    sendInOrder(askForPath);
+  }
 }
 
 // While the song plays, the playhead moves with no key pressed, so the page
@@ -699,6 +710,7 @@ async function openSong(name: string) {
   await askForSound();
   await askForCompose();
   await askForMix();
+  await askForPath();
 }
 
 async function makeNewSong() {
@@ -711,6 +723,7 @@ async function makeNewSong() {
   await askForSound();
   await askForCompose();
   await askForMix();
+  await askForPath();
 }
 
 async function renameSong(name: string) {
@@ -720,6 +733,7 @@ async function renameSong(name: string) {
   } catch (error) {
     showStatus(`Could not rename the song: ${error}`);
   }
+  await askForPath();
 }
 
 async function songNameProblem(name: string): Promise<string | null> {
@@ -980,6 +994,18 @@ async function askForSections() {
     screen?.showSections(view);
   } catch (error) {
     showStatus(`Could not get the sections: ${error}`);
+  }
+  // The path counts the song's sections and tracks, so it is asked with
+  // them.
+  await askForPath();
+}
+
+async function askForPath() {
+  try {
+    const view = await invoke<PathView>("path_view");
+    screen?.showPath(view);
+  } catch (error) {
+    showStatus(`Could not get the learning path: ${error}`);
   }
 }
 

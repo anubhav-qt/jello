@@ -41,6 +41,7 @@ use crate::engine::{
     FASTEST_TEMPO, FULL_VOLUME, GLIDE_KEY_NOTE, MAX_LAYERS, SLOWEST_TEMPO, START_TEMPO, TRACK_COUNT, drum_note,
     PEDAL_KEY_NOTE, VIBRATO_KEY_NOTE,
 };
+use crate::path::{SongPath, done_of_names};
 use crate::presets::name_problem;
 use crate::harmony::{Chord, Key, chord_name, chord_of_name, key_name, key_of_name, pitch_of_name};
 use crate::sound_file::{
@@ -113,6 +114,8 @@ pub struct Song {
     // Pan, sends, effects, buses and the master (src/mix.rs), with a strip
     // for each track.
     pub mix: Mix,
+    // Whether Learn is on and which stages are done (src/path.rs).
+    pub path: SongPath,
 }
 
 // A chord of the song and how long it was held.
@@ -225,6 +228,7 @@ impl Song {
             sections: Vec::new(),
             arrangement: Vec::new(),
             mix: Mix::new(1),
+            path: SongPath::default(),
         }
     }
 
@@ -375,6 +379,12 @@ pub fn text_of(song: &Song) -> String {
     write_flag(&mut text, "snap", song.snap);
     write_number(&mut text, "picked", song.picked + 1);
     write_arrangement(&mut text, song);
+    write_flag(&mut text, "learn", song.path.learn);
+    let mut done = Vec::new();
+    for stage in &song.path.done {
+        done.push(quoted(stage));
+    }
+    text.push_str(&format!("stages_done = [{}]\n", done.join(", ")));
 
     // One chord a line, named for the key.
     text.push('\n');
@@ -713,6 +723,16 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
     let tempo = read_count(&table, "tempo", START_TEMPO);
     song.tempo = tempo.clamp(SLOWEST_TEMPO, FASTEST_TEMPO);
     song.snap = read_flag(&table, "snap", true);
+    song.path.learn = read_flag(&table, "learn", false);
+    let mut stage_names = Vec::new();
+    if let Some(Value::Array(list)) = table.get("stages_done") {
+        for item in list {
+            if let Value::String(name) = item {
+                stage_names.push(name.clone());
+            }
+        }
+    }
+    song.path.done = done_of_names(&stage_names);
 
     for item in items(&table, "chords") {
         if let Some(held) = read_chord(item) {
@@ -1263,6 +1283,10 @@ mod tests {
             sections: vec![verse, chorus],
             arrangement: vec![0, 1, 0],
             mix: full_mix(),
+            path: SongPath {
+                learn: true,
+                done: vec![String::from("idea"), String::from("chords")],
+            },
         }
     }
 
@@ -1456,6 +1480,7 @@ pads = [
             sections: Vec::new(),
             arrangement: Vec::new(),
             mix: Mix::new(1),
+            path: SongPath::default(),
         };
         assert_eq!(song, new_song);
         assert_eq!(song, Song::new(&SoundProfile::new()));

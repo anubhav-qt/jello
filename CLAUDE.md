@@ -24,10 +24,11 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   Alt Windows); Shift vibrato, Option glide (right Alt Windows), Space sustain
   pedal; F12 steps the wave in Sound. Left Cmd+1..9 picks or makes a track, +Return saves a
   section, +Delete removes the last; right Option jumps to the drums track.
-- Agent (0041, 0043): MCP tool server in Rust (`tool_server.rs`,
-  `tools.rs`, `listening.rs`, `undo.rs`); steps 1 to 9 done, step 10 asks
-  first. Providers: Anthropic, OpenAI, Google. Input box: Type, Speak and
-  Hum tabs ([design](docs/design.md#the-input-box)).
+- Agent (0041, 0043): MCP tool server in Rust (`tool_server.rs`, `tools.rs`,
+  `listening.rs`, `undo.rs`); Anthropic, OpenAI, Google; input box Type,
+  Speak, Hum. Being rebuilt by ADR 0050 ([decisions](docs/design.md#ai-and-learning-rethought-2026-11-03),
+  progress in [tasks](docs/tasks.md)); built: the path (`path.rs`,
+  `path_tool.rs`, `ui/TopicMap.svelte`, stage strip, Learn switch).
 - Sampler (0044, 0048): `instruments.rs`, `drums.rs`, `starters.rs` (download
   only on click), `engine/src/sample_set.*`, `drum_kit.*`, `release_sounds.*`.
   Piano: 6 velocity layers picked by an oscillator's touch, release and pedal

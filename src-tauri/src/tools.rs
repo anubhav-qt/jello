@@ -23,6 +23,7 @@ use crate::instruments;
 use crate::key_map::KeyMap;
 use crate::key_stats::KeyStats;
 use crate::keys_tool::{self, KeyOffers};
+use crate::path_tool;
 use crate::layer_notes;
 use crate::listening;
 use crate::memory::{self, Memory};
@@ -583,6 +584,7 @@ pub fn list() -> Value {
     if let Some(list) = tools.as_array_mut() {
         list.push(mix_tool::description());
         list.push(keys_tool::description());
+        list.push(path_tool::description());
     }
     tools
 }
@@ -634,6 +636,7 @@ pub fn call(studio: &Studio, name: &str, arguments: &Value) -> ToolAnswer {
         "jello_arrange" => arrange_sections(studio, arguments),
         "jello_mix" => mix_tool::answer(studio, arguments),
         "jello_keys" => keys_tool::answer(studio, arguments),
+        "jello_path" => path_tool::answer(studio, arguments),
         _ => Err(format!("Jello has no tool called {name}")),
     };
     match answer {
@@ -2375,5 +2378,53 @@ mod tests {
         let refused = test.call("jello_practice", json!({"action": "set", "piece": wrong}));
         assert!(refused.failed);
         assert!(refused.text.contains("area is one of"), "{}", refused.text);
+    }
+
+    #[test]
+    fn the_path_starts_at_the_idea_with_learn_off() {
+        let test = TestStudio::new();
+        let path = json_text(&test.call("jello_path", json!({"action": "look"})));
+        assert_eq!(path["learn"], false);
+        assert_eq!(path["current"], "idea");
+        assert_eq!(path["stages"].as_array().unwrap().len(), 9);
+        assert_eq!(path["areas"][0]["name"], "Theory");
+    }
+
+    #[test]
+    fn the_agent_turns_learn_on_and_marks_stages() {
+        let test = TestStudio::new();
+        let answer = test.call("jello_path", json!({"action": "learn", "on": true}));
+        assert_eq!(answer.changes, ["Learn on"]);
+        assert_eq!(json_text(&answer)["learn"], true);
+        test.call("jello_path", json!({"action": "stage", "stage": "idea", "done": true}));
+        let answer = test.call("jello_path", json!({"action": "stage", "stage": "motif", "done": true}));
+        let path = json_text(&answer);
+        assert_eq!(path["current"], "chords");
+        assert_eq!(path["stages"][2]["state"], "current");
+        assert!(test.composer.lock().unwrap().path().learn);
+    }
+
+    #[test]
+    fn a_wrong_path_call_changes_nothing() {
+        let test = TestStudio::new();
+        assert!(test.call("jello_path", json!({"action": "stage", "stage": "bridge", "done": true})).failed);
+        assert!(test.call("jello_path", json!({"action": "stage", "stage": "idea"})).failed);
+        assert!(test.call("jello_path", json!({"action": "learn"})).failed);
+        assert!(test.call("jello_path", json!({"action": "jump"})).failed);
+        assert!(test.call("jello_path", json!({"action": "topic", "topic": "Rhyme", "covered": true})).failed);
+        assert_eq!(test.composer.lock().unwrap().path(), &crate::path::SongPath::default());
+    }
+
+    #[test]
+    fn covered_topics_reach_the_map() {
+        let test = TestStudio::new();
+        let folder = test_folder("path-topics");
+        *test.memory.lock().unwrap() = Memory::load(Some(folder));
+        let answer = test.call("jello_path", json!({"action": "topic", "topic": "Scales", "covered": true}));
+        assert_eq!(answer.changes, ["Topic Scales covered"]);
+        let path = json_text(&answer);
+        assert_eq!(path["areas"][0]["topics"][0]["state"], "done");
+        assert_eq!(path["areas"][0]["topics"][1]["state"], "current");
+        assert!(test.call("jello_path", json!({"action": "topic", "topic": "Juggling", "covered": true})).failed);
     }
 }

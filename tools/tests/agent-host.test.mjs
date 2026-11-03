@@ -427,3 +427,36 @@ test("only chat files in the chats folder can be opened", async () => {
     rmSync(made.agentDir, { recursive: true, force: true });
   }
 });
+
+test("the Learn line comes when the switch changes, and is left out of what the player said", async () => {
+  const tools = await fakeToolServer();
+  const made = await fakeHost(await jelloTools(toolServer(tools.url, PASSWORD)));
+  const seen = [];
+  try {
+    const answer = (context) => {
+      seen.push(context);
+      return fauxAssistantMessage([fauxText("Ok.")]);
+    };
+    made.faux.setResponses([answer, answer, answer, answer]);
+    await made.host.send("Why does my chorus float?", "composer", "Song", [], "", [], true);
+    await made.host.send("Hint?", "composer", "Song", [], "", [], true);
+    await made.host.send("Just do it", "composer", "Song", [], "", [], false);
+    await made.host.send("Thanks", "composer", "Song");
+
+    const lastSaid = (context) => {
+      const said = playerMessages(context);
+      return JSON.stringify(said[said.length - 1]);
+    };
+    assert.ok(lastSaid(seen[0]).includes("Learn is on for this song."));
+    assert.ok(!lastSaid(seen[1]).includes("Learn is"));
+    assert.ok(lastSaid(seen[2]).includes("Learn is off for this song."));
+    assert.ok(!lastSaid(seen[3]).includes("Learn is"));
+
+    const said = "Now Composer, in the Compose tab.\n\nLearn is on for this song.\n\nWhy?";
+    assert.equal(withoutJobLine(said), "Why?");
+    assert.equal(withoutJobLine("Learn is off for this song.\n\nDo it"), "Do it");
+  } finally {
+    tools.server.close();
+    rmSync(made.agentDir, { recursive: true, force: true });
+  }
+});

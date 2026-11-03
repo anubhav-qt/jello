@@ -50,8 +50,12 @@
     onSongChanged: () => void;
     // The player sent a message, so the agent's marks on the keys go.
     onSent: () => void;
+    // Whether the song's Learn switch is on, or null until Rust has said,
+    // and what flipping it does (docs/design.md#ai-and-learning-rethought-2026-11-03).
+    learn: boolean | null;
+    onLearn: (on: boolean) => void;
   }
-  let { visible, job, onSongChanged, onSent }: Props = $props();
+  let { visible, job, onSongChanged, onSent, learn, onLearn }: Props = $props();
 
   interface Status {
     models: ModelView[];
@@ -1143,6 +1147,18 @@
   <header class="agent-top">
     <h2>{jobName(job)}</h2>
     <div class="agent-top-buttons">
+      <button
+        type="button"
+        class="agent-learn"
+        class:is-on={learn === true}
+        role="switch"
+        aria-checked={learn === true}
+        disabled={learn === null}
+        title="Learn: hints, checks and lessons on this song instead of takes"
+        onclick={() => onLearn(learn !== true)}
+      >
+        Learn <span class="agent-learn-box" aria-hidden="true"></span>
+      </button>
       <button
         type="button"
         class="agent-button-plain"

@@ -2452,6 +2452,162 @@ Later: note-by-note editing like Melodyne (v2, one of the hardest problems in
 the project) and AI voice conversion on the GPU (v3, only with voice models
 we have rights to).
 
+## AI and learning, rethought (2026-11-03)
+
+Task 2 in [tasks](tasks.md): the AI and learning are redesigned one topic at
+a time. Each decision here replaces what it covers in the sections below
+(Learning mode, AI, the agent harness and the agent mode); the tool server,
+`jello_listen`, scoring, `jello_theory`, memory, skills, hum, dictation and
+attachments stay underneath.
+
+- **Takes, not replies.** Whatever the AI makes lands as a draft take on the
+  thing it changes (a section on the tape, a sound, a chain), drawn dashed
+  lavender. The player compares it with their own, keeps it or drops it.
+  This replaces Undo per reply.
+- **Where it lives: a slim rail on the right** (picked 2026-11-03 from
+  [three placements](https://claude.ai/artifact/62LZiAuS9BAD1CkHkx7UJ8),
+  board C). About 360 px at fullscreen, beside the tape and the keyboard,
+  which move left of center. Header: Jello AI, the model, Chats, New. Under
+  it, past exchanges, newest at the bottom: what was asked (dim), one line
+  of answer, and a chip naming the take and its state (open in lavender,
+  kept or dropped dim); the open take shows its keys. At the bottom, the
+  input box with Type, Speak and Hum. It replaces the agent column and the
+  job named button: one agent, no Tutor, Composer or Producer.
+- **One take per answer** (2026-11-03). Everything one answer changes,
+  across the tape, Sound and Mix, is one take, kept or dropped together.
+  In the rail a click drops one part of it.
+- **Keys** (2026-11-03). Hold right Command to talk (dictation into the
+  rail); tap it to flip between the player's version and the take, which
+  stays flipped until the next tap. While a take is open, Return keeps it
+  and Esc drops it; with none open they do their usual jobs. While talking,
+  Jello blocks Command shortcuts (like Command Q) and lets go of held notes,
+  since macOS can drop key-ups while Command is down. Windows has no free
+  modifier left (right Ctrl is drum mode): its key is picked later.
+- **Never lose an idea: who picks** (2026-11-03). Jello records every
+  press. After a jam, Rust measures candidates (phrases played again in
+  about the same rhythm, held or looped moments); the AI chooses the 2 or
+  3 worth keeping from them and names each in a line. Without a model,
+  the card shows Jello's top three by measure.
+- **The jam card shows after a pause** (2026-11-03): about 10 s with no
+  press, quietly in the rail, with no sound and without taking any key.
+- **Keeping a moment: clicks in the rail** (2026-11-03). Each moment on
+  the card has Play, Loop (a new loop layer) and Section (a new section)
+  buttons; no keys.
+- **Jam partner: the AI makes each answer** (2026-11-03), not a Rust
+  generator. A model takes seconds, so the answer cannot start on the next
+  bar.
+- **The wait** (2026-11-03). At first the jam takes turns: after the
+  player's 2 bars the beat pauses, and when the answer is ready it counts
+  in a bar and plays. Once there is enough material that repeating it won't
+  feel like repetition, the beat keeps going instead: everything so far
+  loops until the answer is ready and comes in on the next phrase line.
+  Jello switches at 8 bars: two rounds of call and answer.
+- **The groove that follows** (2026-11-03). The AI writes a groove (like
+  drums and bass) under the player and, from what they played, rewrites it
+  every 8 bars; each new version comes in on the next 8 bar line.
+- **Practicing your own songs: one track** (2026-11-03). Any section
+  becomes a practice piece: the player picks a track and plays its presses
+  as recorded, scored per hand (left and right halves of the keyboard),
+  while Jello plays the other tracks. A two-hand reduction of a whole
+  section by the AI can come later as another kind of piece.
+- **The skill record: skills from songs** (2026-11-03). Jello names
+  what each practiced bar needs, measured from its notes (like "chord
+  change on the and", "left hand holds while the right moves", "run of
+  sixteenths"); each skill gets its own level from the tries, and new
+  ones appear only when a song needs something new. A general list like
+  today's stays too: each song skill sits under one of the seven areas
+  (technique, rhythm, harmony, ear, improvising, pieces, writing), whose
+  levels come from their skills.
+- **The practice screen: two hand lanes** (2026-11-03, board A of
+  [the mockups](https://claude.ai/artifact/6AcaTqshSGLXUMQ597CcnP)). In
+  the tape's place: a head row (section, track, the tempo ladder with the
+  current step lavender, tries and clean tries in a row, the loop), a bar
+  ruler, then a lane per hand moving past a white now line. Each note is a
+  block with its key letter and, under it, what it plays in that note's
+  color; once played it says how many ms late or "missed" (dashed). Each
+  lane's label shows that hand's hits and average offset. The hard bar is
+  framed lavender as the loop; the bars after it stay dim until it is
+  clean. The keyboard marks the next key (numbered 1) and outlines the
+  ones after it. Tries, coaching and the bar's skill (ten dots, its area,
+  the song and bar it came from) are lines in the rail.
+- **Taste drills: targets from the player's songs** (2026-11-03). Drills
+  run in the real Sound and Mix panels: match a target sound until it
+  measures close, name the chord, hear which EQ band moved, match a
+  reference track's balance. Targets come from the player's own presets,
+  progressions, mixes and attached references. A graded set, easy to
+  hard, is a todo for later.
+- **Answering ear drills: both ways** (2026-11-03). The player answers
+  a chord, interval or phrase drill either by playing it back on the keys
+  (Jello checks the notes; a right chord key shows its name) or by
+  picking one of 3 or 4 answers in the rail. The EQ drill is answered by
+  picking the band in Mix.
+- **One agent, no jobs** (2026-11-03). No Tutor, Composer or Producer:
+  one set of instructions, and each request carries what is open (the
+  tab, Sound or Mix and its page, the picked track and section). It acts
+  there first. When an answer changes something not open, the screen
+  stays put: the take lands there, the rail chip names where ("Mix ·
+  Drums"), a click on the chip opens it, and right Command still flips
+  what is heard.
+- **Tools do the work** (2026-11-03, the player's rule for the harness).
+  Every tool answers with very detailed state, and as much as possible is
+  code in the tool: the model calls it with only the thing to change, and
+  the tool works out and sets everything else. The agent has complete
+  understanding and control of every setting. Even a vague request, like a
+  Pink Floyd song's name, works: the tool fetches the song (yt-dlp, run as
+  a separate program like FFmpeg), measures and learns from its audio, and
+  tweaks the settings toward it. Designed as its own topic after the path.
+- **The learning path: song stages** (2026-11-03). Each song walks the
+  stages idea, motif, chords, form, arrangement, lyrics, singing, mix and
+  render. At each stage a short lesson teaches the theory that stage needs
+  (like functions and cadences at chords), heard and played on the song
+  and compared with the player's references. A map of every topic shows
+  what is covered and what is left. A fixed curriculum is a todo for later.
+- **The learn switch** (2026-11-03). A switch per song in the rail. On:
+  the AI answers with hints, checks and short lessons, and makes a take
+  only when told to do it. Off: it makes takes as usual.
+- **Lyrics now, vocals next** (2026-11-03). Lyrics need no engine work:
+  words placed syllable by syllable on melody notes, saved in the song
+  file; stress and rhyme from the CMU pronouncing dictionary; a Rust
+  `jello_lyrics` tool fits words so stressed syllables land on strong
+  beats. Singing needs vocals (v1.5): audio tracks holding clips, mic
+  recording aligned for latency, takes to combine, a vocal chain with a
+  de-esser, later live pitch correction; singing is scored with the hum's
+  pitch detection. Vocals become the next roadmap step after this
+  redesign, with its own ADR and C++ design.
+- **References from a song's name: full depth** (2026-11-03). Personal,
+  local use. yt-dlp fetches the song; Jello measures the whole mix (tempo,
+  key, chords, form, loudness, band balance), splits it into stems
+  (vocals, drums, bass, other) with Demucs (MIT; its model, about 300 MB,
+  downloads once after asking), writes out each part's notes, and matches
+  a Jello sound to a stem by rendering and comparing tries until it
+  measures close. Splitting takes a minute or two per song.
+- **References live in a shared library** (2026-11-03):
+  Music/Jello/References. Each fetched song is split and measured once;
+  any song can point to it, and the path compares against it.
+- **Where the path shows: a stage strip on the tape** (2026-11-03, board
+  C of [the mockups](https://claude.ai/artifact/1WNXn4kg5KbwKHvc9mnp2n)).
+  With Learn on, the tape's top gets "Path · song name" and a strip of the
+  song's nine stages (done white, current lavender, Singing dashed until
+  vocals exist). The tape keeps one constant height with Learn on or off;
+  blank room at its bottom is fine. The lesson (text, chord cards, a
+  reference line), its task and the tries are lines in the rail, the
+  task's keys marked on the keyboard. Clicking the strip opens the topic
+  map (Theory, Composition, Lyrics, Finishing) in the tape's place.
+- **How the path is kept** (built 2026-11-03,
+  [ADR 0050](adr/0050-ai-and-learning-rethought.md)). A song file holds
+  `learn` and `stages_done`; the current stage is the first not done, and
+  Singing is never current until vocals exist. The strip is one row
+  labeled Path, like the tape's other rows, so the tape's rows still fit;
+  what the song has for a stage (notes, chords, sections, tracks) is its
+  hover text. The song's name is already in the top bar. Covered topics belong to the player,
+  across songs, in Music/Jello/Memory/topics.json; each topic is taught at
+  one stage, and the first one not covered at the current stage is the one
+  being learned now. The agent reads and marks all of it with
+  `jello_path`, and each message says when Learn changed ("Learn is on for
+  this song."). Esc closes the topic map before Sound or Mix.
+- **Next:** the rail and takes. Lyrics and the reference card get mockups
+  before their own pieces are built. The Windows talk key is still open.
+
 ## Learning mode (v2)
 
 The Tutor takes this mode over ([the agent mode](#the-agent-mode)).

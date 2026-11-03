@@ -756,6 +756,153 @@
   flex: 1 1 16px;
 }
 
+/* The learning path's stage strip on top of the tape, with Learn on
+   (docs/design.md#ai-and-learning-rethought-2026-11-03): done stages
+   white, the current one lavender, Singing dashed until vocals exist. One
+   row, labeled like the tape's rows, so the tape keeps its height and its
+   rows still fit. Clicking it opens the topic map. */
+.tape-path {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tape-stages {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.tape-stage {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 3px;
+}
+
+.tape-path:hover .tape-stage {
+  border-color: rgba(var(--ink), 0.24);
+}
+
+.tape-stage-name {
+  min-width: 0;
+  font-family: "Doto", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+.tape-stage.is-done .tape-stage-name {
+  color: var(--text);
+}
+
+.tape-stage.is-current,
+.tape-path:hover .tape-stage.is-current {
+  border-color: rgb(var(--accent));
+}
+
+.tape-stage.is-current .tape-stage-name {
+  color: rgb(var(--accent));
+}
+
+.tape-stage.is-later {
+  border-style: dashed;
+}
+
+/* The topic map, in the rest of the tape's place while open. */
+.topic-map {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.topic-map-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0;
+}
+
+.topic-map-count {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.topic-map-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.topic-areas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 28px;
+}
+
+.topic-area {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.topic-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.topic {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid rgba(var(--ink), 0.12);
+  border-radius: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.topic.is-done {
+  border-color: rgba(var(--ink), 0.3);
+  color: var(--text);
+}
+
+.topic.is-current {
+  border-color: rgb(var(--accent));
+  color: rgb(var(--accent));
+}
+
+/* With the stage strip on top, Key, Song and Trying sit closer under it,
+   so the tape's rows still fit in the same height. */
+.tape.has-path .tape-top {
+  height: 30px;
+}
+
 /* Key, Song and Trying, each a small label over its value. */
 .tape-top {
   flex: none;

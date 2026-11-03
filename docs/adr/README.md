@@ -51,13 +51,14 @@ To change a decision, write a new ADR and mark the old one as
 | [0040](0040-play-tutor-on-pi.md) | Play tutor on pi | Superseded by 0041 |
 | [0041](0041-one-agent-for-every-mode.md) | One agent for every mode | Accepted; extended by 0043 |
 | [0042](0042-independent-layer-lengths.md) | Independent layer lengths and pointer recording | Accepted |
-| [0043](0043-the-agent-mode.md) | The agent mode | Accepted |
+| [0043](0043-the-agent-mode.md) | The agent mode | Superseded in part by 0050 |
 | [0044](0044-the-sampler.md) | The sampler | Accepted |
 | [0045](0045-tracks-and-sections.md) | Tracks and sections | Accepted |
 | [0046](0046-the-mix.md) | The mix | Accepted |
 | [0047](0047-song-key-mappings.md) | Song key mappings | Accepted |
 | [0048](0048-the-grand-piano.md) | The grand piano | Accepted |
 | [0049](0049-the-keyboard-guitar.md) | The keyboard guitar | Accepted |
+| [0050](0050-ai-and-learning-rethought.md) | AI and learning, rethought | Accepted |
 
 ## Template
 

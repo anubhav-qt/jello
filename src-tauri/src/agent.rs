@@ -21,6 +21,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::attachments::Attachments;
 use crate::cards::Offers;
 use crate::commands;
+use crate::compose::Composer;
 use crate::memory::Memory;
 use crate::phrases::Phrases;
 use crate::practice::Practice;
@@ -219,6 +220,8 @@ pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String
         return Err(format!("the agent has no job called {job}"));
     }
     let song = app.state::<Mutex<OpenSong>>().lock().unwrap().name().to_string();
+    // Whether the song's Learn switch is on, so the agent teaches or acts.
+    let learn = app.state::<Mutex<Composer>>().lock().unwrap().path().learn;
     // The options the player used since, so the agent knows.
     let mut used = app.state::<Mutex<Offers>>().lock().unwrap().take_used();
     // And what happened in practice.
@@ -239,6 +242,7 @@ pub fn agent_say(app: AppHandle, text: String, job: String) -> Result<(), String
         "used": used,
         "memory": memory,
         "attachments": attached,
+        "learn": learn,
     });
     send(&app, message)
 }

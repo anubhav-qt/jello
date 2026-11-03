@@ -138,6 +138,7 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
         sections: composer.sections().to_vec(),
         arrangement: composer.arrangement().to_vec(),
         mix: composer.mix_now(),
+        path: composer.path().clone(),
     }
 }
 
@@ -502,6 +503,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use crate::mix::{Mix, Place, Slot};
+    use crate::path::SongPath;
     use crate::engine::{EffectKind, TRACK_COUNT, FULL_VOLUME, GLIDE_KEY_NOTE, Kind, LooperState, VIBRATO_KEY_NOTE};
     use crate::harmony::{Chord, Key, Mode, Quality};
     use crate::presets::{mark_starting, test_folder};
@@ -629,6 +631,10 @@ mod tests {
             sections: vec![verse],
             arrangement: vec![0, 0],
             mix: Mix::new(2),
+            path: SongPath {
+                learn: true,
+                done: vec![String::from("idea")],
+            },
         }
     }
 

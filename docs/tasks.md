@@ -13,12 +13,36 @@
 2. **Learning and composing, rethought.** Tutoring, composing through the
    agent harness, guided mode and everything about learning and using the
    instrument well. Nothing that exists now has to stay, its UI included.
-   Designed one topic at a time.
+   Designed one topic at a time; every decision is in
+   [design](design.md#ai-and-learning-rethought-2026-11-03). Settled: takes
+   (one per answer), the slim right rail, right Command keys (Windows key
+   open), the jam card, the jam partner, practice with two hand lanes,
+   skills from songs, taste drills, one agent, the learn switch, the path
+   by song stages, lyrics now with vocals next, and tools do the work.
+   References: full depth (stems, notes, sound matching). Shared library.
+   The path shows as a stage strip on the tape (constant tape height).
+   [ADR 0050](adr/0050-ai-and-learning-rethought.md). Building, piece by
+   piece:
+   - Built: the path (`path.rs`, `path_tool.rs` with `jello_path`; song
+     file `learn` and `stages_done`; topics covered in
+     Memory/topics.json), the stage strip and topic map on the tape
+     (`ComposeTape.svelte`, `TopicMap.svelte`), the Learn switch (in the
+     agent panel until the rail replaces it) and the Learn line the agent
+     gets. Lessons, tasks and tries in the rail come with the rail.
+   - Next: the rail and takes, then one agent with no jobs, then the rest.
+     Lyrics and the reference card get mockups before their pieces.
 3. **Later:** Produce (after everything else is final), Windows checks, and the
    finish line song.
 
 Heard and approved by ear: guitar presets, grand piano, song key mappings
 while playing, and Mix sound.
+
+## Learning: later
+
+- A graded set of taste drills, easy to hard, beside the drills made from
+  the player's songs ([design](design.md#ai-and-learning-rethought-2026-11-03)).
+- A fixed curriculum (scales, chords, functions, cadences, modes and on),
+  beside the path that follows each song's stages.
 
 ## Guitar: known limits
 

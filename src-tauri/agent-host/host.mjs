@@ -29,7 +29,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { JOBS, jobLine, systemPromptWith } from "./instructions.mjs";
+import { JOBS, jobLine, learnLine, systemPromptWith } from "./instructions.mjs";
 
 // How much of a tool's answer the panel is told. A look at the whole song
 // can be long; the model still gets all of it.
@@ -218,6 +218,12 @@ export function withoutJobLine(text) {
   let said = text;
   for (const job of JOBS) {
     const line = `${jobLine(job)}\n\n`;
+    if (said.startsWith(line)) {
+      said = said.slice(line.length);
+    }
+  }
+  for (const on of [true, false]) {
+    const line = `${learnLine(on)}\n\n`;
     if (said.startsWith(line)) {
       said = said.slice(line.length);
     }
@@ -457,6 +463,9 @@ export class Host {
     this.model = null;
     // The job the chat was told last, so a new one gets its line.
     this.job = null;
+    // Whether the chat was told last that Learn is on, or null before it
+    // was told.
+    this.learn = null;
     this.answering = false;
     this.stopped = false;
     // A sign-in under way: its cancel switch and the prompt it waits on.
@@ -566,6 +575,7 @@ export class Host {
         message.used ?? [],
         message.memory ?? "",
         message.attachments ?? [],
+        message.learn ?? null,
       );
       return;
     }
@@ -640,8 +650,9 @@ export class Host {
   // Sends the player's `text` to the chat, as `job`: "tutor", "composer"
   // or "producer". A new chat begins on the song `song`, with the notes
   // `memory`. `attachments` are the files attached ({name, path, kind,
-  // text, images}).
-  async send(text, job, song, used = [], memory = "", attachments = []) {
+  // text, images}). `learn` says whether the song's Learn switch is on, or
+  // is null when Jello didn't say.
+  async send(text, job, song, used = [], memory = "", attachments = [], learn = null) {
     if (this.answering) {
       this.tell({ type: "error", message: "The agent is still answering. Stop it first." });
       return;
@@ -672,6 +683,10 @@ export class Host {
       }
       if (used.length > 0) {
         prompt = `${usedLine(used)}\n\n${prompt}`;
+      }
+      if (learn !== null && learn !== this.learn) {
+        prompt = `${learnLine(learn)}\n\n${prompt}`;
+        this.learn = learn;
       }
       if (job !== this.job) {
         prompt = `${jobLine(job)}\n\n${prompt}`;
@@ -783,6 +798,7 @@ export class Host {
     this.session = null;
     this.chat = null;
     this.job = null;
+    this.learn = null;
   }
 
   // Tells Jello every saved chat, newest first: its first message, the

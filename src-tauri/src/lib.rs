@@ -36,6 +36,8 @@ mod mix_commands;
 mod mix_file;
 mod mix_tool;
 mod modulation;
+mod path;
+mod path_tool;
 mod phrases;
 mod pitch;
 mod practice;
@@ -228,6 +230,8 @@ pub fn run() {
             commands::release_key,
             commands::sound_view,
             commands::key_layout,
+            path_tool::path_view,
+            path_tool::set_learn,
             keys_tool::keys_tab_changed,
             keys_tool::pick_play_scale,
             keys_tool::pick_song_scale,

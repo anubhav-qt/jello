@@ -1,6 +1,6 @@
 # 0043: The agent mode
 
-- Status: Accepted
+- Status: Accepted; superseded in part by 0050
 - Date: 2026-10-24
 
 The agent of 0041 becomes a full mode. While it works, every step shows live

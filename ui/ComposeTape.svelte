@@ -23,6 +23,8 @@
   import { clickThenLetGo } from "./dom";
   import ScalePicker from "./ScalePicker.svelte";
   import { colorForNote } from "./note-colors";
+  import type { PathView, StageView } from "./path";
+  import TopicMap from "./TopicMap.svelte";
 
   interface Props {
     // What Compose shows, or null until Rust has said.
@@ -48,6 +50,9 @@
     // Left Cmd on a Mac, left Alt on Windows.
     modifierName: string;
     onSectionEdit: (edit: SectionEdit) => void;
+    // The song's learning path, or null until Rust has said. With Learn
+    // on, a strip of its stages sits on top of the tape.
+    path: PathView | null;
   }
 
   let {
@@ -63,7 +68,47 @@
     sections,
     modifierName,
     onSectionEdit,
+    path,
   }: Props = $props();
+
+  // Whether the stage strip shows: only with Learn on.
+  let pathShown = $derived.by(() => {
+    if (path === null) {
+      return false;
+    }
+    return path.learn;
+  });
+  // The topic map takes the rest of the tape's place while open.
+  let mapOpen = $state(false);
+  let mapShown = $derived(pathShown && mapOpen);
+
+  // A stage's hover words: its name and what the song has for it.
+  function stageTitle(stage: StageView): string {
+    if (stage.note === "") {
+      return stage.name;
+    }
+    return `${stage.name}: ${stage.note}`;
+  }
+
+  function switchMap() {
+    mapOpen = !mapOpen;
+  }
+
+  // Turning Learn off closes the map, so it doesn't open again with it.
+  $effect(() => {
+    if (!pathShown) {
+      mapOpen = false;
+    }
+  });
+
+  // Esc closes the topic map. Returns true if it was open.
+  export function closeMap(): boolean {
+    if (!mapShown) {
+      return false;
+    }
+    mapOpen = false;
+    return true;
+  }
 
   // The place in the sections' order picked, from 1, or null. Its section's
   // details take the progression's and the tried chords' place.
@@ -322,219 +367,248 @@
   }
 </script>
 
-<section class="tape" style:--keys-across={keysAcross}>
+<section class="tape" class:has-path={pathShown} style:--keys-across={keysAcross}>
   {#if view !== null}
-    <div class="tape-top">
-      <div class="tape-field">
-        <p class="tape-label">Scale</p>
-        {#if view.scale === null}
-          <p class="tape-key is-unpicked">Pick a scale</p>
-        {:else}
-          <button
-            type="button"
-            class="tape-key"
-            style:--accent={colorForNote(view.scale.tonic).accent}
-            onclick={(event) => clickThenLetGo(event, openOrClosePicker)}
-          >
-            {view.scale.name} <span class="tape-key-arrow">v</span>
-          </button>
+    {#if pathShown && path !== null}
+      <button
+        type="button"
+        class="tape-path"
+        class:is-open={mapOpen}
+        title="The song's stages: click for the topic map"
+        onclick={(event) => clickThenLetGo(event, switchMap)}
+      >
+        <span class="tape-row-label">Path</span>
+        <span class="tape-stages">
+          {#each path.stages as stage (stage.id)}
+            <span
+              class="tape-stage"
+              class:is-done={stage.state === "done"}
+              class:is-current={stage.state === "current"}
+              class:is-later={stage.state === "later"}
+              title={stageTitle(stage)}
+            >
+              <span class="tape-stage-name">{stage.name}</span>
+            </span>
+          {/each}
+        </span>
+      </button>
+    {/if}
+
+    {#if mapShown && path !== null}
+      <TopicMap {path} />
+    {:else}
+      <div class="tape-top">
+        <div class="tape-field">
+          <p class="tape-label">Scale</p>
+          {#if view.scale === null}
+            <p class="tape-key is-unpicked">Pick a scale</p>
+          {:else}
+            <button
+              type="button"
+              class="tape-key"
+              style:--accent={colorForNote(view.scale.tonic).accent}
+              onclick={(event) => clickThenLetGo(event, openOrClosePicker)}
+            >
+              {view.scale.name} <span class="tape-key-arrow">v</span>
+            </button>
+          {/if}
+        </div>
+
+        {#if view.key !== null}
+          <div class="tape-field">
+            <p class="tape-label">Song</p>
+            <p class="tape-value">{songWords(view.progression.length, songMs)}</p>
+          </div>
+          <div class="tape-field is-trying">
+            <p class="tape-label">Trying</p>
+            {#if tried === null}
+              <p class="tape-value is-quiet">Play a chord to see how it fits.</p>
+            {:else}
+              <p class="tape-value">
+                <span class="tape-trying-name" style:--accent={triedColor}
+                  >{tried.name}</span
+                >
+                {triedWords}
+              </p>
+            {/if}
+          </div>
         {/if}
       </div>
 
-      {#if view.key !== null}
-        <div class="tape-field">
-          <p class="tape-label">Song</p>
-          <p class="tape-value">{songWords(view.progression.length, songMs)}</p>
-        </div>
-        <div class="tape-field is-trying">
-          <p class="tape-label">Trying</p>
-          {#if tried === null}
-            <p class="tape-value is-quiet">Play a chord to see how it fits.</p>
+      {#if openSection === null}
+        <div class="tape-row tape-slot">
+          {#if pickerShown}
+            <ScalePicker
+              tonic={view.scale?.tonic ?? null}
+              kind={view.scale?.kind ?? null}
+              onPick={pick}
+            />
           {:else}
-            <p class="tape-value">
-              <span class="tape-trying-name" style:--accent={triedColor}
-                >{tried.name}</span
-              >
-              {triedWords}
-            </p>
+            <span class="tape-row-label">Progression</span>
+            {#if songIsEmpty}
+              <p class="tape-empty">
+                Your final progression goes here. Try chords freely, then add
+                from the chords tried or press Return.
+              </p>
+            {:else}
+              <div class="tape-lane">
+                {#if view.progression.length > 0}
+                  <button
+                    type="button"
+                    class="tape-play"
+                    aria-label="Play the song"
+                    onclick={(event) => clickThenLetGo(event, onPlayClick)}
+                  >
+                    &#9654;
+                  </button>
+                {/if}
+                <div class="tape-scroller">
+                  <div class="tape-track" use:keepEndInView>
+                    {#each view.progression as chord, place}
+                      {@const played = playedShare(place)}
+                      <button
+                        type="button"
+                        class="tape-block"
+                        class:is-playing={played !== null}
+                        class:is-selected={selectedSong === place}
+                        style:--accent={colorForNote(chord.root).accent}
+                        style:width={widthFor(lengthNow(chord))}
+                        onclick={(event) =>
+                          clickThenLetGo(event, () => selectSong(place))}
+                      >
+                        <span class="tape-block-name">{chord.name}</span>
+                        <span class="tape-block-length"
+                          >{secondsWords(lengthNow(chord))}</span
+                        >
+                        {#if played !== null}
+                          <span class="tape-playhead" style:--played={played}
+                          ></span>
+                        {/if}
+                      </button>
+                    {/each}
+                    {#if view.holding !== null}
+                      <div
+                        class="tape-block is-holding"
+                        style:--accent={colorForNote(view.holding.root).accent}
+                        style:width={widthFor(lengthNow(view.holding))}
+                      >
+                        <span class="tape-block-name">{view.holding.name}</span>
+                        <span class="tape-block-length"
+                          >{secondsWords(lengthNow(view.holding))}</span
+                        >
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {/if}
           {/if}
         </div>
       {/if}
-    </div>
 
-    {#if openSection === null}
-      <div class="tape-row tape-slot">
-        {#if pickerShown}
-          <ScalePicker
-            tonic={view.scale?.tonic ?? null}
-            kind={view.scale?.kind ?? null}
-            onPick={pick}
-          />
-        {:else}
-          <span class="tape-row-label">Progression</span>
-          {#if songIsEmpty}
-            <p class="tape-empty">
-              Your final progression goes here. Try chords freely, then add
-              from the chords tried or press Return.
-            </p>
+      <SectionsLane
+        {sections}
+        {modifierName}
+        picked={pickedSection}
+        onPick={(place) => (pickedSection = place)}
+        onEdit={onSectionEdit}
+      />
+
+      {#if sections !== null && openSection !== null}
+        <SectionDetails
+          {sections}
+          number={openSection}
+          onEdit={onSectionEdit}
+          onClose={() => (pickedSection = null)}
+        />
+      {:else if selectedChord !== null && selectedSong !== null}
+        <!-- A chord picked in the song can be moved or taken off. -->
+        <div class="tape-row tape-bottom">
+          <span class="tape-row-label">Selected</span>
+          <span
+            class="tape-chosen"
+            style:--accent={colorForNote(selectedChord.root).accent}
+            >{selectedChord.name}</span
+          >
+          <div class="tape-tools">
+            <button
+              type="button"
+              disabled={selectedSong === 0}
+              onclick={(event) => clickThenLetGo(event, () => moveSong("left"))}
+              >← Move</button
+            >
+            <button
+              type="button"
+              disabled={selectedSong === view.progression.length - 1}
+              onclick={(event) => clickThenLetGo(event, () => moveSong("right"))}
+              >Move →</button
+            >
+            <button
+              type="button"
+              onclick={(event) => clickThenLetGo(event, removeSelected)}
+              >Remove</button
+            >
+            <button
+              type="button"
+              onclick={(event) =>
+                clickThenLetGo(event, () => (selectedSong = null))}>Done</button
+            >
+          </div>
+        </div>
+      {:else}
+        <div class="tape-row tape-bottom">
+          <span class="tape-row-label">Tried</span>
+          {#if view.history.length === 0}
+            <p class="tape-quiet">Each chord you play stays here.</p>
           {:else}
-            <div class="tape-lane">
-              {#if view.progression.length > 0}
-                <button
-                  type="button"
-                  class="tape-play"
-                  aria-label="Play the song"
-                  onclick={(event) => clickThenLetGo(event, onPlayClick)}
-                >
-                  &#9654;
-                </button>
-              {/if}
-              <div class="tape-scroller">
-                <div class="tape-track" use:keepEndInView>
-                  {#each view.progression as chord, place}
-                    {@const played = playedShare(place)}
+            <div class="tape-tried">
+              <div class="tape-tried-track" use:keepEndInView>
+                {#each view.history as chord, place}
+                  <div
+                    class="tried-chord"
+                    class:is-selected={view.selected_history === place}
+                    style:--accent={colorForNote(chord.root).accent}
+                  >
                     <button
                       type="button"
-                      class="tape-block"
-                      class:is-playing={played !== null}
-                      class:is-selected={selectedSong === place}
-                      style:--accent={colorForNote(chord.root).accent}
-                      style:width={widthFor(lengthNow(chord))}
+                      class="tried-pick"
+                      title="Guide from this chord. Click again to follow what you play."
                       onclick={(event) =>
-                        clickThenLetGo(event, () => selectSong(place))}
+                        clickThenLetGo(event, () => pickTried(place))}
                     >
-                      <span class="tape-block-name">{chord.name}</span>
-                      <span class="tape-block-length"
-                        >{secondsWords(lengthNow(chord))}</span
-                      >
-                      {#if played !== null}
-                        <span class="tape-playhead" style:--played={played}
-                        ></span>
-                      {/if}
+                      <strong>{chord.name}</strong>
+                      <span>{secondsWords(lengthNow(chord))}</span>
                     </button>
-                  {/each}
-                  {#if view.holding !== null}
-                    <div
-                      class="tape-block is-holding"
-                      style:--accent={colorForNote(view.holding.root).accent}
-                      style:width={widthFor(lengthNow(view.holding))}
+                    <button
+                      type="button"
+                      class="tried-add"
+                      aria-label={`Add ${chord.name} to the progression`}
+                      title={`Add ${chord.name} to the progression`}
+                      onclick={(event) =>
+                        clickThenLetGo(event, () => onEdit("add_history", place))}
+                      >+</button
                     >
-                      <span class="tape-block-name">{view.holding.name}</span>
-                      <span class="tape-block-length"
-                        >{secondsWords(lengthNow(view.holding))}</span
-                      >
-                    </div>
-                  {/if}
-                </div>
+                  </div>
+                {/each}
               </div>
             </div>
           {/if}
-        {/if}
-      </div>
-    {/if}
-
-    <SectionsLane
-      {sections}
-      {modifierName}
-      picked={pickedSection}
-      onPick={(place) => (pickedSection = place)}
-      onEdit={onSectionEdit}
-    />
-
-    {#if sections !== null && openSection !== null}
-      <SectionDetails
-        {sections}
-        number={openSection}
-        onEdit={onSectionEdit}
-        onClose={() => (pickedSection = null)}
-      />
-    {:else if selectedChord !== null && selectedSong !== null}
-      <!-- A chord picked in the song can be moved or taken off. -->
-      <div class="tape-row tape-bottom">
-        <span class="tape-row-label">Selected</span>
-        <span
-          class="tape-chosen"
-          style:--accent={colorForNote(selectedChord.root).accent}
-          >{selectedChord.name}</span
-        >
-        <div class="tape-tools">
-          <button
-            type="button"
-            disabled={selectedSong === 0}
-            onclick={(event) => clickThenLetGo(event, () => moveSong("left"))}
-            >← Move</button
-          >
-          <button
-            type="button"
-            disabled={selectedSong === view.progression.length - 1}
-            onclick={(event) => clickThenLetGo(event, () => moveSong("right"))}
-            >Move →</button
-          >
-          <button
-            type="button"
-            onclick={(event) => clickThenLetGo(event, removeSelected)}
-            >Remove</button
-          >
-          <button
-            type="button"
-            onclick={(event) =>
-              clickThenLetGo(event, () => (selectedSong = null))}>Done</button
-          >
-        </div>
-      </div>
-    {:else}
-      <div class="tape-row tape-bottom">
-        <span class="tape-row-label">Tried</span>
-        {#if view.history.length === 0}
-          <p class="tape-quiet">Each chord you play stays here.</p>
-        {:else}
-          <div class="tape-tried">
-            <div class="tape-tried-track" use:keepEndInView>
-              {#each view.history as chord, place}
-                <div
-                  class="tried-chord"
-                  class:is-selected={view.selected_history === place}
-                  style:--accent={colorForNote(chord.root).accent}
-                >
-                  <button
-                    type="button"
-                    class="tried-pick"
-                    title="Guide from this chord. Click again to follow what you play."
-                    onclick={(event) =>
-                      clickThenLetGo(event, () => pickTried(place))}
-                  >
-                    <strong>{chord.name}</strong>
-                    <span>{secondsWords(lengthNow(chord))}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="tried-add"
-                    aria-label={`Add ${chord.name} to the progression`}
-                    title={`Add ${chord.name} to the progression`}
-                    onclick={(event) =>
-                      clickThenLetGo(event, () => onEdit("add_history", place))}
-                    >+</button
-                  >
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
-        <div class="tape-next">
-          <span class="tape-label">Next</span>
-          {#if bestNext === null}
-            <span class="tape-next-why">Play a chord to see what follows it.</span>
-          {:else}
-            {#if view.reference !== null}
-              <span class="tape-next-why">after {view.reference.name}</span>
+          <div class="tape-next">
+            <span class="tape-label">Next</span>
+            {#if bestNext === null}
+              <span class="tape-next-why">Play a chord to see what follows it.</span>
+            {:else}
+              {#if view.reference !== null}
+                <span class="tape-next-why">after {view.reference.name}</span>
+              {/if}
+              <span class="tape-next-rank">{bestNext.guide.next!.rank}</span>
+              <span class="tape-next-name">{bestNext.guide.name}</span>
+              <kbd>{keyLabel(bestNext.code)}</kbd>
+              <span class="tape-next-why">{bestNext.guide.next!.why}</span>
             {/if}
-            <span class="tape-next-rank">{bestNext.guide.next!.rank}</span>
-            <span class="tape-next-name">{bestNext.guide.name}</span>
-            <kbd>{keyLabel(bestNext.code)}</kbd>
-            <span class="tape-next-why">{bestNext.guide.next!.why}</span>
-          {/if}
+          </div>
         </div>
-      </div>
+      {/if}
     {/if}
   {/if}
 </section>

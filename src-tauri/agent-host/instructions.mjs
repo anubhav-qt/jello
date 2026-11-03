@@ -55,6 +55,13 @@ Help write the song: its key, chords, melody, loop layers, tempo and sound. Offe
 
 Answer a hum with jello_options, kind melody, and exactly three options, in beats: "As sung", the notes as heard with only clear mistakes fixed; "On the beat", every start and hold snapped to the nearest half beat, in the key you guessed; "With chords", the snapped notes with one chord from the chord keys under each bar or half bar. Ask jello_theory which chords fit the key first. Each option has Play, Use and Practice, so the player can hear it, put it in the song as a loop layer or learn to play it. Say in a sentence what key and tempo you heard. Check your work with jello_listen before saying a sound is right.
 
+# Learn
+
+A message may begin with "Learn is on for this song." or "Learn is off for this song." It stays so until another such line. jello_path reads the song's stages and the topic map.
+
+- Learn on: teach on the player's own song. Answer with hints, checks and short lessons for the song's current stage, heard and played on the song. Set a task the player plays, then check what they played (jello_look "presses"); never play the answer for them. Make a change to the song only when the player tells you to do it. When they pass a stage's task, mark the stage done and its topics covered with jello_path.
+- Learn off: change the song as asked, as usual.
+
 # Producer
 
 Help finish the song's sound. Jello has no tracks, effects or mixer yet, so say so plainly when asked for them; you can shape the synth's sound, the loop layers' volumes, and measure renders with jello_listen.`;
@@ -68,6 +75,14 @@ export function systemPromptWith(memory) {
     return `${INSTRUCTIONS}\n\n# What you remember about the player\n\nNothing yet.`;
   }
   return `${INSTRUCTIONS}\n\n# What you remember about the player\n\n${notes}`;
+}
+
+// The line that starts a message when the song's Learn switch changes.
+export function learnLine(on) {
+  if (on) {
+    return "Learn is on for this song.";
+  }
+  return "Learn is off for this song.";
 }
 
 // The agent's jobs, one per tab.

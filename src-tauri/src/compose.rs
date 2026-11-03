@@ -20,6 +20,7 @@ use crate::sound_file::Sound;
 use crate::drums::{DrumPad, Drums};
 use crate::sound_profile::SoundProfile;
 use crate::mix::{Mix, Place, check_track_routing, send_track_routing};
+use crate::path::SongPath;
 use crate::tracks::{Track, Tracks};
 
 // How much slowing down or speeding up changes the song's tempo.
@@ -71,6 +72,8 @@ pub struct Composer {
     // master. It may have fewer strips than there are tracks; mix_mut and
     // mix_now fit it.
     mix: Mix,
+    // Whether Learn is on and which stages are done (src/path.rs).
+    path: SongPath,
 }
 
 // A press as practice reads it.
@@ -253,6 +256,7 @@ impl Composer {
             sections: Sections::default(),
             arranging: None,
             mix: Mix::new(1),
+            path: SongPath::default(),
         }
     }
 
@@ -291,6 +295,7 @@ impl Composer {
             composer.progression.push(played);
         }
         composer.tempo = engine.tempo();
+        composer.path = song.path.clone();
 
         let mut tracks = Vec::new();
         for (number, song_track) in song.tracks.iter().enumerate() {
@@ -448,6 +453,14 @@ impl Composer {
     }
 
     // The order the song plays its sections in, as places among them.
+    pub fn path(&self) -> &SongPath {
+        &self.path
+    }
+
+    pub fn path_mut(&mut self) -> &mut SongPath {
+        &mut self.path
+    }
+
     pub fn arrangement(&self) -> &[usize] {
         self.sections.order()
     }

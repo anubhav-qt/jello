@@ -52,6 +52,7 @@
   import ScalePicker from "./ScalePicker.svelte";
   import type { MappingSender } from "./keys";
   import type { Job } from "./agent";
+  import type { PathView } from "./path";
 
   interface Props {
     platform: Platform;
@@ -153,6 +154,9 @@
   const agentMarks = new SvelteMap<string, string>();
   // The keys practice marks while a try plays.
   const practiceMarks = new SvelteMap<string, PracticeMark>();
+  // The song's learning path, or null until Rust has said. With Learn on,
+  // the tape shows its stages.
+  let path: PathView | null = $state(null);
   // The practice the Tutor set, shown on the Play tab, or null.
   let practice: Practice | null = $state(null);
   // Each held key that plays notes, with the notes it started.
@@ -630,6 +634,9 @@
       closeKeysPage();
       return true;
     }
+    if (tape !== undefined && tape !== null && tape.closeMap()) {
+      return true;
+    }
     if (soundPanelOpen || mixPanelOpen || songsOpen) {
       soundPanelOpen = false;
       mixPanelOpen = false;
@@ -760,6 +767,19 @@
 
   export function showSections(view: SectionsView) {
     sections = view;
+  }
+
+  export function showPath(view: PathView) {
+    path = view;
+  }
+
+  // The Learn switch in the agent's panel.
+  async function switchLearn(on: boolean) {
+    try {
+      path = await invoke<PathView>("set_learn", { on });
+    } catch (error) {
+      showStatus(`Could not switch Learn: ${error}`);
+    }
   }
 
   export function showSongs(view: SongsView) {
@@ -980,6 +1000,7 @@
               {sections}
               {modifierName}
               {onSectionEdit}
+              {path}
               bind:this={tape}
             />
           {/if}
@@ -1039,6 +1060,8 @@
       {job}
       {onSongChanged}
       onSent={clearAgentMarks}
+      learn={path === null ? null : path.learn}
+      onLearn={switchLearn}
     />
   </main>
 
