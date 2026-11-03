@@ -4,9 +4,8 @@
      tabs: Play, Compose and Produce. Messages for the player are typed out
      after the title, wrapping onto a second line when long. The Sound and
      Render WAV buttons sit on the right of the title row, one width, and the
-     agent's button at the right end of the tabs, named for its job in the
-     open tab: Tutor, Composer or Producer, the same width in every tab
-     (docs/adr/0041-one-agent-for-every-mode.md). While drum mode is on,
+     rail's button, Jello AI, at the right end of the tabs: one agent with no
+     jobs (docs/adr/0050-ai-and-learning-rethought.md). While drum mode is on,
      DRUMS is lit before them (docs/design.md#sampler). -->
 <script lang="ts">
   import type { Snippet } from "svelte";
@@ -52,16 +51,6 @@
     drumModeKey,
   }: Props = $props();
 
-  // The agent's name in each tab.
-  let agentName = $derived.by(() => {
-    if (tab === "compose") {
-      return "Composer";
-    }
-    if (tab === "produce") {
-      return "Producer";
-    }
-    return "Tutor";
-  });
 </script>
 
 <header class="topbar">
@@ -213,7 +202,7 @@
         title="The agent's panel"
         onclick={(event) => clickThenLetGo(event, onAgentClick)}
       >
-        <span class="action-name">{agentName}</span>
+        <span class="action-name">Jello AI</span>
       </button>
     </div>
   </nav>
