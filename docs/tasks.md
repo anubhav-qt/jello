@@ -61,6 +61,17 @@ while playing, and Mix sound.
 - A fixed curriculum (scales, chords, functions, cadences, modes and on),
   beside the path that follows each song's stages.
 
+## Element: later
+
+[Element](https://github.com/kushview/element) (GPL-3.0, JUCE) is a modular
+plugin host we may borrow from. Reference only: JUCE stays out (ADR 0008)
+and our own sound stays ours (ADR 0019).
+
+- Third-party plugins (AU, VST3, CLAP): its hosting code as a guide; CLAP
+  could use the MIT CLAP headers without JUCE.
+- Free routing: its node graph and nested racks, beyond 8 slots per track.
+- Lua scripting for our own effects.
+
 ## Guitar: known limits
 
 Built ([ADR 0049](adr/0049-the-keyboard-guitar.md), [design](design.md#guitar)).
@@ -68,6 +79,9 @@ Built ([ADR 0049](adr/0049-the-keyboard-guitar.md), [design](design.md#guitar)).
 - Loops replay a string's move as a fresh pluck, and Compose doesn't time moves.
 - Presets saved earlier stay as saved: remove one from the Sounds folder to get
   the new values.
+- Todo: on guitar tracks J strums up and K strums down the held shape, so two
+  fingers strum while the top row (U I O P [ ]) stays for fingerstyle. J and
+  K lose what they play on guitar tracks.
 
 ## Grand piano: later
 
