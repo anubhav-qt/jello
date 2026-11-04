@@ -152,18 +152,18 @@
   background: rgba(var(--ink), 0.9);
 }
 
-/* The chain: 8 slots, then Out. */
+/* The chain: 8 slots, then Out, short enough to fit a laptop screen. */
 .mix-chain {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .mix-slot {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 24px;
+  height: 22px;
   flex: none;
   padding: 0 10px;
   border: 1px solid rgba(var(--ink), 0.1);
@@ -490,6 +490,24 @@
   font-family: "Open Sans", sans-serif;
   font-size: 13px;
   color: rgba(var(--ink), 0.92);
+}
+
+/* A long bus name ends in "…" rather than running into the next field. */
+.mix-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.mix-out-fields .sound-value,
+.mix-bus-name {
+  min-width: 0;
+}
+
+.mix-out-fields .sound-value-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mix-name-input {

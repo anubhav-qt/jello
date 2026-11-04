@@ -81,6 +81,15 @@
 
   let gapX = $derived(xOf(value("pre_delay_ms") / 1000, 0, span));
 
+  // The gap's words sit right of its square, or left of it once the square
+  // is past the middle, so they stay inside the drawing.
+  let gapWords = $derived.by(() => {
+    if (gapX > WIDTH / 2) {
+      return { x: gapX - 8, anchor: "end" };
+    }
+    return { x: gapX + 8, anchor: "start" };
+  });
+
   let grabbedSpan: number | null = null;
 
   function grabGap() {
@@ -130,8 +139,8 @@
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none">
         <path class="sound-lit" d={pathOf([[EDGE, HEIGHT - EDGE], [EDGE, EDGE]])} />
         <path class="sound-lit is-fine" d={tail} />
-        <text class="sound-axis" x={WIDTH - EDGE - 96} y={EDGE + 10}>{decayWords}</text>
-        <text class="sound-axis" x={gapX + 8} y={HEIGHT - EDGE - 2}>{preDelay.scale.words(value("pre_delay_ms"))} ms gap</text>
+        <text class="sound-axis" text-anchor="end" x={WIDTH - EDGE} y={EDGE + 10}>{decayWords}</text>
+        <text class="sound-axis" text-anchor={gapWords.anchor} x={gapWords.x} y={HEIGHT - EDGE - 2}>{preDelay.scale.words(value("pre_delay_ms"))} ms gap</text>
         <SoundHandle
           x={gapX}
           y={HEIGHT - EDGE}

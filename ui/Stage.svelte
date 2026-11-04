@@ -264,6 +264,9 @@
   // and the mix as Rust answered last.
   let mixPanelOpen = $state(false);
   let mix: MixView | null = $state(null);
+  // While the Sound or Mix panel is open, the track row and the transport
+  // step aside so the panel has room for its pages on a laptop screen.
+  let panelTakesControls = $derived(soundPanelOpen || mixPanelOpen);
   // The sound or Mix panel's value picked for the arrow keys, if any.
   let picked: Picked | null = $state(null);
   let soundModifierHeld = $state(false);
@@ -1147,7 +1150,7 @@
 
       <!-- The keyboard, with no box around it. -->
       <div class="stage-panel" class:is-hidden={keysPageOpen} bind:this={panel}>
-        {#if sound !== null}
+        {#if sound !== null && !panelTakesControls}
           <!-- The track row and the transport, as wide as the keys. -->
           <div class="stage-controls" style:--keys-across={keysAcross(platform)}>
             <TrackRow

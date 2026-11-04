@@ -17,7 +17,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 ## Status
 
 - Built through roadmap step 5 ([details](docs/design.md)); Windows sound unheard;
-  Produce is a dev panel. Fullscreen only (0039), panels fixed, no scroll bars.
+  Produce is a dev panel. Fullscreen only (0039), panels fixed, no scroll bars;
+  Sound and Mix hide the track row and record bar while open.
 - Keys: bare arrows shift octaves; left Cmd+arrows edit sound values (left
   Alt Windows); Shift vibrato, Option glide (right Alt Windows), Space sustain
   pedal; F12 steps the wave in Sound. Left Cmd+1..9 picks or makes a track, +Return saves a
@@ -38,13 +39,11 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   `jello_tracks`, `jello_arrange`, `track` on the other tools.
 - Mix (0046, step 6): engine slices 1 to 5 (`mixer.*`, `limiter.*`,
   `chain.*`, `effect.*`, `listener.*`, nine effects); slice 6's Rust built
-  with backend integration implemented; all tests pass, sound and Windows
-  unchecked.
-  Files: `effects.rs` (values), `mix.rs`, `mix_file.rs`,
-  `mix_tool.rs` (`jello_mix`), `mix_automation.rs`, `loudness.rs` (LUFS,
-  true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
+  and tested, sound and Windows unchecked. Files: `effects.rs` (values),
+  `mix.rs`, `mix_file.rs`, `mix_tool.rs` (`jello_mix`), `mix_automation.rs`,
+  `loudness.rs` (LUFS, true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
   Mix panel built (`ui/MixPanel.svelte`, `Mix*.svelte`, `ui/mix.ts`,
-  `mix_commands.rs`, meters in `engine/src/meter.*`); not yet heard.
+  `mix_commands.rs`, meters in `engine/src/meter.*`); driven, not heard.
   [Mix design](docs/design.md#mix).
 - Guitar (0049): no recordings; oscillator kind `string`
   (`engine/src/plucked_string.*`), amp per track (`engine/src/amp.*`, Amp page),

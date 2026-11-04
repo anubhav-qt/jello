@@ -6,10 +6,12 @@
    pages, `ui/mix.ts`, `src-tauri/src/mix_commands.rs`, engine meters in
    `engine/src/meter.*`). Checked in the real app with tools/jello-drive
    (add, reorder, on dot, remove, arrow keys, fader, + Bus, remove bus,
-   every page, meters while playing). Left: hear it, and look at it full
-   screen (checked only in a 1352x849 window, where the chain and the add
-   list scroll). Not checked by driving: EQ and shaper squares, bus
-   rename, delay and reverb tiles.
+   every page, meters while playing). Full screen (2026-11-04): Sound and
+   Mix hide the track row and the record bar while open, so every page
+   fits. Driven with every edge case: EQ squares and bands, the shaper's
+   points and its 16-point cap, delay tiles and its first echo square,
+   reverb tiles and its gap square, bus and track rename (Escape only puts
+   the name back). Left: hear it.
 2. **Learning and composing, rethought.** Tutoring, composing through the
    agent harness, guided mode and everything about learning and using the
    instrument well. Nothing that exists now has to stay, its UI included.

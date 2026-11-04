@@ -310,15 +310,20 @@ const BEAT_STEPS = [
   12, 16, 24, 32,
 ];
 
+// How near a length must be to a fraction to be written as one. Rust keeps
+// 4 decimals (src-tauri/src/effects.rs), so 4/3 comes back as 1.3333.
+const FRACTION_NEARNESS = 0.0001;
+
 // A length in beats written as a fraction: "3/16", "1/3", "2".
 export function beatWords(beats: number): string {
   if (beats >= 1 && Number.isInteger(Number(beats.toFixed(4)))) {
     return String(Math.round(beats));
   }
   for (let under = 2; under <= 32; under += 1) {
-    const over = beats * under;
-    if (Math.abs(over - Math.round(over)) < 0.0001) {
-      return `${Math.round(over)}/${under}`;
+    const over = Math.round(beats * under);
+    const fraction = over / under;
+    if (Math.abs(beats - fraction) < FRACTION_NEARNESS) {
+      return `${over}/${under}`;
     }
   }
   return trimmed(beats, 3);

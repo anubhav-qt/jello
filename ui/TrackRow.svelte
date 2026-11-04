@@ -55,6 +55,10 @@
     if (event.key === "Enter") {
       finishRenaming();
     } else if (event.key === "Escape") {
+      // Escape only puts the name back: it must not reach the page and
+      // close the panel, nor leave the Mac's full screen.
+      event.preventDefault();
+      event.stopPropagation();
       renaming = null;
     }
   }
@@ -77,6 +81,7 @@
     <div
       class="track"
       class:is-picked={track === picked}
+      class:is-renaming={renaming === track}
       title={`${view.name} (${pickModifier} + ${track})`}
     >
       {#if renaming === track}
@@ -201,8 +206,9 @@
   .track.is-picked .track-number {
     color: rgb(var(--accent));
   }
-  /* While renaming, the number stays and the name becomes a field. */
-  .track:has(.track-name-input) {
+  /* While renaming, the number stays and the name becomes a field. A class,
+     not :has(), since WebKit kept the :has() style after the field left. */
+  .track.is-renaming {
     gap: 0.62em;
     padding-left: 0.92em;
   }

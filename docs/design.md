@@ -1790,7 +1790,9 @@ Mix panel's mockups come next, each approved before it is built.
   list of their own. Section automation reaches every effect setting.
   Decided 2026-10-25.
 - **Screen.** A Mix button beside Sound in Compose opens a Mix panel in
-  the tape's slot, like the Sound panel; the keyboard stays. Its look gets
+  the tape's slot, like the Sound panel; the keyboard stays. While Sound
+  or Mix is open the track row and the record bar step aside, so the panel
+  fits a laptop screen (picked 2026-11-04). Its look gets
   a few mockups first. Decided 2026-10-25. Frame picked 2026-11-03: levels
   and one strip. On the left, every track, bus and the master as a thin
   strip with its meter, volume and pan; a click picks one, as left Cmd and

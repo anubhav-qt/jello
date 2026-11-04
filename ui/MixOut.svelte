@@ -90,6 +90,10 @@
     if (event.key === "Enter") {
       finishEditing();
     } else if (event.key === "Escape") {
+      // Escape only puts the name back: it must not reach the page and
+      // close the panel, nor leave the Mac's full screen.
+      event.preventDefault();
+      event.stopPropagation();
       editing = false;
     }
   }
