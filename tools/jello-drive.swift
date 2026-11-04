@@ -14,6 +14,7 @@
 //   jello-drive tree [depth]      list what is on the page (buttons, text)
 //   jello-drive press <text>      press the first button whose name has <text>
 //   jello-drive click <x> <y>     click at a point in the window
+//   jello-drive dclick <x> <y>    double click at a point in the window
 //   jello-drive drag <x> <y> <x2> <y2>  press at one point, move to the other
 //                                 in steps, and let go there
 //   jello-drive scroll <x> <y> <lines>  turn the wheel over a point, down
@@ -209,7 +210,9 @@ func frontAppName() -> String {
   return front?.localizedName ?? "nothing"
 }
 
-func click(at point: CGPoint) {
+// Clicks once at `point`. `count` says which click of a run it is, so a
+// second click with count 2 reads as a double click.
+func click(at point: CGPoint, count: Int64 = 1) {
   let source = CGEventSource(stateID: .hidSystemState)
   let types: [CGEventType] = [.leftMouseDown, .leftMouseUp]
   for type in types {
@@ -219,6 +222,7 @@ func click(at point: CGPoint) {
       mouseCursorPosition: point,
       mouseButton: .left
     )!
+    event.setIntegerValueField(.mouseEventClickState, value: count)
     event.post(tap: .cghidEventTap)
     usleep(50_000)
   }
@@ -395,6 +399,16 @@ if command == "info" {
   let y = jello.bounds.minY + CGFloat(Double(arguments[2]) ?? 0)
   click(at: CGPoint(x: x, y: y))
   print("clicked \(Int(x)),\(Int(y)) on screen")
+} else if command == "dclick" {
+  if arguments.count < 3 {
+    fail("usage: jello-drive dclick <x> <y>")
+  }
+  requireFront(jello)
+  let x = jello.bounds.minX + CGFloat(Double(arguments[1]) ?? 0)
+  let y = jello.bounds.minY + CGFloat(Double(arguments[2]) ?? 0)
+  click(at: CGPoint(x: x, y: y), count: 1)
+  click(at: CGPoint(x: x, y: y), count: 2)
+  print("double clicked \(Int(x)),\(Int(y)) on screen")
 } else if command == "drag" {
   if arguments.count < 5 {
     fail("usage: jello-drive drag <x> <y> <x2> <y2>")
