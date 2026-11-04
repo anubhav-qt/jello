@@ -98,10 +98,10 @@ pub fn skills_of(lines: &[Value]) -> Value {
             }
         }
         for line in lines {
-            for (worth, skills) in bar_points(line) {
-                for skill in skills {
+            for played in bar_points(line) {
+                for skill in played.skills {
                     if song_skills::area_of(&skill) == Some(area) {
-                        points.push(worth);
+                        points.push(played.worth);
                     }
                 }
             }
@@ -112,9 +112,16 @@ pub fn skills_of(lines: &[Value]) -> Value {
     json!(areas)
 }
 
+// A bar a song try played, from 1: its points and what it needs.
+struct BarPoints {
+    bar: u64,
+    worth: f64,
+    skills: Vec<String>,
+}
+
 // The points of each bar a song try played, with what the bar needs.
 // Not a song try, or a wait-mode one, gives none.
-fn bar_points(line: &Value) -> Vec<(f64, Vec<String>)> {
+fn bar_points(line: &Value) -> Vec<BarPoints> {
     let mut found = Vec::new();
     let Some(bars) = line["song"]["bars"].as_array() else {
         return found;
@@ -151,7 +158,7 @@ fn bar_points(line: &Value) -> Vec<(f64, Vec<String>)> {
                 skills.push(skill.to_string());
             }
         }
-        found.push((worth, skills));
+        found.push(BarPoints { bar: number, worth, skills });
     }
     found
 }
@@ -164,13 +171,8 @@ pub fn song_skills_of(lines: &[Value]) -> Value {
     let mut points: Vec<Vec<f64>> = Vec::new();
     let mut last_seen: Vec<Value> = Vec::new();
     for line in lines {
-        let Some(bars) = line["song"]["bars"].as_array() else {
-            continue;
-        };
-        let worths = bar_points(line);
-        for (place, (worth, skills)) in worths.into_iter().enumerate() {
-            let bar = bars.get(place).map(|found| found["bar"].clone()).unwrap_or(Value::Null);
-            for skill in skills {
+        for played in bar_points(line) {
+            for skill in played.skills {
                 let known = names.iter().position(|name| *name == skill);
                 let at;
                 if let Some(known) = known {
@@ -181,11 +183,11 @@ pub fn song_skills_of(lines: &[Value]) -> Value {
                     last_seen.push(Value::Null);
                     at = names.len() - 1;
                 }
-                points[at].push(worth);
+                points[at].push(played.worth);
                 last_seen[at] = json!({
                     "song": line["song"]["song"],
                     "section": line["song"]["section"],
-                    "bar": bar,
+                    "bar": played.bar,
                 });
             }
         }
@@ -339,6 +341,14 @@ mod tests {
         assert_eq!(rhythm["tries"], json!(2));
         let pieces = areas.as_array().unwrap().iter().find(|area| area["area"] == json!("pieces")).unwrap();
         assert_eq!(pieces["tries"], json!(2));
+    }
+
+    #[test]
+    fn a_skill_is_last_met_in_its_own_bar_after_a_bar_with_no_notes() {
+        let mut line = song_try("beginner", &[(0, &[]), (0, &["run of eighths"])]);
+        line["sections"][0]["tally"] = json!({"notes": 0, "hits": 0, "missed": 0, "accuracy_percent": null});
+        let skills = song_skills_of(&[line]);
+        assert_eq!(skills[0]["from"]["bar"], json!(2));
     }
 
     #[test]

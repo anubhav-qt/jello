@@ -15,7 +15,7 @@ use crate::harmony::{Chord, Fit, Guide, Key, Mode, Quality, BestNext, all_keys, 
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY};
 use crate::key_mapping::KeyMapping;
 use crate::scales::Scale;
-use crate::song_file::{HeldChord, Song, SongSection};
+use crate::song_file::{HeldChord, Song, SongLoop, SongSection};
 use crate::sound_file::Sound;
 use crate::drums::{DrumPad, Drums};
 use crate::sound_profile::SoundProfile;
@@ -68,6 +68,9 @@ pub struct Composer {
     // The arrangement while it plays (src/arrange.rs), holding the loop it
     // put away. None otherwise.
     arranging: Option<Player>,
+    // The loop a section's practice put away while it plays
+    // (src/practice_run.rs), the way the arrangement does. None otherwise.
+    practice_loop: Option<SongLoop>,
     // The song's mix (src/mix.rs): pan, sends, effects, buses and the
     // master. It may have fewer strips than there are tracks; mix_mut and
     // mix_now fit it.
@@ -255,6 +258,7 @@ impl Composer {
             tracks: Tracks::new(),
             sections: Sections::default(),
             arranging: None,
+            practice_loop: None,
             mix: Mix::new(1),
             path: SongPath::default(),
         }
@@ -489,6 +493,17 @@ impl Composer {
     // there was.
     pub fn set_arranging(&mut self, arranging: Option<Player>) -> Option<Player> {
         std::mem::replace(&mut self.arranging, arranging)
+    }
+
+    // The loop a section's practice put away, if it did.
+    pub fn practice_loop(&self) -> Option<&SongLoop> {
+        self.practice_loop.as_ref()
+    }
+
+    // Keeps `looped` as the loop practice put away, and returns the one
+    // there was.
+    pub fn set_practice_loop(&mut self, looped: Option<SongLoop>) -> Option<SongLoop> {
+        std::mem::replace(&mut self.practice_loop, looped)
     }
 
     // Takes track `removed`, from 0, out of the sections and the mix, on

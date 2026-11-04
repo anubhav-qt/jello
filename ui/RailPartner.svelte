@@ -1,7 +1,8 @@
 <!-- The jam partner in the rail (docs/design.md#ai-and-learning-rethought-2026-11-03):
      Start counts in a bar, then the player plays a 2 bar call and the AI
      answers it (src-tauri/src/jam_partner.rs). One line says whose turn it
-     is; Stop ends it at once. -->
+     is; Stop ends it at once. When the card goes away (Chats, Memory, the
+     rail closing) the partner stops too, so its Stop is never out of reach. -->
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -26,22 +27,32 @@
   // A click on Start is on its way, so a quick second one waits.
   let busy = $state(false);
   let unlisten: UnlistenFn | null = null;
+  let gone = false;
 
   let on = $derived(phase !== "off");
 
   onMount(async () => {
-    unlisten = await listen<PartnerEvent>("partner", (event) => {
+    const found = await listen<PartnerEvent>("partner", (event) => {
       phase = event.payload.state;
       looping = event.payload.looping;
       if (event.payload.state === "off") {
         said = event.payload.said;
       }
     });
+    if (gone) {
+      found();
+      return;
+    }
+    unlisten = found;
   });
 
   onDestroy(() => {
+    gone = true;
     if (unlisten !== null) {
       unlisten();
+    }
+    if (on) {
+      invoke("stop_partner");
     }
   });
 
@@ -62,6 +73,10 @@
     try {
       await invoke("start_partner");
       phase = "count_in";
+      // The card went away while the partner was starting.
+      if (gone) {
+        invoke("stop_partner");
+      }
     } catch (error) {
       said = String(error);
     }

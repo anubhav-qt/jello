@@ -2637,7 +2637,10 @@ attachments stay underneath.
   `jello_practice` has action `section`. Keys left of Y, H and N (and
   left modifiers) are the left hand. The ladder starts at 70% of the
   section's tempo in three steps, 2 clean tries a step; after a try that
-  isn't clean the hardest bar loops until it is clean twice.
+  isn't clean the hardest bar loops until it is clean twice. Like the
+  arrangement, it puts the loop away while it plays, so the ladder can set
+  the tempo, and gives it back paused. Notes no key plays now are left
+  out, and the rail says how many.
 - **Taste drills** (built 2026-11-03, `drills.rs`). In the rail while
   Learn is on. Chord: one of the song's held chords. Interval: two notes
   in a row from the loop's instrument layers. Answered by four choices or
@@ -2650,7 +2653,8 @@ attachments stay underneath.
   then the click keeps going and answers come in on the next phrase
   line. Two silent calls, a missing agent or 30 s without an answer stop
   it. Looping everything so far while it waits, and the groove, come next.
-- **Next:** the test pass, then lyrics and references (mockups first).
+- **Next:** lyrics and references (mockups first). The test pass is done
+  (2026-11-04); the sound of drills and the partner is not yet heard.
   The Windows talk key is still open.
 
 ## Learning mode (v2)

@@ -120,6 +120,8 @@ export interface SongPiece {
   track: string;
   keys: string[];
   bar_skills: string[][];
+  // Presses of the track that no key plays now, left out of the piece.
+  left_out: number;
 }
 
 // One note's result in a try.
@@ -192,10 +194,11 @@ export function nextOf<T>(values: readonly T[], value: T): T {
   return values[(place + 1) % values.length];
 }
 
-// An offset as words: "on time", "12 ms late", "30 ms early".
+// An offset as words: "on time", "12 ms late", "30 ms early", or "none
+// hit" when no note was hit, so there is no timing.
 export function offsetWords(offset: number | null | undefined): string {
   if (offset === null || offset === undefined) {
-    return "-";
+    return "none hit";
   }
   if (Math.abs(offset) < 5) {
     return "on time";

@@ -1436,8 +1436,11 @@ function hearTheAgent() {
   listen("agent-acted", () => {
     redrawAfterAgent();
   });
+  // Practice starts, ends or scores a try: a section's practice puts the
+  // loop away and gives it back, so the looper is asked again too.
   listen<PracticeView>("practice", (event) => {
     screen?.showPractice(event.payload);
+    sendInOrder(askForSound);
   });
   listen<{ marks: PracticeMark[] }>("practice-marks", (event) => {
     screen?.showPracticeMarks(event.payload.marks);

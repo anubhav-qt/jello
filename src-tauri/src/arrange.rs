@@ -16,7 +16,7 @@ use crate::mix::Mix;
 use crate::mix_automation::{MixPart, is_track_mix_value, mix_part_at, own_mix_part, send_mix_part};
 use crate::song_file::{Automation, Song, SongLayer, SongLoop, SongSection, TEMPO_WORD};
 use crate::sound_file::Sound;
-use crate::song_session::{loop_now, open_song_loop};
+use crate::song_session::{give_back_practice_loop, loop_now, open_song_loop};
 
 // How far ahead of the sound the sequencer is kept, in seconds.
 const AHEAD_SECONDS: u64 = 2;
@@ -604,9 +604,7 @@ fn samples_of_seconds(seconds: f64, sample_rate: u32) -> u64 {
 // changing nothing, while the looper records, or with no loop or no
 // sections to play.
 pub fn play(composer: &mut Composer, engine: &mut Engine) -> Result<(), String> {
-    if composer.arranging().is_some() {
-        stop(composer, engine);
-    }
+    stop(composer, engine);
     let state = engine.looper_status().state;
     let recording = match state {
         LooperState::CountingIn => true,
@@ -651,8 +649,11 @@ pub fn track_sounds(composer: &Composer) -> Vec<TrackSound> {
     tracks
 }
 
-// Stops the arrangement, if it plays, and opens the loop again, paused.
+// Stops the arrangement, if it plays, and opens the loop again, paused. A
+// section's practice puts the loop away too, so its loop comes back here
+// as well: whatever calls this needs the loop.
 pub fn stop(composer: &mut Composer, engine: &mut Engine) {
+    give_back_practice_loop(composer, engine);
     let Some(player) = composer.set_arranging(None) else {
         return;
     };
@@ -1091,6 +1092,53 @@ mod tests {
             loudest = loudest.max(sample.abs());
         }
         loudest
+    }
+
+    #[test]
+    fn practicing_a_section_puts_the_loop_away_and_anything_needing_it_gives_it_back() {
+        use crate::song_session::{give_back_practice_loop, put_loop_away_for_practice};
+        let looped = one_layer_loop(1, &[(60, 0.0, 2.0)]);
+        let (mut composer, mut engine) = arranged(&looped, vec![section("Verse", 1, 120, &[(0, 0)])], vec![0]);
+
+        put_loop_away_for_practice(&mut composer, &mut engine).unwrap();
+        engine.render(512);
+        assert_eq!(engine.looper_status().state, LooperState::Idle);
+        // The ladder can set the tempo now, and the song still keeps its loop.
+        assert_eq!(engine.set_tempo(84), 84);
+        assert_eq!(song_now(&composer, &mut engine).looped, Some(looped.clone()));
+        // The section's details still show the track's layer.
+        let shown = serde_json::to_value(crate::sections::view(&mut composer, &mut engine)).unwrap();
+        assert_eq!(shown["tracks"][0]["layers"], 1);
+
+        // Whatever needs the loop stops the sections first, which gives it back.
+        stop(&mut composer, &mut engine);
+        engine.render(512);
+        assert!(composer.practice_loop().is_none());
+        assert_eq!(engine.looper_status().state, LooperState::Paused);
+        assert_eq!(song_now(&composer, &mut engine).looped, Some(looped.clone()));
+
+        // Practice ending gives it back too, and twice is harmless.
+        put_loop_away_for_practice(&mut composer, &mut engine).unwrap();
+        give_back_practice_loop(&mut composer, &mut engine);
+        give_back_practice_loop(&mut composer, &mut engine);
+        engine.render(512);
+        assert_eq!(engine.looper_status().state, LooperState::Paused);
+        assert_eq!(song_now(&composer, &mut engine).looped, Some(looped));
+    }
+
+    #[test]
+    fn practicing_with_no_loop_or_while_recording_keeps_the_looper_as_it_is() {
+        use crate::song_session::put_loop_away_for_practice;
+        let mut engine = Engine::new().unwrap();
+        let mut composer = Composer::new();
+        put_loop_away_for_practice(&mut composer, &mut engine).unwrap();
+        assert!(composer.practice_loop().is_none());
+
+        engine.press_looper();
+        engine.render(512);
+        let recording = put_loop_away_for_practice(&mut composer, &mut engine);
+        assert_eq!(recording, Err(String::from("the looper is recording: finish it first")));
+        assert!(composer.practice_loop().is_none());
     }
 
     #[test]

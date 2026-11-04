@@ -80,9 +80,10 @@ struct Placed {
     end: f64,
 }
 
-// The notes of layer `layer` of track `track` as `section` plays them: the
-// layer repeats on its own length from the section's start, and notes still
-// sounding at its end let go there.
+// The notes of layer `layer` of track `track` as `section` plays them, the
+// way the arrangement does (src/arrange.rs): the layer repeats on its own
+// length from the section's start, and a note lets go by the end of its
+// round and of the section.
 fn section_notes(section: &SongSection, looped: &SongLoop, track: usize, layer: usize) -> Vec<Placed> {
     let Some(found) = arrange::layer_of(looped, track, layer) else {
         return Vec::new();
@@ -103,7 +104,7 @@ fn section_notes(section: &SongSection, looped: &SongLoop, track: usize, layer: 
             if start >= length {
                 continue;
             }
-            let end = (round_start + note.end).min(length);
+            let end = (round_start + note.end.min(period)).min(length);
             if end <= start {
                 continue;
             }
@@ -279,6 +280,7 @@ pub fn piece_of_section(source: &SongSource) -> Result<Piece, String> {
             track: track_name.clone(),
             keys,
             bar_skills,
+            left_out: unplayable,
         }),
     })
 }
@@ -545,14 +547,26 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_of_its_own_length_repeats_and_ends_with_the_section() {
-        let looped = SongLoop { bars: 1, layers: vec![layer(0, 1, &[(57, 3.0, 5.0)])] };
+    fn presses_no_key_plays_are_left_out_and_counted() {
+        // A3 is on H; note 20 has no key.
+        let looped = SongLoop { bars: 1, layers: vec![layer(0, 0, &[(57, 1.0, 1.5), (20, 2.0, 2.5), (20, 3.0, 3.5)])] };
+        let verse = section(1, &[(0, 0)]);
+        let key_map = KeyMap::with_test_layout();
+        let piece = piece_of_section(&source(&verse, &looped, &key_map, 0)).unwrap();
+        assert_eq!(piece.parts[1].notes.len(), 1);
+        assert_eq!(piece.song.unwrap().left_out, 2);
+    }
+
+    #[test]
+    fn a_layer_of_its_own_length_repeats_and_its_notes_end_with_each_round() {
+        // As the arrangement plays it: a note held past the layer's bar
+        // lets go there, and one starting past it never plays.
+        let looped = SongLoop { bars: 2, layers: vec![layer(0, 1, &[(57, 3.0, 5.0), (60, 4.5, 5.0)])] };
         let verse = section(2, &[(0, 0)]);
         let notes = section_notes(&verse, &looped, 0, 0);
         assert_eq!(notes.len(), 2);
-        assert_eq!(notes[0].end, 5.0);
-        assert_eq!(notes[1].start, 7.0);
-        assert_eq!(notes[1].end, 8.0);
+        assert_eq!((notes[0].start, notes[0].end), (3.0, 4.0));
+        assert_eq!((notes[1].start, notes[1].end), (7.0, 8.0));
     }
 
     #[test]
@@ -645,6 +659,7 @@ mod tests {
             track: String::from("Piano"),
             keys: Vec::new(),
             bar_skills: vec![vec![String::from("run of eighths")], Vec::new()],
+            left_out: 0,
         };
         let summary = summary_with(&[(1, 4.0, 0.0, 0.0)]);
         let line = song_line(&song, &summary);

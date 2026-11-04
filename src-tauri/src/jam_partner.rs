@@ -251,6 +251,16 @@ fn wait_for_answer(app: &AppHandle, round: u64, running: &AtomicBool) -> Result<
     }
 }
 
+// The first phrase line, `length` apart from `from`, at least LINE_MARGIN
+// after `now`, so an answer ready just before a line waits for the next.
+fn next_line(from: Instant, length: Duration, now: Instant) -> Instant {
+    let mut line = from;
+    while line < now + LINE_MARGIN {
+        line += length;
+    }
+    line
+}
+
 // Rounds of call and answer until Stop or a problem. Returns what ended it,
 // or "" for Stop.
 fn run(app: &AppHandle, running: &AtomicBool) -> String {
@@ -318,12 +328,7 @@ fn run(app: &AppHandle, running: &AtomicBool) -> String {
         };
 
         let answer_at = if looping {
-            // The next phrase line on the click that kept going.
-            let mut line = call_end;
-            while line < Instant::now() + LINE_MARGIN {
-                line += call_length;
-            }
-            line
+            next_line(call_end, call_length, Instant::now())
         } else {
             say(app, "count_in", "", looping);
             start_click(app) + bar
@@ -392,6 +397,8 @@ mod tests {
         ];
         let lines = call_lines(&presses, 10_000.0, 500.0, 8.0);
         assert_eq!(lines, vec!["C4 at 0 for 1 beats", "C4 E4 G4 at 1.5 for 2 beats", "C5 at 7 for 1 beats"]);
+        let off_the_beat = [press(&[60], 10_125, Some(375))];
+        assert_eq!(call_lines(&off_the_beat, 10_000.0, 500.0, 8.0), vec!["C4 at 0.25 for 0.75 beats"]);
         let past_the_end = [press(&[72], 13_000, Some(3000))];
         assert_eq!(call_lines(&past_the_end, 10_000.0, 500.0, 8.0), vec!["C5 at 6 for 2 beats"]);
     }
@@ -415,6 +422,19 @@ mod tests {
             ]
         );
         assert!(answer_notes("I can't play that.", 8.0).is_err());
+    }
+
+    #[test]
+    fn a_looping_answer_comes_in_on_the_next_phrase_line() {
+        let start = Instant::now();
+        let length = Duration::from_secs(4);
+        // Ready 1 s after the call ended: the next line.
+        assert_eq!(next_line(start, length, start + Duration::from_secs(1)), start + length);
+        // Ready just before a line: too close, so the next.
+        let close = start + length - Duration::from_millis(50);
+        assert_eq!(next_line(start, length, close), start + length * 2);
+        // Ready before the call even ended: the call's end.
+        assert_eq!(next_line(start, length, start - Duration::from_secs(1)), start);
     }
 
     #[test]

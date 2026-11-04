@@ -7,7 +7,10 @@
 //
 // The loop pauses while practice plays, and plays again after. While a
 // loop exists its tempo holds (the engine keeps the beat for it), so
-// practice plays at the loop's tempo.
+// practice plays at the loop's tempo. A section of the player's song is
+// made of the loop's layers, and Jello plays them on their layer slots, so
+// its practice puts the loop away instead, as the arrangement does, and
+// gives it back paused when practice ends.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -29,6 +32,7 @@ use crate::practice_song;
 use crate::practice::{self, BEATS_PER_BAR, MOST_PASSES, Piece, Plan, Practice, Settings, Sounding};
 use crate::scoring::{self, Expected, Heard};
 use crate::skills;
+use crate::song_session;
 
 // How often the runner looks at the clock, and how often it tells the
 // Play tab.
@@ -37,6 +41,8 @@ const PROGRESS_EVERY_MS: u128 = 50;
 // The quiet before a listen, and between tries.
 const LEAD_MS: f64 = 600.0;
 const BETWEEN_TRIES: Duration = Duration::from_millis(1200);
+// The longest wait for the engine to hear the loop was put away.
+const LOOPER_SETTLE: Duration = Duration::from_millis(500);
 // The ear's answer ends this long after the last press, or after the
 // longer wait if nothing is pressed.
 const ANSWER_QUIET_MS: u128 = 3000;
@@ -47,55 +53,35 @@ const LATER_MARKS: usize = 4;
 const MOST_UNSENT: usize = 5;
 
 // Starts a try of the piece set, on a thread of its own. Refused with no
-// piece, while a try plays, or while the looper counts in or records.
+// piece, while a try plays, or while the looper counts in or records. The
+// try is claimed first, so a second Start (the button and the agent at
+// once) is refused before it can touch the loop.
 pub fn start(app: &AppHandle) -> Result<(), String> {
     let practice_state = app.state::<Mutex<Practice>>();
-    let ladder = {
-        let practice = practice_state.lock().unwrap();
-        if practice.piece.is_none() {
-            return Err(String::from("no piece is set"));
-        }
-        if practice.is_running() {
-            return Err(String::from("a try is already playing"));
-        }
-        practice.settings.ladder
-    };
-
-    let engine_state = app.state::<Mutex<Engine>>();
-    let loop_tempo = {
-        let mut engine = engine_state.lock().unwrap();
-        engine.start_audio()?;
-        let status = engine.looper_status();
-        let recording = match status.state {
-            LooperState::CountingIn => true,
-            LooperState::Recording => true,
-            LooperState::Layering => true,
-            _ => false,
-        };
-        if recording {
-            return Err(String::from("the looper is recording: finish it first"));
-        }
-        let mut loop_tempo = None;
-        if engine.is_looper_busy() {
-            loop_tempo = Some(engine.tempo());
-        }
-        loop_tempo
-    };
-    if let Some(tempo) = loop_tempo {
-        if ladder.is_some() {
-            return Err(format!(
-                "the loop holds the tempo at {tempo}, so the ladder can't speed up: turn the ladder off or remove the loop"
-            ));
-        }
-    }
-
     let stop = Arc::new(AtomicBool::new(false));
-    {
+    let (has_ladder, song_piece) = {
         let mut practice = practice_state.lock().unwrap();
+        let Some(piece) = &practice.piece else {
+            return Err(String::from("no piece is set"));
+        };
+        let song_piece = piece.song.is_some();
         if practice.is_running() {
             return Err(String::from("a try is already playing"));
         }
         practice.running = Some(Arc::clone(&stop));
+        (practice.settings.ladder.is_some(), song_piece)
+    };
+    let ready = get_ready(app, has_ladder, song_piece);
+    let (loop_tempo, loop_put_away) = match ready {
+        Ok(found) => found,
+        Err(problem) => {
+            practice_state.lock().unwrap().running = None;
+            give_loop_back(app);
+            return Err(problem);
+        }
+    };
+    {
+        let mut practice = practice_state.lock().unwrap();
         practice.tempo_note = None;
         if let Some(tempo) = loop_tempo {
             if tempo != practice.settings.tempo {
@@ -106,11 +92,56 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     }
     show_view(app);
     let handle = app.clone();
-    thread::spawn(move || run(handle, stop));
+    thread::spawn(move || run(handle, stop, loop_put_away));
     Ok(())
 }
 
-fn run(app: AppHandle, stop: Arc<AtomicBool>) {
+// Puts a section's loop away and starts the sound. Returns the tempo a
+// loop still there holds, and whether the loop was put away.
+fn get_ready(app: &AppHandle, has_ladder: bool, song_piece: bool) -> Result<(Option<u32>, bool), String> {
+    let mut loop_put_away = false;
+    if song_piece {
+        let composer = app.state::<Mutex<Composer>>();
+        let mut composer = composer.lock().unwrap();
+        let engine = app.state::<Mutex<Engine>>();
+        let mut engine = engine.lock().unwrap();
+        song_session::put_loop_away_for_practice(&mut composer, &mut engine)?;
+        loop_put_away = composer.practice_loop().is_some();
+    }
+
+    let engine = app.state::<Mutex<Engine>>();
+    let mut engine = engine.lock().unwrap();
+    engine.start_audio()?;
+    let status = engine.looper_status();
+    let recording = match status.state {
+        LooperState::CountingIn => true,
+        LooperState::Recording => true,
+        LooperState::Layering => true,
+        _ => false,
+    };
+    if recording {
+        return Err(String::from("the looper is recording: finish it first"));
+    }
+    // A loop put away still counts as busy until the engine hears it went,
+    // so only a loop still there holds the tempo.
+    let mut loop_tempo = None;
+    if engine.is_looper_busy() && !loop_put_away {
+        loop_tempo = Some(engine.tempo());
+    }
+    if let Some(tempo) = loop_tempo {
+        if has_ladder {
+            return Err(format!(
+                "the loop holds the tempo at {tempo}, so the ladder can't speed up: turn the ladder off or remove the loop"
+            ));
+        }
+    }
+    Ok((loop_tempo, loop_put_away))
+}
+
+fn run(app: AppHandle, stop: Arc<AtomicBool>, loop_put_away: bool) {
+    if loop_put_away {
+        wait_for_empty_looper(&app, &stop);
+    }
     let resume_loop = pause_loop(&app);
     let mut passes = 0;
     let mut listened = false;
@@ -170,6 +201,22 @@ fn snapshot(app: &AppHandle) -> Option<(Piece, Settings, u32)> {
     Some((piece, practice.settings.clone(), practice.tempo_now))
 }
 
+// Waits, at most LOOPER_SETTLE, for the engine to hear that the loop was
+// put away, so the ladder can set the tempo.
+fn wait_for_empty_looper(app: &AppHandle, stop: &AtomicBool) {
+    let until = Instant::now() + LOOPER_SETTLE;
+    while Instant::now() < until {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let busy = app.state::<Mutex<Engine>>().lock().unwrap().is_looper_busy();
+        if !busy {
+            return;
+        }
+        thread::sleep(TICK);
+    }
+}
+
 // Pauses the loop if it plays. Returns whether to play it again after.
 fn pause_loop(app: &AppHandle) -> bool {
     let engine = app.state::<Mutex<Engine>>();
@@ -189,8 +236,18 @@ fn set_engine_tempo(app: &AppHandle, tempo: u32) -> u32 {
     engine.set_tempo(tempo)
 }
 
+// The loop a section's practice put away comes back, paused.
+fn give_loop_back(app: &AppHandle) {
+    let composer = app.state::<Mutex<Composer>>();
+    let mut composer = composer.lock().unwrap();
+    let engine = app.state::<Mutex<Engine>>();
+    let mut engine = engine.lock().unwrap();
+    song_session::give_back_practice_loop(&mut composer, &mut engine);
+}
+
 // Practice ends: the click stops, the song's tempo comes back, the loop
-// plays again if it played before, and the Play tab is told.
+// plays again if it played before, or comes back if a section's practice
+// put it away, and the Play tab is told.
 fn finish(app: &AppHandle, resume_loop: bool) {
     let tempo = app.state::<Mutex<Composer>>().lock().unwrap().tempo();
     {
@@ -202,6 +259,7 @@ fn finish(app: &AppHandle, resume_loop: bool) {
             engine.play_loop();
         }
     }
+    give_loop_back(app);
     {
         let practice = app.state::<Mutex<Practice>>();
         let mut practice = practice.lock().unwrap();

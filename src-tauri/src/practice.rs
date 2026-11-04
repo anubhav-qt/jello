@@ -72,7 +72,8 @@ pub struct Piece {
 
 // A piece made from a section of the player's song: the section and the
 // track practiced, the key each note is played on, by the note's place,
-// and what each bar needs (song_skills.rs), from bar 1.
+// what each bar needs (song_skills.rs), from bar 1, and how many presses
+// no key plays now.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SongPiece {
     pub song: String,
@@ -80,6 +81,8 @@ pub struct SongPiece {
     pub track: String,
     pub keys: Vec<String>,
     pub bar_skills: Vec<Vec<String>>,
+    // Presses of the track that no key plays now, so the piece leaves out.
+    pub left_out: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

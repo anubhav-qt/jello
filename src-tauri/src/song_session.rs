@@ -21,7 +21,7 @@ use tauri::State;
 
 use crate::commands::load_starting_sound;
 use crate::compose::Composer;
-use crate::engine::{Engine, LoopLayer, LoopNote, START_TEMPO};
+use crate::engine::{Engine, LoopLayer, LoopNote, LooperState, START_TEMPO};
 use crate::key_map::LAPTOP_VELOCITY;
 use crate::presets;
 use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, SongTrack, beats_of, samples_of, song_of, text_of};
@@ -186,13 +186,53 @@ pub(crate) fn loop_now(engine: &mut Engine) -> Option<SongLoop> {
     })
 }
 
-// The loop as its file holds it: the one the arrangement put away while it
-// plays, or else the engine's.
-fn loop_kept(composer: &Composer, engine: &mut Engine) -> Option<SongLoop> {
+// The loop as its file holds it: the one the arrangement or a section's
+// practice put away while it plays, or else the engine's.
+pub(crate) fn loop_kept(composer: &Composer, engine: &mut Engine) -> Option<SongLoop> {
     if let Some(player) = composer.arranging() {
         return Some(player.looped().clone());
     }
+    if let Some(looped) = composer.practice_loop() {
+        return Some(looped.clone());
+    }
     loop_now(engine)
+}
+
+// Puts the loop away while a section is practiced, so the ladder can set
+// the tempo and Jello's parts play on the layer slots alone. Nothing
+// happens with no loop. Fails, changing nothing, while the looper records.
+pub(crate) fn put_loop_away_for_practice(composer: &mut Composer, engine: &mut Engine) -> Result<(), String> {
+    crate::arrange::stop(composer, engine);
+    let state = engine.looper_status().state;
+    let recording = match state {
+        LooperState::CountingIn => true,
+        LooperState::Recording => true,
+        LooperState::Layering => true,
+        _ => false,
+    };
+    if recording {
+        return Err(String::from("the looper is recording: finish it first"));
+    }
+    let Some(looped) = loop_now(engine) else {
+        return Ok(());
+    };
+    engine.open_loop(composer.tempo(), 0, &[], LAPTOP_VELOCITY)?;
+    composer.set_practice_loop(Some(looped));
+    Ok(())
+}
+
+// Gives back the loop a section's practice put away, paused at the song's
+// tempo. Anything that needs the loop calls this first, through
+// arrange::stop. If the engine refuses it, the loop stays put away, so the
+// song still saves it.
+pub(crate) fn give_back_practice_loop(composer: &mut Composer, engine: &mut Engine) {
+    let Some(looped) = composer.set_practice_loop(None) else {
+        return;
+    };
+    let opened = open_song_loop(engine, composer.tempo(), Some(&looped));
+    if opened.is_err() {
+        composer.set_practice_loop(Some(looped));
+    }
 }
 
 // Opens `song`'s loop on `engine`, paused, at its tempo, or with no loop,

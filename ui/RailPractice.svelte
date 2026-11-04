@@ -76,6 +76,14 @@
     }
   }
 
+  // Why the piece has fewer notes than the track plays.
+  function leftOutWords(count: number): string {
+    if (count === 1) {
+      return "1 note has no key in the song's keys now, so it is left out.";
+    }
+    return `${count} notes have no key in the song's keys now, so they are left out.`;
+  }
+
   function handWords(name: string, tally: Tally | null | undefined): string {
     if (tally === null || tally === undefined) {
       return "";
@@ -140,6 +148,9 @@
       <span class="agent-jam-title">Practice</span>
       <span class="agent-quiet">{song.section} · {song.track}</span>
     </div>
+    {#if song.left_out > 0}
+      <p class="agent-quiet">{leftOutWords(song.left_out)}</p>
+    {/if}
     {#each shownTries as attempt (attempt.try)}
       <p class="agent-practice-try">{tryWords(attempt)}</p>
     {:else}

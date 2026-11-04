@@ -275,6 +275,13 @@ mod tests {
     fn four_sixteenths_in_a_row_are_a_run_and_three_are_not() {
         assert_eq!(skills_of_bar(&right_run(0.25, 4), 1), vec!["run of sixteenths"]);
         assert!(skills_of_bar(&right_run(0.25, 3), 1).is_empty());
+        // A gap starts the count again.
+        let mut broken = right_run(0.25, 3);
+        for (place, start) in [1.5, 1.75].into_iter().enumerate() {
+            let key = format!("KeyB{place}");
+            broken.push(press(Hand::Right, &key, &[63 + place as u8], start, 0.25));
+        }
+        assert!(skills_of_bar(&broken, 1).is_empty());
         assert_eq!(skills_of_bar(&right_run(0.5, 4), 1), vec!["run of eighths"]);
     }
 

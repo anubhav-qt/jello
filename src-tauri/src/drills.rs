@@ -266,7 +266,7 @@ fn interval_drill(drills: &mut Drills, steps: &[(u8, u8)]) -> Result<(Question, 
     let answer = interval_name(first, second);
     let step = (i32::from(second) - i32::from(first)).abs();
     let mut others = Vec::new();
-    for change in [1, -1, 2, -2, 5] {
+    for change in [1, -1, 2, -2, 5, -5] {
         let near = step + change;
         if (1..=12).contains(&near) {
             let mut moved = i32::from(first) + near;
@@ -280,10 +280,14 @@ fn interval_drill(drills: &mut Drills, steps: &[(u8, u8)]) -> Result<(Question, 
     Ok((Question::Interval(first, second), answer, choices))
 }
 
-// Presses that started within TOGETHER_MS of each other, as one.
+// Presses that started within TOGETHER_MS of each other, as one. A press
+// that plays no note is left out.
 fn grouped(presses: &[HeardPress]) -> Vec<Vec<u8>> {
     let mut groups: Vec<(u64, Vec<u8>)> = Vec::new();
     for press in presses {
+        if press.notes.is_empty() {
+            continue;
+        }
         let joins = match groups.last() {
             Some((start, _)) => press.pressed_ms.saturating_sub(*start) <= TOGETHER_MS,
             None => false,
@@ -729,6 +733,19 @@ mod tests {
     }
 
     #[test]
+    fn every_step_gets_four_different_answers() {
+        let mut drills = Drills::default();
+        for step in 1..=12u8 {
+            for (first, second) in [(60, 60 + step), (72, 72 - step)] {
+                let (_, answer, choices) = interval_drill(&mut drills, &[(first, second)]).unwrap();
+                let distinct: BTreeSet<&String> = choices.iter().collect();
+                assert_eq!(distinct.len(), 4, "{answer}: {choices:?}");
+                assert!(choices.contains(&answer));
+            }
+        }
+    }
+
+    #[test]
     fn three_wrong_tries_tell_the_answer() {
         let mut drill = Drill {
             kind: String::from("chord"),
@@ -748,6 +765,41 @@ mod tests {
         assert_eq!(drill.state, "told");
         assert_eq!(drill.said, "It was C.");
         assert!(is_over(&drill));
+    }
+
+    #[test]
+    fn a_close_sound_ends_the_drill_and_a_far_one_does_not() {
+        let mut drill = Drill {
+            kind: String::from("sound"),
+            question: Question::Chord(major(48)),
+            choices: Vec::new(),
+            answer: String::from("Warm Pad"),
+            first_press: 0,
+            wrong: 0,
+            state: String::from("far"),
+            said: String::new(),
+            closeness: Some(40),
+        };
+        assert!(!is_over(&drill));
+        drill.state = String::from("close");
+        assert!(is_over(&drill));
+    }
+
+    #[test]
+    fn an_interval_is_played_back_the_way_it_was_asked() {
+        let question = Question::Interval(60, 67);
+        let up = [press(1, &[60], 0), press(2, &[67], 400)];
+        assert_eq!(played_back(&question, &up), Some(true));
+        let down = [press(1, &[67], 0), press(2, &[60], 400)];
+        assert_eq!(played_back(&question, &down), Some(false));
+        assert_eq!(played_back(&question, &[press(1, &[60], 0)]), None);
+        let falling = Question::Interval(67, 60);
+        assert_eq!(played_back(&falling, &down), Some(true));
+        assert_eq!(played_back(&falling, &up), Some(false));
+        // A press that plays no note is no part of the answer.
+        let with_silent = [press(1, &[60], 0), press(2, &[], 200), press(3, &[67], 400)];
+        assert_eq!(played_back(&question, &with_silent), Some(true));
+        assert_eq!(played_back(&question, &[press(1, &[], 0), press(2, &[], 400)]), None);
     }
 
     #[test]

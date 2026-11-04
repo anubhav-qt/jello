@@ -17,7 +17,7 @@ use crate::song_file::{
     Automation, MOST_ARRANGED, MOST_AUTOMATION, MOST_KEY_SHIFT, MOST_SECTIONS, SECTION_MOST_BARS, SectionLayer,
     SongLoop, SongSection, TEMPO_WORD,
 };
-use crate::song_session::{loop_now, open_song_loop};
+use crate::song_session::{loop_kept, loop_now, open_song_loop};
 
 // The most letters in a section's name.
 const NAME_LONGEST: usize = 40;
@@ -490,15 +490,6 @@ fn layers_on(looped: Option<&SongLoop>, track: usize) -> usize {
     count
 }
 
-// The loop the sections play: the one put away while they play, or the
-// looper's.
-fn loop_of(composer: &Composer, engine: &mut Engine) -> Option<SongLoop> {
-    if let Some(player) = composer.arranging() {
-        return Some(player.looped().clone());
-    }
-    loop_now(engine)
-}
-
 // Lets the sections forget the layers removed since this was last called.
 // Everything that reads the sections calls this first.
 pub fn catch_up(composer: &mut Composer, engine: &mut Engine) {
@@ -549,7 +540,7 @@ pub fn edit(composer: &mut Composer, engine: &mut Engine, edit: SectionEdit) -> 
             layer,
             on,
         } => {
-            let looped = loop_of(composer, engine);
+            let looped = loop_kept(composer, engine);
             composer.sections_mut().set_layer(section, track, layer, on, looped.as_ref())?;
         }
         SectionEdit::Automate {
@@ -734,7 +725,7 @@ pub struct TrackLayers {
 // What the sections lane and details show now.
 pub fn view(composer: &mut Composer, engine: &mut Engine) -> SectionsView {
     catch_up(composer, engine);
-    let looped = loop_of(composer, engine);
+    let looped = loop_kept(composer, engine);
     let mut sections = Vec::new();
     for section in composer.sections() {
         let mut layers = Vec::new();
