@@ -23,6 +23,7 @@
     type SongKeys,
   } from "./compose";
   import ComposeTape from "./ComposeTape.svelte";
+  import SectionDetails from "./SectionDetails.svelte";
   import { clickThenLetGo } from "./dom";
   import { colorForNote, NOTE_COLORS } from "./note-colors";
   import Keyboard from "./Keyboard.svelte";
@@ -237,9 +238,23 @@
   let compose: ComposeView | null = $state(null);
   // The song's sections, or null until Rust has said.
   let sections: SectionsView | null = $state(null);
-  // Compose's tape, so Esc can close a section's details. Svelte sets it
-  // to null when another tab takes Compose's place.
+  // Compose's tape, so Esc can close its topic map. Svelte sets it to null
+  // when another tab takes Compose's place.
   let tape: ComposeTape | null | undefined = $state();
+  // The place in the sections' order picked on the tape, from 1, or null.
+  // Its section's details show in the left rail.
+  let pickedSection: number | null = $state(null);
+  // The section shown in the left rail, from 1: only in Compose.
+  let openSection: number | null = $derived.by(() => {
+    if (tab !== "compose" || sections === null || pickedSection === null) {
+      return null;
+    }
+    const number = sections.order[pickedSection - 1];
+    if (number === undefined) {
+      return null;
+    }
+    return number;
+  });
   let composeAt = $state(0);
   // The chord key pressed last, by place, like "KeyX".
   let tried: string | null = $state(null);
@@ -645,10 +660,11 @@
       agentOpen = false;
       return true;
     }
-    if (tape === undefined || tape === null) {
-      return false;
+    if (openSection !== null) {
+      pickedSection = null;
+      return true;
     }
-    return tape.closeSection();
+    return false;
   }
 
   // What is open, in words for the agent: the tab, a panel, the picked
@@ -1009,7 +1025,16 @@
     class="screen-body"
     class:is-composing={tab === "compose"}
     class:has-agent={agentOpen}
+    class:has-section={openSection !== null}
   >
+    {#if sections !== null && openSection !== null}
+      <SectionDetails
+        {sections}
+        number={openSection}
+        onEdit={onSectionEdit}
+        onClose={() => (pickedSection = null)}
+      />
+    {/if}
     <div class="screen-left">
       {#if keysPageOpen}
         <KeysPage
@@ -1102,6 +1127,7 @@
               {sections}
               {modifierName}
               {onSectionEdit}
+              bind:pickedSection
               {path}
               draft={draftOnTape(take)}
               bind:this={tape}

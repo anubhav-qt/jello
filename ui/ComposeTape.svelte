@@ -18,7 +18,6 @@
     type SectionEdit,
     type SectionsView,
   } from "./compose";
-  import SectionDetails from "./SectionDetails.svelte";
   import SectionsLane from "./SectionsLane.svelte";
   import { clickThenLetGo } from "./dom";
   import ScalePicker from "./ScalePicker.svelte";
@@ -44,9 +43,11 @@
     onChordClick: (place: number) => void;
     onPlayClick: () => void;
     onEdit: (action: string, place: number) => void;
-    // The sections lane under the progression, and a section's details in
-    // the guidance's place while one is picked.
+    // The sections lane under the progression. A section's details show in
+    // the left rail (Stage.svelte) while one is picked.
     sections: SectionsView | null;
+    // The place in the sections' order picked, from 1, or null.
+    pickedSection: number | null;
     // Left Cmd on a Mac, left Alt on Windows.
     modifierName: string;
     onSectionEdit: (edit: SectionEdit) => void;
@@ -69,6 +70,7 @@
     onPlayClick,
     onEdit,
     sections,
+    pickedSection = $bindable(),
     modifierName,
     onSectionEdit,
     path,
@@ -114,28 +116,6 @@
     return true;
   }
 
-  // The place in the sections' order picked, from 1, or null. Its section's
-  // details take the progression's and the tried chords' place.
-  let pickedSection = $state<number | null>(null);
-  let openSection = $derived.by(() => {
-    if (sections === null || pickedSection === null) {
-      return null;
-    }
-    const number = sections.order[pickedSection - 1];
-    if (number === undefined) {
-      return null;
-    }
-    return number;
-  });
-
-  // Esc closes a section's details. Returns true if one was open.
-  export function closeSection(): boolean {
-    if (openSection === null) {
-      return false;
-    }
-    pickedSection = null;
-    return true;
-  }
 
   // How wide one second of a chord is drawn, in pixels.
   const PIXELS_PER_SECOND = 36;
@@ -444,76 +424,74 @@
         {/if}
       </div>
 
-      {#if openSection === null}
-        <div class="tape-row tape-slot">
-          {#if pickerShown}
-            <ScalePicker
-              tonic={view.scale?.tonic ?? null}
-              kind={view.scale?.kind ?? null}
-              onPick={pick}
-            />
+      <div class="tape-row tape-slot">
+        {#if pickerShown}
+          <ScalePicker
+            tonic={view.scale?.tonic ?? null}
+            kind={view.scale?.kind ?? null}
+            onPick={pick}
+          />
+        {:else}
+          <span class="tape-row-label">Progression</span>
+          {#if songIsEmpty}
+            <p class="tape-empty">
+              Your final progression goes here. Try chords freely, then add
+              from the chords tried or press Return.
+            </p>
           {:else}
-            <span class="tape-row-label">Progression</span>
-            {#if songIsEmpty}
-              <p class="tape-empty">
-                Your final progression goes here. Try chords freely, then add
-                from the chords tried or press Return.
-              </p>
-            {:else}
-              <div class="tape-lane">
-                {#if view.progression.length > 0}
-                  <button
-                    type="button"
-                    class="tape-play"
-                    aria-label="Play the song"
-                    onclick={(event) => clickThenLetGo(event, onPlayClick)}
-                  >
-                    &#9654;
-                  </button>
-                {/if}
-                <div class="tape-scroller">
-                  <div class="tape-track" use:keepEndInView>
-                    {#each view.progression as chord, place}
-                      {@const played = playedShare(place)}
-                      <button
-                        type="button"
-                        class="tape-block"
-                        class:is-playing={played !== null}
-                        class:is-selected={selectedSong === place}
-                        style:--accent={colorForNote(chord.root).accent}
-                        style:width={widthFor(lengthNow(chord))}
-                        onclick={(event) =>
-                          clickThenLetGo(event, () => selectSong(place))}
+            <div class="tape-lane">
+              {#if view.progression.length > 0}
+                <button
+                  type="button"
+                  class="tape-play"
+                  aria-label="Play the song"
+                  onclick={(event) => clickThenLetGo(event, onPlayClick)}
+                >
+                  &#9654;
+                </button>
+              {/if}
+              <div class="tape-scroller">
+                <div class="tape-track" use:keepEndInView>
+                  {#each view.progression as chord, place}
+                    {@const played = playedShare(place)}
+                    <button
+                      type="button"
+                      class="tape-block"
+                      class:is-playing={played !== null}
+                      class:is-selected={selectedSong === place}
+                      style:--accent={colorForNote(chord.root).accent}
+                      style:width={widthFor(lengthNow(chord))}
+                      onclick={(event) =>
+                        clickThenLetGo(event, () => selectSong(place))}
+                    >
+                      <span class="tape-block-name">{chord.name}</span>
+                      <span class="tape-block-length"
+                        >{secondsWords(lengthNow(chord))}</span
                       >
-                        <span class="tape-block-name">{chord.name}</span>
-                        <span class="tape-block-length"
-                          >{secondsWords(lengthNow(chord))}</span
-                        >
-                        {#if played !== null}
-                          <span class="tape-playhead" style:--played={played}
-                          ></span>
-                        {/if}
-                      </button>
-                    {/each}
-                    {#if view.holding !== null}
-                      <div
-                        class="tape-block is-holding"
-                        style:--accent={colorForNote(view.holding.root).accent}
-                        style:width={widthFor(lengthNow(view.holding))}
+                      {#if played !== null}
+                        <span class="tape-playhead" style:--played={played}
+                        ></span>
+                      {/if}
+                    </button>
+                  {/each}
+                  {#if view.holding !== null}
+                    <div
+                      class="tape-block is-holding"
+                      style:--accent={colorForNote(view.holding.root).accent}
+                      style:width={widthFor(lengthNow(view.holding))}
+                    >
+                      <span class="tape-block-name">{view.holding.name}</span>
+                      <span class="tape-block-length"
+                        >{secondsWords(lengthNow(view.holding))}</span
                       >
-                        <span class="tape-block-name">{view.holding.name}</span>
-                        <span class="tape-block-length"
-                          >{secondsWords(lengthNow(view.holding))}</span
-                        >
-                      </div>
-                    {/if}
-                  </div>
+                    </div>
+                  {/if}
                 </div>
               </div>
-            {/if}
+            </div>
           {/if}
-        </div>
-      {/if}
+        {/if}
+      </div>
 
       <SectionsLane
         {sections}
@@ -523,14 +501,7 @@
         onEdit={onSectionEdit}
       />
 
-      {#if sections !== null && openSection !== null}
-        <SectionDetails
-          {sections}
-          number={openSection}
-          onEdit={onSectionEdit}
-          onClose={() => (pickedSection = null)}
-        />
-      {:else if selectedChord !== null && selectedSong !== null}
+      {#if selectedChord !== null && selectedSong !== null}
         <!-- A chord picked in the song can be moved or taken off. -->
         <div class="tape-row tape-bottom">
           <span class="tape-row-label">Selected</span>

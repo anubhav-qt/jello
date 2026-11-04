@@ -1,5 +1,5 @@
-<!-- A section's details, in the progression's place on Compose's tape
-     while its block is picked (docs/design.md#tracks-and-sections): its name,
+<!-- A section's details, in a rail on the left of Compose while its block
+     is picked on the tape (docs/design.md#tracks-and-sections): its name,
      bars, tempo and key shift, each track's layers on or off, and the
      values it moves. Every change is the section's, so every place in the
      order that uses it changes too. Practice on a track plays the section
@@ -275,10 +275,12 @@
 
 <style>
   .section-details {
-    flex: 1 1 0;
+    flex: none;
+    width: var(--section-width);
     min-height: 0;
     display: flex;
     flex-direction: column;
+    gap: 10px;
     padding: 12px;
     border: 1px solid rgba(var(--accent), 0.35);
     border-radius: 5px;
@@ -287,8 +289,14 @@
     font-size: 11px;
     color: var(--text-2);
   }
+  .details-heading {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    margin-bottom: 0;
+  }
   .section-name {
-    width: 240px;
+    width: 100%;
     font:
       800 14px Doto,
       monospace;
@@ -298,21 +306,21 @@
     display: flex;
     gap: 6px;
   }
+  /* One column under another, scrolling in the rail when they don't fit. */
   .section-columns {
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(200px, 1fr) minmax(0, 1.2fr) minmax(0, 1.6fr);
+    display: flex;
+    flex-direction: column;
     gap: 16px;
+    overflow: auto;
+    scrollbar-width: none;
   }
   .section-column {
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 0;
-    min-height: 0;
-    overflow: auto;
-    scrollbar-width: none;
   }
   h3 {
     margin: 0 0 2px;
@@ -388,6 +396,6 @@
     gap: 5px;
   }
   .section-value {
-    width: 150px;
+    width: 100%;
   }
 </style>

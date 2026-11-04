@@ -314,15 +314,20 @@ button.practice-tile:hover:not(:disabled) {
 }
 .lanes-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 18px;
+  gap: 8px 18px;
 }
+/* The name keeps its width; the head wraps onto a second line instead. */
 .lanes-title {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  flex: 1;
-  min-width: 0;
+  flex: 1 0 auto;
+  max-width: 100%;
+}
+.lanes-title span {
+  white-space: nowrap;
 }
 .lanes-title h2 {
   margin: 0;

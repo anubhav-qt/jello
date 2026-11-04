@@ -5,6 +5,26 @@
     min(calc((100vw - 72px) / 15), calc((100vh - 300px) / 10)),
     54px
   );
+  --section-width: 300px;
+}
+/* A section's details open in a rail on the left (ui/SectionDetails.svelte),
+   so a key is sized from what is left, with the Jello AI rail too. */
+.screen.stage:has(.screen-body.has-section) {
+  --u: clamp(
+    30px,
+    min(calc((100vw - 80px - var(--section-width)) / 15), calc((100vh - 300px) / 10)),
+    54px
+  );
+}
+.screen.stage:has(.screen-body.has-section.has-agent) {
+  --u: clamp(
+    30px,
+    min(
+      calc((100vw - 88px - var(--section-width) - var(--agent-width)) / 15),
+      calc((100vh - 300px) / 10)
+    ),
+    54px
+  );
 }
 .screen-body,
 .screen-body.is-composing {

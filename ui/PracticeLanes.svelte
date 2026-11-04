@@ -242,6 +242,9 @@
       tally = lastTry?.right;
     }
     if (tally === null || tally === undefined) {
+      if (part.notes.length === 1) {
+        return "1 note";
+      }
       return `${part.notes.length} notes`;
     }
     return `${tally.hits}/${tally.notes} · ${offsetWords(tally.mean_offset_ms)}`;
