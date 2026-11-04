@@ -83,6 +83,9 @@ pub struct SongPiece {
     pub bar_skills: Vec<Vec<String>>,
     // Presses of the track that no key plays now, so the piece leaves out.
     pub left_out: usize,
+    // The section's key shift in half steps: the keyboard moves by it while
+    // practice plays.
+    pub key_shift: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

@@ -82,9 +82,10 @@ struct Placed {
 
 // The notes of layer `layer` of track `track` as `section` plays them, the
 // way the arrangement does (src/arrange.rs): the layer repeats on its own
-// length from the section's start, and a note lets go by the end of its
-// round and of the section.
-fn section_notes(section: &SongSection, looped: &SongLoop, track: usize, layer: usize) -> Vec<Placed> {
+// length from the section's start, a note lets go by the end of its round
+// and of the section, and notes move `shift` half steps. A note moved out
+// of range is left out.
+fn section_notes(section: &SongSection, looped: &SongLoop, track: usize, layer: usize, shift: i32) -> Vec<Placed> {
     let Some(found) = arrange::layer_of(looped, track, layer) else {
         return Vec::new();
     };
@@ -108,12 +109,24 @@ fn section_notes(section: &SongSection, looped: &SongLoop, track: usize, layer: 
             if end <= start {
                 continue;
             }
-            placed.push(Placed { pitch: note.note, start, end });
+            let Some(pitch) = arrange::shifted(note.note, shift) else {
+                continue;
+            };
+            placed.push(Placed { pitch, start, end });
         }
         round_start += period;
     }
     placed.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.pitch.cmp(&b.pitch)));
     placed
+}
+
+// `pitches` each moved `shift` half steps, or None if one leaves the range.
+fn shifted_all(pitches: &[u8], shift: i32) -> Option<Vec<u8>> {
+    let mut moved = Vec::new();
+    for pitch in pitches {
+        moved.push(arrange::shifted(*pitch, shift)?);
+    }
+    Some(moved)
 }
 
 // Notes that start and end together were one press: its notes, lowest
@@ -178,10 +191,13 @@ pub fn piece_of_section(source: &SongSource) -> Result<Piece, String> {
         return Err(String::from("a drums track can't be practiced yet: pick an instrument track"));
     }
 
+    // The player's keys are found at the song's key; while practice plays,
+    // the keyboard moves by the section's key shift (src/practice_run.rs),
+    // so the same keys play the notes moved.
     let mut own = Vec::new();
     for used in &section.layers {
         if used.track == source.track {
-            own.extend(section_notes(section, source.looped, used.track, used.layer));
+            own.extend(section_notes(section, source.looped, used.track, used.layer, 0));
         }
     }
     own.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.pitch.cmp(&b.pitch)));
@@ -192,8 +208,12 @@ pub fn piece_of_section(source: &SongSource) -> Result<Piece, String> {
             unplayable += 1;
             continue;
         };
+        let Some(moved) = shifted_all(&pitches, section.key_shift) else {
+            unplayable += 1;
+            continue;
+        };
         let hand = hand_of_key(&key);
-        presses.push(SongPress { pitches, key, hand, start, hold });
+        presses.push(SongPress { pitches: moved, key, hand, start, hold });
     }
     if presses.is_empty() && unplayable > 0 {
         return Err(format!(
@@ -240,8 +260,12 @@ pub fn piece_of_section(source: &SongSource) -> Result<Piece, String> {
         if used.track == source.track {
             continue;
         }
+        let mut shift = section.key_shift;
+        if let Some(true) = source.drums.get(used.track) {
+            shift = 0;
+        }
         let mut notes = Vec::new();
-        for placed in section_notes(section, source.looped, used.track, used.layer) {
+        for placed in section_notes(section, source.looped, used.track, used.layer, shift) {
             notes.push(PieceNote {
                 index,
                 label: note_name(placed.pitch),
@@ -281,6 +305,7 @@ pub fn piece_of_section(source: &SongSource) -> Result<Piece, String> {
             keys,
             bar_skills,
             left_out: unplayable,
+            key_shift: section.key_shift,
         }),
     })
 }
@@ -432,7 +457,7 @@ pub fn set_section(open: &OpenParts, section: usize, track: usize) -> Result<Val
         return Err(format!("there is no section {}", section + 1));
     };
     let found = found.clone();
-    let looped = song_session::loop_now(&mut open.engine.lock().unwrap());
+    let looped = song_session::loop_kept(&composer, &mut open.engine.lock().unwrap());
     let Some(looped) = looped else {
         return Err(String::from("there is no loop: sections play its layers"));
     };
@@ -563,10 +588,42 @@ mod tests {
         // lets go there, and one starting past it never plays.
         let looped = SongLoop { bars: 2, layers: vec![layer(0, 1, &[(57, 3.0, 5.0), (60, 4.5, 5.0)])] };
         let verse = section(2, &[(0, 0)]);
-        let notes = section_notes(&verse, &looped, 0, 0);
+        let notes = section_notes(&verse, &looped, 0, 0, 0);
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].start, notes[0].end), (3.0, 4.0));
         assert_eq!((notes[1].start, notes[1].end), (7.0, 8.0));
+    }
+
+    #[test]
+    fn a_section_s_key_shift_moves_its_notes_but_never_drums_or_the_keys_played() {
+        // A3 on H, a bass note, and a kick on the drums track.
+        let looped = SongLoop {
+            bars: 1,
+            layers: vec![layer(0, 0, &[(57, 1.0, 1.5)]), layer(1, 0, &[(36, 0.0, 4.0)]), layer(2, 0, &[(36, 0.0, 1.0)])],
+        };
+        let mut verse = section(1, &[(0, 0), (1, 0), (2, 0)]);
+        verse.key_shift = 2;
+        let key_map = KeyMap::with_test_layout();
+        let piece = piece_of_section(&source(&verse, &looped, &key_map, 0)).unwrap();
+        // The same key plays it, moved, since the keys move while it plays.
+        assert_eq!(piece.parts[1].notes[0].pitches, vec![59]);
+        assert_eq!(piece.parts[1].notes[0].label, "B3");
+        assert_eq!(piece.parts[2].name, "Bass");
+        assert_eq!(piece.parts[2].notes[0].pitches, vec![38]);
+        assert_eq!(piece.parts[3].name, "Drums");
+        assert_eq!(piece.parts[3].notes[0].pitches, vec![36]);
+        let song = piece.song.unwrap();
+        assert_eq!(song.keys, vec!["KeyH"]);
+        assert_eq!(song.key_shift, 2);
+    }
+
+    #[test]
+    fn a_note_moved_out_of_range_is_left_out() {
+        let looped = SongLoop { bars: 1, layers: vec![layer(0, 0, &[(126, 0.0, 1.0), (60, 1.0, 2.0)])] };
+        let verse = section(1, &[(0, 0)]);
+        let notes = section_notes(&verse, &looped, 0, 0, 2);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].pitch, 62);
     }
 
     #[test]
@@ -660,6 +717,7 @@ mod tests {
             keys: Vec::new(),
             bar_skills: vec![vec![String::from("run of eighths")], Vec::new()],
             left_out: 0,
+            key_shift: 0,
         };
         let summary = summary_with(&[(1, 4.0, 0.0, 0.0)]);
         let line = song_line(&song, &summary);

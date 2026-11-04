@@ -2639,7 +2639,9 @@ attachments stay underneath.
   section's tempo in three steps, 2 clean tries a step; after a try that
   isn't clean the hardest bar loops until it is clean twice. Like the
   arrangement, it puts the loop away while it plays, so the ladder can set
-  the tempo, and gives it back paused. Notes no key plays now are left
+  the tempo, and gives it back paused. It plays in the section's key
+  shift, drums apart: the keyboard moves by it while practice plays, so
+  the same keys play the moved notes. Notes no key plays now are left
   out, and the rail says how many.
 - **Taste drills** (built 2026-11-03, `drills.rs`). In the rail while
   Learn is on. Chord: one of the song's held chords. Interval: two notes

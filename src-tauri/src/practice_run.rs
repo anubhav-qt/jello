@@ -59,17 +59,21 @@ const MOST_UNSENT: usize = 5;
 pub fn start(app: &AppHandle) -> Result<(), String> {
     let practice_state = app.state::<Mutex<Practice>>();
     let stop = Arc::new(AtomicBool::new(false));
-    let (has_ladder, song_piece) = {
+    let (has_ladder, song_piece, key_shift) = {
         let mut practice = practice_state.lock().unwrap();
         let Some(piece) = &practice.piece else {
             return Err(String::from("no piece is set"));
         };
         let song_piece = piece.song.is_some();
+        let mut key_shift = 0;
+        if let Some(song) = &piece.song {
+            key_shift = song.key_shift;
+        }
         if practice.is_running() {
             return Err(String::from("a try is already playing"));
         }
         practice.running = Some(Arc::clone(&stop));
-        (practice.settings.ladder.is_some(), song_piece)
+        (practice.settings.ladder.is_some(), song_piece, key_shift)
     };
     let ready = get_ready(app, has_ladder, song_piece);
     let (loop_tempo, loop_put_away) = match ready {
@@ -80,6 +84,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
             return Err(problem);
         }
     };
+    shift_keys(app, key_shift);
     {
         let mut practice = practice_state.lock().unwrap();
         practice.tempo_note = None;
@@ -236,6 +241,14 @@ fn set_engine_tempo(app: &AppHandle, tempo: u32) -> u32 {
     engine.set_tempo(tempo)
 }
 
+// Moves the keyboard by a section's key shift while it is practiced, so the
+// keys it was played with play it in the section's key; 0 puts it back.
+fn shift_keys(app: &AppHandle, half_steps: i32) {
+    let half_steps = i8::try_from(half_steps).unwrap_or(0);
+    let key_map = app.state::<Mutex<KeyMap>>();
+    key_map.lock().unwrap().set_key_shift(half_steps);
+}
+
 // The loop a section's practice put away comes back, paused.
 fn give_loop_back(app: &AppHandle) {
     let composer = app.state::<Mutex<Composer>>();
@@ -247,7 +260,7 @@ fn give_loop_back(app: &AppHandle) {
 
 // Practice ends: the click stops, the song's tempo comes back, the loop
 // plays again if it played before, or comes back if a section's practice
-// put it away, and the Play tab is told.
+// put it away, the keys move back, and the Play tab is told.
 fn finish(app: &AppHandle, resume_loop: bool) {
     let tempo = app.state::<Mutex<Composer>>().lock().unwrap().tempo();
     {
@@ -260,6 +273,7 @@ fn finish(app: &AppHandle, resume_loop: bool) {
         }
     }
     give_loop_back(app);
+    shift_keys(app, 0);
     {
         let practice = app.state::<Mutex<Practice>>();
         let mut practice = practice.lock().unwrap();

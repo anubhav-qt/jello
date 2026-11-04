@@ -526,7 +526,7 @@ fn order_of(message: &Message) -> u8 {
 
 // `note` moved `shift` half steps, or None if that leaves the notes there
 // are. The vibrato and glide keys and drum pads never move.
-fn shifted(note: u8, shift: i32) -> Option<u8> {
+pub(crate) fn shifted(note: u8, shift: i32) -> Option<u8> {
     if note >= VIBRATO_KEY_NOTE {
         return Some(note);
     }

@@ -122,6 +122,9 @@ export interface SongPiece {
   bar_skills: string[][];
   // Presses of the track that no key plays now, left out of the piece.
   left_out: number;
+  // The section's key shift in half steps; the keys move by it while
+  // practice plays.
+  key_shift: number;
 }
 
 // One note's result in a try.

@@ -1437,10 +1437,13 @@ function hearTheAgent() {
     redrawAfterAgent();
   });
   // Practice starts, ends or scores a try: a section's practice puts the
-  // loop away and gives it back, so the looper is asked again too.
+  // loop away and moves the keys by its key shift, then gives both back, so
+  // the looper, the keys and Compose's chord names are asked again too.
   listen<PracticeView>("practice", (event) => {
     screen?.showPractice(event.payload);
     sendInOrder(askForSound);
+    sendInOrder(askForLayout);
+    sendInOrder(askForCompose);
   });
   listen<{ marks: PracticeMark[] }>("practice-marks", (event) => {
     screen?.showPracticeMarks(event.payload.marks);

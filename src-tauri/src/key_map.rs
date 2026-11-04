@@ -357,6 +357,9 @@ fn in_safe_order(mut moves: Vec<(u8, u8)>) -> Vec<(u8, u8)> {
 #[derive(Clone)]
 pub struct KeyMap {
     octave: i8,
+    // Half steps the keys move while a section with a key shift is
+    // practiced (src/practice_run.rs), 0 otherwise. Drums never move.
+    key_shift: i8,
     // What each key does. A key that isn't in here does nothing.
     layout: HashMap<String, KeyRole>,
     // What each key does in drum mode, and whether it is on.
@@ -374,7 +377,7 @@ pub struct KeyMap {
     released_changes: StringChanges,
     // The keys held down right now, each with the notes it started.
     held: HashMap<String, Vec<u8>>,
-    // The mapping the keys play, at no octave shift.
+    // The mapping the keys play, at no octave or key shift.
     mapping: KeyMapping,
     // Which mapping to follow. On the Play tab, the last scale's default;
     // anywhere else, the song's. An optimized mapping being tried comes first.
@@ -473,6 +476,7 @@ impl KeyMap {
 
         KeyMap {
             octave: 0,
+            key_shift: 0,
             layout,
             drum_layout,
             drum_mode: false,
@@ -509,16 +513,18 @@ impl KeyMap {
         key_map
     }
 
-    // Plays `mapping` from now on, at the same octave shift if every note
-    // stays in range, or else at none. Held keys keep the notes they started,
+    // Plays `mapping` from now on, at the same octave and key shift if every
+    // note stays in range; if not, the octave shift goes, then the key shift. Held keys keep the notes they started,
     // so they keep sounding until they are let go.
     fn use_mapping(&mut self, mapping: KeyMapping) {
         self.layout.retain(|_, role| !matches!(role, KeyRole::Notes(_)));
-        let shift = i16::from(self.octave) * 12;
-        if !fits_when_shifted(&mapping, shift) {
+        if !fits_when_shifted(&mapping, self.shift()) {
             self.octave = 0;
         }
-        let shift = i16::from(self.octave) * 12;
+        if !fits_when_shifted(&mapping, self.shift()) {
+            self.key_shift = 0;
+        }
+        let shift = self.shift();
         for (key, notes) in &mapping.keys {
             let mut shifted = Vec::new();
             for note in notes {
@@ -585,7 +591,8 @@ impl KeyMap {
         if !(-4..=4).contains(&next) {
             return;
         }
-        if !fits_when_shifted(&self.mapping, i16::from(next) * 12) {
+        let shift = i16::from(next) * 12 + i16::from(self.key_shift);
+        if !fits_when_shifted(&self.mapping, shift) {
             return;
         }
         self.octave = next;
@@ -596,6 +603,24 @@ impl KeyMap {
     // How many octaves the keys are shifted, from -4 to 4.
     pub fn octave(&self) -> i8 {
         self.octave
+    }
+
+    // Moves the keys `half_steps`, for a section's key shift while it is
+    // practiced; 0 puts them back. If the notes would leave the range, the
+    // octave shift goes first, then this one.
+    pub fn set_key_shift(&mut self, half_steps: i8) {
+        self.key_shift = half_steps;
+        let mapping = self.mapping.clone();
+        self.use_mapping(mapping);
+    }
+
+    pub fn key_shift(&self) -> i8 {
+        self.key_shift
+    }
+
+    // How far every note the keys play moves: the octave and the key shift.
+    fn shift(&self) -> i16 {
+        i16::from(self.octave) * 12 + i16::from(self.key_shift)
     }
 
     // What each key does right now: in drum mode, the drum layout.
@@ -636,7 +661,7 @@ impl KeyMap {
             }
         }
         let note = played?;
-        Some((i16::from(note) + i16::from(self.octave) * 12) as u8)
+        Some((i16::from(note) + self.shift()) as u8)
     }
 
     // Whether a string other than `string` is ringing `note`: they share a
@@ -1061,11 +1086,11 @@ impl KeyMap {
     }
 
     // A shape as the UI draws it on its key: its name and its notes, lowest
-    // first, at the octave shift.
+    // first, at the octave and key shift.
     fn shape_for_ui(&self, name: &str, strings: &[Option<u8>; STRING_COUNT]) -> ChordForUi {
         let mut notes = Vec::new();
         for note in strings.iter().flatten() {
-            notes.push((i16::from(*note) + i16::from(self.octave) * 12) as u8);
+            notes.push((i16::from(*note) + self.shift()) as u8);
         }
         notes.sort();
         ChordForUi {
@@ -1800,6 +1825,39 @@ mod tests {
         assert_eq!(key_map.octave(), 0);
     }
 
+    #[test]
+    fn a_key_shift_moves_the_keys_with_the_octave_and_goes_last_past_the_range() {
+        let mut key_map = KeyMap::new();
+        key_map.follow(&c_major());
+        key_map.set_key_shift(2);
+        assert_eq!(key_map.note_keys()["KeyJ"], 62);
+        key_map.shift_octave(1);
+        assert_eq!(key_map.note_keys()["KeyJ"], 74);
+        key_map.set_key_shift(0);
+        assert_eq!(key_map.note_keys()["KeyJ"], 72);
+
+        let mut high = KeyMapping::default();
+        high.set_key("KeyJ", &[120]).unwrap();
+        key_map.follow(&high);
+        key_map.set_key_shift(7);
+        assert_eq!(key_map.note_keys()["KeyJ"], 127);
+        // 128 is past the top: the octave would go first, but there is none.
+        key_map.set_key_shift(8);
+        assert_eq!(key_map.key_shift(), 0);
+        assert_eq!(key_map.note_keys()["KeyJ"], 120);
+
+        // An octave up that the key shift pushes past the top is refused.
+        let mut middle = KeyMapping::default();
+        middle.set_key("KeyJ", &[100]).unwrap();
+        key_map.follow(&middle);
+        key_map.set_key_shift(5);
+        key_map.shift_octave(1);
+        assert_eq!(key_map.note_keys()["KeyJ"], 117);
+        key_map.shift_octave(1);
+        assert_eq!(key_map.octave(), 1);
+        assert_eq!(key_map.note_keys()["KeyJ"], 117);
+    }
+
     fn guitar_keys() -> KeyMap {
         let mut key_map = KeyMap::new();
         key_map.follow(&c_major());
@@ -2016,6 +2074,10 @@ mod tests {
         key_map.shift_octave(-2);
         key_map.release("KeyU");
         assert_eq!(plucked(key_map.press("KeyU")).1, 28);
+        // A section's key shift moves the strings too.
+        key_map.set_key_shift(2);
+        key_map.release("KeyU");
+        assert_eq!(plucked(key_map.press("KeyU")).1, 30);
     }
 
     #[test]

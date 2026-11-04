@@ -47,8 +47,7 @@
      reference card get mockups first.
    - Known gaps: right Cmd blocks nothing while talking (Cmd Q still
      quits); a take that changes another song than the one open reopens
-     its song; a section's practice plays without the section's key
-     shift (to decide).
+     its song.
 3. **Later:** Produce (after everything else is final), Windows checks, and the
    finish line song.
 
