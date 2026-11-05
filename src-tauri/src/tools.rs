@@ -36,6 +36,7 @@ use crate::song_file;
 use crate::song_session::{self, OpenSong, song_now, songs_view_of};
 use crate::sound_changes;
 use crate::sound_profile::SoundProfile;
+use crate::takes::Takes;
 use crate::theory;
 use crate::tracks::Track;
 
@@ -52,6 +53,8 @@ pub struct Studio<'a> {
     pub memory: &'a Mutex<Memory>,
     pub key_stats: &'a Mutex<KeyStats>,
     pub key_offers: &'a Mutex<KeyOffers>,
+    // Locked last, after the open song, Compose and the engine.
+    pub takes: &'a Mutex<Takes>,
     pub screen: &'a dyn Screen,
 }
 
@@ -131,8 +134,8 @@ pub fn list() -> Value {
             "description": "Reads any parts of what Jello is doing now. sound: every sound value, as \
                 jello_sound takes them, and the preset it sounds exactly like. keys: what each laptop \
                 key plays at the current octave. song: the open song's name and its whole song file. \
-                looper: what the looper is doing, its layers and their notes in beats, the tempo and \
-                snap. compose: Compose's key, chords, guidance and history. presses: the player's \
+                looper: what the looper is doing, its layers and their notes in beats, and the tempo. \
+                compose: Compose's key, chords, guidance and history. presses: the player's \
                 recent presses. presets: every preset and the starting sound. songs: every song and \
                 the one open. skills: each skill area's level out of 10 (the median of its last 5 \
                 tries), trend and recent points, measured from every practice try. song_skills: \
@@ -241,8 +244,7 @@ pub fn list() -> Value {
                 when idle it counts in a bar and records; while recording it closes the loop at the \
                 nearest bar line; while looping it records a new layer over it, and pressed again \
                 that layer starts playing; it records on the picked track. pause and play: the whole \
-                loop; play starts it from beat 1. snap: whether loops snap to the beat (on: true or \
-                false). tempo: the song's beats per minute, 40 to 240, not while the looper is \
+                loop; play starts it from beat 1. tempo: the song's beats per minute, 40 to 240, not while the looper is \
                 busy. layer_volume: a layer's volume in percent (layer, volume). layer_playing: \
                 pauses or plays a layer (layer, playing). remove_layer: removes a layer, or with no \
                 layer the newest. Each track's layers count from 1, oldest first; track names the \
@@ -252,9 +254,8 @@ pub fn list() -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["press", "pause", "play", "snap", "tempo", "layer_volume", "layer_playing", "remove_layer"],
+                        "enum": ["press", "pause", "play", "tempo", "layer_volume", "layer_playing", "remove_layer"],
                     },
-                    "on": {"type": "boolean"},
                     "tempo": {"type": "integer"},
                     "track": {"type": "integer"},
                     "layer": {"type": "integer"},
@@ -883,15 +884,6 @@ fn run_looper_on(
             engine.play_loop();
             lines.push(String::from("Loop playing from beat 1"));
         }
-        "snap" => {
-            let on = flag_argument(arguments, "on")?;
-            engine.set_snap(on);
-            if on {
-                lines.push(String::from("Snap to beat on"));
-            } else {
-                lines.push(String::from("Snap to beat off"));
-            }
-        }
         "tempo" => {
             let tempo = whole_argument(arguments, "tempo")?;
             if tempo < i64::from(SLOWEST_TEMPO) || tempo > i64::from(FASTEST_TEMPO) {
@@ -941,7 +933,7 @@ fn run_looper_on(
             }
         }
         _ => {
-            let actions = "press, pause, play, snap, tempo, layer_volume, layer_playing and remove_layer";
+            let actions = "press, pause, play, tempo, layer_volume, layer_playing and remove_layer";
             return Err(format!("jello_looper has no action {action}: it has {actions}"));
         }
     }
@@ -1005,13 +997,12 @@ fn optional_count_argument(arguments: &Value, name: &str) -> Result<Option<u32>,
     Ok(Some(number as u32))
 }
 
-// What the looper is doing, its tempo and snap, as jello_look reads them.
+// What the looper is doing and its tempo, as jello_look reads them.
 fn looper_json(engine: &mut Engine, composer: &Composer, now: Instant) -> Value {
     let view = to_json(&sound_view_of(engine, composer, now));
     json!({
         "looper": view["looper"],
         "tempo": view["tempo"],
-        "snap": view["snap"],
     })
 }
 
@@ -1104,6 +1095,8 @@ fn change_song(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String>
             let name = text_argument(arguments, "name")?;
             let was = String::from(open_song.name());
             song_session::rename_open_song(&mut open_song, &composer, &mut engine, &name)?;
+            // The answer's take follows its song to the new name.
+            studio.takes.lock().unwrap().song_renamed(&was, open_song.name());
             lines.push(format!("Renamed {was} to {}", open_song.name()));
         }
         _ => {
@@ -1475,6 +1468,7 @@ mod tests {
         memory: Mutex<Memory>,
         key_stats: Mutex<KeyStats>,
         key_offers: Mutex<KeyOffers>,
+        takes: Mutex<Takes>,
         says_yes: bool,
         asked: Mutex<Vec<String>>,
         shown: Mutex<Vec<(String, bool)>>,
@@ -1511,6 +1505,7 @@ mod tests {
                 memory: Mutex::new(Memory::default()),
                 key_stats: Mutex::new(KeyStats::default()),
                 key_offers: Mutex::new(KeyOffers::default()),
+                takes: Mutex::new(Takes::default()),
                 says_yes: true,
                 asked: Mutex::new(Vec::new()),
                 shown: Mutex::new(Vec::new()),
@@ -1529,6 +1524,7 @@ mod tests {
                 memory: &self.memory,
                 key_stats: &self.key_stats,
                 key_offers: &self.key_offers,
+                takes: &self.takes,
                 screen: self,
             };
             call(&studio, name, &arguments)
@@ -1661,11 +1657,10 @@ mod tests {
     }
 
     #[test]
-    fn the_looper_switches_snap_and_refuses_layers_it_has_not() {
+    fn the_looper_refuses_layers_and_actions_it_has_not() {
         let test = TestStudio::new();
         let answer = test.call("jello_looper", json!({"action": "snap", "on": false}));
-        assert_eq!(answer.changes, vec![String::from("Snap to beat off")]);
-        assert!(!test.engine.lock().unwrap().snap());
+        assert!(answer.text.starts_with("jello_looper has no action snap"));
 
         let answer = test.call("jello_looper", json!({"action": "remove_layer"}));
         assert_eq!(answer.text, "the track has no layers");

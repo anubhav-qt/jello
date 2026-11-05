@@ -36,7 +36,6 @@ enum class EventType {
     pause_loop,
     play_loop,
     load_loop,
-    set_snap,
     stop_song,
     add_song_chord,
     play_song,
@@ -100,10 +99,6 @@ struct Event {
     // The beat's new tempo, in beats per minute; only for set_tempo. Like
     // `oscillator`, the other messages can leave it out.
     int tempo = 0;
-
-    // Whether loops snap to the beat; only for set_snap. The other messages
-    // can leave it out too.
-    bool snap = true;
 
     // Which layer of the loop, from 0, or Looper::newest_layer; only for
     // remove_layer, set_layer_volume and set_layer_playing, and which of a

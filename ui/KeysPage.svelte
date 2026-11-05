@@ -14,6 +14,8 @@
   import {
     PIANO_HIGHEST,
     PIANO_LOWEST,
+    STRUM_SLOWEST_MS,
+    STRUM_STEP_MS,
     isBlackNote,
     layoutOfGuitar,
     layoutOfMapping,
@@ -156,6 +158,24 @@
     const strings = withStringMoved(shownStrings, string, steps, from);
     soundOf(strings[string]);
     show(await send.setGuitar(section, shape, strings));
+  }
+
+  // J and K strum; each string waits this long after the one before.
+  async function stepStrum(steps: number) {
+    if (view === null) {
+      return;
+    }
+    let ms = view.guitar.strum_ms + steps * STRUM_STEP_MS;
+    if (ms < 0) {
+      ms = 0;
+    }
+    if (ms > STRUM_SLOWEST_MS) {
+      ms = STRUM_SLOWEST_MS;
+    }
+    if (ms === view.guitar.strum_ms) {
+      return;
+    }
+    show(await send.setStrum(section, ms));
   }
 
   async function silenceString(string: number) {
@@ -382,6 +402,22 @@
       >
         Open strings
       </button>
+      <span class="tape-label">Strum</span>
+      <button
+        type="button"
+        class="keys-button"
+        aria-label="Strum faster"
+        disabled={view === null || view.guitar.strum_ms === 0}
+        onclick={(event) => clickThenLetGo(event, () => stepStrum(-1))}
+      >-</button>
+      <span class="keys-string-note">{view?.guitar.strum_ms ?? 0} ms</span>
+      <button
+        type="button"
+        class="keys-button"
+        aria-label="Strum slower"
+        disabled={view === null || view.guitar.strum_ms === STRUM_SLOWEST_MS}
+        onclick={(event) => clickThenLetGo(event, () => stepStrum(1))}
+      >+</button>
     {:else}
       <button
         type="button"
@@ -464,6 +500,7 @@
       {platform}
       layout={drawn}
       agentHeld={NO_HELD}
+      loopPressed={NO_HELD}
       agentMarks={lockMarks}
       practiceMarks={selectionMarks}
       held={NO_HELD}

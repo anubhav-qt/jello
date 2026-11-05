@@ -48,7 +48,7 @@ fn build_engine() {
         .file("../engine/src/clock.cpp")
         .file("../engine/src/click.cpp")
         .file("../engine/src/looper.cpp")
-        .file("../engine/src/snap.cpp")
+        .file("../engine/src/loop_plan.cpp")
         .file("../engine/src/song_player.cpp")
         .file("../engine/src/sequencer.cpp")
         .file("../engine/src/conductor.cpp")

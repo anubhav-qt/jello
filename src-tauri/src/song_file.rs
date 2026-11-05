@@ -99,7 +99,6 @@ pub struct Song {
     // The song's main mapping. Empty until a scale is picked.
     pub keys: KeyMapping,
     pub tempo: u32,
-    pub snap: bool,
     // The picked track, from 0.
     pub picked: usize,
     pub chords: Vec<HeldChord>,
@@ -220,7 +219,6 @@ impl Song {
             scale: None,
             keys: KeyMapping::default(),
             tempo: START_TEMPO,
-            snap: true,
             picked: 0,
             chords: Vec::new(),
             looped: None,
@@ -376,7 +374,6 @@ pub fn text_of(song: &Song) -> String {
         write_word(&mut text, "scale", &scale.name());
     }
     write_number(&mut text, "tempo", song.tempo);
-    write_flag(&mut text, "snap", song.snap);
     write_number(&mut text, "picked", song.picked + 1);
     write_arrangement(&mut text, song);
     write_flag(&mut text, "learn", song.path.learn);
@@ -407,7 +404,8 @@ pub fn text_of(song: &Song) -> String {
         text.push_str("]\n");
     }
 
-    if !song.keys.is_empty() {
+    // A song with no scale yet can still have its strum speed picked.
+    if song.keys != KeyMapping::default() {
         write_mapping(&mut text, &song.keys, "[keys]");
     }
 
@@ -450,6 +448,7 @@ fn write_mapping(text: &mut String, mapping: &KeyMapping, heading: &str) {
     }
     text.push_str("]\n");
     text.push_str(&format!("guitar_open = [{}]\n", quoted_strings(&mapping.guitar.open)));
+    text.push_str(&format!("guitar_strum_ms = {}\n", mapping.guitar.strum_ms));
     text.push_str("guitar = [\n");
     for (key, shape) in &mapping.guitar.shapes {
         let key = quoted(key);
@@ -490,6 +489,18 @@ fn read_strings(list: Option<&Value>) -> Option<[Option<u8>; STRING_COUNT]> {
 // The guitar in `table`, or `scale`'s default if it has none, so a song saved
 // before guitars plays one. Anything it can't read is skipped.
 fn read_guitar(table: &Table, scale: Option<Scale>) -> GuitarMapping {
+    let mut guitar = read_guitar_strings(table, scale);
+    // A song saved before strums strums at the starting speed.
+    if let Some(ms) = table.get("guitar_strum_ms").and_then(Value::as_integer) {
+        if let Ok(ms) = u32::try_from(ms) {
+            let _ = guitar.set_strum_ms(ms);
+        }
+    }
+    guitar
+}
+
+// The guitar's open strings and shapes in `table`, or `scale`'s default.
+fn read_guitar_strings(table: &Table, scale: Option<Scale>) -> GuitarMapping {
     let shapes = items(table, "guitar");
     let open = read_strings(table.get("guitar_open"));
     if shapes.is_empty() && open.is_none() {
@@ -722,7 +733,6 @@ pub fn song_of(text: &str, new_song: &SoundProfile) -> Result<Song, String> {
 
     let tempo = read_count(&table, "tempo", START_TEMPO);
     song.tempo = tempo.clamp(SLOWEST_TEMPO, FASTEST_TEMPO);
-    song.snap = read_flag(&table, "snap", true);
     song.path.learn = read_flag(&table, "learn", false);
     let mut stage_names = Vec::new();
     if let Some(Value::Array(list)) = table.get("stages_done") {
@@ -1089,6 +1099,7 @@ fn beat_in(item: &Table, name: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guitar::STRUM_START_MS;
 
     #[test]
     fn song_rejects_effect_and_sound_connections_past_shared_capacity() {
@@ -1256,7 +1267,6 @@ mod tests {
             scale: None,
             keys: KeyMapping::default(),
             tempo: 96,
-            snap: false,
             picked: 1,
             chords: vec![
                 HeldChord {
@@ -1328,7 +1338,6 @@ mod tests {
         assert!(text.starts_with("# A Jello song."));
         assert!(text.contains("key = \"A minor\"\n"));
         assert!(text.contains("tempo = 96\n"));
-        assert!(text.contains("snap = false\n"));
         assert!(text.contains("picked = 2\n"));
         assert!(text.contains("arrangement = ['Verse \"one\"', \"Chorus\", 'Verse \"one\"']\n"));
         assert!(text.contains("  { chord = \"Am\", held_ms = 1250 },\n"));
@@ -1466,7 +1475,6 @@ pads = [
             scale: None,
             keys: KeyMapping::default(),
             tempo: START_TEMPO,
-            snap: true,
             picked: 0,
             chords: Vec::new(),
             looped: None,
@@ -1500,6 +1508,17 @@ pads = [
         assert_eq!(song.tempo, 90);
         assert_eq!(song.looped, None);
         assert_eq!(song.tracks, Song::new(&SoundProfile::new()).tracks);
+    }
+
+    #[test]
+    fn a_song_saved_with_snap_opens_and_saves_without_it() {
+        // Loops no longer snap to the beat, so the switch older songs
+        // saved is left out when they open and when they save again.
+        let song = read("tempo = 90\nsnap = true\n");
+        assert_eq!(song.tempo, 90);
+        let saved: Table = text_of(&song).parse().unwrap();
+        assert!(!saved.contains_key("snap"));
+        assert_eq!(saved["tempo"].as_integer(), Some(90));
     }
 
     #[test]
@@ -1550,7 +1569,6 @@ notes = [{ note = "C3", start = 3, end = 3.5 }]
         let song = read(text);
         assert_eq!(song.key, None);
         assert_eq!(song.tempo, FASTEST_TEMPO);
-        assert!(song.snap);
         assert_eq!(song.picked, 0);
         assert_eq!(song.tracks[0].preset, None);
         assert_eq!(song.tracks[0].volume, FULL_VOLUME);
@@ -1827,6 +1845,41 @@ name = "B"
         let odd = "guitar = [ { key = \"Enter\", name = \"x\", strings = [\"\", \"\", \"\", \"\", \"\", \"\"] }, { key = \"KeyF\", strings = [\"E2\"] } ]\n";
         let odd: Table = odd.parse().unwrap();
         assert!(read_mapping(&odd, None).guitar.shapes.is_empty());
+    }
+
+    #[test]
+    fn a_guitar_keeps_its_strum_speed() {
+        let scale = Scale::of_name("A minor").unwrap();
+        let mut keys = KeyMapping::default_for(scale);
+        keys.guitar.set_strum_ms(60).unwrap();
+        let mut text = String::new();
+        write_mapping(&mut text, &keys, "[keys]");
+        let table: Table = text.parse().unwrap();
+        let group = group(&table, "keys").unwrap();
+        assert_eq!(read_mapping(group, Some(scale)).guitar.strum_ms, 60);
+
+        // Saved before strums, or with a speed it can't take, it starts at 25.
+        let older: Table = "map = []\n".parse().unwrap();
+        assert_eq!(read_mapping(&older, Some(scale)).guitar.strum_ms, STRUM_START_MS);
+        for odd in ["guitar_strum_ms = 101\n", "guitar_strum_ms = -5\n", "guitar_strum_ms = \"fast\"\n"] {
+            let odd: Table = odd.parse().unwrap();
+            assert_eq!(read_mapping(&odd, Some(scale)).guitar.strum_ms, STRUM_START_MS);
+        }
+        let none: Table = "guitar_strum_ms = 0\n".parse().unwrap();
+        assert_eq!(read_mapping(&none, None).guitar.strum_ms, 0);
+    }
+
+    #[test]
+    fn a_song_with_no_scale_keeps_its_strum_speed() {
+        let profile = SoundProfile::new();
+        let mut song = Song::new(&profile);
+        song.keys.guitar.set_strum_ms(40).unwrap();
+        let read = song_of(&text_of(&song), &profile).unwrap();
+        assert_eq!(read.keys.guitar.strum_ms, 40);
+
+        // A song with nothing picked writes no mapping at all.
+        let untouched = Song::new(&profile);
+        assert!(!text_of(&untouched).contains("[keys]"));
     }
 
     #[test]

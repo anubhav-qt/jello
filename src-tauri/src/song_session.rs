@@ -27,6 +27,7 @@ use crate::presets;
 use crate::song_file::{BeatNote, Song, SongLayer, SongLoop, SongTrack, beats_of, samples_of, song_of, text_of};
 use crate::songs::{self, SongView};
 use crate::sound_profile::SoundProfile;
+use crate::takes::Takes;
 
 // How long a change has to stay before it is saved.
 const SAVE_AFTER: Duration = Duration::from_secs(1);
@@ -130,7 +131,6 @@ pub fn song_now(composer: &Composer, engine: &mut Engine) -> Song {
         scale: composer.scale(),
         keys: composer.main_keys().clone(),
         tempo: composer.tempo(),
-        snap: engine.snap(),
         picked: tracks.picked(),
         chords: composer.held_chords(),
         looped: loop_kept(composer, engine),
@@ -355,7 +355,6 @@ fn open_read_song(
     // Layers removed from the song before were its sections' to forget.
     engine.take_removed_layers();
     let loop_opened = open_loop_of(engine, &song);
-    engine.set_snap(song.snap);
     *composer = Composer::opened(engine, &song, now);
     for (number, track) in song.tracks.iter().enumerate() {
         let Some(preset) = &track.preset else {
@@ -409,7 +408,6 @@ pub fn new_song(open: &mut OpenSong, composer: &mut Composer, engine: &mut Engin
     // Layers removed from the song before were its sections' to forget.
     engine.take_removed_layers();
     engine.open_loop(START_TEMPO, 0, &[], LAPTOP_VELOCITY)?;
-    engine.set_snap(true);
     *composer = Composer::new();
     composer.send_all(engine);
     load_starting_sound(&folders.sounds, &folders.settings, composer, engine);
@@ -480,6 +478,7 @@ pub fn open_song(
     open: State<'_, Mutex<OpenSong>>,
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
+    takes: State<'_, Mutex<Takes>>,
     name: String,
 ) -> Result<SongsView, String> {
     let now = Instant::now();
@@ -491,6 +490,7 @@ pub fn open_song(
     let song = songs::read(&folders.songs, &name, &SoundProfile::new())?;
     engine.start_audio()?;
     open_read_song(&mut open, &mut composer, &mut engine, &name, now, song)?;
+    takes.lock().unwrap().song_left(open.name());
     Ok(songs_view_of(&open))
 }
 
@@ -500,12 +500,14 @@ pub fn make_new_song(
     open: State<'_, Mutex<OpenSong>>,
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
+    takes: State<'_, Mutex<Takes>>,
 ) -> Result<SongsView, String> {
     let mut open = open.lock().unwrap();
     let mut composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
     engine.start_audio()?;
     new_song(&mut open, &mut composer, &mut engine)?;
+    takes.lock().unwrap().song_left(open.name());
     Ok(songs_view_of(&open))
 }
 
@@ -515,12 +517,15 @@ pub fn rename_song(
     open: State<'_, Mutex<OpenSong>>,
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
+    takes: State<'_, Mutex<Takes>>,
     name: String,
 ) -> Result<SongsView, String> {
     let mut open = open.lock().unwrap();
     let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
+    let was = String::from(open.name());
     rename_open_song(&mut open, &composer, &mut engine, &name)?;
+    takes.lock().unwrap().song_renamed(&was, open.name());
     Ok(songs_view_of(&open))
 }
 
@@ -646,7 +651,6 @@ mod tests {
             scale: Some(Scale::of_key(a_minor())),
             keys: KeyMapping::default_for(Scale::of_key(a_minor())),
             tempo: 100,
-            snap: false,
             picked: 1,
             chords: vec![
                 HeldChord {
@@ -704,7 +708,6 @@ mod tests {
         assert_eq!(song.key, None);
         assert!(song.chords.is_empty());
         assert!(song.looped.is_none());
-        assert!(song.snap);
         assert_eq!(last_song_of(&open), Some(String::from("Untitled 1")));
 
         new_song(&mut open, &mut composer, &mut engine).unwrap();
@@ -781,7 +784,6 @@ mod tests {
         engine.render(64);
         assert_eq!(engine.looper_status().state, crate::engine::LooperState::Paused);
         assert_eq!(engine.tempo(), 100);
-        assert!(!engine.snap());
         assert_eq!(song_now(&composer, &mut engine), song);
         assert_eq!(last_song_of(&open), Some(String::from("Night drive")));
 
@@ -820,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_song_forgets_the_open_song_s_loop_and_snap() {
+    fn a_new_song_forgets_the_open_song_s_loop() {
         let (mut open, mut composer, mut engine) = starting("session-new-forgets");
         put(&open, "Night drive", &night_drive());
         open_song_named(&mut open, &mut composer, &mut engine, "Night drive", Instant::now()).unwrap();
@@ -828,7 +830,6 @@ mod tests {
 
         new_song(&mut open, &mut composer, &mut engine).unwrap();
         engine.render(64);
-        assert!(engine.snap());
         assert_eq!(engine.looper_status().state, LooperState::Idle);
         assert!(song_now(&composer, &mut engine).looped.is_none());
     }

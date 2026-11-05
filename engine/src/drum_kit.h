@@ -14,7 +14,7 @@
 // allocates or waits.
 
 // The drum pads, played as the notes after the vibrato and glide keys', so
-// the looper records, snaps and plays them back like any note.
+// the looper records and plays them back like any note.
 constexpr int drum_first_note = 130;
 constexpr int drum_pad_count = 16;
 

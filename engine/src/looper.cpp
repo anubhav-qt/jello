@@ -77,8 +77,8 @@ void Looper::play(std::uint64_t now, Tracks& tracks) {
     }
     state_ = State::looping;
 
-    // Every layer is planned again, since snap may have changed while
-    // paused, and the loop starts over from its start right away.
+    // Every layer is planned again, and the loop starts over from its start
+    // right away.
     for (int i = 0; i < layer_count_; i++) {
         make_plan(i, layers_[i].count);
     }
@@ -107,8 +107,8 @@ void Looper::set_layer_playing(int layer, bool playing, std::uint64_t now, Track
         return;
     }
 
-    // Like the snap switch: the notes that should be sounding by now start
-    // right away, and the rest wait their turn.
+    // The notes that should be sounding by now start right away, and the
+    // rest wait their turn.
     changed.next_start = 0;
     changed.next_end = 0;
     catch_up_layer(changed, now - repeat_start_, tracks);
@@ -224,28 +224,6 @@ void Looper::set_layer_volume(int layer, float volume, Tracks& tracks) {
     }
     const Layer& changed = layers_[layer];
     tracks.synth(changed.track).set_layer_volume(changed.slot, volume);
-}
-
-void Looper::set_snap(bool snap, std::uint64_t now, Tracks& tracks) {
-    if (snap == snap_) {
-        return;
-    }
-    snap_ = snap;
-    if (!is_playing()) {
-        return;
-    }
-
-    // Like closing at the bar line just passed: the notes that should be
-    // sounding by now start right away, and the rest wait their turn. Each
-    // layer is planned again from the notes it already plays; the ones it
-    // was given since this repeat started still wait for the next.
-    tracks.all_notes_off(Source::loop);
-    for (int i = 0; i < layer_count_; i++) {
-        make_plan(i, layers_[i].planned);
-        layers_[i].next_start = 0;
-        layers_[i].next_end = 0;
-    }
-    catch_up(now - repeat_start_, tracks);
 }
 
 void Looper::note_on(int note, int velocity, std::uint64_t now, int track) {
@@ -693,7 +671,7 @@ void Looper::make_plan(int layer, int count) {
     Layer& planning = layers_[layer];
     const LoopNote* played = notes_.data() + planning.first;
     LoopNote* plan = plan_.data() + planning.first;
-    plan_loop(played, count, length_, beat_, snap_, plan);
+    plan_loop(played, count, plan);
     planning.planned = count;
 
     // Playback lets go of notes in the order they end, which is not the

@@ -601,13 +601,6 @@ void jello_engine_remove_layer(JelloEngine* engine, int layer);
 // layer or volume outside those ranges is ignored.
 void jello_engine_set_layer_volume(JelloEngine* engine, int layer, float volume);
 
-// The "snap to beat" switch (docs/adr/0021-a-looper-on-a-beat.md). While it
-// is on, each time around the loop plays its notes moved to the nearest half
-// beat; while it is off, as they were played. Live notes are never moved. It
-// changes a loop already playing right away: the loop's notes stop, and
-// those that should be sounding start again. A new engine starts with it on.
-void jello_engine_set_snap(JelloEngine* engine, bool snap);
-
 // Play and pause in the lane (docs/adr/0038-song-files.md). Pausing stops
 // every layer's notes and the loop waits, silent, at its start. A layer
 // being recorded stops first, as the second press would. Playing starts it
@@ -1178,16 +1171,14 @@ typedef struct JelloLoopNote {
 // Works out where a loop plays one layer's notes each time around, by the
 // same rule the looper plays them by, so the screen can draw them where they
 // are heard. `played` holds `count` notes as they were played, in any order,
-// like a layer in the copy that jello_engine_next_loop_change keeps, of a
-// loop `bars` bars long at `tempo`. `planned` must have room for `count`
-// notes, and gets them in the order they start each time around: moved to
-// the nearest half beat if `snap` is on, as played if not. Returns false and
-// fills nothing if `count` is below 0 or above JELLO_LOOP_MAX_NOTES, `bars`
-// is below 1, the tempo is outside JELLO_SLOWEST_TEMPO to
-// JELLO_FASTEST_TEMPO, or a note is outside 0 to 127. It leaves no message
-// and never touches the sound, so any thread can call it.
-bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, int count, int bars, int tempo,
-                            bool snap, JelloLoopNote* planned);
+// like a layer in the copy that jello_engine_next_loop_change keeps.
+// `planned` must have room for `count` notes, and gets them in the order
+// they start each time around, each where it was played, cut short where
+// the same key starts again. Returns false and fills nothing if `count` is
+// below 0 or above JELLO_LOOP_MAX_NOTES, or a note is outside the loop's
+// pitches. It leaves no message and never touches the sound, so any thread
+// can call it.
+bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, int count, JelloLoopNote* planned);
 
 // One note of a loop opened from a song file, for jello_engine_load_loop.
 typedef struct JelloLoadedNote {

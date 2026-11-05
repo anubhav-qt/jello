@@ -31,6 +31,7 @@ use crate::phrases::{Phrase, Phrases};
 use crate::practice::Practice;
 use crate::practice_run;
 use crate::song_session::OpenSong;
+use crate::takes::Takes;
 use crate::tools::{self, Screen, Studio, ToolAnswer};
 
 // The MCP versions Jello speaks, newest first. An agent asking for another
@@ -257,6 +258,7 @@ pub fn with_studio<T>(app: &AppHandle, work: impl FnOnce(&Studio) -> T) -> T {
     let memory = app.state::<Mutex<Memory>>();
     let key_stats = app.state::<Mutex<KeyStats>>();
     let key_offers = app.state::<Mutex<KeyOffers>>();
+    let takes = app.state::<Mutex<Takes>>();
     let screen = AppScreen { app };
     let studio = Studio {
         open_song: open_song.inner(),
@@ -269,6 +271,7 @@ pub fn with_studio<T>(app: &AppHandle, work: impl FnOnce(&Studio) -> T) -> T {
         memory: memory.inner(),
         key_stats: key_stats.inner(),
         key_offers: key_offers.inner(),
+        takes: takes.inner(),
         screen: &screen,
     };
     work(&studio)

@@ -48,6 +48,8 @@ export interface KeyLayout {
   // notes and names are in `notes` and `chords`.
   guitar_mode: boolean;
   damp_keys: string[];
+  // The keys that strum, each with its way: "down" or "up".
+  strum_keys: Record<string, string>;
   guitar_strings: string[];
   guitar_shapes: string[];
 }
@@ -94,6 +96,7 @@ export type KeyKind =
   | "glide"
   | "pedal"
   | "damp"
+  | "strum"
   | "beat"
   | "drum"
   | "drum mode"
@@ -311,6 +314,9 @@ export function kindOf(code: string, layout: KeyLayout): KeyKind {
   }
   if (layout.damp_keys.includes(code)) {
     return "damp";
+  }
+  if (layout.strum_keys[code] !== undefined) {
+    return "strum";
   }
   if (layout.beat_keys[code] !== undefined) {
     return "beat";

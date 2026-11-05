@@ -11,8 +11,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - macOS and Windows from day one. GPL-3.0, public (anubhav-qt/jello): only
   GPL-3.0-compatible dependencies (ADR 0007).
 - Run: `nvm use`, `npm install`, `npm run tauri dev` (restart it after
-  `engine/` edits). Tests: `npm run build`, `npm run test:agent`,
-  `cargo test` in `src-tauri/` (needs cmake for whisper.cpp).
+  `engine/` edits). Tests: `npm run check` (agent and UI tests, UI build,
+  `cargo test`; needs cmake for whisper.cpp).
 
 ## Status
 
@@ -25,7 +25,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   section, +Delete removes the last; right Option jumps to the drums track.
 - Agent (0041, 0050): one agent, no jobs, in the rail (`ui/AgentPanel.svelte`);
   MCP tools in Rust (`tool_server.rs`, `tools.rs`, `listening.rs`); takes
-  (`takes.rs`, right Cmd flips, Return keeps, Esc drops), jam card (`jam.rs`),
+  (`takes.rs`, right Cmd flips, Return keeps, Esc drops; `talk_key.rs` puts
+  the app menu away while it is down), jam card (`jam.rs`),
   lesson and task cards, the path (`path.rs`, `path_tool.rs`, `TopicMap.svelte`),
   section practice (`practice_song.rs`, `PracticeLanes.svelte`), song skills
   (`song_skills.rs`), drills (`drills.rs`), jam partner (`jam_partner.rs`).
@@ -43,12 +44,13 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
   `mix.rs`, `mix_file.rs`, `mix_tool.rs` (`jello_mix`), `mix_automation.rs`,
   `loudness.rs` (LUFS, true peak). Backend gaps and decisions: [tasks](docs/tasks.md).
   Mix panel built (`ui/MixPanel.svelte`, `Mix*.svelte`, `ui/mix.ts`,
-  `mix_commands.rs`, meters in `engine/src/meter.*`); driven, not heard.
+  `mix_commands.rs`, meters in `engine/src/meter.*`); driven and heard.
   [Mix design](docs/design.md#mix).
 - Guitar (0049): no recordings; oscillator kind `string`
   (`engine/src/plucked_string.*`), amp per track (`engine/src/amp.*`, Amp page),
   `guitar.rs`. U I O P [ ] are strings, 1QAZ to 5TGB hold shapes per scale,
-  songs can change them. Acoustic approved by ear; four electrics not yet heard.
+  songs can change them. J strums down, K up, by the song's gap (`strums.rs`,
+  0 to 100 ms). Acoustic approved by ear; electrics and strums not yet heard.
   [Design](docs/design.md#guitar).
 - Song key mappings (0047): built, replacing the fixed layout. A key plays any
   note set; no scale means keys play nothing. `scales.rs`, `key_mapping.rs`,
@@ -65,7 +67,8 @@ only, no MIDI, so step 3 is dropped (0027). Later: vocals, learning, AI music.
 - `engine/`: C++ engine. C API in `include/jello_engine.h`, built by
   `src-tauri/build.rs`. How it works: [docs/design.md](docs/design.md#engine).
 - [docs/design.md](docs/design.md): design and roadmap; [docs/adr/](docs/adr/README.md): ADRs.
-- `.github/workflows/ci.yml`: CI, builds and tests on macOS and Windows.
+- No GitHub CI (Actions cost money, turned off): `npm run check` runs every
+  check locally; run it before each push.
 - `tools/jello-drive.swift`: drives the real app on macOS; build steps inside.
 
 ## Working rules

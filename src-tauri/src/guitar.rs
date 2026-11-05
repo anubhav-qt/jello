@@ -24,6 +24,32 @@ pub const STRING_COUNT: usize = 6;
 // The six strings, thickest first.
 pub const STRING_KEYS: [&str; STRING_COUNT] = ["KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight"];
 
+// J strums down, thickest string to thinnest, and K strums up, so two fingers
+// strum while the top row stays for fingerstyle.
+pub const STRUM_DOWN_KEY: &str = "KeyJ";
+pub const STRUM_UP_KEY: &str = "KeyK";
+
+// How long each string of a strum waits after the one before, in ms: each
+// song's own, from 0 (all at once) to STRUM_SLOWEST_MS.
+pub const STRUM_START_MS: u32 = 25;
+pub const STRUM_SLOWEST_MS: u32 = 100;
+
+// Which way a strum goes across the strings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StrumWay {
+    Down,
+    Up,
+}
+
+// The strings a strum `way` passes, in order, thickest first going down.
+pub fn strum_order(way: StrumWay) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..STRING_COUNT).collect();
+    if way == StrumWay::Up {
+        order.reverse();
+    }
+    order
+}
+
 // The left hand's keys, by row then column, 1QAZ on the left.
 const ROW_COUNT: usize = 4;
 const COLUMN_COUNT: usize = 5;
@@ -100,11 +126,23 @@ pub struct GuitarShape {
     pub strings: [Option<u8>; STRING_COUNT],
 }
 
-// What the guitar plays: its open strings and every left-hand key's shape.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+// What the guitar plays: its open strings, every left-hand key's shape, and
+// how fast a strum crosses the strings.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GuitarMapping {
     pub open: [Option<u8>; STRING_COUNT],
     pub shapes: BTreeMap<String, GuitarShape>,
+    pub strum_ms: u32,
+}
+
+impl Default for GuitarMapping {
+    fn default() -> Self {
+        GuitarMapping {
+            open: [None; STRING_COUNT],
+            shapes: BTreeMap::new(),
+            strum_ms: STRUM_START_MS,
+        }
+    }
 }
 
 impl GuitarMapping {
@@ -187,6 +225,16 @@ impl GuitarMapping {
             strings,
         };
         self.shapes.insert(String::from(key), shape);
+        Ok(())
+    }
+
+    // Sets how long each string of a strum waits after the one before.
+    // Refuses more than STRUM_SLOWEST_MS.
+    pub fn set_strum_ms(&mut self, ms: u32) -> Result<(), String> {
+        if ms > STRUM_SLOWEST_MS {
+            return Err(format!("a strum's strings wait 0 to {STRUM_SLOWEST_MS} ms, not {ms}"));
+        }
+        self.strum_ms = ms;
         Ok(())
     }
 

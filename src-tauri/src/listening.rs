@@ -141,7 +141,6 @@ fn render(song: &Song, mut keys: KeyMap, what: &str, with_loop: bool, phrase: Op
     let mut engine = Engine::for_render()?;
     let sample_rate = engine.sample_rate();
     open_loop_of(&mut engine, &copy)?;
-    engine.set_snap(copy.snap);
     let mut composer = Composer::opened(&mut engine, &copy, now);
     engine.settle_volumes();
     if plays_loop {
@@ -450,11 +449,9 @@ mod tests {
         assert_eq!(last["to_beat"], json!(5.0));
     }
 
-    // How loud the loop's second beat is with a note late in that beat, which
-    // snap moves on to the third.
-    fn second_beat_with_a_late_note(snap: bool) -> Option<f64> {
+    // How loud the loop's second beat is with a note late in that beat.
+    fn second_beat_with_a_late_note() -> Option<f64> {
         let mut song = song();
-        song.snap = snap;
         let mut looped = song.looped.take().unwrap();
         looped.layers[0].notes = vec![BeatNote {
             note: 69,
@@ -468,10 +465,9 @@ mod tests {
     }
 
     #[test]
-    fn a_render_plays_the_loop_with_the_song_s_snap() {
-        let free = second_beat_with_a_late_note(false).unwrap();
-        assert!(free > -40.0, "the note sounded at {free}");
-        assert_eq!(second_beat_with_a_late_note(true), None);
+    fn a_render_plays_the_loop_s_notes_where_they_were_played() {
+        let late = second_beat_with_a_late_note().unwrap();
+        assert!(late > -40.0, "the note sounded at {late}");
     }
 
     #[test]

@@ -21,6 +21,8 @@
     // playing a phrase.
     held: boolean;
     byAgent: boolean;
+    // Whether the picked track's loop presses the key right now.
+    byLoop: boolean;
     // The agent's mark on the key, from a keys card, or undefined.
     mark: string | undefined;
     // Practice's mark on the key, which hides the agent's, or undefined.
@@ -54,6 +56,7 @@
     layout,
     held,
     byAgent,
+    byLoop,
     mark,
     practiceMark,
     sound,
@@ -244,6 +247,7 @@
   class:is-half={spec.half === true}
   class:is-held={held}
   class:is-agent={byAgent}
+  class:is-loop-now={byLoop}
   class:is-marked={mark !== undefined && practiceMark === undefined}
   class:is-practice-next={practiceMark?.state === "next"}
   class:is-outside={isOutside}
@@ -322,6 +326,9 @@
   {/if}
   {#if kind === "damp"}
     <span class="key-note">mute</span>
+  {/if}
+  {#if kind === "strum"}
+    <span class="key-note">strum {layout.strum_keys[spec.code]}</span>
   {/if}
   {#if kind === "drum"}
     <span class="key-note">{layout.drums[spec.code]}</span>

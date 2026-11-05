@@ -280,7 +280,7 @@ impl Composer {
         }
         if composer.keys.is_empty() {
             if let Some(scale) = composer.scale {
-                composer.keys = KeyMapping::default_for(scale);
+                composer.keys = composer.keys.with_default_for(scale);
             }
         }
         // No laptop key holds them, so none lets go of them.
@@ -1152,6 +1152,18 @@ mod tests {
         tonic: 0,
         mode: Mode::Major,
     };
+
+    #[test]
+    fn a_song_with_only_a_key_keeps_its_strum_speed() {
+        use crate::song_file::Song;
+        let mut engine = Engine::for_render().unwrap();
+        let mut song = Song::new(&SoundProfile::new());
+        song.key = Some(C_MAJOR);
+        song.keys.guitar.set_strum_ms(40).unwrap();
+        let composer = Composer::opened(&mut engine, &song, Instant::now());
+        assert!(!composer.main_keys().is_empty());
+        assert_eq!(composer.main_keys().guitar.strum_ms, 40);
+    }
 
     // A key map and Compose, played through the same steps the press and
     // release commands take, and an engine to play the song back on. Times

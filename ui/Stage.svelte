@@ -37,6 +37,7 @@
     type Platform,
   } from "./keyboard";
   import { beatsNow, type SoundSender, type SoundView } from "./sound";
+  import { keysByNotes, keysPressedNow, layerPresses } from "./loop-keys";
   import SoundPanel from "./SoundPanel.svelte";
   import MixPanel from "./MixPanel.svelte";
   import type { MixSender, MixView } from "./mix";
@@ -59,10 +60,13 @@
   interface Props {
     platform: Platform;
     layout: KeyLayout;
-    // What the top bar's buttons, the lane's snap switch and its volume
-    // knobs do. `layer` counts from 1, and `volume` is in percent.
+    // Whether the keyboard lights the keys the picked track's loop presses,
+    // as Jello last kept it, and what the lane's Keys switch does.
+    loopKeysShown: boolean;
+    onLoopKeysChange: (shown: boolean) => void;
+    // What the top bar's buttons and the lane's volume knobs do. `layer`
+    // counts from 1, and `volume` is in percent.
     onRenderClick: () => void;
-    onSnapClick: () => void;
     onRecordClick: () => void;
     onExpressionChange: (key: string, held: boolean) => void;
     onTempoChange: (tempo: number) => void;
@@ -95,8 +99,9 @@
   let {
     platform,
     layout,
+    loopKeysShown,
+    onLoopKeysChange,
     onRenderClick,
-    onSnapClick,
     onRecordClick,
     onExpressionChange,
     onTempoChange,
@@ -196,6 +201,40 @@
     }
     const msSince = Math.max(0, clock - soundAt);
     return beatsNow(sound, msSince);
+  });
+
+  // Whether the keyboard lights the keys the picked track's loop presses.
+  // It starts as Jello last kept it; the lane's Keys switch flips it.
+  // svelte-ignore state_referenced_locally
+  let showLoopKeys = $state(loopKeysShown);
+
+  function switchLoopKeys() {
+    showLoopKeys = !showLoopKeys;
+    onLoopKeysChange(showLoopKeys);
+  }
+
+  // Each layer's presses with the key that plays each one now. Rust sends
+  // the picked track's layers, so these are its presses.
+  let loopPresses = $derived.by(() => {
+    if (sound === null) {
+      return [];
+    }
+    let padNames: string[] = [];
+    for (const pad of sound.drums.pads) {
+      padNames.push(pad.name);
+    }
+    return layerPresses(sound.looper.layers, keysByNotes(layout, padNames));
+  });
+
+  // The keys the loop presses this frame, none while they are hidden.
+  let loopPressed = $derived.by(() => {
+    if (!showLoopKeys) {
+      return new Set<string>();
+    }
+    if (sound === null) {
+      return new Set<string>();
+    }
+    return keysPressedNow(sound.looper, loopPresses, looperBeats);
   });
 
   // Where the looper's lane sits, just under the keyboard's panel and only
@@ -723,6 +762,14 @@
     return agentPanel.keepOpenTake();
   }
 
+  // Another song opened, which keeps a take on the song left.
+  export function songOpened() {
+    if (agentPanel === undefined) {
+      return;
+    }
+    agentPanel.songOpened();
+  }
+
   export function dropTake(): boolean {
     if (agentPanel === undefined) {
       return false;
@@ -1168,6 +1215,7 @@
           {platform}
           {layout}
           {agentHeld}
+          {loopPressed}
           {agentMarks}
           practiceMarks={keyMarks}
           {held}
@@ -1208,7 +1256,8 @@
         left={lanePlace.left}
         top={lanePlace.top}
         width={lanePlace.width}
-        {onSnapClick}
+        {showLoopKeys}
+        onLoopKeysClick={switchLoopKeys}
         {onVolumeChange}
         {onLayerPlayingChange}
         {onLoopPlayingChange}

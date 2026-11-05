@@ -76,10 +76,10 @@ calls have been verified locally. Future work: bundle the runtime and provider
 sign-in, extend the harness to song editing/render/listen tools, and check
 teaching quality over complete practice sessions.
 
-Checks: `npm run build`, `npm run test:agent`, and `cargo test` in `src-tauri`.
+Checks: `npm run check` (agent and UI tests, the UI build, `cargo test`).
 Native macOS checks use `tools/build/jello-drive`; its `combo cmd up` command
 also tests modifier shortcuts. Windows native shortcut behavior still needs
-a Windows run; CI compiles and tests the shared mapping and tutor tools.
+a Windows run; `npm run check` there tests the shared mapping and tutor tools.
 
 ## Vision
 
@@ -1011,6 +1011,15 @@ Guitars play on laptop keys with no recordings
   silent, is untouched. Letting go of a shape with an older one still held moves
   back to it. Letting go of the last one moves nothing, so changing chords never
   passes through the open strings; the next pluck or shape decides.
+- **Strums.** J strums the held shape down, low E first, and K strums it up.
+  The first string sounds at once and each next one waits the song's strum
+  gap: 0 to 100 ms, 25 to start, kept with the mapping as `guitar_strum_ms`
+  (the Play tab uses the song's gap too). The waiting plucks sit in
+  `src-tauri/src/strums.rs`; a thread plays the due ones every 2 ms, each on
+  the track it was strummed on. A string, a shape or the palm plays what is left
+  of a strum at once, so strings never sound out of
+  turn. Compose hears a strum as the chord of its notes. J and K show their
+  way only while some string plays.
 - **Glide.** The glide key slides a string's own move, or a pluck leaving another
   note on that string. A string never slides from another string's note.
 - **Loops.** The looper records a move as one note ending and the next starting,
@@ -1021,10 +1030,10 @@ Guitars play on laptop keys with no recordings
   chords and ZXCVB its sevenths, the best under the index finger. Chords are
   barre shapes with the root on the low E or the A.
 - **Songs.** `[keys]` and `[section.keys]` write `guitar_open` and
-  `guitar = [ {key, name, strings} ]`. `jello_keys` and the Keys page's Guitar
-  side change any shape or open string.
+  `guitar = [ {key, name, strings} ]` and `guitar_strum_ms`. `jello_keys` and
+  the Keys page's Guitar side change any shape, open string or the strum gap.
 - Tests check tuning, ringing away, pluck hardness, stopping, glide, every
-  scale's shapes, keys and palm, song files keeping a guitar, every amp knob,
+  scale's shapes, keys, palm and strums, song files keeping a guitar, every amp knob,
   and each electric differing from the others at about the acoustic's level.
 
 ## Input
@@ -2483,7 +2492,10 @@ attachments stay underneath.
   stays flipped until the next tap. While a take is open, Return keeps it
   and Esc drops it; with none open they do their usual jobs. While talking,
   Jello blocks Command shortcuts (like Command Q) and lets go of held notes,
-  since macOS can drop key-ups while Command is down. Windows has no free
+  since macOS can drop key-ups while Command is down. macOS sends those
+  shortcuts to the app menu before the page sees them, so the menu is put
+  away while the key is down (`talk_key.rs`). A take on a song you leave
+  stays, and follows a rename. Windows has no free
   modifier left (right Ctrl is drum mode): its key is picked later.
 - **Never lose an idea: who picks** (2026-11-03). Jello records every
   press. After a jam, Rust measures candidates (phrases played again in
@@ -3109,10 +3121,10 @@ jitter, and one late buffer is an audible click.
 | Audio | CoreAudio | WASAPI low-latency or exclusive; ASIO later with an audio interface |
 | Webview | WebKit (no Web MIDI) | WebView2 |
 
-CI (`.github/workflows/ci.yml`) builds and tests both platforms on every
-push to `main` and every pull request, so one machine never silently breaks
-the other. It cannot hear anything: sound still gets checked by ear on each
-machine.
+Checks run locally, not on GitHub (GitHub Actions cost money, so they are
+off since 2026-11-05): `npm run check` builds and tests everything, on the Mac
+before each push and on the Windows machine when Windows work is checked. It
+cannot hear anything: sound still gets checked by ear on each machine.
 
 ## UI design process
 

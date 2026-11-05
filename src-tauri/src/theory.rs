@@ -773,6 +773,7 @@ mod tests {
         let memory = Mutex::new(crate::memory::Memory::default());
         let key_stats = Mutex::new(crate::key_stats::KeyStats::default());
         let key_offers = Mutex::new(crate::keys_tool::KeyOffers::default());
+        let takes = Mutex::new(crate::takes::Takes::default());
         let studio = Studio {
             open_song: &open_song,
             key_map: &key_map,
@@ -784,6 +785,7 @@ mod tests {
             memory: &memory,
             key_stats: &key_stats,
             key_offers: &key_offers,
+            takes: &takes,
             screen: &NoScreen,
         };
         let answer = keys_for(&studio, &json!({"notes": ["C4", "G5", "A5", "C2"]})).unwrap();

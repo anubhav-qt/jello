@@ -171,12 +171,6 @@ bool Conductor::load_loop(const LoadedNote* notes, int count, int layers, int ba
     return true;
 }
 
-void Conductor::set_snap(bool snap) {
-    Event event{EventType::set_snap, 0, 0};
-    event.snap = snap;
-    send_counted(event);
-}
-
 void Conductor::set_filter(int track, const FilterSettings& settings) {
     Event event{EventType::set_filter, 0, 0};
     event.track = track;
@@ -373,13 +367,13 @@ bool Conductor::set_effect(int chain, int slot, EffectKind kind) {
         on_bus = chain < Mixer::master_chain;
     }
     event.effect = make_effect(kind, sample_rate_, on_bus);
+    if (event.effect != nullptr) {
+        event.effect->count_in(effects_alive_);
+    }
     bool sent = send_counted(event);
     if (!sent) {
         delete event.effect;
         return false;
-    }
-    if (event.effect != nullptr) {
-        effects_made_ += 1;
     }
     return true;
 }
@@ -433,14 +427,13 @@ float Conductor::effect_reduction_db(int chain, int slot) const {
 
 int Conductor::effect_count() {
     free_replaced_effects();
-    return effects_made_ - effects_freed_;
+    return effects_alive_.load();
 }
 
 void Conductor::free_replaced_effects() {
     Effect* effect = nullptr;
     while (freed_effects_.receive(effect)) {
         delete effect;
-        effects_freed_ += 1;
     }
 }
 
@@ -797,8 +790,6 @@ void Conductor::handle(const Event& event) {
                      clock_.asked_beat_length(), tracks_);
         stop_beat_if_unused();
         looper_messages_handled_ += 1;
-    } else if (event.type == EventType::set_snap) {
-        looper_.set_snap(event.snap, now, tracks_);
     } else if (event.type == EventType::set_filter) {
         synth.set_filter(event.filter);
     } else if (event.type == EventType::set_filter_envelope) {

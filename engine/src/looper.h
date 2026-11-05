@@ -5,7 +5,7 @@
 
 #include "clock.h"
 #include "mailbox.h"
-#include "snap.h"
+#include "loop_plan.h"
 #include "synth.h"
 #include "tracks.h"
 
@@ -62,8 +62,8 @@ using LoadedNotes = Mailbox<LoadedNote, 16384>;
 // (docs/adr/0021-a-looper-on-a-beat.md). A loop is a list of notes, not
 // sound: each note's pitch, how hard it was hit, and the samples it started
 // and ended on, counted from the loop's start. It keeps them as they were
-// played, and each time around plays them as planned by plan_loop: moved to
-// the nearest half beat while "snap to beat" is on. The notes come in layers
+// played, and each time around plays them as planned by plan_loop, each
+// where it was played. The notes come in layers
 // (docs/adr/0026-layers.md): the first loop is layer 0, and each layer
 // recorded over it adds one. Each layer belongs to the track it was started
 // on (docs/design.md#tracks-in-the-engine), records only that track's notes
@@ -151,11 +151,6 @@ public:
     // notes already sounding too. Each layer starts at 1. A layer that
     // doesn't exist changes nothing.
     void set_layer_volume(int layer, float volume, Tracks& tracks);
-
-    // The "snap to beat" switch, on to start with. While looping, the loop
-    // changes right away: its notes stop, and those that should be sounding
-    // on sample `now` start again. Otherwise the next loop plays by it.
-    void set_snap(bool snap, std::uint64_t now, Tracks& tracks);
 
     // Live notes on track `track`, so they can be recorded: only the layer
     // being recorded's own track's are. `now` is the sample they are heard
@@ -275,7 +270,7 @@ private:
     void close(std::uint64_t end, int bars);
 
     // Works out where each time around plays the first `count` notes of
-    // layer `layer`, by the snap switch.
+    // layer `layer`.
     void make_plan(int layer, int count);
 
     // Starts a repeat of the loop on sample `start`. What each layer was
@@ -300,8 +295,6 @@ private:
     bool play_next_start(Layer& layer, std::uint64_t position, Tracks& tracks);
 
     LoopChanges& changes_;
-
-    bool snap_ = true;  // the "snap to beat" switch
 
     State state_ = State::idle;
     std::uint64_t count_in_start_ = 0;  // the sample the count-in started on

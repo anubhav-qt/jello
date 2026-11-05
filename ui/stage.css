@@ -425,7 +425,7 @@
 
 /* Keys that do something other than play: the wave key, the vibrato and
    glide keys, the pedal, the beat keys, the drum mode key and the open tab's action
-   keys. Drum keys say their drum the same way. */
+   keys. Drum and strum keys say what they do the same way. */
 .stage .key[data-kind="wave"] .key-note,
 .stage .key[data-kind="vibrato"] .key-note,
 .stage .key[data-kind="glide"] .key-note,
@@ -433,14 +433,17 @@
 .stage .key[data-kind="beat"] .key-note,
 .stage .key[data-kind="drum"] .key-note,
 .stage .key[data-kind="drum mode"] .key-note,
+.stage .key[data-kind="strum"] .key-note,
 .stage .key[data-kind="action"] .key-note {
   font-size: calc(var(--u) * 0.15);
   text-transform: uppercase;
   color: var(--text-2);
 }
 
-/* A drum's name can be two words, like "closed hat", and wraps. */
-.stage .key[data-kind="drum"] .key-note {
+/* A drum's name can be two words, like "closed hat", and wraps. So does
+   "strum down". */
+.stage .key[data-kind="drum"] .key-note,
+.stage .key[data-kind="strum"] .key-note {
   line-height: 1.05;
   text-align: center;
   white-space: normal;
@@ -610,6 +613,7 @@
 }
 
 .stage .key.is-held,
+.stage .key.is-loop-now,
 .stage .key.is-song-now {
   border-color: rgba(var(--ink), 0.45);
   background-color: var(--held-key-bg);
@@ -622,6 +626,8 @@
 
 .stage .key[data-kind="note"].is-held,
 .stage .key[data-kind="chord"].is-held,
+.stage .key[data-kind="note"].is-loop-now,
+.stage .key[data-kind="chord"].is-loop-now,
 .stage .key[data-kind="chord"].is-song-now {
   border-color: rgba(var(--accent), 0.95);
   background-color: rgba(var(--accent), 0.16);
@@ -632,6 +638,7 @@
 }
 
 .stage .key.is-held .key-note,
+.stage .key.is-loop-now .key-note,
 .stage .key.is-song-now .key-note {
   font-variation-settings: "ROND" 100;
   color: rgb(var(--accent));
@@ -657,6 +664,8 @@
   );
 }
 
+.stage .key.is-loop-now .key-label,
+.stage .key.is-loop-now .key-note,
 .stage .key.is-song-now .key-label,
 .stage .key.is-song-now .key-note,
 .stage .key.is-song-next .key-label,
@@ -1373,7 +1382,7 @@
   box-shadow: 0 0 8px rgba(var(--rec), 0.95);
 }
 
-/* The right end: how long the loop is, and the snap switch. */
+/* The right end: how long the loop is, and the Keys switch. */
 .lane-side {
   flex: none;
   display: flex;
@@ -1471,15 +1480,15 @@
   background-color: rgba(var(--accent), 0.2);
 }
 
-/* The snap switch and, once there is a loop, its play and pause button,
+/* The Keys switch and, once there is a loop, its play and pause button,
    side by side. */
 .lane-side-buttons {
   display: flex;
   gap: 6px;
 }
 
-/* The snap switch, styled like the top bar's Wave button. */
-.lane-snap {
+/* The Keys switch, styled like the top bar's Wave button. */
+.lane-switch {
   box-sizing: border-box;
   flex: 1 1 auto;
   min-width: 0;
@@ -1499,18 +1508,18 @@
     background-color 600ms ease-out;
 }
 
-.lane-snap:hover {
+.lane-switch:hover {
   border-color: rgba(var(--accent), 0.75);
   transition:
     border-color 40ms,
     background-color 40ms;
 }
 
-.lane-snap:active {
+.lane-switch:active {
   background-color: rgba(var(--accent), 0.2);
 }
 
-.lane-snap-label {
+.lane-switch-label {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -1518,7 +1527,7 @@
   color: var(--text-2);
 }
 
-.lane-snap-value {
+.lane-switch-value {
   font-family: "Doto", monospace;
   font-size: 14px;
   font-weight: 800;
@@ -1526,7 +1535,7 @@
   color: rgb(var(--accent));
 }
 
-.lane-snap.is-off .lane-snap-value {
+.lane-switch.is-off .lane-switch-value {
   color: var(--text-2);
 }
 

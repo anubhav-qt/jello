@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 // The kinds of effect a chain's slot can hold (docs/design.md#mix-in-the-engine).
 // More come in later slices.
 enum class EffectKind {
@@ -87,9 +89,13 @@ struct EffectContext {
 class Effect {
 public:
     explicit Effect(EffectKind kind);
-    virtual ~Effect() = default;
+    virtual ~Effect();
 
     EffectKind kind() const;
+
+    // Counts the effect in `alive` from now until it is deleted, so the
+    // engine knows how many it really holds (jello_engine_effect_count).
+    void count_in(std::atomic<int>& alive);
 
     // Puts `frames` frames of stereo (left, right, left, ...) through the
     // effect, in place.
@@ -117,6 +123,7 @@ public:
 
 private:
     EffectKind kind_;
+    std::atomic<int>* alive_ = nullptr;  // where it is counted, if anywhere
 };
 
 // A new effect of `kind`, at its starting values, or nullptr for none.

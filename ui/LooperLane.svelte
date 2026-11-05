@@ -9,8 +9,9 @@
      pauses the layer or plays it again (docs/adr/0038-song-files.md). A
      paused layer's notes are drawn dim. Before the loop, the lane shows the
      count-in. Until the first press there is no lane at all. Its right end says
-     how long the loop is and holds the snap switch, and once there is a
-     loop, a button that pauses the whole loop or plays it from beat 1. -->
+     how long the loop is and holds the Keys switch, which shows or hides
+     the keys the loop presses on the keyboard, and once there is a loop, a
+     button that pauses the whole loop or plays it from beat 1. -->
 <script lang="ts">
   import { clickThenLetGo } from "./dom";
   import { colorForNote } from "./note-colors";
@@ -27,7 +28,7 @@
   } from "./sound";
 
   interface Props {
-    // The sound, the tempo, snap and the looper.
+    // The sound, the tempo and the looper.
     sound: SoundView;
     // How many beats into the count-in, the recording or the repeat playing
     // now the looper is, counted on to this frame.
@@ -36,8 +37,10 @@
     left: number;
     top: number;
     width: number;
-    // What the snap switch does.
-    onSnapClick: () => void;
+    // Whether the keyboard lights the keys the loop presses, and what the
+    // Keys switch does.
+    showLoopKeys: boolean;
+    onLoopKeysClick: () => void;
     // What turning a layer's knob does: `layer` counts from 1, and
     // `volume` is in percent, from 0 to 100.
     onVolumeChange: (layer: number, volume: number) => void;
@@ -48,8 +51,19 @@
     onLayerBarsChange: (layer: number, bars: number) => void;
   }
 
-  let { sound, beats, left, top, width, onSnapClick, onVolumeChange, onLayerPlayingChange, onLoopPlayingChange, onLayerBarsChange }: Props =
-    $props();
+  let {
+    sound,
+    beats,
+    left,
+    top,
+    width,
+    showLoopKeys,
+    onLoopKeysClick,
+    onVolumeChange,
+    onLayerPlayingChange,
+    onLoopPlayingChange,
+    onLayerBarsChange,
+  }: Props = $props();
 
   // While the first loop is recorded its length isn't known yet, so the
   // box is marked out this many bars at a time.
@@ -354,9 +368,9 @@
     return "Pause the loop";
   });
 
-  // What the snap switch says.
-  let snapValue = $derived.by(() => {
-    if (sound.snap) {
+  // What the Keys switch says.
+  let loopKeysValue = $derived.by(() => {
+    if (showLoopKeys) {
       return "on";
     }
     return "off";
@@ -495,13 +509,14 @@
       {/if}
       <button
         type="button"
-        class="lane-snap"
-        class:is-off={!sound.snap}
-        title="Snap notes to the nearest half beat"
-        onclick={(event) => clickThenLetGo(event, onSnapClick)}
+        class="lane-switch"
+        class:is-off={!showLoopKeys}
+        aria-pressed={showLoopKeys}
+        title="Light the keys the loop presses as it plays"
+        onclick={(event) => clickThenLetGo(event, onLoopKeysClick)}
       >
-        <span class="lane-snap-label">Snap</span>
-        <span class="lane-snap-value">{snapValue}</span>
+        <span class="lane-switch-label">Keys</span>
+        <span class="lane-switch-value">{loopKeysValue}</span>
       </button>
     </div>
   </div>

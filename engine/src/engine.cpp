@@ -1108,10 +1108,6 @@ void jello_engine_set_layer_volume(JelloEngine* engine, int layer, float volume)
     engine->conductor.set_layer_volume(layer, volume);
 }
 
-void jello_engine_set_snap(JelloEngine* engine, bool snap) {
-    engine->conductor.set_snap(snap);
-}
-
 void jello_engine_pause_loop(JelloEngine* engine) {
     engine->conductor.pause_loop();
 }
@@ -1470,19 +1466,12 @@ bool jello_engine_next_loop_change(JelloEngine* engine, JelloLoopChange* change)
     return true;
 }
 
-bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, int count, int bars, int tempo,
-                            bool snap, JelloLoopNote* planned) {
-    (void)engine;  // every engine runs at the same rate, for now
+bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, int count, JelloLoopNote* planned) {
+    (void)engine;  // the plan needs nothing from the engine
     if (count < 0) {
         return false;
     }
     if (count > JELLO_LOOP_MAX_NOTES) {
-        return false;
-    }
-    if (bars < 1) {
-        return false;
-    }
-    if (!is_valid_tempo(tempo)) {
         return false;
     }
 
@@ -1499,14 +1488,8 @@ bool jello_engine_plan_loop(JelloEngine* engine, const JelloLoopNote* played, in
         notes[i].end = played[i].end;
     }
 
-    BeatLength beat;
-    beat.samples_per_minute = static_cast<std::uint64_t>(sample_rate) * 60;
-    beat.tempo = static_cast<std::uint64_t>(tempo);
-    std::uint64_t whole_bars = static_cast<std::uint64_t>(bars);
-    std::uint64_t length = whole_bars * beats_per_bar * beat.samples_per_minute / beat.tempo;
-
     std::vector<LoopNote> plan(static_cast<std::size_t>(count));
-    plan_loop(notes.data(), count, length, beat, snap, plan.data());
+    plan_loop(notes.data(), count, plan.data());
     for (int i = 0; i < count; i++) {
         planned[i].note = plan[i].note;
         planned[i].start = plan[i].start;

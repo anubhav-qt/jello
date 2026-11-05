@@ -185,9 +185,11 @@ impl KeyMapping {
         Ok(())
     }
 
-    // The default for `scale`, keeping every locked key as it is.
+    // The default for `scale`, keeping every locked key as it is, and the
+    // strum's speed, which is how the player plays, not which notes.
     pub fn with_default_for(&self, scale: Scale) -> KeyMapping {
         let mut mapping = KeyMapping::default_for(scale);
+        mapping.guitar.strum_ms = self.guitar.strum_ms;
         for key in &self.locked {
             match self.keys.get(key) {
                 Some(notes) => {

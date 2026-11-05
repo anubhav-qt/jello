@@ -88,8 +88,6 @@ public:
     // `layers` layers, `bars` bars long at the tempo asked for last. Returns
     // false and sends nothing if either mailbox has no room for all of it.
     bool load_loop(const LoadedNote* notes, int count, int layers, int bars);
-    // The "snap to beat" switch (Looper::set_snap).
-    void set_snap(bool snap);
     // The filter's controls (Synth::set_filter), and the filter envelope
     // (Synth::set_filter_envelope). Timed, like every sound setting from here
     // to set_glide_time, and set_drum_pad.
@@ -313,12 +311,13 @@ private:
 
     EventMailbox mailbox_;
 
-    // Effects the audio thread swapped out, on their way back to be freed,
-    // and how many were ever made and freed. Only the sending thread uses
-    // the counts.
+    // How many effects exist now: each counts itself in from when it is
+    // made until it is deleted. Declared before every chain, so it outlives
+    // the effects they still hold.
+    std::atomic<int> effects_alive_{0};
+
+    // Effects the audio thread swapped out, on their way back to be freed.
     FreedEffects freed_effects_;
-    int effects_made_ = 0;
-    int effects_freed_ = 0;
 
     // How many messages were lost to a full mailbox. Only the sending thread
     // uses it.

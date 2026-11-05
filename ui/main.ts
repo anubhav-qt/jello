@@ -79,6 +79,8 @@ interface StageControls {
   flipTake(): boolean;
   keepTake(): boolean;
   dropTake(): boolean;
+  // Another song opened, which keeps a take on the song left.
+  songOpened(): void;
   // Right Command held talks into the rail.
   talkStarts(): void;
   // A pause in playing, for the jam card.
@@ -303,13 +305,24 @@ async function releaseAllNotes() {
   }
 }
 
-// The lane's snap switch turns snap on or off.
-async function switchSnap() {
+// Whether the keyboard lights the keys the loop presses, as Jello last
+// kept it. They show if Rust can't say.
+async function askLoopKeysShown(): Promise<boolean> {
   try {
-    const view = await invoke<SoundView>("switch_snap");
-    showSound(view);
+    return await invoke<boolean>("loop_keys_shown");
   } catch (error) {
-    showStatus(`Could not switch snap: ${error}`);
+    showStatus(`Could not read the Keys switch: ${error}`);
+    return true;
+  }
+}
+
+// The lane's Keys switch shows or hides the keys the loop presses, kept
+// for next time.
+async function showLoopKeys(shown: boolean) {
+  try {
+    await invoke<boolean>("show_loop_keys", { shown });
+  } catch (error) {
+    showStatus(`Could not keep the Keys switch: ${error}`);
   }
 }
 
@@ -727,6 +740,7 @@ async function openSong(name: string) {
   try {
     const view = await invoke<SongsView>("open_song", { name });
     showSongs(view);
+    screen?.songOpened();
   } catch (error) {
     showStatus(`Could not open ${name}: ${error}`);
   }
@@ -740,6 +754,7 @@ async function makeNewSong() {
   try {
     const view = await invoke<SongsView>("make_new_song");
     showSongs(view);
+    screen?.songOpened();
   } catch (error) {
     showStatus(`Could not make a new song: ${error}`);
   }
@@ -842,6 +857,7 @@ const mappingSender: MappingSender = {
   setNotes: (section, key, notes) => askMapping("set_key_notes", { section, key, notes }),
   setLocked: (section, key, locked) => askMapping("set_key_locked", { section, key, locked }),
   setGuitar: (section, key, strings) => askMapping("set_guitar_strings", { section, key, name: "", strings }),
+  setStrum: (section, ms) => askMapping("set_strum_ms", { section, ms }),
   reset: (section) => askMapping("reset_keys", { section }),
   soundNote: (note, on) =>
     sendInOrder(async () => {
@@ -981,7 +997,20 @@ let talking = false;
 let talkKeyUsed = false;
 let talkTimer = 0;
 
+// macOS sends Command shortcuts like Command Q to the app menu before the
+// page sees them, so Rust puts the menu away while right Command is down.
+function blockShortcuts(blocked: boolean) {
+  let command = "talk_key_up";
+  if (blocked) {
+    command = "talk_key_down";
+  }
+  invoke(command).catch((error) => {
+    showStatus(`Could not block shortcuts: ${error}`);
+  });
+}
+
 function talkKeyGoesDown() {
+  blockShortcuts(true);
   talkKeyDown = true;
   talkKeyUsed = false;
   talking = false;
@@ -995,6 +1024,7 @@ function talkKeyGoesDown() {
 }
 
 function talkKeyComesUp() {
+  blockShortcuts(false);
   window.clearTimeout(talkTimer);
   const wasTalking = talking;
   const wasUsed = talkKeyUsed;
@@ -1125,6 +1155,10 @@ window.addEventListener("keydown", (event) => {
   }
   if (talkKeyDown) {
     talkKeyUsed = true;
+    // Shortcuts the page itself knows, like Command A, are blocked too.
+    if (event.metaKey) {
+      event.preventDefault();
+    }
   }
   if (event.code === soundModifier) {
     soundModifierHeld = true;
@@ -1286,6 +1320,7 @@ window.addEventListener("keyup", (event) => {
 // let go of every key right away.
 window.addEventListener("blur", () => {
   if (talkKeyDown) {
+    blockShortcuts(false);
     window.clearTimeout(talkTimer);
     talkKeyDown = false;
     if (talking) {
@@ -1481,6 +1516,7 @@ async function start() {
   }
   drumModeKeys = layout.drum_mode_keys;
   guitarShapeKeys = layout.guitar_shapes;
+  const loopKeysShown = await askLoopKeysShown();
 
   screen = mount(Stage, {
     target: page,
@@ -1488,7 +1524,8 @@ async function start() {
       platform: detectPlatform(),
       layout,
       onRenderClick: renderWav,
-      onSnapClick: () => sendInOrder(switchSnap),
+      loopKeysShown,
+      onLoopKeysChange: (shown: boolean) => sendInOrder(() => showLoopKeys(shown)),
       onRecordClick: () => sendInOrder(recordLoop),
       onExpressionChange: (key: string, held: boolean) => {
         if (held) {

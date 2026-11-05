@@ -1032,6 +1032,22 @@
     }
   }
 
+  // Another song opened. Rust keeps a take whose song was left, and the
+  // rail says so too.
+  export async function songOpened() {
+    let stillOpen: TakeView | null = null;
+    try {
+      stillOpen = await invoke<TakeView | null>("open_take");
+    } catch {
+      return;
+    }
+    if (stillOpen !== null) {
+      return;
+    }
+    keepOpenTakesInRail();
+    onTake(null);
+  }
+
   // The turn whose take is open, if there is one.
   function openTakeTurn(): Turn | null {
     for (const turn of turns) {

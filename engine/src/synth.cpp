@@ -1,6 +1,6 @@
 #include "synth.h"
 
-#include "snap.h"
+#include "loop_plan.h"
 
 #include <algorithm>
 

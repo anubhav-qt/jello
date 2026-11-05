@@ -61,7 +61,9 @@ mod theory;
 mod tool_server;
 mod tools;
 mod tracks;
+mod strums;
 mod takes;
+mod talk_key;
 mod jam;
 mod jam_partner;
 mod wav;
@@ -79,6 +81,10 @@ use song_session::{Folders, OpenSong, SAVE_CHECK};
 
 // How often the sections playing are kept ahead of the sound.
 const ARRANGE_CHECK: Duration = Duration::from_millis(50);
+
+// How often a strum's waiting plucks are looked at, so each sounds within
+// this much of its time.
+const STRUM_CHECK: Duration = Duration::from_millis(2);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -105,6 +111,7 @@ pub fn run() {
         .manage(Mutex::new(tool_server::Questions::default()))
         .manage(phrases::Phrases::default())
         .manage(Mutex::new(takes::Takes::default()))
+        .manage(talk_key::HeldMenu::default())
         .manage(Mutex::new(jam::Jam::default()))
         .manage(Mutex::new(drills::Drills::default()))
         .manage(Mutex::new(jam_partner::Partner::default()))
@@ -154,6 +161,8 @@ pub fn run() {
             thread::spawn(move || keep_saving(handle));
             let arranging = app.handle().clone();
             thread::spawn(move || keep_arranging(arranging));
+            let strumming = app.handle().clone();
+            thread::spawn(move || keep_strumming(strumming));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -220,7 +229,6 @@ pub fn run() {
             commands::list_instruments,
             commands::open_instruments_folder,
             starters::download_starter,
-            commands::switch_snap,
             commands::set_layer_volume,
             commands::set_layer_bars,
             commands::set_tempo,
@@ -243,11 +251,15 @@ pub fn run() {
             commands::save_preset,
             commands::preset_name_problem,
             commands::mark_starting_preset,
+            commands::loop_keys_shown,
+            commands::show_loop_keys,
             song_session::song_list,
             song_session::open_song,
             song_session::make_new_song,
             song_session::rename_song,
             song_session::song_name_problem,
+            talk_key::talk_key_down,
+            talk_key::talk_key_up,
             commands::press_key,
             commands::release_key,
             commands::sound_view,
@@ -261,6 +273,7 @@ pub fn run() {
             keys_tool::set_key_notes,
             keys_tool::set_key_locked,
             keys_tool::set_guitar_strings,
+            keys_tool::set_strum_ms,
             keys_tool::reset_keys,
             keys_tool::sound_mapped_note,
             keys_tool::try_key_offer,
@@ -366,6 +379,15 @@ fn keep_saving(app: AppHandle) {
 // Keeps the sections playing (src/arrange.rs): every ARRANGE_CHECK, sends
 // the sequencer what is due soon, tells the page each time another section
 // starts, and once they have played.
+// Plays each strum's plucks as they come due (src/strums.rs).
+fn keep_strumming(app: AppHandle) {
+    loop {
+        thread::sleep(STRUM_CHECK);
+        let engine = app.state::<Mutex<Engine>>();
+        engine.lock().unwrap().play_due_plucks(Instant::now());
+    }
+}
+
 fn keep_arranging(app: AppHandle) {
     let mut playing_before = None;
     loop {

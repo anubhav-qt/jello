@@ -6,9 +6,6 @@ export interface SoundView {
   oscillators: OscillatorView[];
   // The song's tempo, in beats per minute.
   tempo: number;
-  // Whether loops snap to the beat: each time around, the loop plays its
-  // notes moved to the nearest half beat.
-  snap: boolean;
   // What the looper is doing.
   looper: LooperView;
   // The loudness envelope new notes start with.

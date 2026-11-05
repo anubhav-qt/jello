@@ -22,6 +22,7 @@ use crate::engine::Engine;
 use crate::phrases::Phrases;
 use crate::song_file::{Song, song_of, text_of};
 use crate::song_session::{OpenSong, put_back_song, song_now};
+use crate::songs;
 use crate::sound_profile::SoundProfile;
 
 // How many takes are remembered.
@@ -109,9 +110,19 @@ impl Takes {
         self.started
     }
 
-    // Ends take `number` with the song as `theirs` now. A take that changed
-    // nothing is forgotten and None comes back.
+    // Ends take `number` with the song as `theirs` now, on screen. A take
+    // that changed nothing is forgotten and None comes back.
     pub fn end(&mut self, number: u64, theirs: String) -> Result<Option<TakeView>, String> {
+        self.finish(number, theirs, TakeState::Open)
+    }
+
+    // Ends take `number` with its song saved as `theirs`, when another song
+    // is open now: the take is kept at once, since its song was left.
+    pub fn end_away(&mut self, number: u64, theirs: String) -> Result<Option<TakeView>, String> {
+        self.finish(number, theirs, TakeState::Kept)
+    }
+
+    fn finish(&mut self, number: u64, theirs: String, state: TakeState) -> Result<Option<TakeView>, String> {
         let take = self.running(number)?;
         let parts = parts_changed(&take.mine, &theirs)?;
         if parts.is_empty() {
@@ -120,8 +131,37 @@ impl Takes {
         }
         take.theirs = theirs;
         take.parts = parts;
-        take.state = TakeState::Open;
+        take.state = state;
         Ok(Some(view_of(take)))
+    }
+
+    // The song take `number` was made on.
+    pub fn song_of(&self, number: u64) -> Option<&str> {
+        for take in &self.takes {
+            if take.number == number {
+                return Some(&take.name);
+            }
+        }
+        None
+    }
+
+    // Keeps every open take on another song than `open_name`, the song open
+    // now: the player left it, so it stays as it is.
+    pub fn song_left(&mut self, open_name: &str) {
+        for take in self.takes.iter_mut() {
+            if take.state == TakeState::Open && take.name != open_name {
+                take.state = TakeState::Kept;
+            }
+        }
+    }
+
+    // Takes on song `from` follow it to its new name `to`.
+    pub fn song_renamed(&mut self, from: &str, to: &str) {
+        for take in self.takes.iter_mut() {
+            if take.name == from {
+                take.name = String::from(to);
+            }
+        }
     }
 
     // Flips take `number` between the player's version and the take. `now`
@@ -243,8 +283,7 @@ fn part_differs(a: &Song, b: &Song, part: &str) -> bool {
             && a.looped == b.looped
             && a.sections == b.sections
             && a.arrangement == b.arrangement
-            && a.tempo == b.tempo
-            && a.snap == b.snap;
+            && a.tempo == b.tempo;
         return !same;
     }
     if part == SOUND {
@@ -281,7 +320,6 @@ fn with_part_of(theirs: &str, mine: &str, part: &str) -> Result<String, String> 
         song.sections = mine.sections;
         song.arrangement = mine.arrangement;
         song.tempo = mine.tempo;
-        song.snap = mine.snap;
     } else if part == SOUND {
         song.key = mine.key;
         song.scale = mine.scale;
@@ -333,18 +371,42 @@ pub fn take_starts(
     start_take(&mut takes, &open, &composer, &mut engine)
 }
 
+// Ends take `number` as the answer ends. If the answer left the take's
+// song for another, the take ends on its song as saved, and is kept.
+pub(crate) fn end_take(
+    takes: &mut Takes,
+    open: &OpenSong,
+    composer: &Composer,
+    engine: &mut Engine,
+    number: u64,
+) -> Result<Option<TakeView>, String> {
+    let Some(name) = takes.song_of(number) else {
+        return Err(format!("take {number} is gone"));
+    };
+    if name == open.name() {
+        let theirs = text_now(composer, engine);
+        return takes.end(number, theirs);
+    }
+    let name = String::from(name);
+    let folders = open.folders()?;
+    let saved = songs::read(&folders.songs, &name, &SoundProfile::new())?;
+    takes.end_away(number, text_of(&saved))
+}
+
 // The panel calls this when the answer ends. None if it changed nothing.
 #[tauri::command]
 pub fn take_ends(
+    open: State<'_, Mutex<OpenSong>>,
     composer: State<'_, Mutex<Composer>>,
     engine: State<'_, Mutex<Engine>>,
     takes: State<'_, Mutex<Takes>>,
     take: u64,
 ) -> Result<Option<TakeView>, String> {
+    let open = open.lock().unwrap();
     let composer = composer.lock().unwrap();
     let mut engine = engine.lock().unwrap();
-    let theirs = text_now(&composer, &mut engine);
-    takes.lock().unwrap().end(take, theirs)
+    let mut takes = takes.lock().unwrap();
+    end_take(&mut takes, &open, &composer, &mut engine, take)
 }
 
 // What the player does to a take: "flip", "keep", "drop", or "drop part".
@@ -358,6 +420,8 @@ fn change_take(
     part: Option<&str>,
     now: Instant,
 ) -> Result<TakeView, String> {
+    // A take whose song is no longer open was kept as the player left it.
+    takes.song_left(open.name());
     let screen = text_now(composer, engine);
     let (view, put_back) = match action {
         "flip" => {
@@ -417,7 +481,7 @@ mod tests {
 
     use crate::harmony::{Key, key_of_name};
     use crate::presets::test_folder;
-    use crate::song_session::{Folders, new_song};
+    use crate::song_session::{Folders, new_song, rename_open_song};
     use crate::songs;
 
     fn starting(label: &str) -> (OpenSong, Composer, Engine) {
@@ -467,6 +531,93 @@ mod tests {
         part: Option<&str>,
     ) -> Result<TakeView, String> {
         change_take(open, composer, engine, takes, number, action, part, Instant::now())
+    }
+
+    #[test]
+    fn leaving_a_take_s_song_keeps_it_and_changes_neither_song() {
+        let (mut open, mut composer, mut engine) = starting("takes-leave");
+        let mut takes = Takes::default();
+        let number = take_with_two_parts(&mut open, &mut composer, &mut engine, &mut takes);
+        let first = String::from(open.name());
+        new_song(&mut open, &mut composer, &mut engine).unwrap();
+        let second = String::from(open.name());
+
+        // A flip on the other song is refused, since the take was kept.
+        let flipped = act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None);
+        assert!(flipped.is_err());
+        assert_eq!(takes.open_now(), None);
+        assert_eq!(open.name(), second);
+        assert_eq!(composer.key(), None);
+        assert_eq!(key_in_file(&open), None);
+        let folder = open.folders().unwrap().songs;
+        let kept = songs::read(&folder, &first, &SoundProfile::new()).unwrap();
+        assert_eq!(kept.key, Some(key("A minor")));
+    }
+
+    #[test]
+    fn only_takes_on_other_songs_are_kept_when_a_song_opens() {
+        let (mut open, mut composer, mut engine) = starting("takes-same-song");
+        let mut takes = Takes::default();
+        take_with_two_parts(&mut open, &mut composer, &mut engine, &mut takes);
+        takes.song_left(open.name());
+        assert_eq!(takes.open_now().unwrap().state, TakeState::Open);
+        takes.song_left("Another song");
+        assert_eq!(takes.open_now(), None);
+    }
+
+    #[test]
+    fn an_answer_that_leaves_its_song_ends_kept_on_its_song() {
+        let (mut open, mut composer, mut engine) = starting("takes-answer-leaves");
+        let mut takes = Takes::default();
+        let number = start_take(&mut takes, &open, &composer, &mut engine);
+        composer.pick_key(key("A minor"));
+        new_song(&mut open, &mut composer, &mut engine).unwrap();
+
+        let view = end_take(&mut takes, &open, &composer, &mut engine, number).unwrap().unwrap();
+        assert_eq!(view.state, TakeState::Kept);
+        assert_eq!(view.parts, vec![SOUND]);
+        assert_eq!(takes.open_now(), None);
+        assert_eq!(composer.key(), None);
+    }
+
+    #[test]
+    fn an_answer_that_leaves_its_song_unchanged_makes_no_take() {
+        let (mut open, mut composer, mut engine) = starting("takes-answer-leaves-nothing");
+        let mut takes = Takes::default();
+        let number = start_take(&mut takes, &open, &composer, &mut engine);
+        new_song(&mut open, &mut composer, &mut engine).unwrap();
+        composer.pick_key(key("A minor"));
+        assert_eq!(end_take(&mut takes, &open, &composer, &mut engine, number).unwrap(), None);
+        assert!(takes.takes.is_empty());
+    }
+
+    #[test]
+    fn a_take_follows_its_song_to_a_new_name() {
+        let (mut open, mut composer, mut engine) = starting("takes-rename");
+        let mut takes = Takes::default();
+        let number = take_with_two_parts(&mut open, &mut composer, &mut engine, &mut takes);
+        let was = String::from(open.name());
+        rename_open_song(&mut open, &composer, &mut engine, "Renamed").unwrap();
+        takes.song_renamed(&was, open.name());
+
+        act(&mut open, &mut composer, &mut engine, &mut takes, number, "flip", None).unwrap();
+        assert_eq!(open.name(), "Renamed");
+        assert_eq!(composer.key(), None);
+        assert_eq!(key_in_file(&open), None);
+    }
+
+    #[test]
+    fn an_answer_that_renames_its_song_ends_open() {
+        let (mut open, mut composer, mut engine) = starting("takes-answer-renames");
+        let mut takes = Takes::default();
+        let number = start_take(&mut takes, &open, &composer, &mut engine);
+        composer.pick_key(key("A minor"));
+        let was = String::from(open.name());
+        rename_open_song(&mut open, &composer, &mut engine, "Renamed").unwrap();
+        takes.song_renamed(&was, open.name());
+
+        let view = end_take(&mut takes, &open, &composer, &mut engine, number).unwrap().unwrap();
+        assert_eq!(view.state, TakeState::Open);
     }
 
     #[test]

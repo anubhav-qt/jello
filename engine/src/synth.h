@@ -26,8 +26,8 @@ public:
 
     // The pitch a loop plays the vibrato key on
     // (docs/adr/0032-the-vibrato-key.md): one past the highest note, so the
-    // looper records, snaps and plays its presses back like a note's. And
-    // the glide key's (docs/adr/0036-glide.md), one past that.
+    // looper records and plays its presses back like a note's. And the
+    // glide key's (docs/adr/0036-glide.md), one past that.
     static constexpr int vibrato_key_note = 128;
     static constexpr int glide_key_note = 129;
 

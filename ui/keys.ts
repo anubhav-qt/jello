@@ -27,7 +27,14 @@ export type GuitarStrings = (number | null)[];
 export interface GuitarMapping {
   open: GuitarStrings;
   shapes: Record<string, { name: string; strings: GuitarStrings }>;
+  // How long each string of a strum waits after the one before, in ms.
+  strum_ms: number;
 }
+
+// A strum's speed: 0 (all at once) to STRUM_SLOWEST_MS, in steps of
+// STRUM_STEP_MS on the page (src-tauri/src/guitar.rs).
+export const STRUM_SLOWEST_MS = 100;
+export const STRUM_STEP_MS = 5;
 
 // What the mapping page sends to Rust. Each answers with the page as it is
 // after, or null if Rust refused, which the top bar then says.
@@ -37,6 +44,7 @@ export interface MappingSender {
   setLocked(section: number | null, key: string, locked: boolean): Promise<MappingView | null>;
   // Puts `strings` on shape key `key`, or with null tunes the open strings.
   setGuitar(section: number | null, key: string | null, strings: GuitarStrings): Promise<MappingView | null>;
+  setStrum(section: number | null, ms: number): Promise<MappingView | null>;
   reset(section: number | null): Promise<MappingView | null>;
   soundNote(note: number, on: boolean): void;
 }

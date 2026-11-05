@@ -19,7 +19,7 @@
 //                                 in steps, and let go there
 //   jello-drive scroll <x> <y> <lines>  turn the wheel over a point, down
 //                                 for more than 0
-//   jello-drive combo <cmd|option> <name>  press a modifier and a key
+//   jello-drive combo <cmd|rcmd|option> <name>  press a modifier and a key
 //   jello-drive key <name> [n]    press a key n times (left, right, up, down,
 //                                 esc, return, space, tab, delete, rshift
 //                                 for the looper, roption for drum mode,
@@ -312,8 +312,15 @@ func pressRightCommand(holdMs: UInt32) {
 // a real keyboard, so the webview can distinguish left and right Command.
 func pressCombo(_ modifier: String, _ code: CGKeyCode) {
   let source = CGEventSource(stateID: .hidSystemState)
-  let modifierCode: CGKeyCode = modifier == "cmd" ? 55 : 58
-  let flags: CGEventFlags = modifier == "cmd" ? .maskCommand : .maskAlternate
+  var modifierCode: CGKeyCode = 58
+  var flags: CGEventFlags = .maskAlternate
+  if modifier == "cmd" {
+    modifierCode = 55
+    flags = .maskCommand
+  } else if modifier == "rcmd" {
+    modifierCode = 54
+    flags = .maskCommand
+  }
   let down = CGEvent(keyboardEventSource: source, virtualKey: modifierCode, keyDown: true)!
   down.type = .flagsChanged
   down.flags = flags
@@ -429,8 +436,8 @@ if command == "info" {
   scroll(at: CGPoint(x: x, y: y), lines: Int32(arguments[3]) ?? 0)
   print("scrolled \(arguments[3]) lines at \(Int(x)),\(Int(y)) on screen")
 } else if command == "combo" {
-  if arguments.count != 3 || !["cmd", "option"].contains(arguments[1]) {
-    fail("usage: jello-drive combo <cmd|option> <name>")
+  if arguments.count != 3 || !["cmd", "rcmd", "option"].contains(arguments[1]) {
+    fail("usage: jello-drive combo <cmd|rcmd|option> <name>")
   }
   guard let code = keyCodes[arguments[2]] else { fail("unknown key") }
   requireFront(jello)

@@ -13,6 +13,9 @@
     // agent holds while it plays a phrase.
     held: Set<string>;
     agentHeld: Set<string>;
+    // The keys the picked track's loop presses right now, empty while they
+    // are hidden.
+    loopPressed: Set<string>;
     // The keys the agent marked, each with its label, and the keys
     // practice marks, which come first.
     agentMarks: Map<string, string>;
@@ -45,6 +48,7 @@
     layout,
     held,
     agentHeld,
+    loopPressed,
     agentMarks,
     practiceMarks,
     sound,
@@ -95,6 +99,7 @@
             {stepping}
             held={isHeld(spec.code)}
             byAgent={agentHeld.has(spec.code)}
+              byLoop={loopPressed.has(spec.code)}
             mark={agentMarks.get(spec.code)}
               practiceMark={practiceMarks.get(spec.code)}
           />
@@ -117,6 +122,7 @@
               {stepping}
               held={isHeld(spec.code)}
             byAgent={agentHeld.has(spec.code)}
+              byLoop={loopPressed.has(spec.code)}
               mark={agentMarks.get(spec.code)}
               practiceMark={practiceMarks.get(spec.code)}
             />
@@ -136,6 +142,7 @@
               {stepping}
               held={isHeld(spec.below.code)}
               byAgent={agentHeld.has(spec.below.code)}
+              byLoop={loopPressed.has(spec.below.code)}
               mark={agentMarks.get(spec.below.code)}
               practiceMark={practiceMarks.get(spec.below.code)}
             />

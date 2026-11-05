@@ -26,6 +26,17 @@ static_assert(reverb_value_count <= effect_most_values, "the reverb's values fit
 
 Effect::Effect(EffectKind kind) : kind_(kind) {}
 
+Effect::~Effect() {
+    if (alive_ != nullptr) {
+        alive_->fetch_sub(1);
+    }
+}
+
+void Effect::count_in(std::atomic<int>& alive) {
+    alive_ = &alive;
+    alive.fetch_add(1);
+}
+
 EffectKind Effect::kind() const {
     return kind_;
 }

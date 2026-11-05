@@ -19,7 +19,7 @@ use crate::engine::{
 use crate::drums::{DRUM_PAD_COUNT, DrumPad, PAD_NAMES};
 use crate::harmony::{Key, Mode};
 use crate::instruments::{self, Status};
-use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, StringChanges, layer_number_of};
+use crate::key_map::{KeyAction, KeyMap, LAPTOP_VELOCITY, LayoutForUi, Pluck, StringChanges, layer_number_of};
 use crate::key_stats::KeyStats;
 use crate::modulation::{
     CONNECTION_COUNT, Connection, LFO_COUNT, LFO_MOST_STEPS, Lfo, LfoShape, LfoSpeed, Source, Target,
@@ -37,18 +37,16 @@ use crate::wav::write_wav;
 // silence, so it ends cleanly.
 
 // What the screen shows about the sound: the oscillators new notes play, the
-// song's tempo in beats per minute, whether loops snap to the beat, what the
-// looper is doing, the loudness envelope, where the filter is, unison's copies, the
-// tuning, the LFOs, the routing list, the vibrato key's times and how long a
-// glide takes. Everything
-// but the looper and snap comes from the song: its tempo and its sound
+// song's tempo in beats per minute, what the looper is doing, the loudness
+// envelope, where the filter is, unison's copies, the tuning, the LFOs, the
+// routing list, the vibrato key's times and how long a glide takes.
+// Everything but the looper comes from the song: its tempo and its sound
 // profile.
 #[derive(Serialize)]
 pub struct SoundView {
     // All 3 oscillators, in order (docs/adr/0035-oscillators-with-kinds.md).
     oscillators: Vec<OscillatorView>,
     tempo: u32,
-    snap: bool,
     looper: LooperView,
     loudness: LoudnessView,
     filter: FilterView,
@@ -517,11 +515,7 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
     if has_loop(status.state) {
         for layer in &mut layers {
             if !layer.recording {
-                let mut bars = layer.bars;
-                if bars == 0 {
-                    bars = status.number;
-                }
-                layer.notes = engine.plan_loop(&layer.notes, bars);
+                layer.notes = engine.plan_loop(&layer.notes);
             }
         }
     }
@@ -549,7 +543,6 @@ pub(crate) fn sound_view_of(engine: &mut Engine, composer: &Composer, now: Insta
     SoundView {
         oscillators,
         tempo: composer.tempo(),
-        snap: engine.snap(),
         looper,
         loudness: loudness_view_of(sound_profile),
         filter: filter_view_of(sound_profile),
@@ -916,22 +909,6 @@ fn kind_named(name: &str) -> Result<Kind, String> {
         Some(kind) => Ok(kind),
         None => Err(format!("there is no kind called {name}")),
     }
-}
-
-// Turns "snap to beat" off if it is on, and on if it is off, and returns
-// what the screen shows about the sound. A loop already playing changes
-// right away. Like `switch_kind`, it opens the speakers first.
-#[tauri::command]
-pub fn switch_snap(
-    composer: State<'_, Mutex<Composer>>,
-    engine: State<'_, Mutex<Engine>>,
-) -> Result<SoundView, String> {
-    let now = Instant::now();
-    let composer = composer.lock().unwrap();
-    let mut engine = engine.lock().unwrap();
-    engine.start_audio()?;
-    engine.switch_snap();
-    Ok(sound_view_of(&mut engine, &composer, now))
 }
 
 // Sets layer `layer`'s volume, counted from 1, to `volume` percent, from 0
@@ -1339,6 +1316,43 @@ pub fn mark_starting_preset(app: AppHandle, name: Option<String>) -> Result<(), 
     presets::mark_starting(&settings, name.as_deref())
 }
 
+// The setting that says whether the keyboard lights the keys the picked
+// track's loop presses as it plays: "off" hides them, and anything else,
+// or nothing, shows them.
+const LOOP_KEYS: &str = "loop_keys";
+
+// Whether the keys the loop presses show, by the settings in `settings`.
+fn loop_keys_shown_in(settings: &Path) -> bool {
+    let saved = presets::setting(settings, LOOP_KEYS);
+    saved.as_deref() != Some("off")
+}
+
+// Keeps whether the keys the loop presses show in the settings in
+// `settings`, and answers with it.
+fn show_loop_keys_in(settings: &Path, shown: bool) -> Result<bool, String> {
+    let mut word = "off";
+    if shown {
+        word = "on";
+    }
+    presets::set_setting(settings, LOOP_KEYS, Some(word))?;
+    Ok(shown)
+}
+
+// Whether the keyboard lights the keys the picked track's loop presses.
+#[tauri::command]
+pub fn loop_keys_shown(app: AppHandle) -> Result<bool, String> {
+    let settings = settings_folder(&app)?;
+    Ok(loop_keys_shown_in(&settings))
+}
+
+// Shows or hides the keys the picked track's loop presses, from now on and
+// after Jello starts again. The lane's Keys switch does this.
+#[tauri::command]
+pub fn show_loop_keys(app: AppHandle, shown: bool) -> Result<bool, String> {
+    let settings = settings_folder(&app)?;
+    show_loop_keys_in(&settings, shown)
+}
+
 // Copies the starting sound, kept in `sounds`, into the song in
 // `composer`, on `engine` too. The app does this as it starts. With no
 // preset marked, or one that is gone or can't be read, the song keeps a
@@ -1481,14 +1495,21 @@ fn take_key_action(engine: &mut Engine, composer: &mut Composer, action: KeyActi
         KeyAction::HitDrum(pad) => {
             engine.note_on(drum_note(pad), LAPTOP_VELOCITY);
         }
-        KeyAction::Pluck { after, note, velocity } => match after {
-            Some(from) => engine.pluck_string_after(from, note, velocity),
-            None => engine.note_on(note, velocity),
-        },
+        // Every guitar key finishes a strum still going first, so the
+        // strings never play out of turn.
+        KeyAction::Pluck { after, note, velocity } => {
+            engine.finish_strums();
+            engine.pluck(Pluck { after, note, velocity });
+        }
+        KeyAction::Strum { plucks, gap_ms } => {
+            engine.strum(&plucks, gap_ms, now);
+        }
         KeyAction::ChangeStrings(changes) => {
+            engine.finish_strums();
             change_strings(engine, changes);
         }
         KeyAction::StopNotes(notes) => {
+            engine.finish_strums();
             for note in notes {
                 engine.note_off(note);
             }
@@ -1555,10 +1576,20 @@ pub(crate) fn release_key_on(key_map: &mut KeyMap, composer: &mut Composer, engi
     if lets_go_of_pedal {
         engine.set_pedal_key(false);
     }
+    let changes = key_map.take_released_changes();
+    let_go(engine, notes, changes);
+}
+
+// Stops the `notes` a key let go of and makes its string `changes`. A strum
+// still going finishes first, so its strings never play after them.
+fn let_go(engine: &mut Engine, notes: Vec<u8>, changes: StringChanges) {
+    if !notes.is_empty() || !changes.moves.is_empty() {
+        engine.finish_strums();
+    }
     for note in notes {
         engine.note_off(note);
     }
-    change_strings(engine, key_map.take_released_changes());
+    change_strings(engine, changes);
 }
 
 fn change_strings(engine: &mut Engine, changes: StringChanges) {
@@ -1586,6 +1617,16 @@ pub(crate) fn key_down(key_map: &mut KeyMap, composer: &mut Composer, key: &str,
         KeyAction::PlayNotes(notes) => composer.notes_pressed(key, notes, now),
         KeyAction::PlayNote(note) => composer.note_pressed(key, *note, now),
         KeyAction::Pluck { note, .. } => composer.note_pressed(key, *note, now),
+        // Compose hears a strum as the chord of its notes.
+        KeyAction::Strum { plucks, .. } => {
+            let mut notes = Vec::new();
+            for pluck in plucks {
+                if !notes.contains(&pluck.note) {
+                    notes.push(pluck.note);
+                }
+            }
+            composer.notes_pressed(key, &notes, now);
+        }
         _ => {}
     }
     Some(action)
@@ -2295,7 +2336,6 @@ mod tests {
         assert_eq!(json["oscillators"][0]["kind"], "triangle");
         assert_eq!(json["oscillators"][0]["level"], 100);
         assert_eq!(json["tempo"], 125);
-        assert_eq!(json["snap"], true);
         assert_eq!(json["looper"]["state"], "counting in");
         assert_eq!(json["looper"]["number"], 1);
         assert_eq!(json["looper"]["busy"], true);
@@ -2437,6 +2477,36 @@ mod tests {
             by_hand.note_on(note, LAPTOP_VELOCITY);
         }
         assert!(control.render(4800) == by_hand.render(4800), "left Control did not play F#m");
+    }
+
+    #[test]
+    fn a_string_or_a_key_let_go_finishes_a_strum_still_going() {
+        let mut composer = Composer::new();
+        let plucks = vec![
+            Pluck { after: None, note: 40, velocity: LAPTOP_VELOCITY },
+            Pluck { after: None, note: 45, velocity: LAPTOP_VELOCITY },
+        ];
+        let now = Instant::now();
+        let strum = KeyAction::Strum { plucks: plucks.clone(), gap_ms: 50 };
+
+        let mut engine = Engine::new().unwrap();
+        take_key_action(&mut engine, &mut composer, strum.clone(), now);
+        assert!(engine.strum_waiting());
+        let pluck = KeyAction::Pluck { after: None, note: 50, velocity: LAPTOP_VELOCITY };
+        take_key_action(&mut engine, &mut composer, pluck, now);
+        assert!(!engine.strum_waiting());
+
+        take_key_action(&mut engine, &mut composer, strum.clone(), now);
+        let_go(&mut engine, Vec::new(), StringChanges::default());
+        assert!(engine.strum_waiting(), "nothing let go, so the strum goes on");
+        let_go(&mut engine, vec![50], StringChanges::default());
+        assert!(!engine.strum_waiting());
+
+        take_key_action(&mut engine, &mut composer, strum, now);
+        let mut moves = StringChanges::default();
+        moves.moves.push((40, 41));
+        let_go(&mut engine, Vec::new(), moves);
+        assert!(!engine.strum_waiting());
     }
 
     #[test]
@@ -2935,30 +3005,17 @@ mod tests {
             end: Some(125_000.0 / 24_000.0),
         }];
 
-        // While recording it shows as played, even with snap on.
+        // While recording it shows as played.
         let view = view_of(&mut engine, Instant::now());
-        assert!(view.snap);
         assert_eq!(view.looper.state, "recording");
         assert_eq!(view.looper.layers[0].notes, as_played);
 
-        // Pressed late in bar 2, the loop closes at its end, 2 bars long.
-        // From then on it shows where the loop plays A4: on the nearest half
-        // beats.
+        // Pressed late in bar 2, the loop closes at its end, 2 bars long,
+        // and plays A4 where it was played.
         engine.press_looper();
         engine.render(30_000);
         let view = view_of(&mut engine, Instant::now());
         assert_eq!(view.looper.state, "looping");
-        let snapped = vec![LoopNoteView {
-            note: A4,
-            start: 4.5,
-            end: Some(5.0),
-        }];
-        assert_eq!(view.looper.layers[0].notes, snapped);
-
-        // With snap off, as played again.
-        engine.switch_snap();
-        let view = view_of(&mut engine, Instant::now());
-        assert!(!view.snap);
         assert_eq!(view.looper.layers[0].notes, as_played);
     }
 
@@ -3226,10 +3283,38 @@ mod tests {
     }
 
     #[test]
+    fn the_loop_s_keys_show_until_hidden_and_stay_as_set() {
+        let settings = presets::test_folder("loop-keys");
+        // With no settings file yet, they show.
+        assert!(loop_keys_shown_in(&settings));
+
+        assert_eq!(show_loop_keys_in(&settings, false), Ok(false));
+        assert!(!loop_keys_shown_in(&settings));
+        assert_eq!(show_loop_keys_in(&settings, true), Ok(true));
+        assert!(loop_keys_shown_in(&settings));
+
+        // Other settings stay, and a word it doesn't know shows them.
+        presets::mark_starting(&settings, Some("Low saw")).unwrap();
+        show_loop_keys_in(&settings, false).unwrap();
+        assert_eq!(presets::starting_name(&settings), Some(String::from("Low saw")));
+        presets::set_setting(&settings, LOOP_KEYS, Some("maybe")).unwrap();
+        assert!(loop_keys_shown_in(&settings));
+    }
+
+    // C5 as played 13,000 samples into a repeat, held for 16,000.
+    fn c5_as_played() -> LoopNoteView {
+        LoopNoteView {
+            note: C5,
+            start: 13_010.0 / 24_000.0,
+            end: Some(29_010.0 / 24_000.0),
+        }
+    }
+
+    #[test]
     fn the_layer_being_recorded_shows_as_played_and_the_others_where_they_play() {
-        // The first loop's A4, played from beat 1 for half a beat, snaps to
-        // 0 to 0.5. The layer's C5, played 13,000 samples into the repeat,
-        // shows as played until the layer stops.
+        // The first loop's A4, played from beat 1 for half a beat, plays
+        // from 0 to 0.5. The layer's C5, played 13,000 samples into the
+        // repeat, shows as played, and still does once the layer stops.
         let mut engine = engine_with_layers(1);
         engine.press_looper();
         engine.render(13_000);
@@ -3246,23 +3331,12 @@ mod tests {
             end: Some(0.5),
         };
         assert_eq!(view.looper.layers[0].notes, vec![a4]);
-        let c5 = LoopNoteView {
-            note: C5,
-            start: 13_010.0 / 24_000.0,
-            end: Some(29_010.0 / 24_000.0),
-        };
-        assert_eq!(view.looper.layers[1].notes, vec![c5]);
+        assert_eq!(view.looper.layers[1].notes, vec![c5_as_played()]);
 
-        // Stopped, it shows where it plays: C5 snaps to 0.5 to 1.0.
         engine.press_looper();
         engine.render(10);
         let view = view_of(&mut engine, Instant::now());
-        let snapped = LoopNoteView {
-            note: C5,
-            start: 0.5,
-            end: Some(1.0),
-        };
-        assert_eq!(view.looper.layers[1].notes, vec![snapped]);
+        assert_eq!(view.looper.layers[1].notes, vec![c5_as_played()]);
         assert!(!view.looper.layers[1].recording);
     }
 }

@@ -14,7 +14,7 @@ use crate::commands::follow_picked_track;
 use crate::compose::{ComposeView, Composer};
 use crate::engine::{BEATS_PER_BAR, Engine, LooperState};
 use crate::key_map::{KeyMap, LAPTOP_VELOCITY, LayoutForUi, name_of_notes};
-use crate::guitar::{GuitarMapping, STRING_COUNT, STRING_KEYS, shape_keys};
+use crate::guitar::{GuitarMapping, STRING_COUNT, STRING_KEYS, STRUM_SLOWEST_MS, shape_keys};
 use crate::key_mapping::{KeyMapping, mappable_keys};
 use crate::key_optimizer::{optimize, usage_of};
 use crate::key_stats::KeyStats;
@@ -57,7 +57,8 @@ pub fn description() -> Value {
             [ ] are the strings, thickest first, and the keys from 1QAZ to 5TGB hold shapes. Each \
             scale has a default. With key, name and strings (six note names, thickest first, \
             \"\" for a silent string) it changes one shape; with strings alone it tunes the open \
-            strings. set, lock, reset, guitar and optimize take an optional section. Refused while the song \
+            strings; with strum_ms (0 to 100) it sets how long each string of a strum waits after \
+            the one before (J strums down, K up; 25 to start). set, lock, reset, guitar and optimize take an optional section. Refused while the song \
             plays: scale and optimize. Answers with the mapping.",
         "inputSchema": {
             "type": "object",
@@ -68,6 +69,7 @@ pub fn description() -> Value {
                 "notes": {"type": "array", "items": {"type": "string"}},
                 "name": {"type": "string"},
                 "strings": {"type": "array", "items": {"type": "string"}},
+                "strum_ms": {"type": "integer"},
                 "locked": {"type": "boolean"},
                 "section": {"type": "string"},
                 "on": {"type": "boolean"},
@@ -181,7 +183,7 @@ fn guitar_json(guitar: &GuitarMapping) -> Value {
     for (key, shape) in &guitar.shapes {
         shapes.push(json!({"key": key, "name": shape.name, "strings": string_names(&shape.strings)}));
     }
-    json!({"open": string_names(&guitar.open), "shapes": shapes})
+    json!({"open": string_names(&guitar.open), "shapes": shapes, "strum_ms": guitar.strum_ms})
 }
 
 fn string_names(strings: &[Option<u8>; STRING_COUNT]) -> Vec<String> {
@@ -280,23 +282,7 @@ pub fn answer(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
             keep_mapping(&mut composer, section, keys)?;
             Some(format!("locked {key}"))
         }
-        "guitar" => {
-            let strings = strings_argument(arguments)?;
-            let mut keys = mapping_of(&composer, section)?;
-            let change = match optional_text_argument(arguments, "key")? {
-                Some(key) => {
-                    let name = optional_text_argument(arguments, "name")?.unwrap_or_default();
-                    keys.guitar.set_shape(&key, &name, strings)?;
-                    format!("guitar shape {key}")
-                }
-                None => {
-                    keys.guitar.set_open(strings)?;
-                    String::from("guitar tuning")
-                }
-            };
-            keep_mapping(&mut composer, section, keys)?;
-            Some(change)
-        }
+        "guitar" => Some(change_guitar(&mut composer, section, arguments)?),
         "reset" => {
             let Some(scale) = composer.scale() else {
                 return Err(String::from("pick a scale first"));
@@ -339,6 +325,35 @@ pub fn answer(studio: &Studio, arguments: &Value) -> Result<ToolAnswer, String> 
         None => Vec::new(),
     };
     Ok(ToolAnswer::of(answer, changes))
+}
+
+// jello_keys guitar: the strum's speed, one shape, or the open strings.
+fn change_guitar(composer: &mut Composer, section: Option<usize>, arguments: &Value) -> Result<String, String> {
+    let mut keys = mapping_of(composer, section)?;
+    let change;
+    if let Some(ms) = arguments.get("strum_ms") {
+        let Some(ms) = ms.as_u64() else {
+            return Err(format!("strum_ms is a whole number of ms, 0 to {STRUM_SLOWEST_MS}"));
+        };
+        let ms = u32::try_from(ms).unwrap_or(u32::MAX);
+        keys.guitar.set_strum_ms(ms)?;
+        change = format!("strum {ms} ms");
+    } else {
+        let strings = strings_argument(arguments)?;
+        match optional_text_argument(arguments, "key")? {
+            Some(key) => {
+                let name = optional_text_argument(arguments, "name")?.unwrap_or_default();
+                keys.guitar.set_shape(&key, &name, strings)?;
+                change = format!("guitar shape {key}");
+            }
+            None => {
+                keys.guitar.set_open(strings)?;
+                change = String::from("guitar tuning");
+            }
+        }
+    }
+    keep_mapping(composer, section, keys)?;
+    Ok(change)
 }
 
 fn notes_argument(arguments: &Value) -> Result<Vec<u8>, String> {
@@ -705,6 +720,24 @@ pub fn set_guitar_strings(
         Some(key) => keys.guitar.set_shape(&key, &name, strings)?,
         None => keys.guitar.set_open(strings)?,
     }
+    keep_mapping(&mut composer, section, keys)?;
+    follow_picked_track(&mut key_map, &composer);
+    view_of(&composer, section)
+}
+
+// Sets how long each string of a strum waits after the one before, on the
+// mapping page.
+#[tauri::command]
+pub fn set_strum_ms(
+    key_map: State<'_, Mutex<KeyMap>>,
+    composer: State<'_, Mutex<Composer>>,
+    section: Option<usize>,
+    ms: u32,
+) -> Result<MappingView, String> {
+    let mut key_map = key_map.lock().unwrap();
+    let mut composer = composer.lock().unwrap();
+    let mut keys = mapping_of(&composer, section)?;
+    keys.guitar.set_strum_ms(ms)?;
     keep_mapping(&mut composer, section, keys)?;
     follow_picked_track(&mut key_map, &composer);
     view_of(&composer, section)

@@ -11,7 +11,8 @@
    fits. Driven with every edge case: EQ squares and bands, the shaper's
    points and its 16-point cap, delay tiles and its first echo square,
    reverb tiles and its gap square, bus and track rename (Escape only puts
-   the name back). Left: hear it.
+   the name back). Heard 2026-11-04 on Racing Riff (track EQs, the Room
+   reverb send, the master limiter): sounds good.
 2. **Learning and composing, rethought.** Tutoring, composing through the
    agent harness, guided mode and everything about learning and using the
    instrument well. Nothing that exists now has to stay, its UI included.
@@ -47,14 +48,14 @@
      and the groove that follows; the EQ and reference drills; the
      keyboard marking the next key in song practice. Lyrics and the
      reference card get mockups first.
-   - Known gaps: right Cmd blocks nothing while talking (Cmd Q still
-     quits); a take that changes another song than the one open reopens
-     its song.
+   - Right Cmd puts the app menu away while down (`talk_key.rs`), so
+     Cmd Q, W, H and M do nothing while talking. A take on a song you
+     leave is kept, and follows the song if the AI renames it.
 3. **Later:** Produce (after everything else is final), Windows checks, and the
    finish line song.
 
 Heard and approved by ear: guitar presets, grand piano, song key mappings
-while playing, and Mix sound.
+while playing, and the Mix (Racing Riff, 2026-11-04).
 
 ## Learning: later
 
@@ -81,9 +82,9 @@ Built ([ADR 0049](adr/0049-the-keyboard-guitar.md), [design](design.md#guitar)).
 - Loops replay a string's move as a fresh pluck, and Compose doesn't time moves.
 - Presets saved earlier stay as saved: remove one from the Sounds folder to get
   the new values.
-- Todo: on guitar tracks J strums up and K strums down the held shape, so two
-  fingers strum while the top row (U I O P [ ]) stays for fingerstyle. J and
-  K lose what they play on guitar tracks.
+- J strums down and K strums up the held shape (`strums.rs`), each string
+  one strum gap after the last: 0 to 100 ms, 25 to start, the song's own
+  (Keys page, Guitar side, or `jello_keys`). Not heard by ear yet.
 
 ## Grand piano: later
 
@@ -131,9 +132,6 @@ Built and committed (151f94c).
 
 ### Next
 
-- Tests miss two deliberate mistakes: a send ignoring its amount
-  (`engine/src/mixer.cpp`) and a replaced effect never freed
-  (`engine/src/conductor.cpp`). Add a test for each.
 - Once (2026-10-30), "Untitled" and "Untitled 4" ignored clicks and presses
   for about a minute after opening, with no message; not reproduced in 26
   more tries. If it returns, log `open_song` in Rust and `open` in

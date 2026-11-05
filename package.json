@@ -9,7 +9,9 @@
     "build": "svelte-check && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:agent": "node --test tools/tests/agent-host.test.mjs"
+    "test:agent": "node --test tools/tests/agent-host.test.mjs",
+    "test:ui": "node --test tools/tests/ui.test.mjs",
+    "check": "npm run test:agent && npm run test:ui && npm run build && cd src-tauri && cargo test"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
